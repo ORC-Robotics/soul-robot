@@ -1,0 +1,8 @@
+{
+    "code-runner.executorMap": {
+        "cpp": "cmake --build build && ./build/robot_test"
+    },
+    "code-runner.runInTerminal": true,
+    "code-runner.saveFileBeforeRun": true,
+    "code-runner.showRunIconInEditorTitleMenu": true
+}
