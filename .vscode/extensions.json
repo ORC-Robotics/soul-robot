@@ -1,6 +1,5 @@
 {
     "recommendations": [
-        "formulahendry.code-runner",
         "ms-vscode.cpptools"
     ]
 }

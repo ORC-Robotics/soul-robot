@@ -8,3 +8,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(robot_test
     src/main.cpp
 )
+
+target_link_libraries(robot_test
+    pthread
+)

@@ -4,5 +4,5 @@
     },
     "code-runner.runInTerminal": true,
     "code-runner.saveFileBeforeRun": true,
-    "code-runner.showRunIconInEditorTitleMenu": true
+    "code-runner.showRunIconInEditorTitleMenu": false
 }
