@@ -1,42 +1,84 @@
 # OBR2026K
 
-## Deploy na Raspberry Pi
+Código C++ do robô OBR 2026 rodando em uma Raspberry Pi, com dashboard web para
+teste, telemetria simples e controle manual dos motores.
 
-Este projeto pode ser enviado pela rede sem usar a extensao Remote SSH do VS Code.
-O deploy usa os comandos locais `ssh` e `scp`: ele copia o codigo para a Raspberry,
-compila com CMake na propria Raspberry e deixa o binario em `/home/obr/OBR2026K/build/robot_test`.
+## Visão geral
 
-Na Raspberry, instale as dependencias uma vez:
+O projeto roda um servidor HTTP/WebSocket na Raspberry Pi. Pelo navegador, o
+dashboard permite:
+
+- ver o modo atual do robô;
+- ver CPU e temperatura da Raspberry;
+- iniciar/parar o modo manual;
+- controlar frente/ré e curva pelos sliders.
+
+O dashboard é uma ferramenta de desenvolvimento e teste. A lógica de segurança
+fica no código do robô, não no navegador.
+
+## Arquitetura
+
+```txt
+src/main.cpp
+  Conecta os módulos e executa o loop principal.
+
+src/dashboard/
+  Dashboard HTTP/WebSocket e comandos vindos do navegador.
+
+src/robot/
+  Estado do robô e controle dos motores.
+
+src/hal/
+  Acesso baixo nível aos GPIOs da Raspberry Pi.
+
+src/telemetry/
+  Leituras simples de telemetria.
+
+include/obr/config.h
+  Pinos, portas, limites e constantes do robô.
+```
+
+## Pinos da ponte H L298N
+
+Os pinos ficam centralizados em `include/obr/config.h` e usam numeração BCM da
+Raspberry Pi.
+
+| Raspberry Pi | L298N | Função |
+| --- | --- | --- |
+| GPIO17 | IN1 | direção do motor esquerdo |
+| GPIO27 | IN2 | direção do motor esquerdo |
+| GPIO22 | IN3 | direção do motor direito |
+| GPIO23 | IN4 | direção do motor direito |
+| GPIO18 | ENA | PWM por software do motor esquerdo |
+| GPIO13 | ENB | PWM por software do motor direito |
+
+O controle de potência usa PWM por software em `ENA` e `ENB`. O período atual
+está em `config::kMotorPwmPeriodMs`.
+
+## Segurança dos motores
+
+O comportamento esperado é:
+
+- ao ligar, os motores começam parados;
+- `Stop` zera os comandos e mantém o robô em modo parado;
+- comandos de movimento só são aceitos depois de `Start`;
+- se o dashboard parar de enviar comandos, os motores param por timeout;
+- todos os comandos de motor são limitados entre `-1.0` e `1.0`;
+- ao encerrar o programa, o código tenta zerar os pinos dos motores.
+
+Durante testes, levante as rodas antes de usar valores altos nos sliders.
+
+## Dependências na Raspberry Pi
+
+Instale uma vez:
 
 ```sh
 sudo apt update
 sudo apt install -y build-essential cmake
 ```
 
-Depois de rodar o deploy, abra o dashboard no navegador:
-
-```txt
-http://raspberrypi.local:8080
-```
-
-O dashboard usa WebSocket para receber telemetria e enviar comandos basicos de
-controle remoto. Por seguranca, o codigo zera os comandos dos motores se ficar
-mais de 2 segundos sem receber comando do dashboard.
-
-## Pinos do robo
-
-Os pinos ficam centralizados em `include/obr/config.h`. A configuracao inicial para a
-ponte H L298N usa numeracao BCM:
-
-- motor esquerdo: `ENA=12`, `IN1=5`, `IN2=6`
-- motor direito: `ENB=13`, `IN3=20`, `IN4=21`
-
-Esta primeira versao usa controle digital para testar os motores: valores
-positivos giram para frente, negativos giram para tras, e valores perto de zero
-param o motor. Depois podemos trocar os pinos `ENA/ENB` para PWM real.
-
-O servico roda como usuario `obr` e tenta usar o grupo `gpio`. Se os pinos nao
-responderem, confira na Raspberry:
+O serviço roda como usuário `obr`. Se os GPIOs não responderem, confira se o
+usuário está no grupo `gpio`:
 
 ```sh
 groups obr
@@ -45,36 +87,47 @@ sudo usermod -aG gpio obr
 
 Depois de alterar grupos, reinicie a Raspberry.
 
-No Windows, rode pelo terminal na pasta do projeto:
+## Deploy pelo Windows
+
+Na pasta do projeto:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1
 ```
 
-O deploy reinicia o servico `obr-robot` quando ele ja esta instalado. Se o
-servico ainda nao existir, ele roda o programa no terminal via SSH. Para apenas
-compilar/enviar sem rodar:
+O deploy copia o código para `/home/obr/OBR2026K`, compila na Raspberry e
+reinicia o serviço `obr-robot` quando ele já está instalado.
+
+Se precisar escolher o host manualmente:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.104
+```
+
+Para apenas enviar e compilar, sem iniciar o robô:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 ```
 
-No Linux/macOS, o processo e o mesmo, usando Bash:
+## Deploy pelo Linux/macOS
 
 ```sh
 bash scripts/deploy.sh
 ```
 
-Para apenas compilar/enviar sem rodar no Linux/macOS:
+Para apenas enviar e compilar, sem iniciar o robô:
 
 ```sh
 bash scripts/deploy.sh --no-run
 ```
 
-## Iniciar automaticamente no boot
+## Serviço no boot
 
-Depois que o deploy ja tiver compilado o projeto pelo menos uma vez, instale o
-servico `systemd` na Raspberry:
+Depois que o projeto já tiver sido compilado pelo menos uma vez na Raspberry,
+instale o serviço:
+
+No Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1
@@ -86,26 +139,45 @@ No Linux/macOS:
 bash scripts/install-service.sh
 ```
 
-Depois disso, a Raspberry inicia `/home/obr/OBR2026K/build/robot_test`
-automaticamente no boot. Para atualizar o codigo e reiniciar o servico:
+Depois disso, a Raspberry inicia o programa automaticamente no boot. O deploy
+normal já reinicia o serviço com a versão nova.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1
-```
-
-No Linux/macOS:
+Comandos úteis na Raspberry:
 
 ```sh
-bash scripts/deploy.sh
+sudo systemctl status obr-robot
+sudo systemctl restart obr-robot
+journalctl -u obr-robot -f
 ```
 
-Se o usuario, host ou pasta forem diferentes:
+## Dashboard
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -User obr -HostName raspberrypi.local -RemoteDir /home/obr/OBR2026K
+Depois do serviço subir, abra:
+
+```txt
+http://raspberrypi.local:8080
 ```
 
-No VS Code, tambem da para usar:
+Se o nome não resolver na rede, use o IP atual da Raspberry:
 
-- `Terminal > Run Build Task` para `Deploy Raspberry`
-- `Terminal > Run Task > Deploy only Raspberry`
+```txt
+http://192.168.0.104:8080
+```
+
+## VS Code
+
+Atalhos úteis:
+
+- `Terminal > Run Build Task` para rodar `Deploy Raspberry`;
+- `Terminal > Run Task > Deploy only Raspberry` para enviar/compilar sem rodar.
+
+O IntelliSense usa `.vscode/c_cpp_properties.json` para encontrar os headers em
+`include/`.
+
+## Commit sugerido
+
+```sh
+git add .
+git commit -m "Add Raspberry deploy flow and robot dashboard control"
+git push
+```
