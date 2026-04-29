@@ -122,6 +122,7 @@ private:
     void cleanupSockets();
     bool isInvalidSocket(SocketHandle socketHandle) const;
     void closeSocket(SocketHandle socketHandle);
+    void shutdownSocket(SocketHandle socketHandle);
 
     void acceptLoop();
     void telemetryLoop();

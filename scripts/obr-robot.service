@@ -1,0 +1,16 @@
+[Unit]
+Description=OBR 2026 Robot Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=obr
+SupplementaryGroups=gpio
+WorkingDirectory=/home/obr/OBR2026K
+ExecStart=/home/obr/OBR2026K/build/robot_test
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

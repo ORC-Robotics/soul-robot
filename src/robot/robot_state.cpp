@@ -56,14 +56,15 @@ void RobotState::drive(double left, double right)
     std::lock_guard<std::mutex> lock(mutex_);
     lastCommand_ = std::chrono::steady_clock::now();
 
-    if (state_.emergencyStop)
+    if (state_.emergencyStop || state_.mode != "manual")
     {
+        // Comandos de movimento só são aceitos depois do Start.
+        // Isso impede que o dashboard tire o robô do modo parado por acidente.
         state_.left = 0.0;
         state_.right = 0.0;
         return;
     }
 
-    state_.mode = "manual";
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
 }

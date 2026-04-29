@@ -9,7 +9,7 @@
 #include <thread>
 
 GpioPin::GpioPin(int bcmPin)
-    : pin_(bcmPin)
+    : bcmPin_(bcmPin), gpioNumber_(detectMainGpioBase() + bcmPin)
 {
 }
 
@@ -23,12 +23,12 @@ bool GpioPin::beginOutput()
 #ifdef _WIN32
     return true;
 #else
-    if (!writeFile("/sys/class/gpio/export", std::to_string(pin_)))
+    if (!writeFile("/sys/class/gpio/export", std::to_string(gpioNumber_)))
     {
         std::ifstream existing(gpioPath("direction"));
         if (!existing.good())
         {
-            std::cerr << "GPIO " << pin_ << " export failed\n";
+            std::cerr << "GPIO BCM " << bcmPin_ << " export failed\n";
             return false;
         }
     }
@@ -37,7 +37,7 @@ bool GpioPin::beginOutput()
 
     if (!writeFile(gpioPath("direction"), "out"))
     {
-        std::cerr << "GPIO " << pin_ << " direction failed\n";
+        std::cerr << "GPIO BCM " << bcmPin_ << " direction failed\n";
         return false;
     }
 
@@ -57,14 +57,32 @@ bool GpioPin::write(bool high)
 
 int GpioPin::pin() const
 {
-    return pin_;
+    return bcmPin_;
 }
 
 std::string GpioPin::gpioPath(const std::string& file) const
 {
     std::ostringstream path;
-    path << "/sys/class/gpio/gpio" << pin_ << "/" << file;
+    path << "/sys/class/gpio/gpio" << gpioNumber_ << "/" << file;
     return path.str();
+}
+
+int GpioPin::detectMainGpioBase()
+{
+#ifdef _WIN32
+    return 0;
+#else
+    std::ifstream chip("/sys/class/gpio/gpiochip512/label");
+    std::string label;
+    chip >> label;
+
+    if (label.find("pinctrl") != std::string::npos)
+    {
+        return 512;
+    }
+
+    return 0;
+#endif
 }
 
 bool GpioPin::writeFile(const std::string& path, const std::string& value)

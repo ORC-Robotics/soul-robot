@@ -81,7 +81,7 @@ void DashboardServer::stop()
     }
 
     running_ = false;
-    closeSocket(server_);
+    shutdownSocket(server_);
 
     {
         std::lock_guard<std::mutex> lock(clientsMutex_);
@@ -142,6 +142,19 @@ void DashboardServer::closeSocket(SocketHandle socketHandle)
 #endif
 }
 
+void DashboardServer::shutdownSocket(SocketHandle socketHandle)
+{
+#if defined(_WIN32) && defined(__INTELLISENSE__)
+    (void)socketHandle;
+#elif defined(_WIN32)
+    shutdown(socketHandle, SD_BOTH);
+    closesocket(socketHandle);
+#else
+    shutdown(socketHandle, SHUT_RDWR);
+    close(socketHandle);
+#endif
+}
+
 void DashboardServer::acceptLoop()
 {
     while (running_)
@@ -159,6 +172,8 @@ void DashboardServer::acceptLoop()
 
 void DashboardServer::telemetryLoop()
 {
+    int telemetryLogCounter = 0;
+
     while (running_)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kTelemetryPeriodMs));
@@ -168,7 +183,12 @@ void DashboardServer::telemetryLoop()
         std::string json = buildTelemetryJson(sample);
         broadcast(json);
 
-        std::cout << "Telemetry " << json << "\n";
+        ++telemetryLogCounter;
+        if (telemetryLogCounter >= config::kTelemetryLogEverySamples)
+        {
+            telemetryLogCounter = 0;
+            std::cout << "Telemetry " << json << "\n";
+        }
     }
 }
 
@@ -317,7 +337,7 @@ std::string DashboardServer::dashboardHtml()
     .metric { min-height: 112px; }
     .label { margin: 0 0 10px; color: #a8b3c1; font-size: 0.9rem; }
     .value { margin: 0; font-size: 2.2rem; font-weight: 800; }
-    .controls { grid-column: span 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .controls { grid-column: span 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     button { min-height: 52px; border: 0; border-radius: 8px; color: #071016; background: #4ade80; font-size: 1rem; font-weight: 800; cursor: pointer; }
     button.secondary { background: #60a5fa; }
     button.danger { background: #fb7185; }
@@ -354,17 +374,22 @@ std::string DashboardServer::dashboardHtml()
       <section class="controls">
         <button onclick="sendCommand('start')">Start</button>
         <button class="secondary" onclick="sendCommand('stop')">Stop</button>
-        <button class="danger" onclick="sendCommand('estop')">Emergency Stop</button>
       </section>
 
       <section class="panel drive">
         <div>
+          <p class="label">Frente/re: <strong id="throttleValue">0.00</strong></p>
+          <input id="throttle" type="range" min="-1" max="1" step="0.05" value="0">
+        </div>
+        <div>
+          <p class="label">Curva: <strong id="turnValue">0.00</strong></p>
+          <input id="turn" type="range" min="-1" max="1" step="0.05" value="0">
+        </div>
+        <div>
           <p class="label">Motor esquerdo: <strong id="leftValue">0.00</strong></p>
-          <input id="left" type="range" min="-1" max="1" step="0.05" value="0">
         </div>
         <div>
           <p class="label">Motor direito: <strong id="rightValue">0.00</strong></p>
-          <input id="right" type="range" min="-1" max="1" step="0.05" value="0">
         </div>
       </section>
     </section>
@@ -372,9 +397,10 @@ std::string DashboardServer::dashboardHtml()
 
   <script>
     let ws;
+    let manualEnabled = false;
     const connection = document.getElementById("connection");
-    const left = document.getElementById("left");
-    const right = document.getElementById("right");
+    const throttle = document.getElementById("throttle");
+    const turn = document.getElementById("turn");
 
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
@@ -395,17 +421,45 @@ std::string DashboardServer::dashboardHtml()
     }
 
     function sendCommand(command) {
+      if (command === "start") {
+        manualEnabled = true;
+      }
+      if (command === "stop" || command === "estop") {
+        manualEnabled = false;
+        resetDrive();
+      }
       send({ command });
     }
 
-    function sendDrive() {
-      document.getElementById("leftValue").textContent = Number(left.value).toFixed(2);
-      document.getElementById("rightValue").textContent = Number(right.value).toFixed(2);
-      send({ command: "drive", left: Number(left.value), right: Number(right.value) });
+    function clamp(value) {
+      return Math.max(-1, Math.min(1, value));
     }
 
-    left.addEventListener("input", sendDrive);
-    right.addEventListener("input", sendDrive);
+    function sendDrive() {
+      const throttleValue = Number(throttle.value);
+      const turnValue = Number(turn.value);
+      const leftValue = clamp(throttleValue + turnValue);
+      const rightValue = clamp(throttleValue - turnValue);
+
+      document.getElementById("throttleValue").textContent = throttleValue.toFixed(2);
+      document.getElementById("turnValue").textContent = turnValue.toFixed(2);
+      document.getElementById("leftValue").textContent = leftValue.toFixed(2);
+      document.getElementById("rightValue").textContent = rightValue.toFixed(2);
+
+      if (manualEnabled) {
+        send({ command: "drive", left: leftValue, right: rightValue });
+      }
+    }
+
+    function resetDrive() {
+      throttle.value = "0";
+      turn.value = "0";
+      sendDrive();
+    }
+
+    throttle.addEventListener("input", sendDrive);
+    turn.addEventListener("input", sendDrive);
+    setInterval(sendDrive, 100);
     connect();
   </script>
 </body>

@@ -3,8 +3,11 @@
 #include "obr/config.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <functional>
 #include <iostream>
+#include <thread>
 
 MotorController::MotorController()
     : leftEnable_(config::kLeftEnablePin),
@@ -14,6 +17,11 @@ MotorController::MotorController()
       rightInput1_(config::kRightInput1Pin),
       rightInput2_(config::kRightInput2Pin)
 {
+}
+
+MotorController::~MotorController()
+{
+    stopPwm();
 }
 
 bool MotorController::begin()
@@ -27,6 +35,11 @@ bool MotorController::begin()
     ok = rightInput2_.beginOutput() && ok;
 
     stop();
+
+    if (ok)
+    {
+        startPwm();
+    }
 
     if (!ok)
     {
@@ -50,6 +63,8 @@ void MotorController::apply(const RobotSnapshot& state)
 
 void MotorController::stop()
 {
+    leftDutyCycle_ = 0.0;
+    rightDutyCycle_ = 0.0;
     leftEnable_.write(false);
     leftInput1_.write(false);
     leftInput2_.write(false);
@@ -58,43 +73,115 @@ void MotorController::stop()
     rightInput2_.write(false);
 }
 
-int MotorController::directionFromCommand(double command)
+double MotorController::safeMotorPower(double command)
 {
     if (!std::isfinite(command))
     {
-        return 0;
+        return 0.0;
     }
 
-    const double safeCommand = std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
+    return std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
+}
 
-    if (std::abs(safeCommand) < config::kMotorDeadband)
+void MotorController::startPwm()
+{
+    if (pwmRunning_)
     {
-        return 0;
+        return;
     }
 
-    return safeCommand > 0.0 ? 1 : -1;
+    pwmRunning_ = true;
+    leftPwmThread_ = std::thread(&MotorController::pwmLoop, this, std::ref(leftEnable_), std::ref(leftDutyCycle_));
+    rightPwmThread_ = std::thread(&MotorController::pwmLoop, this, std::ref(rightEnable_), std::ref(rightDutyCycle_));
+}
+
+void MotorController::stopPwm()
+{
+    if (!pwmRunning_)
+    {
+        stop();
+        return;
+    }
+
+    leftDutyCycle_ = 0.0;
+    rightDutyCycle_ = 0.0;
+    pwmRunning_ = false;
+
+    if (leftPwmThread_.joinable())
+    {
+        leftPwmThread_.join();
+    }
+
+    if (rightPwmThread_.joinable())
+    {
+        rightPwmThread_.join();
+    }
+
+    leftEnable_.write(false);
+    rightEnable_.write(false);
+}
+
+void MotorController::pwmLoop(GpioPin& enable, std::atomic<double>& dutyCycle)
+{
+    const auto period = std::chrono::milliseconds(config::kMotorPwmPeriodMs);
+
+    while (pwmRunning_)
+    {
+        // O PWM por software controla apenas ENA/ENB. Os pinos IN1..IN4
+        // continuam definindo a direção e são zerados nas paradas de segurança.
+        const double duty = std::clamp(dutyCycle.load(), 0.0, 1.0);
+
+        if (duty < config::kMotorDeadband)
+        {
+            enable.write(false);
+            std::this_thread::sleep_for(period);
+            continue;
+        }
+
+        if (duty >= config::kMaxMotorOutput)
+        {
+            enable.write(true);
+            std::this_thread::sleep_for(period);
+            continue;
+        }
+
+        const auto onTime = std::chrono::microseconds(
+            static_cast<int>(config::kMotorPwmPeriodMs * 1000.0 * duty));
+        const auto offTime = std::chrono::microseconds(config::kMotorPwmPeriodMs * 1000) - onTime;
+
+        enable.write(true);
+        std::this_thread::sleep_for(onTime);
+        enable.write(false);
+        std::this_thread::sleep_for(offTime);
+    }
+
+    enable.write(false);
 }
 
 void MotorController::setMotor(GpioPin& enable, GpioPin& input1, GpioPin& input2, double command)
 {
-    const int direction = directionFromCommand(command);
+    std::atomic<double>& dutyCycle = (&enable == &leftEnable_) ? leftDutyCycle_ : rightDutyCycle_;
+    const double safeCommand = safeMotorPower(command);
 
-    if (direction == 0)
+    if (std::abs(safeCommand) < config::kMotorDeadband)
     {
-        enable.write(false);
+        dutyCycle = 0.0;
         input1.write(false);
         input2.write(false);
+        enable.write(false);
+        return;
     }
-    else if (direction > 0)
+
+    if (safeCommand > 0.0)
     {
         input1.write(true);
         input2.write(false);
-        enable.write(true);
     }
     else
     {
         input1.write(false);
         input2.write(true);
-        enable.write(true);
     }
+
+    dutyCycle = std::abs(safeCommand);
 }

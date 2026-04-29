@@ -18,8 +18,10 @@ public:
     int pin() const;
 
 private:
-    int pin_;
+    int bcmPin_;
+    int gpioNumber_;
 
     std::string gpioPath(const std::string& file) const;
+    static int detectMainGpioBase();
     static bool writeFile(const std::string& path, const std::string& value);
 };
