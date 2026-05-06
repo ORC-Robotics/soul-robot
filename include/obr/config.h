@@ -9,6 +9,18 @@ constexpr int kDashboardPort = 8080;
 // Intervalo, em milissegundos, entre envios de telemetria para o dashboard.
 constexpr int kTelemetryPeriodMs = 500;
 
+// Arquivo JPEG atualizado pelo script da câmera.
+// O dashboard lê este caminho; se o script não estiver rodando, a imagem fica indisponível.
+constexpr const char* kCameraFramePath = "/tmp/obr_camera_frame.jpg";
+
+// Arquivo JSON atualizado pelo script da câmera com dados do processamento.
+// O FPS mostrado no dashboard vem deste arquivo para não misturar câmera com telemetria do robô.
+constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
+
+// Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
+// Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.
+constexpr int kCameraLightPinBoard = 40;
+
 // Quantidade de amostras entre logs de telemetria no journal.
 // O dashboard continua recebendo todas as amostras; isso só reduz poluição no log.
 constexpr int kTelemetryLogEverySamples = 20;

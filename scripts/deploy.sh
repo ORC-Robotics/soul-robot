@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-raspberrypi.local}"
+HOST_NAME="${HOST_NAME:-192.168.0.105}"
 USER_NAME="${USER_NAME:-obr}"
 REMOTE_DIR="${REMOTE_DIR:-/home/obr/OBR2026K}"
 TARGET="${TARGET:-robot_test}"
@@ -68,6 +68,7 @@ ssh "${SSH_ARGS[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_DIR/build'"
 scp "${SCP_ARGS[@]}" "$WORKSPACE/CMakeLists.txt" "${REMOTE}:${REMOTE_DIR}/CMakeLists.txt"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/src" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/include" "${REMOTE}:${REMOTE_DIR}/"
+scp "${SCP_ARGS[@]}" -r "$WORKSPACE/scripts" "${REMOTE}:${REMOTE_DIR}/"
 ssh "${SSH_ARGS[@]}" "$REMOTE" "cd '$REMOTE_DIR' && cmake -S . -B build && cmake --build build"
 
 echo "Deploy complete: ${REMOTE}:${REMOTE_DIR}/build/${TARGET}"

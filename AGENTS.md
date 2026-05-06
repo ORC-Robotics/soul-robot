@@ -192,7 +192,7 @@ Do not overcomment obvious code. The goal is clarity, not visual pollution.
 * `main.cpp` should only wire modules together.
 * Dashboard/websocket code belongs in `DashboardServer`.
 * Robot mode and drive values belong in `RobotState`.
-* CPU/temperature readings belong in `Telemetry`.
+* CPU/temperature/RAM readings belong in `Telemetry`.
 * GPIO and motor driver details belong in `GpioPin` and `MotorController`.
 * Pin numbers and hardware constants belong in `include/obr/config.h`.
 * Keep modules small and focused.
@@ -214,7 +214,7 @@ DashboardServer
   Receives commands from the dashboard and sends telemetry back.
 
 Telemetry
-  Reads Raspberry Pi CPU usage, temperature, uptime, and other system data.
+  Reads Raspberry Pi CPU usage, temperature, RAM usage, and other system data.
 
 GpioPin
   Low-level GPIO wrapper.
@@ -270,6 +270,7 @@ Good examples:
 ```cpp
 int commandTimeoutMs;
 double cpuTemperatureCelsius;
+double ramUsagePercent;
 double leftMotorPower;
 bool emergencyStopActive;
 ```
@@ -377,7 +378,8 @@ Telemetry should be useful for debugging, not just decorative.
 
 Telemetry should grow toward including, when available:
 
-* CPU temperature.
+* CPU temper
+* RAM usage.ature.
 * CPU usage.
 * Uptime.
 * Robot mode.
@@ -391,6 +393,7 @@ Telemetry values should include clear names and units.
 Example:
 
 ```json
+  "ramUsagePercent": 47.8
 {
   "cpuTemperatureCelsius": 54.2,
   "lastCommandAgeMs": 120,

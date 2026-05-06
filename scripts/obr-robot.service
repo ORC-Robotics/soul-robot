@@ -8,7 +8,7 @@ Type=simple
 User=obr
 SupplementaryGroups=gpio
 WorkingDirectory=/home/obr/OBR2026K
-ExecStart=/home/obr/OBR2026K/build/robot_test
+ExecStart=/home/obr/OBR2026K/scripts/run_robot.sh
 Restart=always
 RestartSec=2
 

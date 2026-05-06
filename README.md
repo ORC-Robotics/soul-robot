@@ -9,7 +9,8 @@ O projeto roda um servidor HTTP/WebSocket na Raspberry Pi. Pelo navegador, o
 dashboard permite:
 
 - ver o modo atual do robô;
-- ver CPU e temperatura da Raspberry;
+- ver CPU, temperatura e uso de RAM da Raspberry;
+- ver a imagem processada pela câmera, quando o script da câmera estiver rodando;
 - iniciar/parar o modo manual;
 - controlar frente/ré e curva pelos sliders.
 
@@ -87,6 +88,13 @@ sudo usermod -aG gpio obr
 
 Depois de alterar grupos, reinicie a Raspberry.
 
+Para usar a câmera no dashboard, instale também as dependências da Pi Camera e
+do OpenCV para Python:
+
+```sh
+sudo apt install -y python3-picamera2 python3-opencv python3-numpy
+```
+
 ## Deploy pelo Windows
 
 Na pasta do projeto:
@@ -162,6 +170,44 @@ Se o nome não resolver na rede, use o IP atual da Raspberry:
 
 ```txt
 http://192.168.0.104:8080
+```
+
+### Imagem da câmera
+
+O dashboard lê a imagem processada em `/camera.jpg`. Esse endpoint mostra o
+arquivo `/tmp/obr_camera_frame.jpg`, atualizado pelo script. O FPS atual da
+câmera aparece ao lado do título da câmera e vem de `/camera-status.json`.
+
+```sh
+cd /home/obr/OBR2026K
+python3 scripts/camera_line_frame.py
+```
+
+Se estiver em outra pasta, use o caminho completo:
+
+```sh
+python3 /home/obr/OBR2026K/scripts/camera_line_frame.py
+```
+
+Esse script usa a Pi Camera, detecta a linha preta, desenha o contorno, o ângulo
+e o erro horizontal, e salva o frame para o dashboard. Se o script não estiver
+rodando ou a câmera falhar, o painel continua funcionando e mostra o aviso de
+câmera indisponível.
+
+Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
+ele inicia esse script automaticamente junto com o robô. Depois de atualizar o
+arquivo de serviço, reinstale uma vez pelo computador de desenvolvimento:
+
+```sh
+bash scripts/install-service.sh
+```
+
+Se você já estiver no terminal da Raspberry, dentro de `/home/obr/OBR2026K`, use:
+
+```sh
+sudo cp scripts/obr-robot.service /etc/systemd/system/obr-robot.service
+sudo systemctl daemon-reload
+sudo systemctl restart obr-robot
 ```
 
 ## VS Code

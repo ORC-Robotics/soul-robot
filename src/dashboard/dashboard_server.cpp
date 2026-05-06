@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -209,6 +210,23 @@ void DashboardServer::handleClient(SocketHandle client)
         return;
     }
 
+    if (request.find("GET /camera.jpg") == 0)
+    {
+        if (!sendCameraFrame(client))
+        {
+            sendHttpNotFound(client);
+        }
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("GET /camera-status.json") == 0)
+    {
+        sendCameraStatus(client);
+        closeSocket(client);
+        return;
+    }
+
     sendHttpResponse(client, dashboardHtml(), "text/html; charset=utf-8");
     closeSocket(client);
 }
@@ -302,6 +320,7 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
     json << std::fixed << std::setprecision(2)
          << "{\"cpu\":" << sample.cpuUsage
          << ",\"temperature\":" << sample.temperature
+         << ",\"ram\":" << sample.ramUsage
          << ",\"mode\":\"" << state.mode << "\""
          << ",\"left\":" << state.left
          << ",\"right\":" << state.right
@@ -332,7 +351,7 @@ std::string DashboardServer::dashboardHtml()
     header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
     h1 { margin: 0; font-size: clamp(1.7rem, 5vw, 3.2rem); line-height: 1; }
     .status { min-width: 132px; padding: 10px 12px; border: 1px solid #34404d; border-radius: 8px; text-align: center; font-weight: 700; background: #17202a; }
-    .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
     .panel { border: 1px solid #2d3742; border-radius: 8px; background: #151b22; padding: 16px; }
     .metric { min-height: 112px; }
     .label { margin: 0 0 10px; color: #a8b3c1; font-size: 0.9rem; }
@@ -341,12 +360,21 @@ std::string DashboardServer::dashboardHtml()
     button { min-height: 52px; border: 0; border-radius: 8px; color: #071016; background: #4ade80; font-size: 1rem; font-weight: 800; cursor: pointer; }
     button.secondary { background: #60a5fa; }
     button.danger { background: #fb7185; }
+    .camera { grid-column: span 3; overflow: hidden; }
+    .camera-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+    .camera-header .label { margin: 0; }
+    .camera-fps { color: #edf2f7; font-size: 0.95rem; font-weight: 800; white-space: nowrap; }
+    .camera-frame { position: relative; aspect-ratio: 16 / 9; background: #0b1117; border-radius: 6px; overflow: hidden; }
+    .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    .camera-frame.offline img { opacity: 0; }
+    .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: #a8b3c1; text-align: center; padding: 18px; }
+    .camera-frame:not(.offline) .camera-message { display: none; }
     .drive { grid-column: span 3; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
     input[type="range"] { width: 100%; accent-color: #facc15; }
     @media (max-width: 760px) {
       header, .grid, .controls, .drive { grid-template-columns: 1fr; }
       header { align-items: stretch; }
-      .controls, .drive { grid-column: span 1; }
+      .controls, .camera, .drive { grid-column: span 1; }
     }
   </style>
 </head>
@@ -370,15 +398,30 @@ std::string DashboardServer::dashboardHtml()
         <p class="label">Temperatura</p>
         <p id="temp" class="value">-</p>
       </article>
+      <article class="panel metric">
+        <p class="label">RAM</p>
+        <p id="ram" class="value">-</p>
+      </article>
 
       <section class="controls">
         <button onclick="sendCommand('start')">Start</button>
         <button class="secondary" onclick="sendCommand('stop')">Stop</button>
       </section>
 
+      <section class="panel camera">
+        <div class="camera-header">
+          <p class="label">Câmera</p>
+          <div class="camera-fps">FPS: <span id="cameraFps">-</span></div>
+        </div>
+        <div id="cameraFrame" class="camera-frame offline">
+          <img id="cameraImage" alt="Imagem processada da câmera">
+          <div class="camera-message">Aguardando imagem da câmera</div>
+        </div>
+      </section>
+
       <section class="panel drive">
         <div>
-          <p class="label">Frente/re: <strong id="throttleValue">0.00</strong></p>
+          <p class="label">Frente/ré: <strong id="throttleValue">0.00</strong></p>
           <input id="throttle" type="range" min="-1" max="1" step="0.05" value="0">
         </div>
         <div>
@@ -401,6 +444,9 @@ std::string DashboardServer::dashboardHtml()
     const connection = document.getElementById("connection");
     const throttle = document.getElementById("throttle");
     const turn = document.getElementById("turn");
+    const cameraFrame = document.getElementById("cameraFrame");
+    const cameraImage = document.getElementById("cameraImage");
+    const cameraFps = document.getElementById("cameraFps");
 
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
@@ -411,6 +457,7 @@ std::string DashboardServer::dashboardHtml()
         document.getElementById("mode").textContent = data.mode;
         document.getElementById("cpu").textContent = `${data.cpu.toFixed(1)}%`;
         document.getElementById("temp").textContent = `${data.temperature.toFixed(1)} C`;
+        document.getElementById("ram").textContent = `${data.ram.toFixed(1)}%`;
       };
     }
 
@@ -457,9 +504,42 @@ std::string DashboardServer::dashboardHtml()
       sendDrive();
     }
 
+    function refreshCamera() {
+      cameraImage.src = `/camera.jpg?ts=${Date.now()}`;
+    }
+
+    async function refreshCameraStatus() {
+      try {
+        const response = await fetch(`/camera-status.json?ts=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("camera status unavailable");
+        }
+        const data = await response.json();
+        if (data.active !== true || Number(data.fps) <= 0) {
+          cameraFps.textContent = "aguardando";
+          return;
+        }
+        cameraFps.textContent = Number(data.fps).toFixed(1);
+      } catch {
+        cameraFps.textContent = "erro";
+      }
+    }
+
+    cameraImage.addEventListener("load", () => {
+      cameraFrame.classList.remove("offline");
+    });
+
+    cameraImage.addEventListener("error", () => {
+      cameraFrame.classList.add("offline");
+    });
+
     throttle.addEventListener("input", sendDrive);
     turn.addEventListener("input", sendDrive);
     setInterval(sendDrive, 100);
+    setInterval(refreshCamera, 150);
+    setInterval(refreshCameraStatus, 500);
+    refreshCamera();
+    refreshCameraStatus();
     connect();
   </script>
 </body>
@@ -477,6 +557,94 @@ void DashboardServer::sendHttpResponse(SocketHandle client, const std::string& c
 
     std::string text = response.str();
     send(client, text.c_str(), static_cast<int>(text.size()), 0);
+}
+
+void DashboardServer::sendHttpNotFound(SocketHandle client)
+{
+    const std::string content = "Not found";
+    std::ostringstream response;
+    response << "HTTP/1.1 404 Not Found\r\n"
+             << "Content-Type: text/plain; charset=utf-8\r\n"
+             << "Content-Length: " << content.size() << "\r\n"
+             << "Connection: close\r\n\r\n"
+             << content;
+
+    std::string text = response.str();
+    send(client, text.c_str(), static_cast<int>(text.size()), 0);
+}
+
+bool DashboardServer::sendCameraFrame(SocketHandle client)
+{
+    // O script da câmera troca o arquivo de forma atômica para evitar JPEG parcial.
+    // Se a leitura falhar, a dashboard mantém o aviso de câmera indisponível.
+    std::ifstream file(config::kCameraFramePath, std::ios::binary);
+    if (!file)
+    {
+        return false;
+    }
+
+    std::ostringstream content;
+    content << file.rdbuf();
+    std::string frame = content.str();
+    if (frame.empty())
+    {
+        return false;
+    }
+
+    std::ostringstream response;
+    response << "HTTP/1.1 200 OK\r\n"
+             << "Content-Type: image/jpeg\r\n"
+             << "Content-Length: " << frame.size() << "\r\n"
+             << "Cache-Control: no-store\r\n"
+             << "Connection: close\r\n\r\n";
+
+    std::string header = response.str();
+    return sendAll(client, header.c_str(), header.size()) && sendAll(client, frame.c_str(), frame.size());
+}
+
+bool DashboardServer::sendCameraStatus(SocketHandle client)
+{
+    // O status da câmera é gerado pelo script Python em JSON simples.
+    // Se ele não existir, a dashboard recebe um estado claro sem afetar o controle do robô.
+    std::ifstream file(config::kCameraStatusPath, std::ios::binary);
+    std::string status;
+    if (file)
+    {
+        std::ostringstream content;
+        content << file.rdbuf();
+        status = content.str();
+    }
+
+    if (status.empty())
+    {
+        status = "{\"fps\":0.0,\"active\":false}";
+    }
+
+    std::ostringstream response;
+    response << "HTTP/1.1 200 OK\r\n"
+             << "Content-Type: application/json; charset=utf-8\r\n"
+             << "Content-Length: " << status.size() << "\r\n"
+             << "Cache-Control: no-store\r\n"
+             << "Connection: close\r\n\r\n";
+
+    std::string header = response.str();
+    return sendAll(client, header.c_str(), header.size()) && sendAll(client, status.c_str(), status.size());
+}
+
+bool DashboardServer::sendAll(SocketHandle client, const char* data, size_t size)
+{
+    size_t sent = 0;
+    while (sent < size)
+    {
+        SocketResult result = send(client, data + sent, static_cast<int>(size - sent), 0);
+        if (result <= 0)
+        {
+            return false;
+        }
+        sent += static_cast<size_t>(result);
+    }
+
+    return true;
 }
 
 std::string DashboardServer::getHeaderValue(const std::string& request, const std::string& header)

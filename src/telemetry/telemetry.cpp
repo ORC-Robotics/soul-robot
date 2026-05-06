@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <string>
+#include <sstream>
 
 Telemetry::Telemetry()
     : previous_(readCpuSample())
@@ -14,6 +15,7 @@ TelemetrySample Telemetry::read()
     TelemetrySample sample;
     sample.cpuUsage = calculateCpuUsage(previous_, current);
     sample.temperature = readCpuTemperature();
+    sample.ramUsage = readRamUsage();
     previous_ = current;
     return sample;
 }
@@ -59,4 +61,36 @@ double Telemetry::readCpuTemperature()
     int tempMilliCelsius = 0;
     file >> tempMilliCelsius;
     return tempMilliCelsius / 1000.0;
+}
+
+double Telemetry::readRamUsage()
+{
+    std::ifstream file("/proc/meminfo");
+    std::string line;
+    unsigned long long totalRam = 0;
+    unsigned long long availableRam = 0;
+
+    while (std::getline(file, line))
+    {
+        if (line.find("MemTotal:") == 0)
+        {
+            std::istringstream iss(line.substr(9));
+            iss >> totalRam;
+        }
+        else if (line.find("MemAvailable:") == 0)
+        {
+            std::istringstream iss(line.substr(13));
+            iss >> availableRam;
+            break;
+        }
+    }
+
+    if (totalRam == 0)
+    {
+        return 0.0;
+    }
+
+    // Calcula o uso de RAM em porcentagem
+    unsigned long long usedRam = totalRam - availableRam;
+    return 100.0 * static_cast<double>(usedRam) / totalRam;
 }

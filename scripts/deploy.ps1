@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "raspberrypi.local",
+    [string]$HostName = "192.168.0.105",
     [string]$User = "obr",
     [string]$RemoteDir = "/home/obr/OBR2026K",
     [string]$Target = "robot_test",
@@ -53,6 +53,12 @@ Invoke-Checked scp @(
     $scpArgs +
     "-r",
     "$workspace/include",
+    "${remote}:$RemoteDir/"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    "$workspace/scripts",
     "${remote}:$RemoteDir/"
 )
 Invoke-Checked ssh @(

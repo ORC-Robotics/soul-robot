@@ -5,6 +5,7 @@ struct TelemetrySample
 {
     double cpuUsage = 0.0;
     double temperature = 0.0;
+    double ramUsage = 0.0;
 };
 
 // Lê métricas do sistema operacional da Raspberry Pi para diagnóstico do robô.
@@ -27,4 +28,5 @@ private:
     static CpuSample readCpuSample();
     static double calculateCpuUsage(const CpuSample& previous, const CpuSample& current);
     static double readCpuTemperature();
+    static double readRamUsage();
 };
