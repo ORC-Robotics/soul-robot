@@ -269,17 +269,12 @@ def create_camera():
     return picam2, "RGB888"
 
 def normalize_frame_colors(frame, camera_format):
-    # O OpenCV codifica JPEG esperando BGR.
-    # Se a Picamera2 entregar RGB, a conversão evita canais vermelho e azul trocados.
-    if camera_format == "RGB888":
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
+    # O frame já está no formato correto para o pipeline OpenCV usado aqui.
+    # Não aplicamos conversão de RGB para BGR porque isso inverteu vermelho e azul.
     return frame
 
-def camera_format_label(camera_format):
-    if camera_format == "RGB888":
-        return "RGB888->BGR"
 
+def camera_format_label(camera_format):
     return camera_format
 
 def tune_camera_image(picam2):
