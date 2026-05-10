@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.105",
+    [string]$HostName = "raspberrypi.local",
     [string]$User = "obr",
     [string]$ServiceName = "obr-robot",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\obr_raspberry"
@@ -28,6 +28,8 @@ $scpArgs = @()
 if (Test-Path $KeyPath) {
     $sshArgs += @("-i", $KeyPath)
     $scpArgs += @("-i", $KeyPath)
+} else {
+    Write-Host "SSH key not found at $KeyPath. SSH may ask for the Raspberry password."
 }
 
 Write-Host "Installing $ServiceName service on $remote"

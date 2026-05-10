@@ -1,7 +1,9 @@
 # OBR2026K
 
 Código C++ do robô OBR 2026 rodando em uma Raspberry Pi, com dashboard web para
-teste, telemetria simples e controle manual dos motores.
+teste, telemetria simples e controle manual dos motores. A Raspberry conversa
+por UART com uma ESP32, que controla a ponte H L298N e lê o MPU6050 e o sensor
+ultrassônico.
 
 ## Visão geral
 
@@ -10,6 +12,7 @@ dashboard permite:
 
 - ver o modo atual do robô;
 - ver CPU, temperatura e uso de RAM da Raspberry;
+- ver distância do ultrassônico, gyro Z, yaw Z e aceleração vindos da ESP32;
 - ver a imagem processada pela câmera, quando o script da câmera estiver rodando;
 - iniciar/parar o modo manual;
 - controlar frente/ré e curva pelos sliders.
@@ -30,31 +33,63 @@ src/robot/
   Estado do robô e controle dos motores.
 
 src/hal/
-  Acesso baixo nível aos GPIOs da Raspberry Pi.
+  Acesso baixo nível aos GPIOs da Raspberry Pi e ponte UART com a ESP32.
 
 src/telemetry/
   Leituras simples de telemetria.
+
+esp32/obr_esp32_bridge/
+  Sketch Arduino da ESP32 para motores, MPU6050, ultrassônico e UART.
 
 include/obr/config.h
   Pinos, portas, limites e constantes do robô.
 ```
 
-## Pinos da ponte H L298N
+## Comunicação Raspberry Pi e ESP32
 
-Os pinos ficam centralizados em `include/obr/config.h` e usam numeração BCM da
-Raspberry Pi.
+A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
+`/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
 
-| Raspberry Pi | L298N | Função |
+| Raspberry Pi | ESP32 | Função |
 | --- | --- | --- |
-| GPIO17 | IN1 | direção do motor esquerdo |
-| GPIO27 | IN2 | direção do motor esquerdo |
-| GPIO22 | IN3 | direção do motor direito |
-| GPIO23 | IN4 | direção do motor direito |
-| GPIO18 | ENA | PWM por software do motor esquerdo |
-| GPIO13 | ENB | PWM por software do motor direito |
+| GPIO14 / TXD | RX2 / GPIO16 | comandos para a ESP32 |
+| GPIO15 / RXD | TX2 / GPIO17 | telemetria da ESP32 |
+| GND | GND | referência elétrica comum |
 
-O controle de potência usa PWM por software em `ENA` e `ENB`. O período atual
-está em `config::kMotorPwmPeriodMs`.
+Ative a UART serial da Raspberry sem console de login antes de testar:
+
+```sh
+sudo raspi-config
+```
+
+Use `Interface Options > Serial Port`, desative o shell pela serial e ative a
+porta serial de hardware.
+
+## Pinos da ESP32
+
+O sketch da ESP32 fica em `esp32/obr_esp32_bridge/obr_esp32_bridge.ino`.
+No Arduino IDE, instale o pacote da placa ESP32 e as bibliotecas
+`Adafruit MPU6050` e `Adafruit Unified Sensor` antes de gravar.
+
+| ESP32 | L298N | Função |
+| --- | --- | --- |
+| GPIO25 | ENA | PWM do motor esquerdo |
+| GPIO32 | IN1 | direção do motor esquerdo |
+| GPIO33 | IN2 | direção do motor esquerdo |
+| GPIO14 | ENB | PWM do motor direito |
+| GPIO23 | IN3 | direção do motor direito |
+| GPIO19 | IN4 | direção do motor direito |
+| GND | GND | referência elétrica comum |
+
+| ESP32 | Sensor | Função |
+| --- | --- | --- |
+| GPIO21 | MPU6050 | SDA |
+| GPIO22 | MPU6050 | SCL |
+| GPIO27 | Ultrassônico | TRIG |
+| GPIO26 | Ultrassônico | ECHO |
+
+Se o ultrassônico for HC-SR04 alimentado com 5 V, reduza o sinal de ECHO para
+3,3 V antes de ligar na ESP32.
 
 ## Segurança dos motores
 
@@ -64,8 +99,9 @@ O comportamento esperado é:
 - `Stop` zera os comandos e mantém o robô em modo parado;
 - comandos de movimento só são aceitos depois de `Start`;
 - se o dashboard parar de enviar comandos, os motores param por timeout;
+- se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - todos os comandos de motor são limitados entre `-1.0` e `1.0`;
-- ao encerrar o programa, o código tenta zerar os pinos dos motores.
+- ao encerrar o programa, o código envia `STOP` para a ESP32.
 
 Durante testes, levante as rodas antes de usar valores altos nos sliders.
 
@@ -118,6 +154,15 @@ Para apenas enviar e compilar, sem iniciar o robô:
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 ```
 
+Para não digitar a senha em todo deploy, crie uma chave SSH no computador de
+desenvolvimento e instale a chave pública na Raspberry. A senha da Raspberry será
+pedida só nessa configuração inicial:
+
+```powershell
+ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\obr_raspberry" -N ""
+Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh obr@raspberrypi.local "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+```
+
 ## Deploy pelo Linux/macOS
 
 ```sh
@@ -128,6 +173,13 @@ Para apenas enviar e compilar, sem iniciar o robô:
 
 ```sh
 bash scripts/deploy.sh --no-run
+```
+
+No Linux/macOS, use a mesma chave esperada pelo script:
+
+```sh
+ssh-keygen -t ed25519 -f ~/.ssh/obr_raspberry -N ""
+ssh-copy-id -i ~/.ssh/obr_raspberry.pub obr@raspberrypi.local
 ```
 
 ## Serviço no boot
@@ -174,9 +226,18 @@ http://192.168.0.104:8080
 
 ### Imagem da câmera
 
-O dashboard lê a imagem processada em `/camera.jpg`. Esse endpoint mostra o
-arquivo `/tmp/obr_camera_frame.jpg`, atualizado pelo script. O FPS atual da
-câmera aparece ao lado do título da câmera e vem de `/camera-status.json`.
+O dashboard mostra a imagem processada pelo stream MJPEG na própria porta do
+dashboard:
+
+```txt
+http://raspberrypi.local:8080/camera-stream.mjpg
+```
+
+O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
+para `/camera-stream.mjpg`. O endpoint antigo `/camera.jpg` continua disponível
+como snapshot de compatibilidade, lendo `/tmp/obr_camera_frame.jpg`. O FPS atual
+da câmera, a resolução, a qualidade JPEG e o erro horizontal da linha vêm de
+`/camera-status.json`.
 
 ```sh
 cd /home/obr/OBR2026K
@@ -189,10 +250,12 @@ Se estiver em outra pasta, use o caminho completo:
 python3 /home/obr/OBR2026K/scripts/camera_line_frame.py
 ```
 
-Esse script usa a Pi Camera, detecta a linha preta, desenha o contorno, o ângulo
-e o erro horizontal, e salva o frame para o dashboard. Se o script não estiver
-rodando ou a câmera falhar, o painel continua funcionando e mostra o aviso de
-câmera indisponível.
+Esse script usa a Pi Camera, detecta a linha preta, desenha o contorno e o erro
+horizontal, e transmite vídeo em MJPEG para o dashboard. A configuração padrão
+usa `960x540`, JPEG `82` e stream alvo de `30 FPS`. A detecção da linha roda em
+uma cópia menor da imagem para preservar FPS sem borrar a visualização do
+dashboard. Se o script não estiver rodando ou a câmera falhar, o painel continua
+funcionando e mostra o aviso de câmera indisponível.
 
 Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
 ele inicia esse script automaticamente junto com o robô. Depois de atualizar o

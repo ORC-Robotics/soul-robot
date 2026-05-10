@@ -1,5 +1,6 @@
 #include "obr/config.h"
 #include "obr/dashboard_server.h"
+#include "obr/esp32_bridge.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
 #include "obr/telemetry.h"
@@ -27,8 +28,9 @@ int main()
 
     RobotState robotState;
     Telemetry telemetry;
-    MotorController motors;
-    DashboardServer dashboard(robotState, telemetry);
+    Esp32Bridge esp32;
+    MotorController motors(esp32);
+    DashboardServer dashboard(robotState, telemetry, esp32);
 
     motors.begin();
 

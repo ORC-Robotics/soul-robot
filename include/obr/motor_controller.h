@@ -1,40 +1,21 @@
 #pragma once
 
-#include "obr/gpio.h"
+#include "obr/esp32_bridge.h"
 #include "obr/robot_state.h"
 
-#include <atomic>
-#include <thread>
-
-// Converte comandos seguros do RobotState em sinais digitais para a ponte H L298N.
-// Em parada de emergência ou modo parado, todos os pinos dos motores são zerados.
-// ENA e ENB recebem PWM por software para controlar a potência dos motores.
+// Converte comandos seguros do RobotState em mensagens UART para a ESP32.
+// A ESP32 controla a ponte H L298N e também aplica timeout próprio de segurança.
 class MotorController
 {
 public:
-    MotorController();
-    ~MotorController();
+    explicit MotorController(Esp32Bridge& esp32);
 
     bool begin();
     void apply(const RobotSnapshot& state);
     void stop();
 
 private:
-    GpioPin leftEnable_;
-    GpioPin leftInput1_;
-    GpioPin leftInput2_;
-    GpioPin rightEnable_;
-    GpioPin rightInput1_;
-    GpioPin rightInput2_;
-    std::atomic<bool> pwmRunning_{false};
-    std::atomic<double> leftDutyCycle_{0.0};
-    std::atomic<double> rightDutyCycle_{0.0};
-    std::thread leftPwmThread_;
-    std::thread rightPwmThread_;
+    Esp32Bridge& esp32_;
 
     static double safeMotorPower(double command);
-    void startPwm();
-    void stopPwm();
-    void pwmLoop(GpioPin& enable, std::atomic<double>& dutyCycle);
-    void setMotor(GpioPin& enable, GpioPin& input1, GpioPin& input2, double command);
 };

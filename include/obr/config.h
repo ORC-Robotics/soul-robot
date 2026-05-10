@@ -17,6 +17,13 @@ constexpr const char* kCameraFramePath = "/tmp/obr_camera_frame.jpg";
 // O FPS mostrado no dashboard vem deste arquivo para não misturar câmera com telemetria do robô.
 constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 
+// Porta local do stream MJPEG gerado pelo script Python da câmera.
+// O dashboard acessa esse vídeo pelo proxy /camera-stream.mjpg na porta principal.
+constexpr int kCameraStreamPort = 8090;
+
+// Caminho HTTP do stream MJPEG dentro do script Python da câmera.
+constexpr const char* kCameraStreamPath = "/stream.mjpg";
+
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
 // Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.
 constexpr int kCameraLightPinBoard = 40;
@@ -32,10 +39,6 @@ constexpr int kCommandTimeoutMs = 2000;
 // Intervalo, em milissegundos, do loop principal que aplica os comandos aos motores.
 constexpr int kMainLoopPeriodMs = 20;
 
-// Período, em milissegundos, do PWM por software usado nos pinos ENA e ENB.
-// Valores menores deixam o controle mais suave, mas aumentam o uso de CPU.
-constexpr int kMotorPwmPeriodMs = 10;
-
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;
@@ -46,27 +49,50 @@ constexpr int kGpioExportDelayMs = 100;
 constexpr double kMinMotorOutput = -1.0;
 constexpr double kMaxMotorOutput = 1.0;
 
-// Pinos BCM da Raspberry Pi conectados à ponte H L298N.
-// Ajuste estes valores quando a fiação do robô mudar.
-// ENA habilita o motor esquerdo e recebe PWM por software.
-constexpr int kLeftEnablePin = 18;
-
-// IN1 controla um lado da direção do motor esquerdo.
-constexpr int kLeftInput1Pin = 17;
-
-// IN2 controla o outro lado da direção do motor esquerdo.
-constexpr int kLeftInput2Pin = 27;
-
-// ENB habilita o motor direito e recebe PWM por software.
-constexpr int kRightEnablePin = 13;
-
-// IN3 controla um lado da direção do motor direito.
-constexpr int kRightInput1Pin = 22;
-
-// IN4 controla o outro lado da direção do motor direito.
-constexpr int kRightInput2Pin = 23;
-
 // Zona morta do motor.
 // Comandos com módulo menor que este valor são tratados como parada.
 constexpr double kMotorDeadband = 0.05;
+
+// Dispositivo UART usado pela Raspberry Pi para falar com a ESP32.
+// Em uma Raspberry Pi comum, /dev/serial0 usa GPIO14 como TXD e GPIO15 como RXD.
+constexpr const char* kEsp32SerialPort = "/dev/serial0";
+
+// Velocidade da UART entre Raspberry Pi e ESP32, em bits por segundo.
+// O sketch da ESP32 deve usar o mesmo valor para evitar comandos corrompidos.
+constexpr int kEsp32SerialBaudRate = 115200;
+
+// Tempo máximo, em milissegundos, para considerar recente a telemetria da ESP32.
+// Se esse tempo estourar, o dashboard mostra os sensores como desatualizados.
+constexpr int kEsp32TelemetryTimeoutMs = 1000;
+
+// Tempo máximo, em milissegundos, que a ESP32 deve aceitar sem novo comando.
+// Este valor fica documentado aqui e deve ser mantido igual no sketch da ESP32.
+constexpr int kEsp32MotorCommandTimeoutMs = 500;
+
+// Pinos BCM da Raspberry Pi usados pela UART de hardware com a ESP32.
+// O TX da Raspberry deve ir ao RX2 da ESP32, e o RX da Raspberry deve vir do TX2.
+constexpr int kRaspberryUartTxPin = 14;
+constexpr int kRaspberryUartRxPin = 15;
+
+// Pinos da ESP32 usados pela UART2 ligada à Raspberry Pi.
+// Ajuste o sketch da ESP32 se a placa usar outros pinos para RX2 e TX2.
+constexpr int kEsp32UartRx2Pin = 16;
+constexpr int kEsp32UartTx2Pin = 17;
+
+// Pinos da ESP32 conectados à ponte H L298N.
+// ENA/ENB recebem PWM; IN1..IN4 definem o sentido dos motores.
+constexpr int kEsp32LeftEnablePin = 25;
+constexpr int kEsp32LeftInput1Pin = 32;
+constexpr int kEsp32LeftInput2Pin = 33;
+constexpr int kEsp32RightEnablePin = 14;
+constexpr int kEsp32RightInput1Pin = 23;
+constexpr int kEsp32RightInput2Pin = 19;
+
+// Pinos I2C da ESP32 usados pelo MPU6050.
+constexpr int kEsp32MpuSdaPin = 21;
+constexpr int kEsp32MpuSclPin = 22;
+
+// Pinos da ESP32 usados pelo sensor ultrassônico.
+constexpr int kEsp32UltrasonicTrigPin = 27;
+constexpr int kEsp32UltrasonicEchoPin = 26;
 }

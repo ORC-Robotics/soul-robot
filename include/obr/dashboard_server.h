@@ -1,5 +1,6 @@
 #pragma once
 
+#include "obr/esp32_bridge.h"
 #include "obr/robot_state.h"
 #include "obr/telemetry.h"
 
@@ -102,7 +103,7 @@ using SocketLength = socklen_t;
 class DashboardServer
 {
 public:
-    DashboardServer(RobotState& robotState, Telemetry& telemetry);
+    DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32);
     ~DashboardServer();
 
     bool start();
@@ -111,6 +112,7 @@ public:
 private:
     RobotState& robotState_;
     Telemetry& telemetry_;
+    Esp32Bridge& esp32_;
     std::atomic<bool> running_{false};
     SocketHandle server_{};
     std::thread acceptThread_;
@@ -139,6 +141,8 @@ private:
     static void sendHttpResponse(SocketHandle client, const std::string& content, const std::string& contentType);
     static void sendHttpNotFound(SocketHandle client);
     static bool sendCameraFrame(SocketHandle client);
+    static bool sendCameraStreamHead(SocketHandle client);
+    static bool proxyCameraStream(SocketHandle client);
     static bool sendCameraStatus(SocketHandle client);
     static bool sendAll(SocketHandle client, const char* data, size_t size);
     static std::string getHeaderValue(const std::string& request, const std::string& header);

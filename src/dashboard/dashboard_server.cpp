@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -12,8 +13,19 @@
 #include <sstream>
 #include <thread>
 
-DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry)
-    : robotState_(robotState), telemetry_(telemetry)
+namespace
+{
+std::string lowerCopy(std::string text)
+{
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return text;
+}
+}
+
+DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32)
+    : robotState_(robotState), telemetry_(telemetry), esp32_(esp32)
 {
 }
 
@@ -204,7 +216,7 @@ void DashboardServer::handleClient(SocketHandle client)
     }
 
     std::string request(buffer, bytesRead);
-    if (request.find("Upgrade: websocket") != std::string::npos)
+    if (lowerCopy(request).find("upgrade: websocket") != std::string::npos)
     {
         handleWebSocket(client, request);
         return;
@@ -213,6 +225,26 @@ void DashboardServer::handleClient(SocketHandle client)
     if (request.find("GET /camera.jpg") == 0)
     {
         if (!sendCameraFrame(client))
+        {
+            sendHttpNotFound(client);
+        }
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("GET /camera-stream.mjpg") == 0)
+    {
+        if (!proxyCameraStream(client))
+        {
+            sendHttpNotFound(client);
+        }
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("HEAD /camera-stream.mjpg") == 0)
+    {
+        if (!sendCameraStreamHead(client))
         {
             sendHttpNotFound(client);
         }
@@ -315,6 +347,7 @@ void DashboardServer::handleCommand(const std::string& message)
 std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) const
 {
     RobotSnapshot state = robotState_.snapshot();
+    Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
 
     std::ostringstream json;
     json << std::fixed << std::setprecision(2)
@@ -325,6 +358,16 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"left\":" << state.left
          << ",\"right\":" << state.right
          << ",\"emergency\":" << (state.emergencyStop ? "true" : "false")
+         << ",\"esp32SerialOpen\":" << (esp32.serialOpen ? "true" : "false")
+         << ",\"esp32SensorFresh\":" << (esp32.sensorFresh ? "true" : "false")
+         << ",\"esp32LastSensorAgeMs\":" << esp32.lastSensorAgeMs
+         << ",\"mpuOk\":" << (esp32.mpuOk ? "true" : "false")
+         << ",\"ultrasonicDistanceCm\":" << esp32.ultrasonicDistanceCm
+         << ",\"gyroZDegPerSec\":" << esp32.gyroZDegPerSec
+         << ",\"yawZDeg\":" << esp32.yawZDeg
+         << ",\"accelX\":" << esp32.accelX
+         << ",\"accelY\":" << esp32.accelY
+         << ",\"accelZ\":" << esp32.accelZ
          << "}";
 
     return json.str();
@@ -356,15 +399,17 @@ std::string DashboardServer::dashboardHtml()
     .metric { min-height: 112px; }
     .label { margin: 0 0 10px; color: #a8b3c1; font-size: 0.9rem; }
     .value { margin: 0; font-size: 2.2rem; font-weight: 800; }
-    .controls { grid-column: span 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .value.small { font-size: 1.35rem; line-height: 1.25; }
+    .controls { grid-column: span 3; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
     button { min-height: 52px; border: 0; border-radius: 8px; color: #071016; background: #4ade80; font-size: 1rem; font-weight: 800; cursor: pointer; }
     button.secondary { background: #60a5fa; }
     button.danger { background: #fb7185; }
     .camera { grid-column: span 3; overflow: hidden; }
     .camera-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
     .camera-header .label { margin: 0; }
+    .camera-info { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
     .camera-fps { color: #edf2f7; font-size: 0.95rem; font-weight: 800; white-space: nowrap; }
-    .camera-frame { position: relative; aspect-ratio: 16 / 9; background: #0b1117; border-radius: 6px; overflow: hidden; }
+    .camera-frame { position: relative; aspect-ratio: 16 / 9; max-width: 960px; margin: 0 auto; background: #0b1117; border-radius: 6px; overflow: hidden; }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: #a8b3c1; text-align: center; padding: 18px; }
@@ -402,16 +447,42 @@ std::string DashboardServer::dashboardHtml()
         <p class="label">RAM</p>
         <p id="ram" class="value">-</p>
       </article>
+      <article class="panel metric">
+        <p class="label">ESP32</p>
+        <p id="esp32Status" class="value small">-</p>
+      </article>
+      <article class="panel metric">
+        <p class="label">Ultrassônico</p>
+        <p id="ultrasonic" class="value small">-</p>
+      </article>
+      <article class="panel metric">
+        <p class="label">Gyro Z</p>
+        <p id="gyroZ" class="value small">-</p>
+      </article>
+      <article class="panel metric">
+        <p class="label">Yaw Z</p>
+        <p id="yawZ" class="value small">-</p>
+      </article>
+      <article class="panel metric">
+        <p class="label">Aceleração</p>
+        <p id="accel" class="value small">-</p>
+      </article>
 
       <section class="controls">
         <button onclick="sendCommand('start')">Start</button>
         <button class="secondary" onclick="sendCommand('stop')">Stop</button>
+        <button class="danger" onclick="sendCommand('estop')">E-Stop</button>
       </section>
 
       <section class="panel camera">
         <div class="camera-header">
           <p class="label">Câmera</p>
-          <div class="camera-fps">FPS: <span id="cameraFps">-</span></div>
+          <div class="camera-info">
+            <div class="camera-fps">FPS: <span id="cameraFps">-</span></div>
+            <div class="camera-fps">Erro: <span id="cameraLineError">-</span></div>
+            <div class="camera-fps">Res: <span id="cameraResolution">-</span></div>
+            <div class="camera-fps">Fmt: <span id="cameraFormat">-</span></div>
+          </div>
         </div>
         <div id="cameraFrame" class="camera-frame offline">
           <img id="cameraImage" alt="Imagem processada da câmera">
@@ -447,6 +518,10 @@ std::string DashboardServer::dashboardHtml()
     const cameraFrame = document.getElementById("cameraFrame");
     const cameraImage = document.getElementById("cameraImage");
     const cameraFps = document.getElementById("cameraFps");
+    const cameraLineError = document.getElementById("cameraLineError");
+    const cameraResolution = document.getElementById("cameraResolution");
+    const cameraFormat = document.getElementById("cameraFormat");
+    let cameraReconnectTimer;
 
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
@@ -458,7 +533,42 @@ std::string DashboardServer::dashboardHtml()
         document.getElementById("cpu").textContent = `${data.cpu.toFixed(1)}%`;
         document.getElementById("temp").textContent = `${data.temperature.toFixed(1)} C`;
         document.getElementById("ram").textContent = `${data.ram.toFixed(1)}%`;
+        updateEsp32Telemetry(data);
       };
+    }
+
+    function formatNumber(value, digits) {
+      const number = Number(value);
+      if (!Number.isFinite(number)) {
+        return "-";
+      }
+      return number.toFixed(digits);
+    }
+
+    function updateEsp32Telemetry(data) {
+      const sensorFresh = data.esp32SensorFresh === true;
+      const mpuOk = sensorFresh && data.mpuOk === true;
+      const distanceCm = Number(data.ultrasonicDistanceCm);
+
+      document.getElementById("esp32Status").textContent = data.esp32SerialOpen
+        ? (sensorFresh ? "online" : "sem dados")
+        : "offline";
+
+      document.getElementById("ultrasonic").textContent = sensorFresh && distanceCm >= 0
+        ? `${formatNumber(distanceCm, 1)} cm`
+        : "falha";
+
+      document.getElementById("gyroZ").textContent = mpuOk
+        ? `${formatNumber(data.gyroZDegPerSec, 1)} deg/s`
+        : "sem MPU";
+
+      document.getElementById("yawZ").textContent = mpuOk
+        ? `${formatNumber(data.yawZDeg, 1)} deg`
+        : "sem MPU";
+
+      document.getElementById("accel").textContent = mpuOk
+        ? `x ${formatNumber(data.accelX, 1)}  y ${formatNumber(data.accelY, 1)}  z ${formatNumber(data.accelZ, 1)}`
+        : "sem MPU";
     }
 
     function send(payload) {
@@ -504,8 +614,13 @@ std::string DashboardServer::dashboardHtml()
       sendDrive();
     }
 
-    function refreshCamera() {
-      cameraImage.src = `/camera.jpg?ts=${Date.now()}`;
+    function cameraStreamUrl() {
+      return `/camera-stream.mjpg?ts=${Date.now()}`;
+    }
+
+    function startCameraStream() {
+      window.clearTimeout(cameraReconnectTimer);
+      cameraImage.src = cameraStreamUrl();
     }
 
     async function refreshCameraStatus() {
@@ -517,11 +632,24 @@ std::string DashboardServer::dashboardHtml()
         const data = await response.json();
         if (data.active !== true || Number(data.fps) <= 0) {
           cameraFps.textContent = "aguardando";
+          cameraLineError.textContent = "-";
+          cameraResolution.textContent = "-";
+          cameraFormat.textContent = "-";
           return;
         }
         cameraFps.textContent = Number(data.fps).toFixed(1);
+        cameraLineError.textContent = data.lineDetected === true
+          ? Number(data.lineError).toFixed(0)
+          : "perdida";
+        cameraResolution.textContent = Number(data.width) > 0 && Number(data.height) > 0
+          ? `${Number(data.width).toFixed(0)}x${Number(data.height).toFixed(0)}`
+          : "-";
+        cameraFormat.textContent = data.cameraFormat || "-";
       } catch {
         cameraFps.textContent = "erro";
+        cameraLineError.textContent = "-";
+        cameraResolution.textContent = "-";
+        cameraFormat.textContent = "-";
       }
     }
 
@@ -531,14 +659,14 @@ std::string DashboardServer::dashboardHtml()
 
     cameraImage.addEventListener("error", () => {
       cameraFrame.classList.add("offline");
+      cameraReconnectTimer = window.setTimeout(startCameraStream, 1000);
     });
 
     throttle.addEventListener("input", sendDrive);
     turn.addEventListener("input", sendDrive);
     setInterval(sendDrive, 100);
-    setInterval(refreshCamera, 150);
     setInterval(refreshCameraStatus, 500);
-    refreshCamera();
+    startCameraStream();
     refreshCameraStatus();
     connect();
   </script>
@@ -602,6 +730,119 @@ bool DashboardServer::sendCameraFrame(SocketHandle client)
     return sendAll(client, header.c_str(), header.size()) && sendAll(client, frame.c_str(), frame.size());
 }
 
+bool DashboardServer::sendCameraStreamHead(SocketHandle client)
+{
+    // O HEAD é usado só para diagnóstico rápido com curl.
+    // Ele confirma se o processo Python da câmera está aceitando conexões.
+    SocketHandle cameraSocket = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (cameraSocket == INVALID_SOCKET)
+#else
+    if (cameraSocket < 0)
+#endif
+    {
+        return false;
+    }
+
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(config::kCameraStreamPort);
+    address.sin_addr.s_addr = htonl(0x7f000001u);
+
+    if (connect(cameraSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0)
+    {
+#ifdef _WIN32
+        closesocket(cameraSocket);
+#else
+        close(cameraSocket);
+#endif
+        return false;
+    }
+
+#ifdef _WIN32
+    closesocket(cameraSocket);
+#else
+    close(cameraSocket);
+#endif
+
+    const std::string response =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n";
+
+    return sendAll(client, response.c_str(), response.size());
+}
+
+bool DashboardServer::proxyCameraStream(SocketHandle client)
+{
+    // O vídeo em alta taxa vem do servidor MJPEG do script Python.
+    // O proxy mantém o navegador usando a mesma porta do dashboard.
+    SocketHandle cameraSocket = socket(AF_INET, SOCK_STREAM, 0);
+#ifdef _WIN32
+    if (cameraSocket == INVALID_SOCKET)
+#else
+    if (cameraSocket < 0)
+#endif
+    {
+        return false;
+    }
+
+    sockaddr_in address = {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(config::kCameraStreamPort);
+    address.sin_addr.s_addr = htonl(0x7f000001u);
+
+    if (connect(cameraSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0)
+    {
+#ifdef _WIN32
+        closesocket(cameraSocket);
+#else
+        close(cameraSocket);
+#endif
+        return false;
+    }
+
+    std::ostringstream request;
+    request << "GET " << config::kCameraStreamPath << " HTTP/1.1\r\n"
+            << "Host: 127.0.0.1:" << config::kCameraStreamPort << "\r\n"
+            << "Connection: close\r\n\r\n";
+
+    const std::string requestText = request.str();
+    if (!sendAll(cameraSocket, requestText.c_str(), requestText.size()))
+    {
+#ifdef _WIN32
+        closesocket(cameraSocket);
+#else
+        close(cameraSocket);
+#endif
+        return false;
+    }
+
+    char buffer[8192] = {};
+    while (true)
+    {
+        SocketResult bytesRead = recv(cameraSocket, buffer, sizeof(buffer), 0);
+        if (bytesRead <= 0)
+        {
+            break;
+        }
+
+        if (!sendAll(client, buffer, static_cast<size_t>(bytesRead)))
+        {
+            break;
+        }
+    }
+
+#ifdef _WIN32
+    closesocket(cameraSocket);
+#else
+    close(cameraSocket);
+#endif
+
+    return true;
+}
+
 bool DashboardServer::sendCameraStatus(SocketHandle client)
 {
     // O status da câmera é gerado pelo script Python em JSON simples.
@@ -649,7 +890,9 @@ bool DashboardServer::sendAll(SocketHandle client, const char* data, size_t size
 
 std::string DashboardServer::getHeaderValue(const std::string& request, const std::string& header)
 {
-    size_t start = request.find(header);
+    const std::string lowerRequest = lowerCopy(request);
+    const std::string lowerHeader = lowerCopy(header);
+    size_t start = lowerRequest.find(lowerHeader);
     if (start == std::string::npos)
     {
         return "";

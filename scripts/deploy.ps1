@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.105",
+    [string]$HostName = "raspberrypi.local",
     [string]$User = "obr",
     [string]$RemoteDir = "/home/obr/OBR2026K",
     [string]$Target = "robot_test",
@@ -27,12 +27,16 @@ function Invoke-Checked {
 $workspace = Split-Path -Parent $PSScriptRoot
 $remote = "$User@$HostName"
 $remoteBuild = "$RemoteDir/build"
+$remoteCameraPattern = "$RemoteDir/scripts/[c]amera_line_frame.py"
+$remoteRunScript = "$RemoteDir/scripts/run_robot.sh"
 $sshArgs = @()
 $scpArgs = @()
 
 if (Test-Path $KeyPath) {
     $sshArgs += @("-i", $KeyPath)
     $scpArgs += @("-i", $KeyPath)
+} else {
+    Write-Host "SSH key not found at $KeyPath. SSH may ask for the Raspberry password."
 }
 
 Write-Host "Deploying to ${remote}:$RemoteDir"
@@ -69,16 +73,24 @@ Invoke-Checked ssh @(
 
 Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"
 
+$stopOldCameraCommand = "pkill -f '$remoteCameraPattern' >/dev/null 2>&1 || true"
+$prepareScriptsCommand = "cd '$RemoteDir' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$remoteRunScript'"
+$installServiceCommand = "$prepareScriptsCommand && sudo cp '$RemoteDir/scripts/$ServiceName.service' '/etc/systemd/system/$ServiceName.service' && sudo systemctl daemon-reload && sudo systemctl enable $ServiceName.service >/dev/null 2>&1"
+$restartServiceCommand = "$installServiceCommand && sudo systemctl restart $ServiceName.service"
+$statusServiceCommand = "sudo systemctl status $ServiceName.service --no-pager || true"
+
 if ($NoRun) {
     Write-Host "Robot was deployed but is not running."
     Write-Host "Dashboard URL after starting: http://${HostName}:8080"
 } elseif ($Service) {
-    Invoke-Checked ssh @($sshArgs + @($remote, "sudo systemctl restart $ServiceName.service && sudo systemctl status $ServiceName.service --no-pager"))
+    Invoke-Checked ssh @($sshArgs + @($remote, "$stopOldCameraCommand; $restartServiceCommand"))
+    Invoke-Checked ssh @($sshArgs + @($remote, $statusServiceCommand))
     Write-Host "Service restarted. Dashboard URL: http://${HostName}:8080"
 } elseif ($Run) {
-    Invoke-Checked ssh @($sshArgs + @($remote, "cd '$RemoteDir' && ./build/$Target"))
+    Invoke-Checked ssh @($sshArgs + @($remote, "$stopOldCameraCommand; $prepareScriptsCommand; cd '$RemoteDir' && ./build/$Target"))
 } else {
-    $startCommand = "if systemctl cat $ServiceName.service >/dev/null 2>&1; then sudo systemctl restart $ServiceName.service && sudo systemctl status $ServiceName.service --no-pager; else cd '$RemoteDir' && ./build/$Target; fi"
+    $startCommand = "$stopOldCameraCommand; if [ -f '$RemoteDir/scripts/$ServiceName.service' ]; then $restartServiceCommand; else $prepareScriptsCommand; cd '$RemoteDir' && ./build/$Target; fi"
     Invoke-Checked ssh @($sshArgs + @($remote, $startCommand))
+    Invoke-Checked ssh @($sshArgs + @($remote, $statusServiceCommand))
     Write-Host "Dashboard URL: http://${HostName}:8080"
 }

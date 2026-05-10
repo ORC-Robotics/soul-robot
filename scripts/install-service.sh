@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-192.168.0.105}"
+HOST_NAME="${HOST_NAME:-raspberrypi.local}"
 USER_NAME="${USER_NAME:-obr}"
 SERVICE_NAME="${SERVICE_NAME:-obr-robot}"
 KEY_PATH="${KEY_PATH:-$HOME/.ssh/obr_raspberry}"
@@ -40,6 +40,8 @@ SCP_ARGS=()
 if [[ -f "$KEY_PATH" ]]; then
   SSH_ARGS=(-i "$KEY_PATH")
   SCP_ARGS=(-i "$KEY_PATH")
+else
+  echo "SSH key not found at $KEY_PATH. SSH may ask for the Raspberry password."
 fi
 
 echo "Installing $SERVICE_NAME service on $REMOTE"

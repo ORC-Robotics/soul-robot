@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-192.168.0.105}"
+HOST_NAME="${HOST_NAME:-raspberrypi.local}"
 USER_NAME="${USER_NAME:-obr}"
 REMOTE_DIR="${REMOTE_DIR:-/home/obr/OBR2026K}"
 TARGET="${TARGET:-robot_test}"
@@ -9,6 +9,13 @@ RUN_ROBOT="${RUN_ROBOT:-1}"
 KEY_PATH="${KEY_PATH:-$HOME/.ssh/obr_raspberry}"
 SERVICE_NAME="${SERVICE_NAME:-obr-robot}"
 RESTART_SERVICE="${RESTART_SERVICE:-0}"
+RUN_MODE="${RUN_MODE:-auto}"
+
+if [[ "$RUN_ROBOT" == "0" ]]; then
+  RUN_MODE="no-run"
+elif [[ "$RESTART_SERVICE" == "1" ]]; then
+  RUN_MODE="service"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,7 +40,11 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --service)
-      RESTART_SERVICE="1"
+      RUN_MODE="service"
+      shift
+      ;;
+    --run)
+      RUN_MODE="run"
       shift
       ;;
     --service-name)
@@ -41,7 +52,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --no-run)
-      RUN_ROBOT="0"
+      RUN_MODE="no-run"
       shift
       ;;
     *)
@@ -54,32 +65,48 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="$(cd "$SCRIPT_DIR/.." && pwd)"
 REMOTE="${USER_NAME}@${HOST_NAME}"
+REMOTE_BUILD="${REMOTE_DIR}/build"
+REMOTE_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[c]amera_line_frame.py"
+REMOTE_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_robot.sh"
 SSH_ARGS=()
 SCP_ARGS=()
 
 if [[ -f "$KEY_PATH" ]]; then
   SSH_ARGS=(-i "$KEY_PATH")
   SCP_ARGS=(-i "$KEY_PATH")
+else
+  echo "SSH key not found at $KEY_PATH. SSH may ask for the Raspberry password."
 fi
 
 echo "Deploying to ${REMOTE}:${REMOTE_DIR}"
 
-ssh "${SSH_ARGS[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_DIR/build'"
+ssh "${SSH_ARGS[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_BUILD'"
 scp "${SCP_ARGS[@]}" "$WORKSPACE/CMakeLists.txt" "${REMOTE}:${REMOTE_DIR}/CMakeLists.txt"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/src" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/include" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/scripts" "${REMOTE}:${REMOTE_DIR}/"
 ssh "${SSH_ARGS[@]}" "$REMOTE" "cd '$REMOTE_DIR' && cmake -S . -B build && cmake --build build"
 
-echo "Deploy complete: ${REMOTE}:${REMOTE_DIR}/build/${TARGET}"
+echo "Deploy complete: ${REMOTE}:${REMOTE_BUILD}/${TARGET}"
 
-if [[ "$RUN_ROBOT" == "0" ]]; then
+stop_old_camera_command="pkill -f '$REMOTE_CAMERA_PATTERN' >/dev/null 2>&1 || true"
+prepare_scripts_command="cd '$REMOTE_DIR' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$REMOTE_RUN_SCRIPT'"
+install_service_command="$prepare_scripts_command && sudo cp '$REMOTE_DIR/scripts/${SERVICE_NAME}.service' '/etc/systemd/system/${SERVICE_NAME}.service' && sudo systemctl daemon-reload && sudo systemctl enable '${SERVICE_NAME}.service'"
+restart_service_command="$install_service_command && sudo systemctl restart '${SERVICE_NAME}.service'"
+status_service_command="sudo systemctl status '${SERVICE_NAME}.service' --no-pager || true"
+
+if [[ "$RUN_MODE" == "no-run" ]]; then
   echo "Robot was deployed but is not running."
   echo "Dashboard URL after starting: http://${HOST_NAME}:8080"
-elif [[ "$RESTART_SERVICE" == "1" ]]; then
-  ssh "${SSH_ARGS[@]}" "$REMOTE" "sudo systemctl restart ${SERVICE_NAME}.service && sudo systemctl status ${SERVICE_NAME}.service --no-pager"
+elif [[ "$RUN_MODE" == "service" ]]; then
+  ssh "${SSH_ARGS[@]}" "$REMOTE" "$stop_old_camera_command; $restart_service_command"
+  ssh "${SSH_ARGS[@]}" "$REMOTE" "$status_service_command"
   echo "Service restarted. Dashboard URL: http://${HOST_NAME}:8080"
+elif [[ "$RUN_MODE" == "run" ]]; then
+  ssh "${SSH_ARGS[@]}" "$REMOTE" "$stop_old_camera_command; $prepare_scripts_command; cd '$REMOTE_DIR' && ./build/$TARGET"
 else
-  ssh "${SSH_ARGS[@]}" "$REMOTE" "if systemctl cat ${SERVICE_NAME}.service >/dev/null 2>&1; then sudo systemctl restart ${SERVICE_NAME}.service && sudo systemctl status ${SERVICE_NAME}.service --no-pager; else cd '$REMOTE_DIR' && ./build/$TARGET; fi"
+  start_command="$stop_old_camera_command; if [ -f '$REMOTE_DIR/scripts/${SERVICE_NAME}.service' ]; then $restart_service_command; else $prepare_scripts_command; cd '$REMOTE_DIR' && ./build/$TARGET; fi"
+  ssh "${SSH_ARGS[@]}" "$REMOTE" "$start_command"
+  ssh "${SSH_ARGS[@]}" "$REMOTE" "$status_service_command"
   echo "Dashboard URL: http://${HOST_NAME}:8080"
 fi
