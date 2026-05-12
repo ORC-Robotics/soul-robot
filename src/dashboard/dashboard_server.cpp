@@ -330,6 +330,11 @@ void DashboardServer::handleCommand(const std::string& message)
         robotState_.start();
         std::cout << "Start received\n";
     }
+    else if (message.find("\"command\":\"auto\"") != std::string::npos)
+    {
+        robotState_.startAutonomous();
+        std::cout << "Autonomous start received\n";
+    }
     else if (message.find("\"command\":\"stop\"") != std::string::npos)
     {
         robotState_.stop();
@@ -400,7 +405,7 @@ std::string DashboardServer::dashboardHtml()
     .label { margin: 0 0 10px; color: #a8b3c1; font-size: 0.9rem; }
     .value { margin: 0; font-size: 2.2rem; font-weight: 800; }
     .value.small { font-size: 1.35rem; line-height: 1.25; }
-    .controls { grid-column: span 3; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .controls { grid-column: span 4; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
     button { min-height: 52px; border: 0; border-radius: 8px; color: #071016; background: #4ade80; font-size: 1rem; font-weight: 800; cursor: pointer; }
     button.secondary { background: #60a5fa; }
     button.danger { background: #fb7185; }
@@ -469,7 +474,8 @@ std::string DashboardServer::dashboardHtml()
       </article>
 
       <section class="controls">
-        <button onclick="sendCommand('start')">Start</button>
+        <button onclick="sendCommand('start')">Manual</button>
+        <button class="secondary" onclick="sendCommand('auto')">Auto</button>
         <button class="secondary" onclick="sendCommand('stop')">Stop</button>
         <button class="danger" onclick="sendCommand('estop')">E-Stop</button>
       </section>
@@ -581,7 +587,7 @@ std::string DashboardServer::dashboardHtml()
       if (command === "start") {
         manualEnabled = true;
       }
-      if (command === "stop" || command === "estop") {
+      if (command === "auto" || command === "stop" || command === "estop") {
         manualEnabled = false;
         resetDrive();
       }

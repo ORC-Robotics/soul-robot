@@ -39,6 +39,42 @@ constexpr int kCommandTimeoutMs = 2000;
 // Intervalo, em milissegundos, do loop principal que aplica os comandos aos motores.
 constexpr int kMainLoopPeriodMs = 20;
 
+// Tempo máximo, em milissegundos, para aceitar dados da câmera no modo autônomo.
+// Se a câmera travar ou parar de atualizar o JSON, o robô deve parar.
+constexpr int kCameraStatusTimeoutMs = 400;
+
+// Potência base usada para seguir linha no modo autônomo.
+// Comece com valor baixo nos testes para reduzir o risco de colisão.
+constexpr double kLineFollowerBasePower = 0.25;
+
+// Ganho proporcional aplicado ao erro horizontal da linha, em pixels.
+// Valores altos fazem o robô virar mais forte, mas podem causar oscilação.
+constexpr double kLineFollowerTurnGain = 0.0012;
+
+// Potência máxima de correção usada pelo seguidor de linha.
+// Esse limite evita comandos bruscos quando a linha aparece perto da borda da imagem.
+constexpr double kLineFollowerMaxTurnCorrection = 0.35;
+
+// Potência usada nas manobras temporizadas ao detectar marcações verdes.
+// Teste com as rodas suspensas antes de aumentar esse valor.
+constexpr double kGreenTurnPower = 0.35;
+
+// Tempo, em milissegundos, para avançar um pouco antes de girar no verde.
+// Isso ajuda o centro do robô a chegar na interseção antes da curva.
+constexpr int kGreenApproachMs = 220;
+
+// Tempo, em milissegundos, para curvas de 90 graus acionadas pelo verde.
+// Ajuste este valor no robô real conforme velocidade, piso e bateria.
+constexpr int kGreenTurnMs = 650;
+
+// Tempo, em milissegundos, para meia-volta quando há verde dos dois lados.
+// Deve ser maior que a curva simples, mas ainda precisa ser validado no piso.
+constexpr int kGreenUTurnMs = 1200;
+
+// Tempo, em milissegundos, para ignorar o mesmo verde após concluir uma manobra.
+// Sem esse bloqueio, o robô pode detectar o mesmo marcador várias vezes.
+constexpr int kGreenCooldownMs = 900;
+
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;

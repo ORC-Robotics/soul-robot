@@ -21,9 +21,11 @@ public:
     RobotSnapshot snapshot() const;
 
     void start();
+    void startAutonomous();
     void stop();
     void emergencyStop();
     void drive(double left, double right);
+    void driveAutonomous(double left, double right);
     void enforceCommandTimeout(std::chrono::milliseconds timeout);
 
 private:
