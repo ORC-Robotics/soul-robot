@@ -213,6 +213,24 @@ ssh-keygen -t ed25519 -f ~/.ssh/obr_raspberry -N ""
 ssh-copy-id -i ~/.ssh/obr_raspberry.pub obr@raspberrypi.local
 ```
 
+## Botão de deploy local
+
+Para abrir um painel local com botão de deploy automático:
+
+```sh
+python3 scripts/deploy_panel.py
+```
+
+Depois abra:
+
+```txt
+http://127.0.0.1:8765
+```
+
+O botão executa o deploy em modo serviço, equivalente a `scripts/deploy.sh --service`
+no Linux/macOS ou `scripts/deploy.ps1 -Service` no Windows. O painel escuta apenas
+em `127.0.0.1`, então ele fica disponível só no computador de desenvolvimento.
+
 ## Serviço no boot
 
 Depois que o projeto já tiver sido compilado pelo menos uma vez na Raspberry,
@@ -267,8 +285,8 @@ http://raspberrypi.local:8080/camera-stream.mjpg
 O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
 para `/camera-stream.mjpg`. O endpoint antigo `/camera.jpg` continua disponível
 como snapshot de compatibilidade, lendo `/tmp/obr_camera_frame.jpg`. O FPS atual
-da câmera, a resolução, a qualidade JPEG e o erro horizontal da linha vêm de
-`/camera-status.json`.
+da câmera, a resolução, a qualidade JPEG, o erro horizontal da linha e a ação de
+verde detectada vêm de `/camera-status.json`.
 
 ```sh
 cd /home/obr/OBR2026K
@@ -310,6 +328,8 @@ Atalhos úteis:
 
 - `Terminal > Run Build Task` para rodar `Deploy Raspberry`;
 - `Terminal > Run Task > Deploy only Raspberry` para enviar/compilar sem rodar.
+- `Terminal > Run Task > Open Deploy Button` para abrir o painel local com botão
+  de deploy automático.
 
 O IntelliSense usa `.vscode/c_cpp_properties.json` para encontrar os headers em
 `include/`.

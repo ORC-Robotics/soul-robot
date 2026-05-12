@@ -29,6 +29,15 @@
                 "-NoRun"
             ],
             "problemMatcher": []
+        },
+        {
+            "label": "Open Deploy Button",
+            "type": "shell",
+            "command": "python3",
+            "args": [
+                "${workspaceFolder}/scripts/deploy_panel.py"
+            ],
+            "problemMatcher": []
         }
     ]
 }

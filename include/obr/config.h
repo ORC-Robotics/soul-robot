@@ -55,6 +55,14 @@ constexpr double kLineFollowerTurnGain = 0.0005;
 // Esse limite evita comandos bruscos quando a linha aparece perto da borda da imagem.
 constexpr double kLineFollowerMaxTurnCorrection = 0.35;
 
+// Potência usada para procurar a linha quando ela some em uma curva fechada.
+// Mantenha este valor baixo: ele pode fazer o robô girar no próprio eixo.
+constexpr double kLineFollowerLostLineTurnPower = 0.22;
+
+// Erro mínimo, em pixels, para decidir o lado de busca quando a linha some.
+// Abaixo deste valor, o robô ainda segue devagar para evitar giro sem direção.
+constexpr double kLineFollowerLostLineDeadbandPixels = 35.0;
+
 // Potência usada nas manobras temporizadas ao detectar marcações verdes.
 // Teste com as rodas suspensas antes de aumentar esse valor.
 constexpr double kGreenTurnPower = 0.35;

@@ -34,6 +34,7 @@ private:
     std::string activeGreenAction_ = "NENHUM";
     std::chrono::steady_clock::time_point phaseUntil_{};
     std::chrono::steady_clock::time_point greenCooldownUntil_{};
+    double lastLineError_ = 0.0;
 
     CameraStatus readCameraStatus() const;
     void followLine(RobotState& robotState, const CameraStatus& status);

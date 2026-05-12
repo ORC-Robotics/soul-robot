@@ -38,17 +38,28 @@ STATUS_FPS = 10
 # Qualidade do JPEG do stream MJPEG.
 # Valores maiores deixam a imagem mais limpa, mas usam mais banda na rede.
 JPEG_QUALITY = 82
-BLACK_THRESHOLD = 75
+# Limite de brilho usado para separar a linha preta do piso.
+# Aumentar este valor aceita tons mais claros como linha, mas pode pegar sombras.
+BLACK_THRESHOLD = 80
 # O processamento da linha usa uma cópia menor para preservar FPS.
 # A imagem do dashboard continua saindo na resolução principal.
 PROCESS_WIDTH = 320
 PROCESS_HEIGHT = 180
-ROI_TOP_RATIO = 0.55
+# Fração superior ignorada no processamento da pista.
+# Valor menor faz a câmera olhar mais à frente, útil para curvas e marcações verdes.
+ROI_TOP_RATIO = 0.20
 ROI_TOP_Y = int(FRAME_HEIGHT * ROI_TOP_RATIO)
 PROCESS_ROI_TOP_Y = int(PROCESS_HEIGHT * ROI_TOP_RATIO)
 # Área mínima da linha em pixels na imagem reduzida de processamento.
 # Isso evita aceitar ruído pequeno como se fosse a faixa preta.
 MIN_LINE_AREA = 80
+# Faixa HSV usada para detectar marcações verdes na pista.
+# Esses valores foram calibrados para o piso de teste e podem variar com a iluminação.
+GREEN_LOWER = np.array([35, 50, 40])
+GREEN_UPPER = np.array([90, 255, 255])
+# Área mínima, em pixels, para aceitar uma marcação verde.
+# Limites baixos demais podem transformar ruído colorido em manobra do robô.
+MIN_GREEN_AREA = 50
 
 # Ajustes visuais para a Raspberry Pi Camera V2.
 # Eles favorecem nitidez no dashboard sem mudar a lógica de segurança do robô.
@@ -142,43 +153,104 @@ def start_stream_server():
     print(f"Stream MJPEG disponível em http://127.0.0.1:{MJPEG_STREAM_PORT}{MJPEG_STREAM_PATH}", flush=True)
     return server
 
+def scale_roi_contour_to_frame(contour):
+    scaled_contour = contour.astype(np.float32)
+    scaled_contour[:, :, 0] *= FRAME_WIDTH / PROCESS_WIDTH
+    scaled_contour[:, :, 1] = (scaled_contour[:, :, 1] + PROCESS_ROI_TOP_Y) * FRAME_HEIGHT / PROCESS_HEIGHT
+    return scaled_contour.astype(np.int32)
+
+def find_line_contour(mask_black, last_position):
+    contours, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    last_center_x_small = int(last_position[0] * PROCESS_WIDTH / FRAME_WIDTH)
+    best_contour = None
+    best_distance = float("inf")
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area < MIN_LINE_AREA:
+            continue
+
+        x, _, width, _ = cv2.boundingRect(contour)
+        center_x_small = x + (width // 2)
+        distance = abs(center_x_small - last_center_x_small)
+        if distance < best_distance:
+            best_distance = distance
+            best_contour = contour
+
+    return best_contour
+
+def detect_green_action(frame, mask_green, mask_black):
+    contours, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    middle_x = PROCESS_WIDTH // 2
+    left_marker_valid = False
+    right_marker_valid = False
+
+    for contour in contours:
+        if cv2.contourArea(contour) < MIN_GREEN_AREA:
+            continue
+
+        moments = cv2.moments(contour)
+        if moments["m00"] <= 0:
+            continue
+
+        green_x = int(moments["m10"] / moments["m00"])
+        green_y = int(moments["m01"] / moments["m00"])
+        check_top = max(0, green_y - 35)
+        check_left = max(0, green_x - 10)
+        check_right = min(PROCESS_WIDTH, green_x + 10)
+        black_before_green = mask_black[check_top:green_y, check_left:check_right]
+        marker_valid = np.any(black_before_green == 255)
+
+        if marker_valid:
+            if green_x < middle_x:
+                left_marker_valid = True
+            else:
+                right_marker_valid = True
+
+        # Verde validado fica destacado; verde sem linha antes dele aparece cinza.
+        color = (0, 255, 0) if marker_valid else (100, 100, 100)
+        cv2.drawContours(frame, [scale_roi_contour_to_frame(contour)], -1, color, 3)
+
+    if left_marker_valid and right_marker_valid:
+        return "MEIA VOLTA"
+    if left_marker_valid:
+        return "ESQUERDA"
+    if right_marker_valid:
+        return "DIREITA"
+    return "NENHUM"
+
 def process_frame(frame, last_position):
-    # O segue-linha precisa olhar principalmente a parte de baixo da imagem.
-    # A análise roda em baixa resolução para não derrubar o FPS do dashboard.
+    # O segue-linha olha a região inferior da imagem em baixa resolução para
+    # preservar FPS sem perder a imagem detalhada enviada ao dashboard.
     process_frame_small = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT), interpolation=cv2.INTER_AREA)
     roi = process_frame_small[PROCESS_ROI_TOP_Y:PROCESS_HEIGHT, :]
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    _, mask = cv2.threshold(gray, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
+    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
 
     kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    blurred_value = cv2.GaussianBlur(hsv_roi[:, :, 2], (5, 5), 0)
+    _, mask_black = cv2.threshold(blurred_value, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
+    mask_black = cv2.morphologyEx(mask_black, cv2.MORPH_CLOSE, kernel, iterations=1)
+    mask_green = cv2.inRange(hsv_roi, GREEN_LOWER, GREEN_UPPER)
+    mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel, iterations=1)
 
     line_detected = False
     error = 0
+    green_action = detect_green_action(frame, mask_green, mask_black)
+    contour = find_line_contour(mask_black, last_position)
 
-    if contours:
-        contour = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(contour)
+    if contour is not None:
+        moments = cv2.moments(contour)
+        if moments["m00"] > 0:
+            center_x_small = int(moments["m10"] / moments["m00"])
+            center_y_small = int(moments["m01"] / moments["m00"]) + PROCESS_ROI_TOP_Y
+            center_x = int(center_x_small * FRAME_WIDTH / PROCESS_WIDTH)
+            center_y = int(center_y_small * FRAME_HEIGHT / PROCESS_HEIGHT)
+            last_position = (center_x, center_y)
+            error = int(center_x - SETPOINT_X)
+            line_detected = True
 
-        if area >= MIN_LINE_AREA:
-            moments = cv2.moments(contour)
-            if moments["m00"] > 0:
-                center_x_small = int(moments["m10"] / moments["m00"])
-                center_y_small = int(moments["m01"] / moments["m00"]) + PROCESS_ROI_TOP_Y
-                center_x = int(center_x_small * FRAME_WIDTH / PROCESS_WIDTH)
-                center_y = int(center_y_small * FRAME_HEIGHT / PROCESS_HEIGHT)
-                last_position = (center_x, center_y)
-                error = int(center_x - SETPOINT_X)
-                line_detected = True
-
-                scaled_contour = contour.astype(np.float32)
-                scaled_contour[:, :, 0] *= FRAME_WIDTH / PROCESS_WIDTH
-                scaled_contour[:, :, 1] = (scaled_contour[:, :, 1] + PROCESS_ROI_TOP_Y) * FRAME_HEIGHT / PROCESS_HEIGHT
-                scaled_contour = scaled_contour.astype(np.int32)
-                cv2.drawContours(frame, [scaled_contour], -1, (0, 255, 0), 2)
-                cv2.line(frame, (center_x, ROI_TOP_Y), (center_x, FRAME_HEIGHT - 1), (255, 0, 0), 2)
+            cv2.drawContours(frame, [scale_roi_contour_to_frame(contour)], -1, (255, 0, 0), 2)
+            cv2.line(frame, (center_x, ROI_TOP_Y), (center_x, FRAME_HEIGHT - 1), (255, 0, 0), 2)
 
     cv2.line(frame, (SETPOINT_X, ROI_TOP_Y), (SETPOINT_X, FRAME_HEIGHT - 1), (255, 255, 0), 1)
     cv2.rectangle(frame, (0, ROI_TOP_Y), (FRAME_WIDTH - 1, FRAME_HEIGHT - 1), (80, 80, 80), 1)
@@ -187,8 +259,9 @@ def process_frame(frame, last_position):
     cv2.putText(frame, f"FPS: {getattr(process_frame, 'current_fps', 0):.1f}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
     cv2.putText(frame, f"erro: {error}", (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
     cv2.putText(frame, status_text, (8, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    cv2.putText(frame, f"verde: {green_action}", (8, 96), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-    return frame, last_position, line_detected, error
+    return frame, last_position, line_detected, error, green_action
 
 def encode_frame(frame):
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
@@ -211,12 +284,13 @@ def save_frame(jpeg):
         frame_file.write(jpeg)
     os.replace(TEMP_FRAME_PATH, FRAME_PATH)
 
-def save_status(fps, line_detected, line_error, camera_format="", active=True, error_message=""):
+def save_status(fps, line_detected, line_error, green_action="NENHUM", camera_format="", active=True, error_message=""):
     status = {
         "fps": round(fps, 2),
         "active": active,
         "lineDetected": line_detected,
         "lineError": line_error,
+        "greenAction": green_action,
         "width": FRAME_WIDTH,
         "height": FRAME_HEIGHT,
         "processWidth": PROCESS_WIDTH,
@@ -343,6 +417,7 @@ def main():
         smoothed_fps = 0.0
         line_detected = False
         line_error = 0
+        green_action = "NENHUM"
 
         while running:
             frame = picam2.capture_array()
@@ -357,7 +432,7 @@ def main():
                 smoothed_fps = (smoothed_fps * 0.90) + (actual_fps * 0.10) if smoothed_fps > 0 else actual_fps
 
             process_frame.current_fps = smoothed_fps
-            frame, last_position, line_detected, line_error = process_frame(frame, last_position)
+            frame, last_position, line_detected, line_error, green_action = process_frame(frame, last_position)
 
             should_stream = curr_time - last_stream_frame_time >= stream_frame_interval
             should_save_snapshot = curr_time - last_snapshot_save_time >= snapshot_save_interval
@@ -376,7 +451,7 @@ def main():
                         last_snapshot_save_time = curr_time
 
             if curr_time - last_status_save_time >= status_save_interval:
-                save_status(smoothed_fps, line_detected, line_error, camera_format_label(camera_format))
+                save_status(smoothed_fps, line_detected, line_error, green_action, camera_format_label(camera_format))
                 last_status_save_time = curr_time
     except Exception as error:
         error_message = f"Camera script failed: {error}"

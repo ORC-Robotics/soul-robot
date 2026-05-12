@@ -35,6 +35,7 @@ void LineFollower::update(RobotState& robotState)
     {
         phase_ = Phase::Following;
         activeGreenAction_ = "NENHUM";
+        lastLineError_ = 0.0;
         return;
     }
 
@@ -93,12 +94,28 @@ void LineFollower::followLine(RobotState& robotState, const CameraStatus& status
 {
     if (!status.lineDetected)
     {
-        // Se a câmera está ativa e recente, uma perda curta da linha pode ser
-        // apenas uma falha de contraste ou uma interseção. Seguir reto evita
-        // uma parada brusca, mas dados de câmera antigos ainda param o robô.
-        robotState.driveAutonomous(config::kLineFollowerBasePower, config::kLineFollowerBasePower);
+        // Em curvas de 90 graus, a linha pode sair da imagem por alguns ciclos.
+        // O robô gira para o último lado conhecido, mas ainda para se o JSON da
+        // câmera ficar antigo, porque dados antigos não são seguros.
+        if (std::abs(lastLineError_) > config::kLineFollowerLostLineDeadbandPixels)
+        {
+            const double turnPower = config::kLineFollowerLostLineTurnPower;
+            if (lastLineError_ > 0.0)
+            {
+                robotState.driveAutonomous(turnPower, -turnPower);
+            }
+            else
+            {
+                robotState.driveAutonomous(-turnPower, turnPower);
+            }
+            return;
+        }
+
+        robotState.driveAutonomous(config::kLineFollowerBasePower * 0.5, config::kLineFollowerBasePower * 0.5);
         return;
     }
+
+    lastLineError_ = status.lineError;
 
     const double correction = std::clamp(
         status.lineError * config::kLineFollowerTurnGain,
