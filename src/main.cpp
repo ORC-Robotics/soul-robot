@@ -1,7 +1,6 @@
 #include "obr/config.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
-#include "obr/line_follower.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
 #include "obr/telemetry.h"
@@ -30,7 +29,6 @@ int main()
     RobotState robotState;
     Telemetry telemetry;
     Esp32Bridge esp32;
-    LineFollower lineFollower;
     MotorController motors(esp32);
     DashboardServer dashboard(robotState, telemetry, esp32);
 
@@ -47,7 +45,6 @@ int main()
 
     while (running)
     {
-        lineFollower.update(robotState);
         motors.apply(robotState.snapshot());
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kMainLoopPeriodMs));
     }

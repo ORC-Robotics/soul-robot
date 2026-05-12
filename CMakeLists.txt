@@ -11,7 +11,6 @@ add_executable(robot_test
     src/hal/esp32_bridge.cpp
     src/hal/gpio.cpp
     src/robot/motor_controller.cpp
-    src/robot/line_follower.cpp
     src/robot/robot_state.cpp
     src/telemetry/telemetry.cpp
 )

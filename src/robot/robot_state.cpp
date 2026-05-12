@@ -32,16 +32,6 @@ void RobotState::start()
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
-void RobotState::startAutonomous()
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    state_.emergencyStop = false;
-    state_.mode = "autonomous";
-    state_.left = 0.0;
-    state_.right = 0.0;
-    lastCommand_ = std::chrono::steady_clock::now();
-}
-
 void RobotState::stop()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -79,28 +69,12 @@ void RobotState::drive(double left, double right)
     state_.right = clampMotorCommand(right);
 }
 
-void RobotState::driveAutonomous(double left, double right)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    lastCommand_ = std::chrono::steady_clock::now();
-
-    if (state_.emergencyStop || state_.mode != "autonomous")
-    {
-        // O controlador autônomo só pode mover o robô quando o modo autônomo
-        // foi ativado explicitamente pelo dashboard.
-        return;
-    }
-
-    state_.left = clampMotorCommand(left);
-    state_.right = clampMotorCommand(right);
-}
-
 void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto age = std::chrono::steady_clock::now() - lastCommand_;
 
-    if ((state_.mode == "manual" || state_.mode == "autonomous") && age > timeout)
+    if (state_.mode == "manual" && age > timeout)
     {
         state_.left = 0.0;
         state_.right = 0.0;

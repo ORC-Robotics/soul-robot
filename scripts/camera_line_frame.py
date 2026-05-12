@@ -13,28 +13,50 @@ try:
 except ImportError:
     GPIO = None
 try:
-    from picamera2 import Picamera2 # type: ignore[import]
+    from picamera2 import Picamera2  # type: ignore[import]
 except ImportError:
     Picamera2 = None
 
-# --- CONFIGURAÇÕES ---
-FRAME_WIDTH, FRAME_HEIGHT = 960, 540
-SETPOINT_X = FRAME_WIDTH // 2
-PROCESS_WIDTH, PROCESS_HEIGHT = 320, 180
-ROI_TOP_RATIO = 0.20 
-ROI_TOP_Y = int(FRAME_HEIGHT * ROI_TOP_RATIO)
-PROCESS_ROI_TOP_Y = int(PROCESS_HEIGHT * ROI_TOP_RATIO)
-
-BLACK_THRESHOLD = 80 
-GREEN_LOWER = np.array([35, 50, 40])
-GREEN_UPPER = np.array([90, 255, 255])
-MIN_GREEN_AREA = 50 
-
+FRAME_PATH = "/tmp/obr_camera_frame.jpg"
+TEMP_FRAME_PATH = "/tmp/obr_camera_frame.tmp.jpg"
 STATUS_PATH = "/tmp/obr_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_camera_status.tmp.json"
+LIGHT_PIN_BOARD = 40
+# Resolução enviada para o dashboard.
+# Subir este valor melhora a nitidez, mas aumenta o custo de processamento e rede.
+FRAME_WIDTH = 960
+FRAME_HEIGHT = 540
+SETPOINT_X = FRAME_WIDTH // 2
+# FPS alvo da câmera.
+# Em 30 FPS a Camera V2 tem mais tempo de exposição e gera menos ruído.
+TARGET_CAMERA_FPS = 30
 MJPEG_STREAM_PORT = 8090
+MJPEG_STREAM_PATH = "/stream.mjpg"
+MJPEG_STREAM_FPS = 30
+SNAPSHOT_FRAME_FPS = 2
+STATUS_FPS = 10
+# Qualidade do JPEG do stream MJPEG.
+# Valores maiores deixam a imagem mais limpa, mas usam mais banda na rede.
+JPEG_QUALITY = 82
+BLACK_THRESHOLD = 75
+# O processamento da linha usa uma cópia menor para preservar FPS.
+# A imagem do dashboard continua saindo na resolução principal.
+PROCESS_WIDTH = 320
+PROCESS_HEIGHT = 180
+ROI_TOP_RATIO = 0.55
+ROI_TOP_Y = int(FRAME_HEIGHT * ROI_TOP_RATIO)
+PROCESS_ROI_TOP_Y = int(PROCESS_HEIGHT * ROI_TOP_RATIO)
+# Área mínima da linha em pixels na imagem reduzida de processamento.
+# Isso evita aceitar ruído pequeno como se fosse a faixa preta.
+MIN_LINE_AREA = 80
 
-last_cx_small = PROCESS_WIDTH // 2 
+# Ajustes visuais para a Raspberry Pi Camera V2.
+# Eles favorecem nitidez no dashboard sem mudar a lógica de segurança do robô.
+CAMERA_SHARPNESS = 1.2
+CAMERA_CONTRAST = 1.05
+CAMERA_SATURATION = 1.0
+CAMERA_EXPOSURE_VALUE = 0.4
+CAMERA_PIXEL_FORMATS = ("RGB888",)
 
 running = True
 latest_jpeg = None
@@ -44,172 +66,334 @@ frame_condition = threading.Condition()
 def handle_signal(signum, frame):
     global running
     running = False
-    with frame_condition: frame_condition.notify_all()
+    with frame_condition:
+        frame_condition.notify_all()
+
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
 
 class CameraStreamHandler(BaseHTTPRequestHandler):
-    def log_message(self, format_text, *args): return
+    def log_message(self, format_text, *args):
+        return
+
     def do_GET(self):
-        if self.path != "/stream.mjpg":
-            self.send_response(404); self.end_headers(); return
+        path = self.path.split("?", 1)[0]
+        if path != MJPEG_STREAM_PATH:
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"Not found")
+            return
+
         self.send_response(200)
+        self.send_header("Age", "0")
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.end_headers()
+
         last_sequence = -1
         try:
             while running:
                 with frame_condition:
-                    frame_condition.wait_for(lambda: latest_jpeg_sequence != last_sequence or not running, timeout=1.0)
+                    frame_condition.wait_for(
+                        lambda: latest_jpeg_sequence != last_sequence or not running,
+                        timeout=1.0,
+                    )
+
+                    if latest_jpeg is None:
+                        continue
+
                     jpeg = latest_jpeg
                     last_sequence = latest_jpeg_sequence
-                if jpeg:
-                    self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
-                    self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii"))
-                    self.wfile.write(jpeg + b"\r\n")
-        except: return
 
-def process_frame(frame):
-    global last_cx_small
-    
-    # 1. Visualização de Referência
-    cv2.line(frame, (0, ROI_TOP_Y), (FRAME_WIDTH, ROI_TOP_Y), (255, 0, 255), 2)
-    cv2.line(frame, (SETPOINT_X, ROI_TOP_Y), (SETPOINT_X, FRAME_HEIGHT), (0, 255, 255), 1)
+                self.wfile.write(b"--frame\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii"))
+                self.wfile.write(jpeg)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
-    small = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT), interpolation=cv2.INTER_AREA)
-    roi_bgr = small[PROCESS_ROI_TOP_Y:, :]
-    hsv_roi = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
-    
-    # 2. Máscaras
-    blurred_v = cv2.GaussianBlur(hsv_roi[:,:,2], (5, 5), 0)
-    _, mask_black = cv2.threshold(blurred_v, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
-    mask_green = cv2.inRange(hsv_roi, GREEN_LOWER, GREEN_UPPER)
+    def do_HEAD(self):
+        path = self.path.split("?", 1)[0]
+        if path != MJPEG_STREAM_PATH:
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            return
+
+        self.send_response(200)
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+
+def start_stream_server():
+    try:
+        server = ReusableThreadingHTTPServer(("127.0.0.1", MJPEG_STREAM_PORT), CameraStreamHandler)
+    except OSError as error:
+        print(f"Não foi possível iniciar o stream MJPEG na porta {MJPEG_STREAM_PORT}: {error}", flush=True)
+        return None
+
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"Stream MJPEG disponível em http://127.0.0.1:{MJPEG_STREAM_PORT}{MJPEG_STREAM_PATH}", flush=True)
+    return server
+
+def process_frame(frame, last_position):
+    # O segue-linha precisa olhar principalmente a parte de baixo da imagem.
+    # A análise roda em baixa resolução para não derrubar o FPS do dashboard.
+    process_frame_small = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT), interpolation=cv2.INTER_AREA)
+    roi = process_frame_small[PROCESS_ROI_TOP_Y:PROCESS_HEIGHT, :]
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, BLACK_THRESHOLD, 255, cv2.THRESH_BINARY_INV)
 
     kernel = np.ones((3, 3), np.uint8)
-    mask_black = cv2.morphologyEx(mask_black, cv2.MORPH_CLOSE, kernel)
-    mask_green = cv2.morphologyEx(mask_green, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
 
-    green_action = "NENHUM"
-    error = 0
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
     line_detected = False
-    
-    # 3. DETECÇÃO E CONTORNO DA LINHA PRETA
-    contours_black, _ = cv2.findContours(mask_black, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    best_contour = None
-    min_dist = float('inf')
+    error = 0
 
-    for cnt in contours_black:
-        if cv2.contourArea(cnt) > 60:
-            x, y, w, h = cv2.boundingRect(cnt)
-            cx = x + (w // 2)
-            dist = abs(cx - last_cx_small)
-            if dist < min_dist:
-                min_dist = dist
-                best_contour = cnt
+    if contours:
+        contour = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(contour)
 
-    if best_contour is not None:
-        # --- NOVO: Desenhar o contorno de toda a linha reconhecida ---
-        # Ajustamos as coordenadas do contorno pequeno para o frame original (960x540)
-        poly_line = best_contour.astype(np.float32)
-        poly_line[:, :, 0] *= (FRAME_WIDTH / PROCESS_WIDTH)
-        poly_line[:, :, 1] = (poly_line[:, :, 1] + PROCESS_ROI_TOP_Y) * (FRAME_HEIGHT / PROCESS_HEIGHT)
-        
-        # Desenha o contorno azul em volta de toda a linha
-        cv2.drawContours(frame, [poly_line.astype(np.int32)], -1, (255, 0, 0), 2)
+        if area >= MIN_LINE_AREA:
+            moments = cv2.moments(contour)
+            if moments["m00"] > 0:
+                center_x_small = int(moments["m10"] / moments["m00"])
+                center_y_small = int(moments["m01"] / moments["m00"]) + PROCESS_ROI_TOP_Y
+                center_x = int(center_x_small * FRAME_WIDTH / PROCESS_WIDTH)
+                center_y = int(center_y_small * FRAME_HEIGHT / PROCESS_HEIGHT)
+                last_position = (center_x, center_y)
+                error = int(center_x - SETPOINT_X)
+                line_detected = True
 
-        # Calcula Centro e Erro
-        x, y, w, h = cv2.boundingRect(best_contour)
-        last_cx_small = x + (w // 2)
-        center_x = int(last_cx_small * FRAME_WIDTH / PROCESS_WIDTH)
-        error = center_x - SETPOINT_X
-        line_detected = True
-        
-        # Linha vertical de centro (azul mais grossa)
-        cv2.line(frame, (center_x, ROI_TOP_Y), (center_x, FRAME_HEIGHT), (255, 0, 0), 3)
+                scaled_contour = contour.astype(np.float32)
+                scaled_contour[:, :, 0] *= FRAME_WIDTH / PROCESS_WIDTH
+                scaled_contour[:, :, 1] = (scaled_contour[:, :, 1] + PROCESS_ROI_TOP_Y) * FRAME_HEIGHT / PROCESS_HEIGHT
+                scaled_contour = scaled_contour.astype(np.int32)
+                cv2.drawContours(frame, [scaled_contour], -1, (0, 255, 0), 2)
+                cv2.line(frame, (center_x, ROI_TOP_Y), (center_x, FRAME_HEIGHT - 1), (255, 0, 0), 2)
 
-    # 4. DETECÇÃO DOS VERDES
-    contours_green, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    mid_x = PROCESS_WIDTH // 2
-    raw_l, raw_r, val_l, val_r = False, False, False, False
+    cv2.line(frame, (SETPOINT_X, ROI_TOP_Y), (SETPOINT_X, FRAME_HEIGHT - 1), (255, 255, 0), 1)
+    cv2.rectangle(frame, (0, ROI_TOP_Y), (FRAME_WIDTH - 1, FRAME_HEIGHT - 1), (80, 80, 80), 1)
 
-    for c in contours_green:
-        if cv2.contourArea(c) >= MIN_GREEN_AREA:
-            M = cv2.moments(c)
-            if M["m00"] > 0:
-                gx, gy = int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"])
-                if gx < mid_x: raw_l = True
-                else: raw_r = True
+    status_text = "linha ok" if line_detected else "linha perdida"
+    cv2.putText(frame, f"FPS: {getattr(process_frame, 'current_fps', 0):.1f}", (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    cv2.putText(frame, f"erro: {error}", (8, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+    cv2.putText(frame, status_text, (8, 72), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-                y_start = max(0, gy - 35)
-                x_start, x_end = max(0, gx - 10), min(PROCESS_WIDTH, gx + 10)
-                check_zone = mask_black[y_start:gy, x_start:x_end]
-                
-                if np.any(check_zone == 255):
-                    if gx < mid_x: val_l = True
-                    else: val_r = True
-                    color = (0, 255, 0)
-                else: color = (100, 100, 100)
+    return frame, last_position, line_detected, error
 
-                poly = (c.astype(np.float32))
-                poly[:,:,0] *= (FRAME_WIDTH / PROCESS_WIDTH)
-                poly[:,:,1] = (poly[:,:,1] + PROCESS_ROI_TOP_Y) * (FRAME_HEIGHT / PROCESS_HEIGHT)
-                cv2.drawContours(frame, [poly.astype(np.int32)], -1, color, 3)
+def encode_frame(frame):
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+    ok, encoded = cv2.imencode(".jpg", frame, encode_params)
+    if not ok:
+        return None
 
-    if raw_l and raw_r: green_action = "MEIA VOLTA"
-    elif val_l: green_action = "ESQUERDA"
-    elif val_r: green_action = "DIREITA"
+    return encoded.tobytes()
 
-    cv2.putText(frame, f"ACAO: {green_action}", (10, 140), cv2.FONT_HERSHEY_DUPLEX, 0.9, (255, 255, 255), 2)
-    cv2.putText(frame, f"Erro: {error}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    return frame, line_detected, error, green_action
+def publish_stream_frame(jpeg):
+    global latest_jpeg, latest_jpeg_sequence
+
+    with frame_condition:
+        latest_jpeg = jpeg
+        latest_jpeg_sequence += 1
+        frame_condition.notify_all()
+
+def save_frame(jpeg):
+    with open(TEMP_FRAME_PATH, "wb") as frame_file:
+        frame_file.write(jpeg)
+    os.replace(TEMP_FRAME_PATH, FRAME_PATH)
+
+def save_status(fps, line_detected, line_error, camera_format="", active=True, error_message=""):
+    status = {
+        "fps": round(fps, 2),
+        "active": active,
+        "lineDetected": line_detected,
+        "lineError": line_error,
+        "width": FRAME_WIDTH,
+        "height": FRAME_HEIGHT,
+        "processWidth": PROCESS_WIDTH,
+        "processHeight": PROCESS_HEIGHT,
+        "jpegQuality": JPEG_QUALITY,
+        "targetCameraFps": TARGET_CAMERA_FPS,
+        "cameraFormat": camera_format,
+        "streamPort": MJPEG_STREAM_PORT,
+        "streamPath": MJPEG_STREAM_PATH,
+        "streamFps": MJPEG_STREAM_FPS,
+        "error": error_message,
+        "timestamp": time.time(),
+    }
+    with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
+        json.dump(status, status_file)
+    os.replace(TEMP_STATUS_PATH, STATUS_PATH)
+
+def create_camera():
+    picam2 = Picamera2()
+    frame_duration_us = int(1_000_000 / TARGET_CAMERA_FPS)
+
+    for pixel_format in CAMERA_PIXEL_FORMATS:
+        try:
+            camera_config = picam2.create_video_configuration(
+                main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": pixel_format},
+                controls={"FrameDurationLimits": (frame_duration_us, frame_duration_us)},
+                buffer_count=4,
+            )
+            picam2.configure(camera_config)
+            print(f"Câmera configurada em {pixel_format} com alvo de {TARGET_CAMERA_FPS} FPS.", flush=True)
+            return picam2, pixel_format
+        except Exception as error:
+            print(f"Configuração {pixel_format} com FPS fixo falhou: {error}", flush=True)
+
+    for pixel_format in CAMERA_PIXEL_FORMATS:
+        try:
+            camera_config = picam2.create_video_configuration(
+                main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": pixel_format},
+                buffer_count=4,
+            )
+            picam2.configure(camera_config)
+            print(f"Câmera configurada em {pixel_format} sem FPS fixo.", flush=True)
+            return picam2, pixel_format
+        except Exception as error:
+            print(f"Configuração {pixel_format} simples falhou: {error}", flush=True)
+
+    camera_config = picam2.create_still_configuration({"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"})
+    picam2.configure(camera_config)
+    print("Câmera configurada em modo still como fallback.", flush=True)
+    return picam2, "RGB888"
+
+def normalize_frame_colors(frame, camera_format):
+    # O frame já está no formato correto para o pipeline OpenCV usado aqui.
+    # Não aplicamos conversão de RGB para BGR porque isso inverteu vermelho e azul.
+    return frame
+
+
+def camera_format_label(camera_format):
+    return camera_format
+
+def tune_camera_image(picam2):
+    # Estes ajustes são visuais e não fazem parte da lógica de segurança.
+    # Se a câmera não suportar algum controle, o script continua rodando.
+    camera_controls = {
+        "AeEnable": True,
+        "AwbEnable": True,
+        "ExposureValue": CAMERA_EXPOSURE_VALUE,
+        "Sharpness": CAMERA_SHARPNESS,
+        "Contrast": CAMERA_CONTRAST,
+        "Saturation": CAMERA_SATURATION,
+    }
+
+    applied_controls = []
+    for name, value in camera_controls.items():
+        try:
+            picam2.set_controls({name: value})
+            applied_controls.append(name)
+        except Exception as error:
+            print(f"Controle de câmera {name} não foi aplicado: {error}", flush=True)
+
+    if applied_controls:
+        print(f"Ajustes de imagem aplicados: {', '.join(applied_controls)}.", flush=True)
 
 def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
-    server = ThreadingHTTPServer(("127.0.0.1", MJPEG_STREAM_PORT), CameraStreamHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    
-    if Picamera2 is None:
+
+    if GPIO is None or Picamera2 is None:
+        error_message = "Dependências (GPIO ou Picamera2) não encontradas."
+        print(error_message, flush=True)
+        save_status(0.0, False, 0, active=False, error_message=error_message)
         return 1
 
-    picam2 = Picamera2()
-    picam2.configure(picam2.create_video_configuration(main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"}))
-    picam2.start()
-    previous_time = time.monotonic()
-    
+    # Cria o arquivo de status inicial para evitar que o dashboard fique em
+    # 'aguardando' indefinidamente enquanto a câmera está sendo preparada.
+    save_status(0.0, False, 0)
+
+    stream_server = None
+    picam2 = None
+    camera_started = False
+    light_ready = False
+
     try:
+        GPIO.setmode(GPIO.BOARD)
+        GPIO.setup(LIGHT_PIN_BOARD, GPIO.OUT)
+        GPIO.output(LIGHT_PIN_BOARD, GPIO.HIGH)
+        light_ready = True
+        stream_server = start_stream_server()
+
+        picam2, camera_format = create_camera()
+        picam2.start()
+        tune_camera_image(picam2)
+        camera_started = True
+
+        last_position = (FRAME_WIDTH // 2, FRAME_HEIGHT // 2)
+
+        prev_time = time.monotonic()
+        last_stream_frame_time = 0.0
+        last_snapshot_save_time = 0.0
+        last_status_save_time = 0.0
+        stream_frame_interval = 1.0 / MJPEG_STREAM_FPS
+        snapshot_save_interval = 1.0 / SNAPSHOT_FRAME_FPS
+        status_save_interval = 1.0 / STATUS_FPS
+        smoothed_fps = 0.0
+        line_detected = False
+        line_error = 0
+
         while running:
             frame = picam2.capture_array()
-            frame, det, err, act = process_frame(frame)
-            current_time = time.monotonic()
-            elapsed = current_time - previous_time
-            previous_time = current_time
-            fps = 1.0 / elapsed if elapsed > 0 else 0.0
+            frame = normalize_frame_colors(frame, camera_format)
 
-            ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-            if ok:
-                global latest_jpeg, latest_jpeg_sequence
-                with frame_condition:
-                    latest_jpeg = jpeg.tobytes()
-                    latest_jpeg_sequence += 1
-                    frame_condition.notify_all()
-            status = {
-                "fps": round(fps, 2),
-                "active": True,
-                "lineDetected": det,
-                "lineError": err,
-                "greenAction": act,
-                "width": FRAME_WIDTH,
-                "height": FRAME_HEIGHT,
-                "cameraFormat": "RGB888",
-                "timestamp": time.time(),
-            }
-            with open(TEMP_STATUS_PATH, "w") as f: json.dump(status, f)
-            os.replace(TEMP_STATUS_PATH, STATUS_PATH)
+            curr_time = time.monotonic()
+            elapsed = curr_time - prev_time
+            prev_time = curr_time
+
+            if elapsed > 0:
+                actual_fps = 1.0 / elapsed
+                smoothed_fps = (smoothed_fps * 0.90) + (actual_fps * 0.10) if smoothed_fps > 0 else actual_fps
+
+            process_frame.current_fps = smoothed_fps
+            frame, last_position, line_detected, line_error = process_frame(frame, last_position)
+
+            should_stream = curr_time - last_stream_frame_time >= stream_frame_interval
+            should_save_snapshot = curr_time - last_snapshot_save_time >= snapshot_save_interval
+
+            # O stream MJPEG fica em memória; o arquivo em /tmp é só compatibilidade.
+            # Assim o dashboard pode ver vídeo rápido sem forçar escrita em disco.
+            if should_stream or should_save_snapshot:
+                jpeg = encode_frame(frame)
+                if jpeg is not None:
+                    if should_stream:
+                        publish_stream_frame(jpeg)
+                        last_stream_frame_time = curr_time
+
+                    if should_save_snapshot:
+                        save_frame(jpeg)
+                        last_snapshot_save_time = curr_time
+
+            if curr_time - last_status_save_time >= status_save_interval:
+                save_status(smoothed_fps, line_detected, line_error, camera_format_label(camera_format))
+                last_status_save_time = curr_time
+    except Exception as error:
+        error_message = f"Camera script failed: {error}"
+        print(error_message, flush=True)
+        save_status(0.0, False, 0, active=False, error_message=error_message)
+        return 1
     finally:
-        status = {"fps": 0.0, "active": False, "lineDetected": False, "lineError": 0, "greenAction": "NENHUM", "timestamp": time.time()}
-        with open(TEMP_STATUS_PATH, "w") as f: json.dump(status, f)
-        os.replace(TEMP_STATUS_PATH, STATUS_PATH)
-        picam2.stop()
+        if stream_server is not None:
+            stream_server.shutdown()
+            stream_server.server_close()
+        if GPIO is not None and light_ready:
+            GPIO.output(LIGHT_PIN_BOARD, GPIO.LOW)
+            GPIO.cleanup()
+        if picam2 is not None and camera_started:
+            picam2.stop()
+
+    return 0
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

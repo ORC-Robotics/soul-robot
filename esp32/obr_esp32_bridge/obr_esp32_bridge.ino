@@ -21,30 +21,32 @@ constexpr unsigned long UART_BAUD_RATE = 115200;
 constexpr int SDA_PIN = 21;
 constexpr int SCL_PIN = 22;
 
-// Pinos do sensor ultrassônico.
+// Pinos do sensor ultrassônico frontal.
 // Se o módulo for HC-SR04 de 5 V, use divisor de tensão no ECHO para proteger a ESP32.
-constexpr int TRIG_PIN = 27;
-constexpr int ECHO_PIN = 26;
+constexpr int TRIG_PIN = 25;
+constexpr int ECHO_PIN = 35;
 
-// Pinos da ponte H L298N.
-// Valores positivos fazem IN1/IN3 ficarem em HIGH e IN2/IN4 em LOW.
-constexpr int LEFT_ENABLE_PIN = 25;
-constexpr int LEFT_INPUT_1_PIN = 32;
-constexpr int LEFT_INPUT_2_PIN = 33;
-constexpr int RIGHT_ENABLE_PIN = 14;
-constexpr int RIGHT_INPUT_1_PIN = 23;
-constexpr int RIGHT_INPUT_2_PIN = 19;
+// Pinos dos drivers BTS7960.
+// Cada motor usa um enable comum e dois sinais PWM: RPWM para um sentido e LPWM para o sentido oposto.
+constexpr int LEFT_ENABLE_PIN = 15;
+constexpr int LEFT_RPWM_PIN = 14;
+constexpr int LEFT_LPWM_PIN = 5;
+constexpr int RIGHT_ENABLE_PIN = 2;
+constexpr int RIGHT_RPWM_PIN = 4;
+constexpr int RIGHT_LPWM_PIN = 33;
 
 // Inverta um motor aqui se ele girar no sentido contrário durante o teste com as rodas suspensas.
-constexpr bool LEFT_MOTOR_INVERTED = false;
+constexpr bool LEFT_MOTOR_INVERTED = true;
 constexpr bool RIGHT_MOTOR_INVERTED = false;
 
-// Configuração do PWM usado nos pinos ENA e ENB do L298N.
+// Configuração do PWM usado nos pinos RPWM e LPWM do BTS7960.
 constexpr int PWM_FREQUENCY_HZ = 1000;
 constexpr int PWM_RESOLUTION_BITS = 8;
 constexpr int PWM_MAX_DUTY = (1 << PWM_RESOLUTION_BITS) - 1;
-constexpr int LEFT_PWM_CHANNEL = 0;
-constexpr int RIGHT_PWM_CHANNEL = 1;
+constexpr int LEFT_RPWM_CHANNEL = 0;
+constexpr int LEFT_LPWM_CHANNEL = 1;
+constexpr int RIGHT_RPWM_CHANNEL = 2;
+constexpr int RIGHT_LPWM_CHANNEL = 3;
 
 // Tempo máximo, em milissegundos, sem comando da Raspberry antes de zerar os motores.
 constexpr unsigned long COMMAND_TIMEOUT_MS = 500;
@@ -58,11 +60,18 @@ constexpr unsigned long ULTRASONIC_TIMEOUT_US = 25000;
 // Zona morta evita PWM pequeno demais para mover o motor de forma previsível.
 constexpr float MOTOR_DEADBAND = 0.05f;
 
+// O MPU6050 costuma medir uma rotação pequena mesmo parado.
+// A zona morta evita que esse ruído vire deriva constante no yaw da telemetria.
+constexpr float GYRO_Z_RATE_DEADBAND_DPS = 0.8f;
+constexpr float GYRO_Z_STATIONARY_BIAS_ALPHA = 0.002f;
+
 HardwareSerial RaspberrySerial(2);
 Adafruit_MPU6050 mpu;
 
 float gyroZBias = 0.0f;
 float yawZ = 0.0f;
+float currentLeftPower = 0.0f;
+float currentRightPower = 0.0f;
 bool mpuReady = false;
 bool emergencyStopActive = false;
 
@@ -107,38 +116,41 @@ float clampMotorPower(float command) {
 }
 
 void stopMotorOutputs() {
-  writePwmDuty(LEFT_ENABLE_PIN, LEFT_PWM_CHANNEL, 0);
-  writePwmDuty(RIGHT_ENABLE_PIN, RIGHT_PWM_CHANNEL, 0);
+  writePwmDuty(LEFT_RPWM_PIN, LEFT_RPWM_CHANNEL, 0);
+  writePwmDuty(LEFT_LPWM_PIN, LEFT_LPWM_CHANNEL, 0);
+  writePwmDuty(RIGHT_RPWM_PIN, RIGHT_RPWM_CHANNEL, 0);
+  writePwmDuty(RIGHT_LPWM_PIN, RIGHT_LPWM_CHANNEL, 0);
 
-  digitalWrite(LEFT_INPUT_1_PIN, LOW);
-  digitalWrite(LEFT_INPUT_2_PIN, LOW);
-  digitalWrite(RIGHT_INPUT_1_PIN, LOW);
-  digitalWrite(RIGHT_INPUT_2_PIN, LOW);
+  digitalWrite(LEFT_ENABLE_PIN, LOW);
+  digitalWrite(RIGHT_ENABLE_PIN, LOW);
+
+  currentLeftPower = 0.0f;
+  currentRightPower = 0.0f;
 }
 
-void setOneMotor(int enablePin, int pwmChannel, int input1Pin, int input2Pin, float command, bool inverted) {
+void setOneMotor(int enablePin, int rpwmPin, int rpwmChannel, int lpwmPin, int lpwmChannel, float command, bool inverted) {
   if (inverted) {
     command = -command;
   }
 
   float safeCommand = clampMotorPower(command);
   if (safeCommand == 0.0f) {
-    digitalWrite(input1Pin, LOW);
-    digitalWrite(input2Pin, LOW);
-    writePwmDuty(enablePin, pwmChannel, 0);
+    writePwmDuty(rpwmPin, rpwmChannel, 0);
+    writePwmDuty(lpwmPin, lpwmChannel, 0);
+    digitalWrite(enablePin, LOW);
     return;
   }
 
-  if (safeCommand > 0.0f) {
-    digitalWrite(input1Pin, HIGH);
-    digitalWrite(input2Pin, LOW);
-  } else {
-    digitalWrite(input1Pin, LOW);
-    digitalWrite(input2Pin, HIGH);
-  }
+  digitalWrite(enablePin, HIGH);
 
   int duty = static_cast<int>(fabs(safeCommand) * PWM_MAX_DUTY);
-  writePwmDuty(enablePin, pwmChannel, duty);
+  if (safeCommand > 0.0f) {
+    writePwmDuty(lpwmPin, lpwmChannel, 0);
+    writePwmDuty(rpwmPin, rpwmChannel, duty);
+  } else {
+    writePwmDuty(rpwmPin, rpwmChannel, 0);
+    writePwmDuty(lpwmPin, lpwmChannel, duty);
+  }
 }
 
 void applyMotorCommand(float leftPower, float rightPower) {
@@ -147,18 +159,21 @@ void applyMotorCommand(float leftPower, float rightPower) {
     return;
   }
 
-  setOneMotor(LEFT_ENABLE_PIN, LEFT_PWM_CHANNEL, LEFT_INPUT_1_PIN, LEFT_INPUT_2_PIN, leftPower, LEFT_MOTOR_INVERTED);
-  setOneMotor(RIGHT_ENABLE_PIN, RIGHT_PWM_CHANNEL, RIGHT_INPUT_1_PIN, RIGHT_INPUT_2_PIN, rightPower, RIGHT_MOTOR_INVERTED);
+  currentLeftPower = clampMotorPower(leftPower);
+  currentRightPower = clampMotorPower(rightPower);
+
+  setOneMotor(LEFT_ENABLE_PIN, LEFT_RPWM_PIN, LEFT_RPWM_CHANNEL, LEFT_LPWM_PIN, LEFT_LPWM_CHANNEL, currentLeftPower, LEFT_MOTOR_INVERTED);
+  setOneMotor(RIGHT_ENABLE_PIN, RIGHT_RPWM_PIN, RIGHT_RPWM_CHANNEL, RIGHT_LPWM_PIN, RIGHT_LPWM_CHANNEL, currentRightPower, RIGHT_MOTOR_INVERTED);
 }
 
 void setupMotorPins() {
-  pinMode(LEFT_INPUT_1_PIN, OUTPUT);
-  pinMode(LEFT_INPUT_2_PIN, OUTPUT);
-  pinMode(RIGHT_INPUT_1_PIN, OUTPUT);
-  pinMode(RIGHT_INPUT_2_PIN, OUTPUT);
+  pinMode(LEFT_ENABLE_PIN, OUTPUT);
+  pinMode(RIGHT_ENABLE_PIN, OUTPUT);
 
-  attachPwmPin(LEFT_ENABLE_PIN, LEFT_PWM_CHANNEL);
-  attachPwmPin(RIGHT_ENABLE_PIN, RIGHT_PWM_CHANNEL);
+  attachPwmPin(LEFT_RPWM_PIN, LEFT_RPWM_CHANNEL);
+  attachPwmPin(LEFT_LPWM_PIN, LEFT_LPWM_CHANNEL);
+  attachPwmPin(RIGHT_RPWM_PIN, RIGHT_RPWM_CHANNEL);
+  attachPwmPin(RIGHT_LPWM_PIN, RIGHT_LPWM_CHANNEL);
 
   // O robô deve ligar com os motores parados, antes de qualquer comando UART.
   stopMotorOutputs();
@@ -192,7 +207,7 @@ void calibrateGyroZ() {
 
   Serial.println("Calibrando gyro Z. Deixe o MPU6050 parado.");
 
-  constexpr int samples = 500;
+  constexpr int samples = 800;
   float sum = 0.0f;
 
   for (int i = 0; i < samples; i++) {
@@ -301,7 +316,7 @@ void readCommandsFromRaspberry() {
 
 void enforceCommandTimeout() {
   if (millis() - lastCommandTimeMs > COMMAND_TIMEOUT_MS) {
-    // Se a Raspberry parar de enviar comandos, a ESP32 zera a ponte H sozinha.
+    // Se a Raspberry parar de enviar comandos, a ESP32 zera os drivers dos motores sozinha.
     stopMotorOutputs();
   }
 }
@@ -325,6 +340,19 @@ void sendSensorTelemetry() {
     mpu.getEvent(&accel, &gyro, &temp);
 
     correctedGyroZ = gyro.gyro.z * 57.2958f - gyroZBias;
+    bool robotStopped = fabs(currentLeftPower) < 0.01f && fabs(currentRightPower) < 0.01f;
+
+    if (robotStopped && fabs(correctedGyroZ) < 3.0f) {
+      // Quando o robô está parado, ajusta o bias lentamente para compensar deriva térmica.
+      gyroZBias = (gyroZBias * (1.0f - GYRO_Z_STATIONARY_BIAS_ALPHA)) +
+                  ((gyro.gyro.z * 57.2958f) * GYRO_Z_STATIONARY_BIAS_ALPHA);
+      correctedGyroZ = gyro.gyro.z * 57.2958f - gyroZBias;
+    }
+
+    if (fabs(correctedGyroZ) < GYRO_Z_RATE_DEADBAND_DPS) {
+      correctedGyroZ = 0.0f;
+    }
+
     yawZ += correctedGyroZ * dt;
 
     if (yawZ > 180.0f) {

@@ -2,7 +2,7 @@
 
 Código C++ do robô OBR 2026 rodando em uma Raspberry Pi, com dashboard web para
 teste, telemetria simples e controle manual dos motores. A Raspberry conversa
-por UART com uma ESP32, que controla a ponte H L298N e lê o MPU6050 e o sensor
+por UART com uma ESP32, que controla drivers BTS7960 e lê o MPU6050 e o sensor
 ultrassônico.
 
 ## Visão geral
@@ -71,25 +71,56 @@ O sketch da ESP32 fica em `esp32/obr_esp32_bridge/obr_esp32_bridge.ino`.
 No Arduino IDE, instale o pacote da placa ESP32 e as bibliotecas
 `Adafruit MPU6050` e `Adafruit Unified Sensor` antes de gravar.
 
-| ESP32 | L298N | Função |
+| ESP32 | BTS7960 | Função |
 | --- | --- | --- |
-| GPIO25 | ENA | PWM do motor esquerdo |
-| GPIO32 | IN1 | direção do motor esquerdo |
-| GPIO33 | IN2 | direção do motor esquerdo |
-| GPIO14 | ENB | PWM do motor direito |
-| GPIO23 | IN3 | direção do motor direito |
-| GPIO19 | IN4 | direção do motor direito |
+| GPIO15 | EN | enable do driver do motor esquerdo |
+| GPIO14 | RPWM | PWM do motor esquerdo em um sentido |
+| GPIO5 | LPWM | PWM do motor esquerdo no sentido oposto |
+| GPIO2 | EN | enable do driver do motor direito |
+| GPIO4 | RPWM | PWM do motor direito em um sentido |
+| GPIO33 | LPWM | PWM do motor direito no sentido oposto |
 | GND | GND | referência elétrica comum |
 
 | ESP32 | Sensor | Função |
 | --- | --- | --- |
 | GPIO21 | MPU6050 | SDA |
 | GPIO22 | MPU6050 | SCL |
-| GPIO27 | Ultrassônico | TRIG |
-| GPIO26 | Ultrassônico | ECHO |
+| GPIO25 | Ultrassônico frontal | TRIG |
+| GPIO35 | Ultrassônico frontal | ECHO |
 
 Se o ultrassônico for HC-SR04 alimentado com 5 V, reduza o sinal de ECHO para
 3,3 V antes de ligar na ESP32.
+
+### Teste direto dos motores pela ESP32
+
+Para testar os BTS7960 sem a Raspberry Pi, grave temporariamente o sketch:
+
+```txt
+esp32/bts7960_motor_web_test/bts7960_motor_web_test.ino
+```
+
+Esse teste cria uma rede Wi-Fi chamada `OBR-Motor-Test`, com senha `obr2026k`.
+Depois de conectar nela, abra:
+
+```txt
+http://192.168.4.1
+```
+
+Use esse sketch somente para teste de bancada. Ele limita a potência em `0.80`,
+zera os motores ao abrir a página e desliga as saídas se parar de receber
+comandos por mais de 500 ms. Depois do teste, grave novamente o sketch principal
+`esp32/obr_esp32_bridge/obr_esp32_bridge.ino` para voltar à comunicação com a
+Raspberry Pi.
+
+O site também aceita controle compatível com navegador. O gatilho direito move
+para frente, o gatilho esquerdo dá ré e o analógico esquerdo gira o robô. Se o
+controle não aparecer, pressione algum botão com a página aberta para o navegador
+liberar o acesso ao dispositivo.
+
+Quando o MPU6050 estiver ligado no I2C da ESP32, o teste tenta manter o eixo do
+robô automaticamente enquanto houver aceleração/ré e o analógico de giro estiver
+solto. Se a correção piorar o desvio, inverta `HEADING_HOLD_CORRECTION_SIGN` no
+sketch de teste.
 
 ## Segurança dos motores
 

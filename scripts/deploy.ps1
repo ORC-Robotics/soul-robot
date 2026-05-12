@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "raspberrypi.local",
+    [string]$HostName = "192.168.0.102",
     [string]$User = "obr",
     [string]$RemoteDir = "/home/obr/OBR2026K",
     [string]$Target = "robot_test",
