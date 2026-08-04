@@ -1,24 +1,23 @@
 # OBR2026K
 
-Código C++ do robô OBR 2026 rodando em uma Raspberry Pi, com dashboard web para
-teste, telemetria simples e controle manual dos motores. A Raspberry conversa
-por UART com uma ESP32, que controla drivers BTS7960 e lê o MPU6050 e o sensor
-ultrassônico.
+Código do robô OBR 2026. A etapa atual pode ser testada somente com a ESP32: ela
+cria a própria rede Wi-Fi, serve um dashboard, controla os DRV8833 e lê MPU6050,
+PCA9685, ultrassônico, encoders, botão de partida e tensão da bateria. A ponte
+UART e o programa C++ da Raspberry Pi permanecem no projeto para a próxima etapa.
 
 ## Visão geral
 
-O projeto roda um servidor HTTP/WebSocket na Raspberry Pi. Pelo navegador, o
-dashboard permite:
+O dashboard autônomo da ESP32 permite:
 
-- ver o modo atual do robô;
-- ver CPU, temperatura e uso de RAM da Raspberry;
-- ver distância do ultrassônico, gyro Z, yaw Z e aceleração vindos da ESP32;
-- ver a imagem processada pela câmera, quando o script da câmera estiver rodando;
-- iniciar/parar o modo manual;
-- controlar frente/ré e curva pelos sliders.
+- acionar os motores esquerdo e direito em teste de bancada;
+- ver distância frontal e tensão da bateria;
+- acompanhar aceleração, giro, yaw e temperatura do MPU6050;
+- acompanhar contagem e taxa dos dois encoders;
+- ver o estado do botão, do PCA9685 e dos clientes Wi-Fi;
+- usar parada de emergência e timeout de comando sem depender da Raspberry Pi.
 
-O dashboard é uma ferramenta de desenvolvimento e teste. A lógica de segurança
-fica no código do robô, não no navegador.
+O dashboard da Raspberry Pi continua disponível para câmera, telemetria do
+sistema e modos manual/autônomo quando ela for integrada novamente.
 
 ## Arquitetura
 
@@ -39,24 +38,91 @@ src/telemetry/
   Leituras simples de telemetria.
 
 esp32/obr_esp32_bridge/
-  Sketch Arduino da ESP32 para motores, MPU6050, ultrassônico e UART.
+  Sketch principal da ESP32, dashboard e configuração centralizada de pinos.
 
 include/obr/config.h
   Pinos, portas, limites e constantes do robô.
 ```
 
-## Comunicação Raspberry Pi e ESP32
+## Teste somente com a ESP32
+
+Abra `esp32/obr_esp32_bridge/obr_esp32_bridge.ino` no Arduino IDE. Selecione uma
+placa ESP32 compatível e instale:
+
+- `Adafruit MPU6050`;
+- `Adafruit Unified Sensor`;
+- `Adafruit PWM Servo Driver Library`.
+
+Depois de gravar o sketch:
+
+1. Conecte o celular ou computador à rede `OBR2026K-ESP32`.
+2. Use a senha `obr2026k-painel`.
+3. Abra `http://192.168.4.1`.
+4. Confira os sensores com os motores sem alimentação.
+5. Levante as rodas, energize os drivers e clique em `Habilitar motores`.
+
+Os sliders e os botões de frente e ré permitem controlar cada lado de -100% a
+100%. Se o navegador deixar de enviar comandos por 500 ms, a ESP32 zera os
+motores e remove a habilitação. O
+E-Stop permanece travado até o botão `Liberar E-Stop` ser usado; liberar não
+volta a movimentar o robô.
+
+O botão do GPIO27 é lido e aparece na telemetria, mas não inicia movimento
+sozinho. A ação de competição desse botão será ligada ao modo autônomo quando a
+estratégia correspondente for implementada.
+
+## Pinagem da ESP32
+
+As constantes ficam em `esp32/obr_esp32_bridge/robot_config.h`.
+
+| ESP32 | Ligação | Função |
+| --- | --- | --- |
+| GPIO32 | Ultrassônico TRIG | Disparo frontal |
+| GPIO33 | Ultrassônico ECHO | Leitura frontal, somente até 3,3 V |
+| GPIO27 | Start button | Entrada com pull-up, botão para GND |
+| GPIO14 / GPIO13 | I2C SCL / SDA | MPU6050, PCA9685 e futuro SSD1306 |
+| GPIO5 / GPIO18 | DRV8833 esquerdo IN1 / IN2 | Dois motores do lado esquerdo |
+| GPIO16 / GPIO17 | DRV8833 direito IN1 / IN2 | Dois motores do lado direito |
+| GPIO19 / GPIO21 | Encoder esquerdo A / B | Contagem quadrature nas quatro bordas |
+| GPIO22 / GPIO23 | Encoder direito A / B | Contagem quadrature nas quatro bordas |
+| GPIO1 / GPIO3 | UART TX / RX | Reservados para a futura Raspberry Pi |
+| GPIO36 | Divisor 47 kΩ / 10 kΩ | Leitura ADC1 da bateria de 12 V |
+
+### Cuidados elétricos
+
+- Todos os módulos devem compartilhar GND.
+- O ECHO de um HC-SR04 alimentado em 5 V precisa de divisor ou conversor para
+  nunca aplicar 5 V ao GPIO33.
+- O divisor da bateria usa 47 kΩ entre bateria e GPIO36 e 10 kΩ entre GPIO36 e
+  GND. Um capacitor de 100 nF entre GPIO36 e GND ajuda a estabilizar a leitura.
+- Os dois motores de cada lado só podem compartilhar a mesma ponte H se a soma
+  das correntes, principalmente a corrente de travamento, estiver dentro do
+  limite do DRV8833 e da placa usada. Não ligue duas saídas de pontes H em
+  paralelo para tentar aumentar corrente.
+- Se a placa DRV8833 expuser `nSLEEP`, mantenha esse pino em nível alto; em nível
+  baixo as saídas permanecem desligadas.
+- GPIO5 participa da inicialização da ESP32. O driver não deve forçar esse pino
+  a um nível incompatível enquanto a placa liga.
+- GPIO1 e GPIO3 também são usados na gravação e no monitor serial. Quando a
+  Raspberry for instalada, desconecte-a ou mantenha a UART dela silenciosa ao
+  gravar a ESP32.
+
+O PCA9685 é detectado em `0x40`, configurado em 50 Hz e inicia com os 16 canais
+desligados. Ainda não há movimento de servo porque os atuadores e limites de
+pulso não foram informados. O MPU6050 é procurado em `0x68` e `0x69`.
+
+## Comunicação futura com a Raspberry Pi
 
 A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 `/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
 
 | Raspberry Pi | ESP32 | Função |
 | --- | --- | --- |
-| GPIO14 / TXD | RX2 / GPIO16 | comandos para a ESP32 |
-| GPIO15 / RXD | TX2 / GPIO17 | telemetria da ESP32 |
+| GPIO14 / TXD | RX / GPIO3 | comandos para a ESP32 |
+| GPIO15 / RXD | TX / GPIO1 | telemetria da ESP32 |
 | GND | GND | referência elétrica comum |
 
-Ative a UART serial da Raspberry sem console de login antes de testar:
+Ative a UART serial da Raspberry sem console de login antes de integrar:
 
 ```sh
 sudo raspi-config
@@ -65,73 +131,18 @@ sudo raspi-config
 Use `Interface Options > Serial Port`, desative o shell pela serial e ative a
 porta serial de hardware.
 
-## Pinos da ESP32
-
-O sketch da ESP32 fica em `esp32/obr_esp32_bridge/obr_esp32_bridge.ino`.
-No Arduino IDE, instale o pacote da placa ESP32 e as bibliotecas
-`Adafruit MPU6050` e `Adafruit Unified Sensor` antes de gravar.
-
-| ESP32 | BTS7960 | Função |
-| --- | --- | --- |
-| GPIO15 | EN | enable do driver do motor esquerdo |
-| GPIO14 | RPWM | PWM do motor esquerdo em um sentido |
-| GPIO5 | LPWM | PWM do motor esquerdo no sentido oposto |
-| GPIO2 | EN | enable do driver do motor direito |
-| GPIO4 | RPWM | PWM do motor direito em um sentido |
-| GPIO33 | LPWM | PWM do motor direito no sentido oposto |
-| GND | GND | referência elétrica comum |
-
-| ESP32 | Sensor | Função |
-| --- | --- | --- |
-| GPIO21 | MPU6050 | SDA |
-| GPIO22 | MPU6050 | SCL |
-| GPIO25 | Ultrassônico frontal | TRIG |
-| GPIO35 | Ultrassônico frontal | ECHO |
-
-Se o ultrassônico for HC-SR04 alimentado com 5 V, reduza o sinal de ECHO para
-3,3 V antes de ligar na ESP32.
-
-### Teste direto dos motores pela ESP32
-
-Para testar os BTS7960 sem a Raspberry Pi, grave temporariamente o sketch:
-
-```txt
-esp32/bts7960_motor_web_test/bts7960_motor_web_test.ino
-```
-
-Esse teste cria uma rede Wi-Fi chamada `OBR-Motor-Test`, com senha `obr2026k`.
-Depois de conectar nela, abra:
-
-```txt
-http://192.168.4.1
-```
-
-Use esse sketch somente para teste de bancada. Ele limita a potência em `0.80`,
-zera os motores ao abrir a página e desliga as saídas se parar de receber
-comandos por mais de 500 ms. Depois do teste, grave novamente o sketch principal
-`esp32/obr_esp32_bridge/obr_esp32_bridge.ino` para voltar à comunicação com a
-Raspberry Pi.
-
-O site também aceita controle compatível com navegador. O gatilho direito move
-para frente, o gatilho esquerdo dá ré e o analógico esquerdo gira o robô. Se o
-controle não aparecer, pressione algum botão com a página aberta para o navegador
-liberar o acesso ao dispositivo.
-
-Quando o MPU6050 estiver ligado no I2C da ESP32, o teste tenta manter o eixo do
-robô automaticamente enquanto houver aceleração/ré e o analógico de giro estiver
-solto. Se a correção piorar o desvio, inverta `HEADING_HOLD_CORRECTION_SIGN` no
-sketch de teste.
-
 ## Segurança dos motores
 
 O comportamento esperado é:
 
-- ao ligar, os motores começam parados;
-- `Stop` zera os comandos e mantém o robô em modo parado;
-- comandos de movimento só são aceitos depois de `Start`;
+- ao ligar, os GPIOs dos motores são forçados para LOW antes do `setup()` e
+  permanecem parados até receber um comando válido;
+- `Desabilitar` e `Parar` zeram os comandos;
+- comandos do dashboard direto só são aceitos depois de `Habilitar motores`;
 - se o dashboard parar de enviar comandos, os motores param por timeout;
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
-- todos os comandos de motor são limitados entre `-1.0` e `1.0`;
+- os comandos locais são limitados entre `-1.00` e `1.00`;
+- o E-Stop tem prioridade sobre dashboard e UART;
 - ao encerrar o programa, o código envia `STOP` para a ESP32.
 
 Durante testes, levante as rodas antes de usar valores altos nos sliders.

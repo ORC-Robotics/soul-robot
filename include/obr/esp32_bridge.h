@@ -36,6 +36,7 @@ public:
     bool sendMotorCommand(double left, double right, bool emergencyStop);
     bool sendStop();
     bool sendEmergencyStop();
+    bool sendClearEmergencyStop();
 
     Esp32TelemetrySnapshot telemetrySnapshot() const;
 

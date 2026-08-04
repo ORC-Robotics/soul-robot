@@ -114,29 +114,36 @@ constexpr int kEsp32TelemetryTimeoutMs = 1000;
 constexpr int kEsp32MotorCommandTimeoutMs = 500;
 
 // Pinos BCM da Raspberry Pi usados pela UART de hardware com a ESP32.
-// O TX da Raspberry deve ir ao RX2 da ESP32, e o RX da Raspberry deve vir do TX2.
+// O TX da Raspberry deve ir ao RX da ESP32, e o RX da Raspberry deve vir do TX.
 constexpr int kRaspberryUartTxPin = 14;
 constexpr int kRaspberryUartRxPin = 15;
 
-// Pinos da ESP32 usados pela UART2 ligada à Raspberry Pi.
-// Ajuste o sketch da ESP32 se a placa usar outros pinos para RX2 e TX2.
-constexpr int kEsp32UartRx2Pin = 16;
-constexpr int kEsp32UartTx2Pin = 17;
+// Pinos da UART0 da ESP32 reservados para a integração futura com a Raspberry.
+// Eles também são usados durante a gravação da ESP32 e não devem ser forçados externamente.
+constexpr int kEsp32UartRxPin = 3;
+constexpr int kEsp32UartTxPin = 1;
 
-// Pinos da ESP32 conectados aos drivers BTS7960.
-// Cada motor usa um enable comum e dois PWM: RPWM para um sentido e LPWM para o sentido oposto.
-constexpr int kEsp32LeftEnablePin = 15;
-constexpr int kEsp32LeftRpwmPin = 14;
-constexpr int kEsp32LeftLpwmPin = 5;
-constexpr int kEsp32RightEnablePin = 2;
-constexpr int kEsp32RightRpwmPin = 4;
-constexpr int kEsp32RightLpwmPin = 33;
+// Entradas dos DRV8833. Cada par controla os dois motores do respectivo lado.
+constexpr int kEsp32LeftMotorIn1Pin = 5;
+constexpr int kEsp32LeftMotorIn2Pin = 18;
+constexpr int kEsp32RightMotorIn1Pin = 16;
+constexpr int kEsp32RightMotorIn2Pin = 17;
 
-// Pinos I2C da ESP32 usados pelo MPU6050.
-constexpr int kEsp32MpuSdaPin = 21;
-constexpr int kEsp32MpuSclPin = 22;
+// Pinos I2C da ESP32 usados pelo MPU6050, PCA9685 e futuro SSD1306.
+constexpr int kEsp32I2cSdaPin = 13;
+constexpr int kEsp32I2cSclPin = 14;
 
 // Pinos da ESP32 usados pelo sensor ultrassônico frontal.
-constexpr int kEsp32UltrasonicTrigPin = 25;
-constexpr int kEsp32UltrasonicEchoPin = 35;
+constexpr int kEsp32UltrasonicTrigPin = 32;
+constexpr int kEsp32UltrasonicEchoPin = 33;
+
+// Pinos dos encoders em quadrature dos lados esquerdo e direito.
+constexpr int kEsp32LeftEncoderAPin = 19;
+constexpr int kEsp32LeftEncoderBPin = 21;
+constexpr int kEsp32RightEncoderAPin = 22;
+constexpr int kEsp32RightEncoderBPin = 23;
+
+// Botão de partida e entrada ADC1 do divisor de tensão da bateria.
+constexpr int kEsp32StartButtonPin = 27;
+constexpr int kEsp32BatteryAdcPin = 36;
 }

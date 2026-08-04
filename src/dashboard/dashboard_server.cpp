@@ -327,11 +327,13 @@ void DashboardServer::handleCommand(const std::string& message)
     }
     else if (message.find("\"command\":\"start\"") != std::string::npos)
     {
+        esp32_.sendClearEmergencyStop();
         robotState_.start();
         std::cout << "Start received\n";
     }
     else if (message.find("\"command\":\"auto\"") != std::string::npos)
     {
+        esp32_.sendClearEmergencyStop();
         robotState_.startAutonomous();
         std::cout << "Autonomous start received\n";
     }

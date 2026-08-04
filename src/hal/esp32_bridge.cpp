@@ -122,6 +122,13 @@ bool Esp32Bridge::sendEmergencyStop()
     return writeLine("ESTOP\n");
 }
 
+bool Esp32Bridge::sendClearEmergencyStop()
+{
+    // A ESP32 mantém o E-Stop travado. Somente uma ação explícita de partida
+    // pode liberar a trava, e os motores continuam zerados durante a liberação.
+    return writeLine("CLEAR_ESTOP\n");
+}
+
 Esp32TelemetrySnapshot Esp32Bridge::telemetrySnapshot() const
 {
     std::lock_guard<std::mutex> lock(telemetryMutex_);
