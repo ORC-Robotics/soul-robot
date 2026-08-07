@@ -32,6 +32,10 @@ struct Esp32TelemetrySnapshot
     double rightEncoderRate = 0.0;
     double appliedLeftPower = 0.0;
     double appliedRightPower = 0.0;
+    double straightMinimumMotorPower = 0.0;
+    double straightMaximumMotorPower = 0.0;
+    double turnMinimumMotorPower = 0.0;
+    double turnMaximumMotorPower = 0.0;
     bool startButtonPressed = false;
     unsigned long long startButtonPressSequence = 0;
     bool pca9685Ok = false;

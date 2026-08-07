@@ -96,9 +96,15 @@ constexpr bool kRightMotorInverted = false;
 // do ciclo de trabalho do PWM e só deve ser testado com as rodas suspensas.
 constexpr float kMaximumMotorPower = 1.00f;
 
-// Potência mínima que inicia os quatro motores, incluindo os dianteiros que
-// exigem mais PWM que os traseiros. Comandos úteis variam de 70% até 100%.
-constexpr float kMinimumMovingMotorPower = 0.70f;
+// Perfil padrão para movimentos em linha reta. Depois do pulso inicial, o
+// comando lógico é distribuído entre 55% e 60% do PWM físico.
+constexpr float kDefaultStraightMinimumMotorPower = 0.55f;
+constexpr float kDefaultStraightMaximumMotorPower = 0.60f;
+
+// Perfil padrão para giros com os lados em sentidos opostos. A faixa começa em
+// 70% para vencer o atrito e limita a potência contínua máxima a 80%.
+constexpr float kDefaultTurnMinimumMotorPower = 0.70f;
+constexpr float kDefaultTurnMaximumMotorPower = 0.80f;
 
 // Comandos abaixo de 0,5% são tratados como zero para evitar movimento causado
 // por ruído numérico sem remover posições úteis dos sliders.

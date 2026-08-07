@@ -27,7 +27,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 </head>
 <body>
 <main>
-  <div class="top"><div><h1>OBR2026K · ESP32</h1><div class="sub">Firmware v19 · recuperação automática de tração · controle WASD</div></div><div id="connection" class="badge">Conectando…</div></div>
+  <div class="top"><div><h1>OBR2026K · ESP32</h1><div class="sub">Firmware v20 · perfis de reta e giro · controle WASD</div></div><div id="connection" class="badge">Conectando…</div></div>
   <div class="grid">
     <section class="card"><h2>Bateria 12 V</h2><div><span id="battery" class="value">--</span> <span class="unit">V</span></div><div class="line"><span>ADC GPIO36</span><span id="batteryAdc">-- mV</span></div></section>
     <section class="card"><h2>Ultrassônico frontal</h2><div><span id="distance" class="value">--</span> <span class="unit">cm</span></div><div id="ultrasonicState" class="muted">Sem leitura</div></section>
@@ -40,7 +40,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
   <section class="card">
     <h2>Controle de bancada</h2>
     <p class="warn">Levante as rodas antes do primeiro teste. O painel desarma se deixar de enviar comandos por 500 ms.</p>
-    <p class="muted">Faixa útil remapeada: zero mantém o PWM parado; qualquer posição diferente de zero controla linearmente entre 70% e 100%. O driver permanece habilitado e responde sem novo tempo de inicialização.</p>
+    <p class="muted">Perfil físico: reta entre 55% e 60%; giro com lados opostos entre 70% e 80%. O pulso inicial sincronizado continua em 100% e o driver permanece habilitado.</p>
     <div class="controls">
       <div class="keyboard-panel wide">
         <div class="keyboard-copy"><strong>Controle pelo teclado</strong><span id="keyboardState" class="muted">Habilite os motores para usar WASD.</span></div>
@@ -52,7 +52,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
       <button class="danger wide" onclick="emergencyStop()">PARADA DE EMERGÊNCIA</button>
       <button id="clearEstop" class="secondary wide" onclick="clearEmergencyStop()">Liberar E‑Stop (mantém parado)</button>
       <div class="drive wide">
-        <button class="forward" data-l="1.00" data-r="1.00">Frente 100%</button><button class="left" data-l="-1.00" data-r="1.00">Esquerda 100%</button><button class="stop" data-l="0" data-r="0">Parar</button><button class="right" data-l="1.00" data-r="-1.00">Direita 100%</button><button class="reverse" data-l="-1.00" data-r="-1.00">Ré 100%</button>
+        <button class="forward" data-l="1.00" data-r="1.00">Frente máx. 60%</button><button class="left" data-l="-1.00" data-r="1.00">Esquerda máx. 80%</button><button class="stop" data-l="0" data-r="0">Parar</button><button class="right" data-l="1.00" data-r="-1.00">Direita máx. 80%</button><button class="reverse" data-l="-1.00" data-r="-1.00">Ré máx. 60%</button>
       </div>
     </div>
   </section>
@@ -63,14 +63,14 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 </main>
 <script>
   const $=id=>document.getElementById(id), left=$('left'), right=$('right'); let armed=false, motorRequestInFlight=false, motorCommandPending=false;
-  const minimumMovingPower=0.70;
+  const straightMinimumPower=0.55,straightMaximumPower=0.60,turnMinimumPower=0.70,turnMaximumPower=0.80;
   const driveKeyCodes=['KeyW','KeyA','KeyS','KeyD'], pressedDriveKeys=new Set();
   const n=(value,digits=2)=>Number(value).toFixed(digits);
-  function appliedPower(command){const magnitude=Math.abs(command);return magnitude===0?0:Math.sign(command)*(minimumMovingPower+magnitude*(1-minimumMovingPower))}
+  function appliedPower(command,minimumPower,maximumPower){const magnitude=Math.abs(command);return magnitude===0?0:Math.sign(command)*(minimumPower+magnitude*(maximumPower-minimumPower))}
   async function post(path,params={}){const query=new URLSearchParams(params).toString();try{const response=await fetch(path+(query?'?'+query:''),{method:'POST',cache:'no-store'});const data=await response.json();if(!response.ok)throw new Error(data.error||'falha');return data}catch(error){$('connection').textContent=error.message;$('connection').className='badge';throw error}}
   function keepBothSidesMoving(l,r){if(l===0&&r!==0)l=-r;else if(r===0&&l!==0)r=-l;return[l,r]}
   function setDrive(l,r){[l,r]=keepBothSidesMoving(l,r);left.value=Math.round(l*100);right.value=Math.round(r*100);updateLabels();if(armed)sendMotor()}
-  function updateLabels(){$('leftValue').textContent=n(appliedPower(Number(left.value)/100));$('rightValue').textContent=n(appliedPower(Number(right.value)/100))}
+  function updateLabels(){const l=Number(left.value)/100,r=Number(right.value)/100,turning=l*r<0,min=turning?turnMinimumPower:straightMinimumPower,max=turning?turnMaximumPower:straightMaximumPower;$('leftValue').textContent=n(appliedPower(l,min,max));$('rightValue').textContent=n(appliedPower(r,min,max))}
   function updateKeyboardIndicators(){driveKeyCodes.forEach(code=>$(code.replace('Key','key')).classList.toggle('active',pressedDriveKeys.has(code)));$('keyboardState').textContent=!armed?'Habilite os motores para usar WASD.':(pressedDriveKeys.size?'Teclado comandando os dois lados.':'W/S: frente e ré · A/D: giro com os dois lados.')}
   function resetKeyboardState(){pressedDriveKeys.clear();updateKeyboardIndicators()}
   function applyKeyboardDrive(){const forward=(pressedDriveKeys.has('KeyW')?1:0)-(pressedDriveKeys.has('KeyS')?1:0),turn=(pressedDriveKeys.has('KeyD')?1:0)-(pressedDriveKeys.has('KeyA')?1:0);if(turn<0)setDrive(-1,1);else if(turn>0)setDrive(1,-1);else setDrive(forward,forward)}

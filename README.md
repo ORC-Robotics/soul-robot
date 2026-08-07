@@ -71,18 +71,20 @@ Depois de gravar o sketch:
 5. Levante as rodas, energize os drivers e clique em `Habilitar motores`.
 
 Os sliders e os botões de frente e ré permitem controlar cada lado de -100% a
-100%. Como os motores dianteiros exigem mais PWM para iniciar que os traseiros,
-qualquer comando diferente de zero é remapeado para a faixa útil de 70% a 100%. O DRV8833
-é habilitado uma única vez durante o `setup()` e permanece ativo. Parar,
+100% lógico. Depois do pulso inicial de 100%, movimentos em reta são remapeados
+para 55%–60% de PWM físico e giros com os lados opostos usam 70%–80%. A
+Raspberry envia esses quatro limites em cada comando e pode alterá-los sem nova
+gravação da ESP32. O DRV8833 é habilitado uma única vez durante o `setup()` e
+permanece ativo. Parar,
 desabilitar, acionar o E-Stop ou atingir o timeout apenas zera os quatro PWMs,
 sem repetir a inicialização do driver. Se o navegador deixar de enviar comandos
 por 500 ms, a ESP32 zera os motores e remove a habilitação. O
 E-Stop permanece travado até o botão `Liberar E-Stop` ser usado; liberar não
 volta a movimentar o robô.
 
-Os botões de curva comandam os lados em sentidos opostos e com 100% de PWM.
-Essa potência evita que o lado com maior atrito permaneça dentro da faixa em
-que o motor recebe corrente, mas ainda não consegue iniciar o movimento.
+Os botões de curva comandam os lados em sentidos opostos. O pulso inicial usa
+100% e o giro contínuo fica limitado a 80%, evitando manter força máxima durante toda a
+manobra.
 Depois de usar `Habilitar motores`, o teclado também pode controlar o robô:
 `W` avança, `S` recua, `A` gira para a esquerda e `D` gira para a direita.
 Durante um giro, os dois lados se movem em sentidos opostos; A/D têm prioridade
@@ -176,6 +178,12 @@ pela UART da Raspberry, mantendo timeout e E-Stop locais na ESP32.
 
 A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 `/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
+
+Os perfis de potência podem ser alterados em `include/obr/config.h` pelas
+constantes `kEsp32StraightMinimumMotorPower`,
+`kEsp32StraightMaximumMotorPower`, `kEsp32TurnMinimumMotorPower` e
+`kEsp32TurnMaximumMotorPower`. Cada mensagem `MOTOR` leva os quatro valores para
+a ESP32; depois de alterá-los, basta fazer novo deploy da Raspberry.
 
 | Raspberry Pi | ESP32 | Função |
 | --- | --- | --- |

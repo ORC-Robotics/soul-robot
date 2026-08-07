@@ -130,7 +130,11 @@ bool Esp32Bridge::sendMotorCommand(double left, double right, bool emergencyStop
 
     std::ostringstream command;
     command << std::fixed << std::setprecision(3)
-            << "MOTOR," << safeLeft << "," << safeRight << "," << (emergencyStop ? 1 : 0) << "\n";
+            << "MOTOR," << safeLeft << "," << safeRight << "," << (emergencyStop ? 1 : 0)
+            << "," << config::kEsp32StraightMinimumMotorPower
+            << "," << config::kEsp32StraightMaximumMotorPower
+            << "," << config::kEsp32TurnMinimumMotorPower
+            << "," << config::kEsp32TurnMaximumMotorPower << "\n";
 
     return writeLine(command.str());
 }
@@ -461,6 +465,14 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
         {
             next.tractionRecoveryActive = std::stoi(values[27]) != 0;
             next.tractionRecoverySide = std::stoi(values[28]);
+        }
+
+        if (values.size() >= 33)
+        {
+            next.straightMinimumMotorPower = std::stod(values[29]);
+            next.straightMaximumMotorPower = std::stod(values[30]);
+            next.turnMinimumMotorPower = std::stod(values[31]);
+            next.turnMaximumMotorPower = std::stod(values[32]);
         }
 
         std::lock_guard<std::mutex> lock(telemetryMutex_);

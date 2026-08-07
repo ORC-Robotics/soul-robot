@@ -20,7 +20,7 @@ da ESP32, mantenha a Raspberry desligada ou desconectada da UART0.
 ## Comandos recebidos
 
 ```text
-MOTOR,<esquerda>,<direita>,<emergencia>
+MOTOR,<esquerda>,<direita>,<emergencia>,<retaMin>,<retaMax>,<giroMin>,<giroMax>
 STOP
 ESTOP
 CLEAR_ESTOP
@@ -29,9 +29,11 @@ CALIBRATE_SENSORS
 PING
 ```
 
-As potências ficam entre `-1.000` e `1.000`. O firmware bloqueia movimento
-unilateral: se somente um lado for diferente de zero, o comando é convertido
-em giro com os dois lados em sentidos opostos.
+As potências e os limites ficam entre `-1.000` e `1.000`. O perfil padrão usa
+55%–60% em reta e 70%–80% em giro. O firmware bloqueia movimento unilateral: se
+somente um lado for diferente de zero, o comando é convertido em giro com os
+dois lados em sentidos opostos. O formato antigo de `MOTOR` com três campos
+continua aceito e preserva os limites já ativos na ESP32.
 
 Se nenhum comando de motor chegar durante 500 ms, os dois lados são zerados.
 O E-Stop permanece travado até `CLEAR_ESTOP` e tem prioridade sobre qualquer
@@ -84,7 +86,8 @@ distanciaCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 bateriaV,encoderEsquerdo,encoderDireito,startButton,pcaOk,
 potenciaEsquerda,potenciaDireita,taxaEsquerda,taxaDireita,
 rampa,gyroX,gyroY,temperaturaImu,oledOk,nSleepHigh,estop,
-bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,recuperacaoTracao,ladoRecuperacao
+bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,recuperacaoTracao,ladoRecuperacao,
+retaMin,retaMax,giroMin,giroMax
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

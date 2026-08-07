@@ -128,6 +128,10 @@ float currentLeftPower = 0.0f;
 float currentRightPower = 0.0f;
 float requestedLeftPower = 0.0f;
 float requestedRightPower = 0.0f;
+float straightMinimumMotorPower = kDefaultStraightMinimumMotorPower;
+float straightMaximumMotorPower = kDefaultStraightMaximumMotorPower;
+float turnMinimumMotorPower = kDefaultTurnMinimumMotorPower;
+float turnMaximumMotorPower = kDefaultTurnMaximumMotorPower;
 float gyroYBias = 0.0f;
 float gyroZBias = 0.0f;
 float filteredGyroZ = 0.0f;
@@ -245,7 +249,7 @@ void writeMotorPwm(uint8_t pin, uint8_t channel, uint16_t duty)
 #endif
 }
 
-float safeMotorPower(float command)
+float safeMotorCommand(float command)
 {
   if (!isfinite(command))
   {
@@ -259,11 +263,32 @@ float safeMotorPower(float command)
     return 0.0f;
   }
 
-  // Elimina a faixa morta física observada nos motores. O comando preserva
-  // toda a resolução do slider, mas a saída útil passa a variar de 70% a 100%.
-  const float usefulPower = kMinimumMovingMotorPower +
-                            magnitude * (kMaximumMotorPower - kMinimumMovingMotorPower);
+  return command;
+}
+
+float mapMotorPower(float command, float minimumPower, float maximumPower)
+{
+  if (command == 0.0f)
+  {
+    return 0.0f;
+  }
+
+  // Distribui a resolução lógica do comando dentro do perfil físico escolhido.
+  // Reta e giro usam faixas diferentes porque o atrito nas curvas é maior.
+  const float magnitude = fabs(command);
+  const float usefulPower = minimumPower + magnitude * (maximumPower - minimumPower);
   return command > 0.0f ? usefulPower : -usefulPower;
+}
+
+bool validMotorProfile(float straightMinimum, float straightMaximum,
+                       float turnMinimum, float turnMaximum)
+{
+  return isfinite(straightMinimum) && isfinite(straightMaximum) &&
+         isfinite(turnMinimum) && isfinite(turnMaximum) &&
+         straightMinimum >= 0.0f && straightMinimum <= straightMaximum &&
+         straightMaximum <= kMaximumMotorPower &&
+         turnMinimum >= 0.0f && turnMinimum <= turnMaximum &&
+         turnMaximum <= kMaximumMotorPower;
 }
 
 void zeroMotorPwmOutputs()
@@ -454,27 +479,27 @@ void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
 
   keepMotorDriverEnabled();
 
-  float safeLeftPower = safeMotorPower(leftPower);
-  float safeRightPower = safeMotorPower(rightPower);
+  float safeLeftCommand = safeMotorCommand(leftPower);
+  float safeRightCommand = safeMotorCommand(rightPower);
 
   // A elétrica agrupa dois motores em cada lado do robô. Nunca permite que
   // apenas um lado se mova, pois as rodas de borracha travariam e fariam o robô
   // vibrar. Um comando unilateral é convertido em giro com os lados opostos.
-  const bool leftSideStopped = safeLeftPower == 0.0f;
-  const bool rightSideStopped = safeRightPower == 0.0f;
+  const bool leftSideStopped = safeLeftCommand == 0.0f;
+  const bool rightSideStopped = safeRightCommand == 0.0f;
   if (leftSideStopped != rightSideStopped)
   {
     if (leftSideStopped)
     {
-      safeLeftPower = -safeRightPower;
+      safeLeftCommand = -safeRightCommand;
     }
     else
     {
-      safeRightPower = -safeLeftPower;
+      safeRightCommand = -safeLeftCommand;
     }
   }
 
-  if (safeLeftPower == 0.0f && safeRightPower == 0.0f)
+  if (safeLeftCommand == 0.0f && safeRightCommand == 0.0f)
   {
     stopMotorOutputs();
     resetTractionMonitor();
@@ -482,6 +507,15 @@ void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
     lastMotorCommandMs = millis();
     return;
   }
+
+  const bool turningInPlace = motorDirection(safeLeftCommand) !=
+                              motorDirection(safeRightCommand);
+  const float minimumPower = turningInPlace ? turnMinimumMotorPower
+                                            : straightMinimumMotorPower;
+  const float maximumPower = turningInPlace ? turnMaximumMotorPower
+                                            : straightMaximumMotorPower;
+  const float safeLeftPower = mapMotorPower(safeLeftCommand, minimumPower, maximumPower);
+  const float safeRightPower = mapMotorPower(safeRightCommand, minimumPower, maximumPower);
 
   const bool wasStopped = requestedLeftPower == 0.0f && requestedRightPower == 0.0f;
   const bool directionChanged = !wasStopped &&
@@ -1252,6 +1286,10 @@ String telemetryJson()
   addJsonFloat(json, "ultrasonicDistanceCm", sensors.ultrasonicDistanceCm);
   addJsonFloat(json, "leftMotorPower", currentLeftPower);
   addJsonFloat(json, "rightMotorPower", currentRightPower);
+  addJsonFloat(json, "straightMinimumMotorPower", straightMinimumMotorPower);
+  addJsonFloat(json, "straightMaximumMotorPower", straightMaximumMotorPower);
+  addJsonFloat(json, "turnMinimumMotorPower", turnMinimumMotorPower);
+  addJsonFloat(json, "turnMaximumMotorPower", turnMaximumMotorPower);
   addJsonFloat(json, "leftEncoderRate", sensors.leftEncoderRate);
   addJsonFloat(json, "rightEncoderRate", sensors.rightEncoderRate);
   addJsonFloat(json, "accelX", sensors.accelX);
@@ -1410,9 +1448,24 @@ void handleUartCommand(const char* line)
 
   float leftPower = 0.0f;
   float rightPower = 0.0f;
+  float straightMinimum = 0.0f;
+  float straightMaximum = 0.0f;
+  float turnMinimum = 0.0f;
+  float turnMaximum = 0.0f;
   int emergencyFlag = 0;
-  if (sscanf(line, "MOTOR,%f,%f,%d", &leftPower, &rightPower, &emergencyFlag) == 3)
+  const int parsedFields = sscanf(line, "MOTOR,%f,%f,%d,%f,%f,%f,%f",
+                                  &leftPower, &rightPower, &emergencyFlag,
+                                  &straightMinimum, &straightMaximum,
+                                  &turnMinimum, &turnMaximum);
+  if (parsedFields == 3 || parsedFields == 7)
   {
+    if (emergencyFlag != 0)
+    {
+      emergencyStopActive = true;
+      dashboardArmed = false;
+      stopMotorOutputs();
+      return;
+    }
     if (!isfinite(leftPower) || !isfinite(rightPower) ||
         leftPower < -1.0f || leftPower > 1.0f ||
         rightPower < -1.0f || rightPower > 1.0f)
@@ -1421,12 +1474,19 @@ void handleUartCommand(const char* line)
       sendUartError("invalid_motor_power");
       return;
     }
-    if (emergencyFlag != 0)
+    if (parsedFields == 7)
     {
-      emergencyStopActive = true;
-      dashboardArmed = false;
-      stopMotorOutputs();
-      return;
+      if (!validMotorProfile(straightMinimum, straightMaximum,
+                             turnMinimum, turnMaximum))
+      {
+        stopMotorOutputs();
+        sendUartError("invalid_motor_profile");
+        return;
+      }
+      straightMinimumMotorPower = straightMinimum;
+      straightMaximumMotorPower = straightMaximum;
+      turnMinimumMotorPower = turnMinimum;
+      turnMaximumMotorPower = turnMaximum;
     }
     applyMotorCommand(leftPower, rightPower, ControlSource::Raspberry);
     return;
@@ -1536,7 +1596,15 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(tractionRecoveryActive ? 1 : 0);
   Serial.print(',');
-  Serial.println(static_cast<uint8_t>(tractionRecoverySide));
+  Serial.print(static_cast<uint8_t>(tractionRecoverySide));
+  Serial.print(',');
+  Serial.print(straightMinimumMotorPower, 3);
+  Serial.print(',');
+  Serial.print(straightMaximumMotorPower, 3);
+  Serial.print(',');
+  Serial.print(turnMinimumMotorPower, 3);
+  Serial.print(',');
+  Serial.println(turnMaximumMotorPower, 3);
 }
 
 void enforceMotorTimeout()

@@ -422,6 +422,10 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"rightEncoderRate\":" << esp32.rightEncoderRate
          << ",\"esp32AppliedLeftPower\":" << esp32.appliedLeftPower
          << ",\"esp32AppliedRightPower\":" << esp32.appliedRightPower
+         << ",\"straightMinimumMotorPower\":" << esp32.straightMinimumMotorPower
+         << ",\"straightMaximumMotorPower\":" << esp32.straightMaximumMotorPower
+         << ",\"turnMinimumMotorPower\":" << esp32.turnMinimumMotorPower
+         << ",\"turnMaximumMotorPower\":" << esp32.turnMaximumMotorPower
          << ",\"startButtonPressed\":" << (esp32.startButtonPressed ? "true" : "false")
          << ",\"pca9685Ok\":" << (esp32.pca9685Ok ? "true" : "false")
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
@@ -736,6 +740,8 @@ std::string DashboardServer::dashboardHtml()
         <div class="telemetry-list">
           <div class="telemetry-row"><span>Solicitado pela Raspberry</span><strong><span id="requestedLeft">0.00</span> / <span id="requestedRight">0.00</span></strong></div>
           <div class="telemetry-row"><span>DRV8833 nSLEEP · GPIO26</span><strong id="sleepState">--</strong></div>
+          <div class="telemetry-row"><span>Perfil de reta</span><strong id="straightMotorProfile">--</strong></div>
+          <div class="telemetry-row"><span>Perfil de giro</span><strong id="turnMotorProfile">--</strong></div>
           <div class="telemetry-row"><span>E-Stop local da ESP32</span><strong id="esp32Estop">--</strong></div>
         </div>
       </article>
@@ -925,6 +931,8 @@ std::string DashboardServer::dashboardHtml()
       element("requestedRight").textContent = formatNumber(data.right, 2);
       element("appliedLeft").textContent = fresh ? formatNumber(data.esp32AppliedLeftPower, 2) : "--";
       element("appliedRight").textContent = fresh ? formatNumber(data.esp32AppliedRightPower, 2) : "--";
+      element("straightMotorProfile").textContent = fresh ? `${formatNumber(Number(data.straightMinimumMotorPower) * 100, 0)}–${formatNumber(Number(data.straightMaximumMotorPower) * 100, 0)}%` : "--";
+      element("turnMotorProfile").textContent = fresh ? `${formatNumber(Number(data.turnMinimumMotorPower) * 100, 0)}–${formatNumber(Number(data.turnMaximumMotorPower) * 100, 0)}%` : "--";
       element("leftMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedLeftPower)) * 100)}%` : "0%";
       element("rightMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedRightPower)) * 100)}%` : "0%";
       if (fresh) {

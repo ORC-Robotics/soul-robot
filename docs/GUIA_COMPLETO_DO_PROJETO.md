@@ -335,14 +335,18 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Duty máximo: 1023.
 - Saída máxima: 100%.
 - Comandos abaixo de 0,5% são tratados como zero.
-- Qualquer comando útil é remapeado linearmente para 70%–100%.
+- Reta: comandos úteis são remapeados linearmente para 55%–60%.
+- Giro com os lados opostos: saída contínua entre 70% e 80%.
+- Partidas e recuperações: pulso sincronizado de 100% por 180 ms.
 - Nos testes pelo slider da Raspberry, os traseiros iniciaram em `0.05` e os
   dianteiros somente em `0.15`. Com o remapeamento anterior, isso correspondia a
-  aproximadamente 62% e 66% de PWM físico. O mínimo de 70% adiciona margem para
-  iniciar os quatro motores juntos.
+  aproximadamente 62% e 66% de PWM físico. O pulso inicial atual fornece a
+  margem de partida, enquanto a reta pode continuar em potência menor.
 
 Esse remapeamento significa que `0.10` não equivale a 10% de PWM físico. Ele vira
-aproximadamente 73%. A interface mostra o valor aplicado pela ESP32.
+55,5% em reta e 71% em giro. A interface mostra o valor aplicado pela ESP32.
+Os quatro limites ficam em `include/obr/config.h` e são enviados pela Raspberry
+em cada mensagem `MOTOR`, permitindo ajustá-los com deploy sem regravar a ESP32.
 
 ### Regra contra movimento unilateral
 
@@ -515,7 +519,7 @@ O botão está entre GPIO27 e GND com pull-up interno.
 ### Comandos enviados à ESP32
 
 ```text
-MOTOR,<left>,<right>,<emergency>
+MOTOR,<left>,<right>,<emergency>,<straightMin>,<straightMax>,<turnMin>,<turnMax>
 STOP
 ESTOP
 CLEAR_ESTOP
@@ -524,8 +528,10 @@ CALIBRATE_SENSORS
 PING
 ```
 
-`MOTOR` aceita potências finitas entre -1,000 e 1,000. Valores inválidos param
-os motores e geram erro.
+`MOTOR` aceita potências finitas entre -1,000 e 1,000. Os quatro limites também
+devem permanecer ordenados e dentro de `[0, 1]`. Valores inválidos param os
+motores e geram erro. O formato antigo com somente três campos continua aceito
+e usa os padrões armazenados na ESP32.
 
 ### Eventos e respostas da ESP32
 
@@ -551,7 +557,8 @@ batteryV,leftEncoder,rightEncoder,startButton,pcaOk,
 appliedLeft,appliedRight,leftRate,rightRate,
 ramp,gyroX,gyroY,imuTemperature,oledOk,nSleepHigh,estop,
 batteryAdcMillivolts,uptimeMs,calibrationActive,
-tractionRecovery,tractionRecoverySide
+tractionRecovery,tractionRecoverySide,
+straightMinimum,straightMaximum,turnMinimum,turnMaximum
 ```
 
 Valores de `tractionRecoverySide`:

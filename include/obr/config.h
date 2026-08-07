@@ -43,9 +43,9 @@ constexpr int kMainLoopPeriodMs = 20;
 // Se a câmera travar ou parar de atualizar o JSON, o robô deve parar.
 constexpr int kCameraStatusTimeoutMs = 400;
 
-// Potência base usada para seguir linha no modo autônomo.
-// Comece com valor baixo nos testes para reduzir o risco de colisão.
-constexpr double kLineFollowerBasePower = 0.3;
+// Potência lógica base usada para seguir linha no modo autônomo. Com o perfil
+// de reta abaixo, 0,10 corresponde a aproximadamente 55,5% de PWM físico.
+constexpr double kLineFollowerBasePower = 0.10;
 
 // Ganho proporcional aplicado ao erro horizontal da linha, em pixels.
 // Valores altos fazem o robô virar mais forte, mas podem causar oscilação.
@@ -116,6 +116,23 @@ constexpr double kMaxMotorOutput = 1.0;
 // Zona morta do motor.
 // Comandos com módulo menor que este valor são tratados como parada.
 constexpr double kMotorDeadband = 0.005;
+
+// Perfis físicos enviados em cada comando para a ESP32. Alterar estes valores
+// exige somente novo deploy da Raspberry, sem regravar o firmware da ESP32.
+// A reta preserva resolução entre 55% e 60%; giros variam entre 70% e 80%.
+constexpr double kEsp32StraightMinimumMotorPower = 0.55;
+constexpr double kEsp32StraightMaximumMotorPower = 0.60;
+constexpr double kEsp32TurnMinimumMotorPower = 0.70;
+constexpr double kEsp32TurnMaximumMotorPower = 0.80;
+
+static_assert(kEsp32StraightMinimumMotorPower >= 0.0 &&
+                  kEsp32StraightMinimumMotorPower <= kEsp32StraightMaximumMotorPower &&
+                  kEsp32StraightMaximumMotorPower <= 1.0,
+              "Invalid straight motor profile");
+static_assert(kEsp32TurnMinimumMotorPower >= 0.0 &&
+                  kEsp32TurnMinimumMotorPower <= kEsp32TurnMaximumMotorPower &&
+                  kEsp32TurnMaximumMotorPower <= 1.0,
+              "Invalid turn motor profile");
 
 // Dispositivo UART usado pela Raspberry Pi para falar com a ESP32.
 // Em uma Raspberry Pi comum, /dev/serial0 usa GPIO14 como TXD e GPIO15 como RXD.
