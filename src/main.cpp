@@ -49,19 +49,9 @@ int main()
     std::cout << "Open http://raspberrypi.local:" << config::kDashboardPort << " in a browser\n";
 
     unsigned long long handledStartButtonPressSequence = 0;
-    bool tractionFaultWasActive = false;
-
     while (running)
     {
         const Esp32TelemetrySnapshot esp32Telemetry = esp32.telemetrySnapshot();
-        if (esp32Telemetry.tractionFaultActive && !tractionFaultWasActive)
-        {
-            // A ESP32 já zerou os quatro PWMs. A Raspberry também abandona o
-            // modo atual para impedir que comandos antigos tentem religá-los.
-            robotState.stop();
-            std::cerr << "Traction fault stopped the robot; explicit rearm required\n";
-        }
-        tractionFaultWasActive = esp32Telemetry.tractionFaultActive;
         if (esp32Telemetry.calibrationActive)
         {
             // A calibração física também força a Raspberry para o modo parado.

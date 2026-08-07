@@ -427,8 +427,8 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
          << ",\"motorSleepPinHigh\":" << (esp32.motorSleepPinHigh ? "true" : "false")
          << ",\"esp32EmergencyStop\":" << (esp32.emergencyStopActive ? "true" : "false")
-         << ",\"tractionFaultActive\":" << (esp32.tractionFaultActive ? "true" : "false")
-         << ",\"tractionFaultSide\":" << esp32.tractionFaultSide
+         << ",\"tractionRecoveryActive\":" << (esp32.tractionRecoveryActive ? "true" : "false")
+         << ",\"tractionRecoverySide\":" << esp32.tractionRecoverySide
          << ",\"esp32CalibrationActive\":" << (esp32.calibrationActive ? "true" : "false")
          << ",\"esp32CalibrationStatusKnown\":" << (esp32.calibrationStatusKnown ? "true" : "false")
          << ",\"esp32LastCalibrationSucceeded\":" << (esp32.lastCalibrationSucceeded ? "true" : "false")
@@ -717,7 +717,7 @@ std::string DashboardServer::dashboardHtml()
           <div class="request-value"><span>Lado esquerdo</span><strong id="leftValue">0.00</strong></div>
           <div class="request-value"><span>Lado direito</span><strong id="rightValue">0.00</strong></div>
         </div>
-        <div class="safety-note">Os dois lados sempre recebem comando juntos. Se um encoder não responder, a ESP32 zera os quatro motores e exige um novo rearme.</div>
+        <div class="safety-note">Os dois lados sempre recebem comando juntos. Se um encoder atrasar, a ESP32 aplica uma recuperação sincronizada sem desarmar o robô.</div>
       </aside>
     </section>
 
@@ -888,15 +888,15 @@ std::string DashboardServer::dashboardHtml()
       const calibrating = data.esp32CalibrationActive === true;
       const mpuOk = fresh && !calibrating && data.mpuOk === true;
       const localEmergency = data.esp32EmergencyStop === true;
-      const tractionFault = data.tractionFaultActive === true;
+      const tractionRecovery = data.tractionRecoveryActive === true;
       const systemEmergency = data.emergency === true || localEmergency;
       const battery = Number(data.batteryVoltage);
       const distance = Number(data.ultrasonicDistanceCm);
       const age = Number(data.esp32LastSensorAgeMs);
 
       setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE"), calibrating ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
-      const tractionSide = Number(data.tractionFaultSide) === 1 ? "ESQUERDA" : "DIREITA";
-      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (tractionFault ? `FALHA DE TRAÇÃO · ${tractionSide}` : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO"))), (systemEmergency || tractionFault) ? "danger" : ((calibrating || data.mode === "stopped") ? "warn" : "ok"));
+      const tractionSide = Number(data.tractionRecoverySide) === 1 ? "ESQUERDA" : "DIREITA";
+      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (tractionRecovery ? `RECUPERANDO TRAÇÃO · ${tractionSide}` : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO"))), systemEmergency ? "danger" : ((tractionRecovery || calibrating || data.mode === "stopped") ? "warn" : "ok"));
       const esp32Status = element("esp32Status");
       esp32Status.textContent = calibrating ? "CALIBRANDO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE"));
       esp32Status.className = `hero-value ${calibrating ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"))}`;
@@ -911,8 +911,8 @@ std::string DashboardServer::dashboardHtml()
       element("raspberryCommandTimeout").textContent = `${formatNumber(data.raspberryCommandTimeoutMs, 0)} ms`;
       element("esp32MotorTimeout").textContent = `${formatNumber(data.esp32MotorCommandTimeoutMs, 0)} ms`;
       const tractionState = element("tractionProtectionState");
-      tractionState.textContent = tractionFault ? `TRAVADA · ${tractionSide} NÃO RESPONDEU` : (fresh ? "monitorando" : "sem dados");
-      tractionState.className = tractionFault ? "state-bad" : (fresh ? "state-good" : "state-warn");
+      tractionState.textContent = tractionRecovery ? `pulso sincronizado · ${tractionSide}` : (fresh ? "monitorando" : "sem dados");
+      tractionState.className = tractionRecovery ? "state-warn" : (fresh ? "state-good" : "state-warn");
 
       element("batteryVoltage").textContent = fresh ? `${formatNumber(battery, 2)} V` : "--.-- V";
       element("batteryAdc").textContent = fresh ? `${formatNumber(data.batteryAdcMillivolts, 0)} mV` : "-- mV";

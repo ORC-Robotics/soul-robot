@@ -33,11 +33,18 @@ enum class ControlSource
   Raspberry
 };
 
-enum class TractionFaultSide : uint8_t
+enum class TractionRecoverySide : uint8_t
 {
   None = 0,
   Left = 1,
   Right = 2
+};
+
+enum class MotorTransitionPhase : uint8_t
+{
+  Idle,
+  DirectionDeadTime,
+  SynchronizedBoost
 };
 
 void forceMotorPinsLowImmediately()
@@ -114,10 +121,13 @@ bool calibrationActive = false;
 bool calibrationStopLatched = false;
 bool dashboardArmed = false;
 bool emergencyStopActive = false;
-bool tractionFaultActive = false;
-TractionFaultSide tractionFaultSide = TractionFaultSide::None;
+bool tractionRecoveryActive = false;
+TractionRecoverySide tractionRecoverySide = TractionRecoverySide::None;
+MotorTransitionPhase motorTransitionPhase = MotorTransitionPhase::Idle;
 float currentLeftPower = 0.0f;
 float currentRightPower = 0.0f;
+float requestedLeftPower = 0.0f;
+float requestedRightPower = 0.0f;
 float gyroYBias = 0.0f;
 float gyroZBias = 0.0f;
 float filteredGyroZ = 0.0f;
@@ -150,6 +160,9 @@ int32_t tractionMonitorLeftStartCount = 0;
 int32_t tractionMonitorRightStartCount = 0;
 int8_t tractionMonitorLeftDirection = 0;
 int8_t tractionMonitorRightDirection = 0;
+uint8_t tractionImbalanceCount = 0;
+uint32_t motorTransitionStartedMs = 0;
+uint32_t tractionMonitorResumeMs = 0;
 
 portMUX_TYPE ultrasonicMux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool ultrasonicWaitingForEcho = false;
@@ -263,10 +276,19 @@ void zeroMotorPwmOutputs()
   currentRightPower = 0.0f;
 }
 
+void keepMotorDriverEnabled();
+
 void stopMotorOutputs()
 {
   // A parada mantém o DRV8833 habilitado e zera somente IN1/IN2. Isso evita
   // repetir o tempo de inicialização do driver a cada novo movimento.
+  keepMotorDriverEnabled();
+  requestedLeftPower = 0.0f;
+  requestedRightPower = 0.0f;
+  motorTransitionPhase = MotorTransitionPhase::Idle;
+  tractionRecoveryActive = false;
+  tractionRecoverySide = TractionRecoverySide::None;
+  tractionImbalanceCount = 0;
   zeroMotorPwmOutputs();
 }
 
@@ -280,28 +302,6 @@ void resetTractionMonitor()
   tractionMonitorActive = false;
   tractionMonitorLeftDirection = 0;
   tractionMonitorRightDirection = 0;
-}
-
-void clearTractionFault()
-{
-  // O rearme exige um comando humano explícito. Apenas parar os motores não
-  // apaga a falha, pois comandos antigos poderiam voltar a arrastar um lado.
-  tractionFaultActive = false;
-  tractionFaultSide = TractionFaultSide::None;
-  resetTractionMonitor();
-}
-
-void latchTractionFault(TractionFaultSide side)
-{
-  tractionFaultActive = true;
-  tractionFaultSide = side;
-  dashboardArmed = false;
-  controlSource = ControlSource::None;
-  stopMotorOutputs();
-  resetTractionMonitor();
-
-  Serial.print("TRACTION_FAULT,");
-  Serial.println(side == TractionFaultSide::Left ? "LEFT" : "RIGHT");
 }
 
 void keepMotorDriverEnabled()
@@ -347,9 +347,105 @@ void setMotorSide(uint8_t in1Pin, uint8_t in1Channel, uint8_t in2Pin,
   }
 }
 
+int8_t motorDirection(float power)
+{
+  if (power > 0.0f)
+  {
+    return 1;
+  }
+  if (power < 0.0f)
+  {
+    return -1;
+  }
+  return 0;
+}
+
+void applyMotorPowers(float leftPower, float rightPower)
+{
+  // Os dois lados são atualizados na mesma passagem do loop. A diferença entre
+  // as escritas LEDC é de apenas microssegundos e não envolve o nSLEEP.
+  setMotorSide(kLeftMotorIn1Pin, kLeftMotorIn1Channel, kLeftMotorIn2Pin,
+               kLeftMotorIn2Channel, leftPower, kLeftMotorInverted);
+  setMotorSide(kRightMotorIn1Pin, kRightMotorIn1Channel, kRightMotorIn2Pin,
+               kRightMotorIn2Channel, rightPower, kRightMotorInverted);
+  currentLeftPower = leftPower;
+  currentRightPower = rightPower;
+}
+
+void beginSynchronizedMotorStart(bool directionChange,
+                                 bool recovery,
+                                 TractionRecoverySide recoverySide)
+{
+  // O driver continua acordado durante toda a transição. Somente IN1/IN2 são
+  // zerados quando uma direção precisa ser invertida.
+  keepMotorDriverEnabled();
+  resetTractionMonitor();
+  tractionImbalanceCount = 0;
+  tractionRecoveryActive = recovery;
+  tractionRecoverySide = recovery ? recoverySide : TractionRecoverySide::None;
+  motorTransitionStartedMs = millis();
+
+  if (directionChange)
+  {
+    zeroMotorPwmOutputs();
+    motorTransitionPhase = MotorTransitionPhase::DirectionDeadTime;
+    return;
+  }
+
+  const float boostLeft = motorDirection(requestedLeftPower) * kMaximumMotorPower;
+  const float boostRight = motorDirection(requestedRightPower) * kMaximumMotorPower;
+  applyMotorPowers(boostLeft, boostRight);
+  motorTransitionPhase = MotorTransitionPhase::SynchronizedBoost;
+}
+
+void updateSynchronizedMotorStart()
+{
+  if (motorTransitionPhase == MotorTransitionPhase::Idle)
+  {
+    return;
+  }
+
+  if (emergencyStopActive || calibrationActive || calibrationStopLatched ||
+      (controlSource == ControlSource::Dashboard && !dashboardArmed) ||
+      requestedLeftPower == 0.0f || requestedRightPower == 0.0f)
+  {
+    stopMotorOutputs();
+    return;
+  }
+
+  keepMotorDriverEnabled();
+  const uint32_t nowMs = millis();
+  if (motorTransitionPhase == MotorTransitionPhase::DirectionDeadTime)
+  {
+    if (nowMs - motorTransitionStartedMs < kMotorDirectionDeadTimeMs)
+    {
+      return;
+    }
+
+    const float boostLeft = motorDirection(requestedLeftPower) * kMaximumMotorPower;
+    const float boostRight = motorDirection(requestedRightPower) * kMaximumMotorPower;
+    applyMotorPowers(boostLeft, boostRight);
+    motorTransitionPhase = MotorTransitionPhase::SynchronizedBoost;
+    motorTransitionStartedMs = nowMs;
+    return;
+  }
+
+  if (nowMs - motorTransitionStartedMs < kMotorSynchronizedBoostMs)
+  {
+    return;
+  }
+
+  applyMotorPowers(requestedLeftPower, requestedRightPower);
+  motorTransitionPhase = MotorTransitionPhase::Idle;
+  tractionRecoveryActive = false;
+  tractionRecoverySide = TractionRecoverySide::None;
+  tractionMonitorResumeMs = nowMs + kTractionStartupGraceMs;
+  resetTractionMonitor();
+}
+
 void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
 {
-  if (emergencyStopActive || tractionFaultActive || calibrationActive || calibrationStopLatched ||
+  if (emergencyStopActive || calibrationActive || calibrationStopLatched ||
       (source == ControlSource::Dashboard && !dashboardArmed))
   {
     stopMotorOutputs();
@@ -387,14 +483,25 @@ void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
     return;
   }
 
-  setMotorSide(kLeftMotorIn1Pin, kLeftMotorIn1Channel, kLeftMotorIn2Pin,
-               kLeftMotorIn2Channel, safeLeftPower, kLeftMotorInverted);
-  setMotorSide(kRightMotorIn1Pin, kRightMotorIn1Channel, kRightMotorIn2Pin,
-               kRightMotorIn2Channel, safeRightPower, kRightMotorInverted);
-  currentLeftPower = safeLeftPower;
-  currentRightPower = safeRightPower;
+  const bool wasStopped = requestedLeftPower == 0.0f && requestedRightPower == 0.0f;
+  const bool directionChanged = !wasStopped &&
+                                (motorDirection(safeLeftPower) != motorDirection(requestedLeftPower) ||
+                                 motorDirection(safeRightPower) != motorDirection(requestedRightPower));
+  requestedLeftPower = safeLeftPower;
+  requestedRightPower = safeRightPower;
   controlSource = source;
   lastMotorCommandMs = millis();
+
+  if (wasStopped || directionChanged)
+  {
+    beginSynchronizedMotorStart(directionChanged, false, TractionRecoverySide::None);
+    return;
+  }
+
+  if (motorTransitionPhase == MotorTransitionPhase::Idle)
+  {
+    applyMotorPowers(requestedLeftPower, requestedRightPower);
+  }
 }
 
 void setupMotors()
@@ -958,7 +1065,10 @@ void updateEncoderRatesIfDue()
 void enforceTractionSafety()
 {
   const bool bothSidesCommanded = currentLeftPower != 0.0f && currentRightPower != 0.0f;
-  if (tractionFaultActive || !bothSidesCommanded)
+  const uint32_t nowMs = millis();
+  const bool startupGraceActive = static_cast<int32_t>(nowMs - tractionMonitorResumeMs) < 0;
+  if (!bothSidesCommanded || motorTransitionPhase != MotorTransitionPhase::Idle ||
+      startupGraceActive)
   {
     resetTractionMonitor();
     return;
@@ -974,14 +1084,14 @@ void enforceTractionSafety()
     tractionMonitorLeftStartCount = leftEncoderCount;
     tractionMonitorRightStartCount = rightEncoderCount;
     portEXIT_CRITICAL(&encoderMux);
-    tractionMonitorStartMs = millis();
+    tractionMonitorStartMs = nowMs;
     tractionMonitorActive = true;
     tractionMonitorLeftDirection = leftDirection;
     tractionMonitorRightDirection = rightDirection;
     return;
   }
 
-  const uint32_t elapsedMs = millis() - tractionMonitorStartMs;
+  const uint32_t elapsedMs = nowMs - tractionMonitorStartMs;
   if (elapsedMs < kTractionMonitorWindowMs)
   {
     return;
@@ -1010,20 +1120,39 @@ void enforceTractionSafety()
   const float rightProgress = rightDelta / fabs(currentRightPower);
   const float leadingProgress = max(leftProgress, rightProgress);
 
+  TractionRecoverySide slowSide = TractionRecoverySide::None;
   if (leftProgress < leadingProgress * kTractionMinimumProgressRatio)
   {
-    latchTractionFault(TractionFaultSide::Left);
-    return;
+    slowSide = TractionRecoverySide::Left;
   }
-  if (rightProgress < leadingProgress * kTractionMinimumProgressRatio)
+  else if (rightProgress < leadingProgress * kTractionMinimumProgressRatio)
   {
-    latchTractionFault(TractionFaultSide::Right);
+    slowSide = TractionRecoverySide::Right;
+  }
+
+  if (slowSide != TractionRecoverySide::None)
+  {
+    ++tractionImbalanceCount;
+    tractionMonitorLeftStartCount = currentLeftCount;
+    tractionMonitorRightStartCount = currentRightCount;
+    tractionMonitorStartMs = nowMs;
+    if (tractionImbalanceCount < kTractionImbalanceConfirmations)
+    {
+      return;
+    }
+
+    // Em vez de travar o robô, interrompe os dois lados pelo mesmo intervalo e
+    // reaplica um pulso de 100%. O comando original volta automaticamente.
+    beginSynchronizedMotorStart(true, true, slowSide);
+    Serial.print("TRACTION_RECOVERY,");
+    Serial.println(slowSide == TractionRecoverySide::Left ? "LEFT" : "RIGHT");
     return;
   }
 
+  tractionImbalanceCount = 0;
   tractionMonitorLeftStartCount = currentLeftCount;
   tractionMonitorRightStartCount = currentRightCount;
-  tractionMonitorStartMs = millis();
+  tractionMonitorStartMs = nowMs;
 }
 
 void updateStartButton()
@@ -1100,8 +1229,8 @@ String telemetryJson()
   json += "\"uptimeMs\":" + String(millis());
   json += ",\"wifiClients\":" + String(WiFi.softAPgetStationNum());
   json += ",\"emergencyStop\":" + String(emergencyStopActive ? "true" : "false");
-  json += ",\"tractionFaultActive\":" + String(tractionFaultActive ? "true" : "false");
-  json += ",\"tractionFaultSide\":" + String(static_cast<uint8_t>(tractionFaultSide));
+  json += ",\"tractionRecoveryActive\":" + String(tractionRecoveryActive ? "true" : "false");
+  json += ",\"tractionRecoverySide\":" + String(static_cast<uint8_t>(tractionRecoverySide));
   json += ",\"dashboardArmed\":" + String(dashboardArmed ? "true" : "false");
   json += ",\"startButtonPressed\":" + String(startButtonPressed ? "true" : "false");
   json += ",\"calibrationActive\":" + String(calibrationActive ? "true" : "false");
@@ -1176,7 +1305,7 @@ void setupDashboardRoutes()
                 sendJsonResponse(409, "{\"error\":\"Libere o E-Stop antes de habilitar\"}");
                 return;
               }
-              clearTractionFault();
+              resetTractionMonitor();
               calibrationStopLatched = false;
               dashboardArmed = true;
               controlSource = ControlSource::Dashboard;
@@ -1265,7 +1394,7 @@ void handleUartCommand(const char* line)
     stopMotorOutputs();
     emergencyStopActive = false;
     calibrationStopLatched = false;
-    clearTractionFault();
+    resetTractionMonitor();
     return;
   }
   if (strcmp(line, "RESET_ENCODERS") == 0)
@@ -1405,9 +1534,9 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(calibrationActive ? 1 : 0);
   Serial.print(',');
-  Serial.print(tractionFaultActive ? 1 : 0);
+  Serial.print(tractionRecoveryActive ? 1 : 0);
   Serial.print(',');
-  Serial.println(static_cast<uint8_t>(tractionFaultSide));
+  Serial.println(static_cast<uint8_t>(tractionRecoverySide));
 }
 
 void enforceMotorTimeout()
@@ -1461,6 +1590,7 @@ void loop()
   server.handleClient();
 #endif
   readUartCommands();
+  updateSynchronizedMotorStart();
   updateStartButton();
   readImuIfDue();
   readBatteryIfDue();

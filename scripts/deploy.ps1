@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.106",
+    [string]$HostName = "192.168.0.110",
     [string]$User = "obr",
     [string]$RemoteDir = "/home/obr/OBR2026K",
     [string]$Target = "robot_test",

@@ -94,11 +94,12 @@ ou a futura Raspberry enviar um lado diferente de zero e o outro em zero, o
 comando unilateral será convertido em giro com os dois lados em sentidos opostos.
 Os sliders aplicam a mesma regra e mostram imediatamente o comando convertido.
 
-Além de validar o comando, a ESP32 confirma a resposta física pelos encoders. Se
-um lado avançar e o outro praticamente não responder durante 250 ms, ela zera os
-quatro PWMs e trava a proteção de tração. O dashboard da Raspberry informa qual
-lado falhou. Depois de verificar driver, fiação e mecânica, use `Manual` ou
-`Autônomo` para fazer um rearme explícito; apenas `Parar` não apaga a falha.
+Além de validar o comando, a ESP32 confirma a resposta física pelos encoders.
+Partidas e inversões usam os dois lados de forma sincronizada: o nSLEEP permanece
+HIGH, uma inversão zera os PWMs por 15 ms e ambos recebem um pulso de 100% por
+180 ms. Se duas janelas consecutivas confirmarem que um lado atrasou, a ESP32
+repete essa recuperação automaticamente e retoma o comando original sem
+desarmar o modo manual ou autônomo.
 
 > **Atenção:** a medição de uma bateria de 12 V no GPIO36 não significa que
 > essa tensão possa alimentar diretamente o DRV8833. O VM do driver deve ficar
@@ -213,8 +214,9 @@ O comportamento esperado é:
 - se o dashboard de bancada ou a Raspberry parar de enviar comandos, os motores param por timeout;
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
-- se somente um lado responder pelos encoders, a ESP32 zera os quatro PWMs e
-  mantém a falha de tração travada até um rearme explícito;
+- partidas e inversões aplicam um pulso sincronizado nos dois lados;
+- se somente um lado responder pelos encoders em duas janelas consecutivas, a
+  ESP32 repete a recuperação automaticamente sem alternar o nSLEEP;
 - o E-Stop tem prioridade sobre dashboard e UART;
 - ao encerrar o programa, o código envia `STOP` para a ESP32.
 
@@ -264,7 +266,7 @@ instalado e o robô permanece parado. Depois da troca, o deploy reinicia o servi
 Se precisar escolher o host manualmente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.104
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.110
 ```
 
 Para apenas enviar e compilar, sem iniciar o robô:

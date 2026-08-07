@@ -38,8 +38,8 @@ struct Esp32TelemetrySnapshot
     bool oledOk = false;
     bool motorSleepPinHigh = false;
     bool emergencyStopActive = false;
-    bool tractionFaultActive = false;
-    int tractionFaultSide = 0;
+    bool tractionRecoveryActive = false;
+    int tractionRecoverySide = 0;
     bool calibrationActive = false;
     bool calibrationStatusKnown = false;
     bool lastCalibrationSucceeded = false;
@@ -50,7 +50,6 @@ struct Esp32TelemetrySnapshot
     bool readyForOperation() const
     {
         return serialOpen && sensorFresh && motorSleepPinHigh &&
-               !tractionFaultActive &&
                !emergencyStopActive && !calibrationActive;
     }
 };

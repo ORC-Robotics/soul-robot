@@ -370,13 +370,13 @@ void Esp32Bridge::handleLine(const std::string& line)
         return;
     }
 
-    if (startsWith(line, "TRACTION_FAULT,"))
+    if (startsWith(line, "TRACTION_RECOVERY,") || startsWith(line, "TRACTION_FAULT,"))
     {
         std::lock_guard<std::mutex> lock(telemetryMutex_);
-        telemetry_.tractionFaultActive = true;
-        telemetry_.tractionFaultSide = line == "TRACTION_FAULT,LEFT" ? 1 : 2;
-        std::cerr << "ESP32 traction fault: "
-                  << (telemetry_.tractionFaultSide == 1 ? "left side stopped" : "right side stopped")
+        telemetry_.tractionRecoveryActive = true;
+        telemetry_.tractionRecoverySide = line.find("LEFT") != std::string::npos ? 1 : 2;
+        std::cout << "ESP32 traction recovery: "
+                  << (telemetry_.tractionRecoverySide == 1 ? "boosting left side" : "boosting right side")
                   << "\n";
         return;
     }
@@ -459,8 +459,8 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
 
         if (values.size() >= 29)
         {
-            next.tractionFaultActive = std::stoi(values[27]) != 0;
-            next.tractionFaultSide = std::stoi(values[28]);
+            next.tractionRecoveryActive = std::stoi(values[27]) != 0;
+            next.tractionRecoverySide = std::stoi(values[28]);
         }
 
         std::lock_guard<std::mutex> lock(telemetryMutex_);
@@ -469,8 +469,8 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
         next.lastCalibrationSucceeded = telemetry_.lastCalibrationSucceeded;
         if (values.size() < 29)
         {
-            next.tractionFaultActive = telemetry_.tractionFaultActive;
-            next.tractionFaultSide = telemetry_.tractionFaultSide;
+            next.tractionRecoveryActive = telemetry_.tractionRecoveryActive;
+            next.tractionRecoverySide = telemetry_.tractionRecoverySide;
         }
         if (values.size() < 27)
         {

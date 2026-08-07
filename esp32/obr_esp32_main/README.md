@@ -38,10 +38,11 @@ O E-Stop permanece travado até `CLEAR_ESTOP` e tem prioridade sobre qualquer
 comando de movimento.
 
 Enquanto os dois lados recebem potência, a ESP32 também compara o avanço dos
-dois encoders em janelas de 250 ms. Se um lado se mover e o outro registrar menos
-de 20% do avanço normalizado, os quatro PWMs são zerados e a falha de tração fica
-travada. `STOP` não libera essa proteção; depois de corrigir a causa física, é
-necessário um novo `CLEAR_ESTOP` explícito para rearmar o movimento.
+dois encoders em janelas de 250 ms. Duas janelas desequilibradas iniciam uma
+recuperação automática: o nSLEEP continua HIGH, os dois PWMs são sincronizados e
+recebem um pulso de 100% por 180 ms. O comando original volta automaticamente,
+sem travar Manual ou Autônomo. E-Stop, `STOP` e timeout continuam interrompendo
+qualquer recuperação imediatamente.
 
 `CALIBRATE_SENSORS` para os motores, zera encoders, ângulos e filtros de
 navegação e mede novamente os desvios do giroscópio. O mesmo processo começa ao
@@ -60,8 +61,8 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
-TRACTION_FAULT,LEFT
-TRACTION_FAULT,RIGHT
+TRACTION_RECOVERY,LEFT
+TRACTION_RECOVERY,RIGHT
 SENSOR,<campos CSV...>
 ```
 
@@ -73,7 +74,7 @@ uma tentativa de calibrar também coloque o robô em movimento.
 Os primeiros campos de `SENSOR` preservam o protocolo anterior. Os demais
 incluem bateria, encoders, botão, PCA9685, potências aplicadas, velocidades dos
 encoders, rampa, giroscópio, temperatura, OLED, nSLEEP, E-Stop, uptime e a
-proteção de tração.
+recuperação de tração.
 
 Ordem completa dos campos:
 
@@ -83,7 +84,7 @@ distanciaCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 bateriaV,encoderEsquerdo,encoderDireito,startButton,pcaOk,
 potenciaEsquerda,potenciaDireita,taxaEsquerda,taxaDireita,
 rampa,gyroX,gyroY,temperaturaImu,oledOk,nSleepHigh,estop,
-bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,falhaTracao,ladoFalha
+bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,recuperacaoTracao,ladoRecuperacao
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

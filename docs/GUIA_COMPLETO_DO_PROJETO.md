@@ -109,7 +109,8 @@ flowchart LR
 5. A ESP32 valida novamente o comando, aplica a regra dos dois lados, remapeia a
    faixa útil de PWM e escreve nos DRV8833.
 6. Os encoders confirmam se ambos os lados responderam.
-7. Qualquer timeout, E-Stop ou falha de tração zera os quatro PWMs.
+7. Um desequilíbrio confirmado aciona recuperação sincronizada; timeout e
+   E-Stop continuam zerando imediatamente os quatro PWMs.
 
 ### Fluxo autônomo principal
 
@@ -356,15 +357,17 @@ Quando os dois lados recebem potência, a ESP32 compara o avanço normalizado:
 - janela inicial: 250 ms;
 - decisão somente após pelo menos quatro transições no lado que avançou;
 - o lado mais lento deve alcançar ao menos 20% do progresso do outro;
-- abaixo desse limite, os quatro PWMs são zerados;
-- a falha fica travada como `LEFT` ou `RIGHT`;
-- comandos antigos não reativam os motores;
-- é necessário rearme explícito em Manual/Autônomo ou `CLEAR_ESTOP`.
+- são necessárias duas janelas consecutivas para confirmar o desequilíbrio;
+- após partidas e inversões, existe uma tolerância adicional de 450 ms;
+- uma inversão zera ambos os lados por 15 ms sem baixar o nSLEEP;
+- a recuperação aplica 100% nos dois lados por 180 ms;
+- o comando original volta automaticamente, sem desarmar Manual ou Autônomo;
+- recuperações adicionais são tentadas se o desequilíbrio continuar.
 
-Essa proteção reduz o tempo de arraste, mas não consegue detectar uma falha em
-zero milissegundo: alguns pulsos precisam ser observados. Ela também compara os
-lados entre si; se ambos ficarem completamente travados, não há um lado de
-referência e essa condição não é atualmente classificada como falha de tração.
+Essa proteção corrige atrasos transitórios sem transformar uma diferença normal
+de partida em parada permanente. Ela compara os lados entre si; se ambos ficarem
+completamente travados, não há um lado de referência e essa condição não é
+atualmente classificada como desequilíbrio de tração.
 
 ## 11. Camadas de segurança
 
@@ -375,7 +378,7 @@ referência e essa condição não é atualmente classificada como falha de tra�
 | Estado parado | Raspberry envia `STOP`; ESP32 zera os quatro PWMs |
 | Limites | Raspberry e ESP32 limitam comandos a `[-1, 1]` |
 | Regra bilateral | Um comando unilateral vira giro com os dois lados |
-| Feedback de tração | Encoders interrompem movimento unilateral físico |
+| Feedback de tração | Encoders acionam uma recuperação sincronizada sem baixar o nSLEEP |
 | Timeout Raspberry | Após 2000 ms sem comando válido, `RobotState` zera potências |
 | Timeout ESP32 | Após 500 ms sem comando, os PWMs são zerados |
 | E-Stop | Tem prioridade sobre manual, autônomo e dashboard |
@@ -486,7 +489,7 @@ O botão está entre GPIO27 e GND com pull-up interno.
   - não houver E-Stop;
   - ESP32 e telemetria estiverem prontas;
   - nSLEEP estiver HIGH;
-  - não houver falha de tração ou calibração;
+  - não houver calibração;
   - câmera estiver ativa e recente.
 
 ### Pressão por cinco segundos
@@ -534,8 +537,8 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
-TRACTION_FAULT,LEFT
-TRACTION_FAULT,RIGHT
+TRACTION_RECOVERY,LEFT
+TRACTION_RECOVERY,RIGHT
 SENSOR,<campos CSV...>
 ```
 
@@ -548,12 +551,12 @@ batteryV,leftEncoder,rightEncoder,startButton,pcaOk,
 appliedLeft,appliedRight,leftRate,rightRate,
 ramp,gyroX,gyroY,imuTemperature,oledOk,nSleepHigh,estop,
 batteryAdcMillivolts,uptimeMs,calibrationActive,
-tractionFault,tractionFaultSide
+tractionRecovery,tractionRecoverySide
 ```
 
-Valores de `tractionFaultSide`:
+Valores de `tractionRecoverySide`:
 
-- `0`: nenhuma falha;
+- `0`: nenhuma recuperação ativa;
 - `1`: lado esquerdo;
 - `2`: lado direito.
 
@@ -705,7 +708,7 @@ ativos.
 - ultrassônico;
 - MPU6050, yaw, rampa, gyro, aceleração e temperatura;
 - PCA9685 e OLED;
-- nSLEEP, E-Stop, calibração e falha de tração;
+- nSLEEP, E-Stop, calibração e recuperação de tração;
 - LED de pronto, UART e timeouts.
 
 ## 19. LED de sistema pronto
@@ -716,7 +719,6 @@ O LED verde da Raspberry no BCM GPIO26 acende apenas quando:
 - telemetria da ESP32 está recente;
 - nSLEEP está HIGH;
 - não há E-Stop local da ESP32;
-- não há falha de tração;
 - não há calibração ativa;
 - a câmera está ativa, com FPS maior que zero e status recente;
 - o `RobotState` não está em emergência.
@@ -909,8 +911,8 @@ de iniciar câmera ou programa principal.
 | E-Stop zera os quatro motores | **PREENCHER teste físico** | |
 | Timeout Raspberry zera motores | **PREENCHER** | |
 | Timeout ESP32 zera motores | **PREENCHER** | |
-| Falha de tração esquerda é detectada | **PREENCHER** | |
-| Falha de tração direita é detectada | **PREENCHER** | |
+| Recuperação do lado esquerdo é acionada | **PREENCHER** | |
+| Recuperação do lado direito é acionada | **PREENCHER** | |
 | Ambos os lados giram em W/S | **PREENCHER** | |
 | Ambos os lados giram opostos em A/D | **PREENCHER** | |
 | Giro de 90° para no alvo | **PREENCHER** | |
@@ -982,10 +984,10 @@ Confirme:
 1. Pare imediatamente.
 2. Leia no dashboard qual potência foi solicitada e aplicada.
 3. Observe contagem/taxa dos dois encoders.
-4. Verifique alerta de tração e lado indicado.
+4. Verifique o aviso de recuperação e o lado indicado.
 5. Desligue a potência antes de trocar cabos.
 6. Teste motor, saída do driver, conector e entrada da PCB separadamente.
-7. Após corrigir, rearme explicitamente.
+7. Após corrigir, teste novamente com as rodas suspensas.
 
 ### OLED não aparece
 

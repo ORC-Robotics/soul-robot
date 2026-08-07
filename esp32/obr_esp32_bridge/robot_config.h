@@ -79,6 +79,15 @@ constexpr uint8_t kRightMotorIn2Channel = 3;
 // Tempo de estabilização do DRV8833 depois que nSLEEP volta para HIGH.
 constexpr uint32_t kMotorDriverWakeDelayUs = 1000;
 
+// Intervalo, em milissegundos, com os quatro PWMs zerados antes de inverter
+// qualquer lado. O nSLEEP permanece HIGH; essa pausa curta permite que os dois
+// lados terminem a direção anterior antes da nova partida sincronizada.
+constexpr uint32_t kMotorDirectionDeadTimeMs = 15;
+
+// Duração, em milissegundos, do pulso de 100% aplicado aos dois lados durante
+// uma partida ou recuperação. Um valor muito alto aumenta trancos e desgaste.
+constexpr uint32_t kMotorSynchronizedBoostMs = 180;
+
 // Inverta somente o lado que girar ao contrário no teste com as rodas suspensas.
 constexpr bool kLeftMotorInverted = false;
 constexpr bool kRightMotorInverted = false;
@@ -103,13 +112,21 @@ constexpr uint32_t kMotorCommandTimeoutMs = 500;
 // aumenta a chance de uma partida lenta ser interpretada como falha.
 constexpr uint32_t kTractionMonitorWindowMs = 250;
 
+// Tempo, em milissegundos, durante o qual diferenças de partida são ignoradas
+// depois do pulso sincronizado. Isso evita confundir inércia com falha física.
+constexpr uint32_t kTractionStartupGraceMs = 450;
+
 // Quantidade mínima de transições no lado que está girando antes de comparar
 // os encoders. Isso evita disparos falsos enquanto o robô ainda está parado.
 constexpr int32_t kTractionMinimumLeadingCounts = 4;
 
 // O lado mais lento deve registrar ao menos 20% do movimento normalizado do
-// outro lado. Abaixo disso, os quatro motores são parados e a falha fica travada.
+// outro lado. Abaixo disso, a ESP32 tenta uma nova partida sincronizada.
 constexpr float kTractionMinimumProgressRatio = 0.20f;
+
+// Quantidade de janelas desequilibradas necessárias para iniciar a recuperação.
+// A recuperação é automática e nunca desarma o robô ou alterna o nSLEEP.
+constexpr uint8_t kTractionImbalanceConfirmations = 2;
 
 // Tempo, em milissegundos, que o botão Start deve permanecer pressionado para
 // iniciar a calibração. A espera longa evita resets acidentais durante a prova.
