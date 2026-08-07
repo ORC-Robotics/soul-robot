@@ -87,9 +87,9 @@ constexpr bool kRightMotorInverted = false;
 // do ciclo de trabalho do PWM e só deve ser testado com as rodas suspensas.
 constexpr float kMaximumMotorPower = 1.00f;
 
-// Potência mínima que consegue iniciar os motores reais deste robô.
-// Comandos diferentes de zero são remapeados linearmente de 60% até 100%.
-constexpr float kMinimumMovingMotorPower = 0.60f;
+// Potência mínima que inicia os quatro motores, incluindo os dianteiros que
+// exigem mais PWM que os traseiros. Comandos úteis variam de 70% até 100%.
+constexpr float kMinimumMovingMotorPower = 0.70f;
 
 // Comandos abaixo de 0,5% são tratados como zero para evitar movimento causado
 // por ruído numérico sem remover posições úteis dos sliders.

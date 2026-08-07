@@ -127,7 +127,7 @@ flowchart LR
 | Controlador de baixo nível | ESP32, compilada atualmente como `DOIT ESP32 DEVKIT V1` |
 | Computador principal | Raspberry Pi; **PREENCHER modelo e revisão** |
 | Câmera | Código preparado para Raspberry Pi Camera V2; **confirmar modelo físico** |
-| Tração | Quatro motores, agrupados em lado esquerdo e lado direito |
+| Tração | Quatro motores, agrupados em lado esquerdo e lado direito; dianteiros e traseiros possuem comportamentos/modelos diferentes |
 | Drivers | DRV8833 com PWM e nSLEEP |
 | IMU | MPU6050 |
 | Expansor PWM | PCA9685 em `0x40`, ainda sem atuadores definidos |
@@ -150,7 +150,8 @@ flowchart LR
 | Distância entre eixos | **PREENCHER em mm** |
 | Diâmetro das rodas | **PREENCHER em mm** |
 | Material das rodas | Borracha; **PREENCHER modelo/dureza** |
-| Modelo dos motores | **PREENCHER** |
+| Modelo dos motores dianteiros | **PREENCHER** |
+| Modelo dos motores traseiros | **PREENCHER** |
 | Relação da caixa de redução | **PREENCHER** |
 | RPM nominal na tensão usada | **PREENCHER** |
 | Torque nominal/estol | **PREENCHER** |
@@ -333,11 +334,14 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Duty máximo: 1023.
 - Saída máxima: 100%.
 - Comandos abaixo de 0,5% são tratados como zero.
-- Qualquer comando útil é remapeado linearmente para 60%–100%, porque os motores
-  reais não iniciaram de forma confiável abaixo de 60%.
+- Qualquer comando útil é remapeado linearmente para 70%–100%.
+- Nos testes pelo slider da Raspberry, os traseiros iniciaram em `0.05` e os
+  dianteiros somente em `0.15`. Com o remapeamento anterior, isso correspondia a
+  aproximadamente 62% e 66% de PWM físico. O mínimo de 70% adiciona margem para
+  iniciar os quatro motores juntos.
 
 Esse remapeamento significa que `0.10` não equivale a 10% de PWM físico. Ele vira
-aproximadamente 64%. A interface mostra o valor aplicado pela ESP32.
+aproximadamente 73%. A interface mostra o valor aplicado pela ESP32.
 
 ### Regra contra movimento unilateral
 

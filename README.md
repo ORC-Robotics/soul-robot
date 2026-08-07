@@ -71,8 +71,8 @@ Depois de gravar o sketch:
 5. Levante as rodas, energize os drivers e clique em `Habilitar motores`.
 
 Os sliders e os botões de frente e ré permitem controlar cada lado de -100% a
-100%. Como os motores reais não iniciam abaixo de 60% de PWM, o firmware remapeia
-qualquer comando diferente de zero para a faixa útil de 60% a 100%. O DRV8833
+100%. Como os motores dianteiros exigem mais PWM para iniciar que os traseiros,
+qualquer comando diferente de zero é remapeado para a faixa útil de 70% a 100%. O DRV8833
 é habilitado uma única vez durante o `setup()` e permanece ativo. Parar,
 desabilitar, acionar o E-Stop ou atingir o timeout apenas zera os quatro PWMs,
 sem repetir a inicialização do driver. Se o navegador deixar de enviar comandos

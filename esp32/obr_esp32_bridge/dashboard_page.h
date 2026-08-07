@@ -40,7 +40,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
   <section class="card">
     <h2>Controle de bancada</h2>
     <p class="warn">Levante as rodas antes do primeiro teste. O painel desarma se deixar de enviar comandos por 500 ms.</p>
-    <p class="muted">Faixa útil remapeada: zero mantém o PWM parado; qualquer posição diferente de zero controla linearmente entre 60% e 100%. O driver permanece habilitado e responde sem novo tempo de inicialização.</p>
+    <p class="muted">Faixa útil remapeada: zero mantém o PWM parado; qualquer posição diferente de zero controla linearmente entre 70% e 100%. O driver permanece habilitado e responde sem novo tempo de inicialização.</p>
     <div class="controls">
       <div class="keyboard-panel wide">
         <div class="keyboard-copy"><strong>Controle pelo teclado</strong><span id="keyboardState" class="muted">Habilite os motores para usar WASD.</span></div>
@@ -63,7 +63,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"HTML(
 </main>
 <script>
   const $=id=>document.getElementById(id), left=$('left'), right=$('right'); let armed=false, motorRequestInFlight=false, motorCommandPending=false;
-  const minimumMovingPower=0.60;
+  const minimumMovingPower=0.70;
   const driveKeyCodes=['KeyW','KeyA','KeyS','KeyD'], pressedDriveKeys=new Set();
   const n=(value,digits=2)=>Number(value).toFixed(digits);
   function appliedPower(command){const magnitude=Math.abs(command);return magnitude===0?0:Math.sign(command)*(minimumMovingPower+magnitude*(1-minimumMovingPower))}

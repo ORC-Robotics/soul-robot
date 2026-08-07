@@ -247,7 +247,7 @@ float safeMotorPower(float command)
   }
 
   // Elimina a faixa morta física observada nos motores. O comando preserva
-  // toda a resolução do slider, mas a saída útil passa a variar de 60% a 100%.
+  // toda a resolução do slider, mas a saída útil passa a variar de 70% a 100%.
   const float usefulPower = kMinimumMovingMotorPower +
                             magnitude * (kMaximumMotorPower - kMinimumMovingMotorPower);
   return command > 0.0f ? usefulPower : -usefulPower;
