@@ -15,10 +15,14 @@ constexpr uint8_t kFrontUltrasonicEchoPin = 33;
 // a entrada em nível alto quando o botão não está pressionado.
 constexpr uint8_t kStartButtonPin = 27;
 
-// Barramento I2C compartilhado pelo MPU6050, PCA9685 e, futuramente, SSD1306.
+// Barramento I2C compartilhado pelo MPU6050, PCA9685 e SSD1306.
 constexpr uint8_t kI2cSclPin = 14;
 constexpr uint8_t kI2cSdaPin = 13;
 constexpr uint32_t kI2cFrequencyHz = 400000;
+
+// GPIO ligado ao nSLEEP do DRV8833. LOW desliga as pontes H e tem prioridade
+// sobre IN1/IN2; HIGH libera o driver depois que todas as entradas estão em zero.
+constexpr uint8_t kMotorSleepPin = 26;
 
 // Entradas IN1 e IN2 do DRV8833 que comandam os dois motores esquerdos.
 constexpr uint8_t kLeftMotorIn1Pin = 5;
@@ -49,10 +53,15 @@ constexpr float kBatteryDividerRatio =
     (kBatteryUpperResistorOhms + kBatteryLowerResistorOhms) /
     kBatteryLowerResistorOhms;
 
-// Endereços I2C padrão. O MPU6050 também é procurado em 0x69 quando AD0 está alto.
+// Endereços I2C padrão. MPU6050 e OLED também são procurados nos endereços
+// alternativos usados pelos respectivos módulos.
 constexpr uint8_t kPca9685Address = 0x40;
 constexpr uint8_t kMpu6050PrimaryAddress = 0x68;
 constexpr uint8_t kMpu6050SecondaryAddress = 0x69;
+constexpr uint8_t kOledPrimaryAddress = 0x3C;
+constexpr uint8_t kOledSecondaryAddress = 0x3D;
+constexpr int16_t kOledWidth = 128;
+constexpr int16_t kOledHeight = 64;
 
 // Frequência inicial segura do PCA9685 para servos. Todos os 16 canais
 // permanecem desligados até que uma função futura defina seus movimentos.
@@ -67,6 +76,9 @@ constexpr uint8_t kLeftMotorIn2Channel = 1;
 constexpr uint8_t kRightMotorIn1Channel = 2;
 constexpr uint8_t kRightMotorIn2Channel = 3;
 
+// Tempo de estabilização do DRV8833 depois que nSLEEP volta para HIGH.
+constexpr uint32_t kMotorDriverWakeDelayUs = 1000;
+
 // Inverta somente o lado que girar ao contrário no teste com as rodas suspensas.
 constexpr bool kLeftMotorInverted = false;
 constexpr bool kRightMotorInverted = false;
@@ -74,10 +86,38 @@ constexpr bool kRightMotorInverted = false;
 // Potência máxima disponível para os motores. O valor 1,0 corresponde a 100%
 // do ciclo de trabalho do PWM e só deve ser testado com as rodas suspensas.
 constexpr float kMaximumMotorPower = 1.00f;
-constexpr float kMotorDeadband = 0.04f;
+
+// Potência mínima que consegue iniciar os motores reais deste robô.
+// Comandos diferentes de zero são remapeados linearmente de 60% até 100%.
+constexpr float kMinimumMovingMotorPower = 0.60f;
+
+// Comandos abaixo de 0,5% são tratados como zero para evitar movimento causado
+// por ruído numérico sem remover posições úteis dos sliders.
+constexpr float kMotorCommandDeadband = 0.005f;
 
 // Tempo máximo sem comando de movimento antes de zerar os quatro motores.
 constexpr uint32_t kMotorCommandTimeoutMs = 500;
+
+// Janela, em milissegundos, usada para confirmar pelos encoders que os dois
+// lados responderam ao comando. Um valor menor reduz o tempo de arraste, mas
+// aumenta a chance de uma partida lenta ser interpretada como falha.
+constexpr uint32_t kTractionMonitorWindowMs = 250;
+
+// Quantidade mínima de transições no lado que está girando antes de comparar
+// os encoders. Isso evita disparos falsos enquanto o robô ainda está parado.
+constexpr int32_t kTractionMinimumLeadingCounts = 4;
+
+// O lado mais lento deve registrar ao menos 20% do movimento normalizado do
+// outro lado. Abaixo disso, os quatro motores são parados e a falha fica travada.
+constexpr float kTractionMinimumProgressRatio = 0.20f;
+
+// Tempo, em milissegundos, que o botão Start deve permanecer pressionado para
+// iniciar a calibração. A espera longa evita resets acidentais durante a prova.
+constexpr uint32_t kSensorCalibrationHoldMs = 5000;
+
+// Duração mínima, em milissegundos, para reconhecer um toque curto no Start.
+// Pulsos menores são ignorados como ruído ou contato mecânico do botão.
+constexpr uint32_t kStartButtonMinimumPressMs = 80;
 
 // Períodos de leitura e envio. Esses valores evitam sobrecarregar o I2C,
 // o navegador e a UART durante o loop principal.
@@ -86,13 +126,35 @@ constexpr uint32_t kTelemetryIntervalMs = 100;
 constexpr uint32_t kBatteryReadIntervalMs = 250;
 constexpr uint32_t kEncoderRateIntervalMs = 250;
 constexpr uint32_t kUltrasonicIntervalMs = 100;
+constexpr uint32_t kOledRefreshIntervalMs = 100;
+
+// Tempo, em milissegundos, que o resultado da calibração permanece na OLED.
+// Depois desse período, a tela volta automaticamente à bateria e aos ângulos.
+constexpr uint32_t kOledCalibrationResultDurationMs = 900;
 
 // O ECHO é descartado depois deste tempo para que uma falha do sensor não
 // bloqueie o controle dos motores nem o servidor web.
 constexpr uint32_t kUltrasonicTimeoutUs = 25000;
 
-// Rede local criada pela ESP32 para configuração e teste de bancada.
-// Troque a senha antes de usar o robô em local público.
+// Constante de tempo, em segundos, do filtro complementar da inclinação.
+// Valores maiores suavizam mais a leitura, mas tornam a resposta mais lenta.
+constexpr float kRampFilterTimeConstantSeconds = 0.50f;
+
+// Permite corrigir o sinal caso o MPU6050 esteja montado com o eixo X invertido.
+constexpr float kRampAngleSign = 1.0f;
+
+// Suaviza a velocidade de giro usada para integrar o yaw.
+constexpr float kGyroLowPassAlpha = 0.75f;
+
+// Velocidades menores que este limite, em graus por segundo, são tratadas
+// como ruído quando o robô está parado.
+constexpr float kGyroDeadbandDegreesPerSecond = 0.25f;
+
+// Faixa visual da bateria de níquel de 12 V usada na barra do OLED.
+constexpr float kBatteryGaugeMinimumVoltage = 10.50f;
+constexpr float kBatteryGaugeMaximumVoltage = 14.00f;
+
+// Rede local criada somente pelo firmware de bancada da ESP32.
 constexpr const char* kWifiSsid = "OBR2026K-ESP32";
 constexpr const char* kWifiPassword = "obr2026k-painel";
 }

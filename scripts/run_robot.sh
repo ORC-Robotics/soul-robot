@@ -33,6 +33,19 @@ trap cleanup EXIT INT TERM
 
 cd "$APP_DIR"
 
+if [[ ! -s "$ROBOT_BIN" ]]; then
+  # Um executável vazio pode ser aceito pelo shell como um script sem comandos.
+  # Falhar explicitamente mantém o LED apagado e deixa a causa visível no journal.
+  echo "Robot binary is missing or empty: $ROBOT_BIN" >&2
+  exit 1
+fi
+
+if [[ ! -x "$ROBOT_BIN" ]]; then
+  # O serviço nunca deve iniciar câmera ou motores sem um binário executável.
+  echo "Robot binary is not executable: $ROBOT_BIN" >&2
+  exit 1
+fi
+
 if [[ -f "$CAMERA_SCRIPT" ]]; then
   # Remove uma instância antiga do mesmo script, caso uma reinicialização anterior
   # tenha deixado a porta do stream ocupada.

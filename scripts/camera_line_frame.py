@@ -13,8 +13,10 @@ try:
 except ImportError:
     GPIO = None
 try:
+    from libcamera import Transform  # type: ignore[import]
     from picamera2 import Picamera2  # type: ignore[import]
 except ImportError:
+    Transform = None
     Picamera2 = None
 
 FRAME_PATH = "/tmp/obr_camera_frame.jpg"
@@ -68,6 +70,10 @@ CAMERA_CONTRAST = 1.05
 CAMERA_SATURATION = 1.0
 CAMERA_EXPOSURE_VALUE = 0.4
 CAMERA_PIXEL_FORMATS = ("RGB888",)
+# A câmera está instalada fisicamente de cabeça para baixo. A transformação
+# ocorre no pipeline da câmera para que o dashboard e a visão processem o mesmo
+# quadro já corrigido, sem gastar CPU girando cada imagem com OpenCV.
+CAMERA_ROTATION_DEGREES = 180
 
 running = True
 latest_jpeg = None
@@ -298,6 +304,7 @@ def save_status(fps, line_detected, line_error, green_action="NENHUM", camera_fo
         "jpegQuality": JPEG_QUALITY,
         "targetCameraFps": TARGET_CAMERA_FPS,
         "cameraFormat": camera_format,
+        "rotationDegrees": CAMERA_ROTATION_DEGREES,
         "streamPort": MJPEG_STREAM_PORT,
         "streamPath": MJPEG_STREAM_PATH,
         "streamFps": MJPEG_STREAM_FPS,
@@ -311,12 +318,14 @@ def save_status(fps, line_detected, line_error, green_action="NENHUM", camera_fo
 def create_camera():
     picam2 = Picamera2()
     frame_duration_us = int(1_000_000 / TARGET_CAMERA_FPS)
+    camera_transform = Transform(hflip=True, vflip=True)
 
     for pixel_format in CAMERA_PIXEL_FORMATS:
         try:
             camera_config = picam2.create_video_configuration(
                 main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": pixel_format},
                 controls={"FrameDurationLimits": (frame_duration_us, frame_duration_us)},
+                transform=camera_transform,
                 buffer_count=4,
             )
             picam2.configure(camera_config)
@@ -329,6 +338,7 @@ def create_camera():
         try:
             camera_config = picam2.create_video_configuration(
                 main={"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": pixel_format},
+                transform=camera_transform,
                 buffer_count=4,
             )
             picam2.configure(camera_config)
@@ -337,7 +347,10 @@ def create_camera():
         except Exception as error:
             print(f"Configuração {pixel_format} simples falhou: {error}", flush=True)
 
-    camera_config = picam2.create_still_configuration({"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"})
+    camera_config = picam2.create_still_configuration(
+        {"size": (FRAME_WIDTH, FRAME_HEIGHT), "format": "RGB888"},
+        transform=camera_transform,
+    )
     picam2.configure(camera_config)
     print("Câmera configurada em modo still como fallback.", flush=True)
     return picam2, "RGB888"

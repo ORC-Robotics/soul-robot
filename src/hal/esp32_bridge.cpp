@@ -102,8 +102,31 @@ void Esp32Bridge::stop()
 
 bool Esp32Bridge::sendMotorCommand(double left, double right, bool emergencyStop)
 {
-    const double safeLeft = emergencyStop ? 0.0 : safeMotorPower(left);
-    const double safeRight = emergencyStop ? 0.0 : safeMotorPower(right);
+    double safeLeft = emergencyStop ? 0.0 : safeMotorPower(left);
+    double safeRight = emergencyStop ? 0.0 : safeMotorPower(right);
+
+    if (std::abs(safeLeft) < config::kMotorDeadband)
+    {
+        safeLeft = 0.0;
+    }
+    if (std::abs(safeRight) < config::kMotorDeadband)
+    {
+        safeRight = 0.0;
+    }
+
+    // Nunca envia somente um lado. A ESP32 repete esta validação, mas a
+    // Raspberry já transmite um giro válido para manter o protocolo previsível.
+    if ((safeLeft == 0.0) != (safeRight == 0.0))
+    {
+        if (safeLeft == 0.0)
+        {
+            safeLeft = -safeRight;
+        }
+        else
+        {
+            safeRight = -safeLeft;
+        }
+    }
 
     std::ostringstream command;
     command << std::fixed << std::setprecision(3)
@@ -127,6 +150,17 @@ bool Esp32Bridge::sendClearEmergencyStop()
     // A ESP32 mantém o E-Stop travado. Somente uma ação explícita de partida
     // pode liberar a trava, e os motores continuam zerados durante a liberação.
     return writeLine("CLEAR_ESTOP\n");
+}
+
+bool Esp32Bridge::sendResetEncoders()
+{
+    return writeLine("RESET_ENCODERS\n");
+}
+
+bool Esp32Bridge::sendCalibrateSensors()
+{
+    // A ESP32 para os motores antes de apagar referências e recalibrar o IMU.
+    return writeLine("CALIBRATE_SENSORS\n");
 }
 
 Esp32TelemetrySnapshot Esp32Bridge::telemetrySnapshot() const
@@ -318,6 +352,47 @@ void Esp32Bridge::handleLine(const std::string& line)
         return;
     }
 
+    if (line == "CALIBRATION,START")
+    {
+        std::lock_guard<std::mutex> lock(telemetryMutex_);
+        telemetry_.calibrationActive = true;
+        telemetry_.calibrationStatusKnown = true;
+        telemetry_.lastCalibrationSucceeded = false;
+        std::cout << "ESP32 sensor calibration started\n";
+        return;
+    }
+
+    if (line == "START_BUTTON,SHORT")
+    {
+        std::lock_guard<std::mutex> lock(telemetryMutex_);
+        ++telemetry_.startButtonPressSequence;
+        std::cout << "ESP32 short Start-button press received\n";
+        return;
+    }
+
+    if (startsWith(line, "TRACTION_FAULT,"))
+    {
+        std::lock_guard<std::mutex> lock(telemetryMutex_);
+        telemetry_.tractionFaultActive = true;
+        telemetry_.tractionFaultSide = line == "TRACTION_FAULT,LEFT" ? 1 : 2;
+        std::cerr << "ESP32 traction fault: "
+                  << (telemetry_.tractionFaultSide == 1 ? "left side stopped" : "right side stopped")
+                  << "\n";
+        return;
+    }
+
+    if (line == "CALIBRATION,DONE" || line == "CALIBRATION,FAILED")
+    {
+        std::lock_guard<std::mutex> lock(telemetryMutex_);
+        telemetry_.calibrationActive = false;
+        telemetry_.calibrationStatusKnown = true;
+        telemetry_.lastCalibrationSucceeded = line == "CALIBRATION,DONE";
+        std::cout << (telemetry_.lastCalibrationSucceeded
+                          ? "ESP32 sensor calibration completed\n"
+                          : "ESP32 sensor calibration failed\n");
+        return;
+    }
+
     if (startsWith(line, "SENSOR,"))
     {
         if (!parseSensorLine(line))
@@ -349,7 +424,58 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
         next.accelZ = std::stod(values[6]);
         next.mpuOk = std::stoi(values[7]) != 0;
 
+        // Os campos após o MPU6050 são opcionais para manter compatibilidade
+        // com firmwares antigos. O firmware principal atual envia todos eles.
+        if (values.size() >= 17)
+        {
+            next.batteryVoltage = std::stod(values[8]);
+            next.leftEncoderCount = std::stoll(values[9]);
+            next.rightEncoderCount = std::stoll(values[10]);
+            next.startButtonPressed = std::stoi(values[11]) != 0;
+            next.pca9685Ok = std::stoi(values[12]) != 0;
+            next.appliedLeftPower = std::stod(values[13]);
+            next.appliedRightPower = std::stod(values[14]);
+            next.leftEncoderRate = std::stod(values[15]);
+            next.rightEncoderRate = std::stod(values[16]);
+        }
+
+        if (values.size() >= 26)
+        {
+            next.rampAngleDeg = std::stod(values[17]);
+            next.gyroXDegPerSec = std::stod(values[18]);
+            next.gyroYDegPerSec = std::stod(values[19]);
+            next.imuTemperatureCelsius = std::stod(values[20]);
+            next.oledOk = std::stoi(values[21]) != 0;
+            next.motorSleepPinHigh = std::stoi(values[22]) != 0;
+            next.emergencyStopActive = std::stoi(values[23]) != 0;
+            next.batteryAdcMillivolts = std::stoll(values[24]);
+            next.esp32UptimeMs = std::stoll(values[25]);
+        }
+
+        if (values.size() >= 27)
+        {
+            next.calibrationActive = std::stoi(values[26]) != 0;
+        }
+
+        if (values.size() >= 29)
+        {
+            next.tractionFaultActive = std::stoi(values[27]) != 0;
+            next.tractionFaultSide = std::stoi(values[28]);
+        }
+
         std::lock_guard<std::mutex> lock(telemetryMutex_);
+        next.startButtonPressSequence = telemetry_.startButtonPressSequence;
+        next.calibrationStatusKnown = telemetry_.calibrationStatusKnown;
+        next.lastCalibrationSucceeded = telemetry_.lastCalibrationSucceeded;
+        if (values.size() < 29)
+        {
+            next.tractionFaultActive = telemetry_.tractionFaultActive;
+            next.tractionFaultSide = telemetry_.tractionFaultSide;
+        }
+        if (values.size() < 27)
+        {
+            next.calibrationActive = telemetry_.calibrationActive;
+        }
         telemetry_ = next;
         hasSensorSample_ = true;
         lastSensorTime_ = std::chrono::steady_clock::now();

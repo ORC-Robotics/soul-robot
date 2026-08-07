@@ -18,6 +18,18 @@ double clampMotorCommand(double command)
 }
 }
 
+const char* autonomousMissionName(AutonomousMission mission)
+{
+    switch (mission)
+    {
+    case AutonomousMission::TurnRight90:
+        return "turn_right_90";
+    case AutonomousMission::MainMission:
+    default:
+        return "main_mission";
+    }
+}
+
 RobotSnapshot RobotState::snapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -39,6 +51,19 @@ void RobotState::startAutonomous()
     state_.mode = "autonomous";
     state_.left = 0.0;
     state_.right = 0.0;
+    lastCommand_ = std::chrono::steady_clock::now();
+}
+
+void RobotState::setAutonomousMission(AutonomousMission mission)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Trocar a missão sempre para o robô. Isso impede que uma nova estratégia
+    // assuma os motores no meio de um movimento iniciado pela missão anterior.
+    state_.mode = state_.emergencyStop ? "emergency" : "stopped";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.autonomousMission = mission;
     lastCommand_ = std::chrono::steady_clock::now();
 }
 

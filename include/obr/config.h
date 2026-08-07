@@ -83,6 +83,26 @@ constexpr int kGreenUTurnMs = 1200;
 // Sem esse bloqueio, o robô pode detectar o mesmo marcador várias vezes.
 constexpr int kGreenCooldownMs = 900;
 
+// Ângulo-alvo, em graus, da missão de teste que gira o robô para a direita.
+constexpr double kTurn90TargetDegrees = 90.0;
+
+// Margem, em graus, usada para parar antes de ultrapassar demais o alvo.
+// Ajuste após testar a inércia real das rodas no piso da competição.
+constexpr double kTurn90StopToleranceDegrees = 2.0;
+
+// Abaixo desta distância angular, o giro usa potência menor para reduzir a
+// ultrapassagem do alvo causada pela inércia dos quatro motores.
+constexpr double kTurn90SlowdownDegrees = 25.0;
+
+// Potências enviadas durante as fases rápida e fina do giro de 90 graus.
+// A ESP32 ainda aplica seu remapeamento físico e todos os limites de segurança.
+constexpr double kTurn90Power = 0.25;
+constexpr double kTurn90FinePower = 0.08;
+
+// Tempo máximo, em milissegundos, permitido para o giro de teste.
+// Se o MPU6050 falhar ou o robô travar, a missão para ao atingir esse limite.
+constexpr int kTurn90TimeoutMs = 3500;
+
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;
@@ -95,7 +115,7 @@ constexpr double kMaxMotorOutput = 1.0;
 
 // Zona morta do motor.
 // Comandos com módulo menor que este valor são tratados como parada.
-constexpr double kMotorDeadband = 0.05;
+constexpr double kMotorDeadband = 0.005;
 
 // Dispositivo UART usado pela Raspberry Pi para falar com a ESP32.
 // Em uma Raspberry Pi comum, /dev/serial0 usa GPIO14 como TXD e GPIO15 como RXD.
@@ -118,6 +138,10 @@ constexpr int kEsp32MotorCommandTimeoutMs = 500;
 constexpr int kRaspberryUartTxPin = 14;
 constexpr int kRaspberryUartRxPin = 15;
 
+// GPIO BCM da Raspberry Pi ligado ao LED de sistema pronto.
+// O LED é ativo em HIGH e só acende quando a UART recebe telemetria recente da ESP32.
+constexpr int kRaspberryReadyLedPin = 26;
+
 // Pinos da UART0 da ESP32 reservados para a integração futura com a Raspberry.
 // Eles também são usados durante a gravação da ESP32 e não devem ser forçados externamente.
 constexpr int kEsp32UartRxPin = 3;
@@ -129,7 +153,10 @@ constexpr int kEsp32LeftMotorIn2Pin = 18;
 constexpr int kEsp32RightMotorIn1Pin = 16;
 constexpr int kEsp32RightMotorIn2Pin = 17;
 
-// Pinos I2C da ESP32 usados pelo MPU6050, PCA9685 e futuro SSD1306.
+// Pino ligado ao nSLEEP do DRV8833. LOW mantém todas as pontes H desligadas.
+constexpr int kEsp32MotorSleepPin = 26;
+
+// Pinos I2C da ESP32 usados pelo MPU6050, PCA9685 e SSD1306.
 constexpr int kEsp32I2cSdaPin = 13;
 constexpr int kEsp32I2cSclPin = 14;
 

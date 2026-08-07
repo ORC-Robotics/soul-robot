@@ -1,13 +1,19 @@
 #include <Arduino.h>
+#include <Adafruit_GFX.h>
 #include <Adafruit_MPU6050.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Adafruit_Sensor.h>
+#include <Adafruit_SSD1306.h>
+#ifndef OBR_ESP32_RASPBERRY_MODE
 #include <WebServer.h>
 #include <WiFi.h>
+#endif
 #include <Wire.h>
 #include <driver/gpio.h>
 
+#ifndef OBR_ESP32_RASPBERRY_MODE
 #include "dashboard_page.h"
+#endif
 #include "robot_config.h"
 
 #if __has_include(<esp_arduino_version.h>)
@@ -27,8 +33,22 @@ enum class ControlSource
   Raspberry
 };
 
+enum class TractionFaultSide : uint8_t
+{
+  None = 0,
+  Left = 1,
+  Right = 2
+};
+
 void forceMotorPinsLowImmediately()
 {
+  // Mantém o driver dormindo antes de configurar qualquer entrada de motor.
+  // O pull-down físico da PCB garante o mesmo estado antes deste código rodar.
+  gpio_set_level(static_cast<gpio_num_t>(kMotorSleepPin), 0);
+  // INPUT_OUTPUT permite dirigir nSLEEP e ler no dashboard o nível presente
+  // no pad. Em OUTPUT puro, gpio_get_level() pode informar LOW incorretamente.
+  gpio_set_direction(static_cast<gpio_num_t>(kMotorSleepPin), GPIO_MODE_INPUT_OUTPUT);
+
   // Grava LOW antes de habilitar os GPIOs como saída. Assim, nenhuma entrada
   // do DRV8833 recebe um pulso alto causado pela troca de direção do pino.
   gpio_set_level(static_cast<gpio_num_t>(kLeftMotorIn1Pin), 0);
@@ -54,11 +74,14 @@ public:
 
 EarlyMotorSafetyInitializer earlyMotorSafetyInitializer;
 
-// O dashboard HTTP pertence somente à ESP32 e permite testar o hardware
-// mesmo quando a Raspberry Pi ainda não está executando o programa principal.
+#ifndef OBR_ESP32_RASPBERRY_MODE
+// O servidor existe somente no firmware de bancada. O firmware principal
+// exclui Wi-Fi e HTTP durante a compilação e obedece apenas à Raspberry.
 WebServer server(80);
+#endif
 Adafruit_MPU6050 mpu;
 Adafruit_PWMServoDriver pca9685(kPca9685Address, Wire);
+Adafruit_SSD1306 oled(kOledWidth, kOledHeight, &Wire, -1);
 
 struct SensorState
 {
@@ -73,6 +96,7 @@ struct SensorState
   float gyroY = 0.0f;
   float gyroZ = 0.0f;
   float yawZ = 0.0f;
+  float rampAngleDegrees = 0.0f;
   float imuTemperatureCelsius = 0.0f;
   float leftEncoderRate = 0.0f;
   float rightEncoderRate = 0.0f;
@@ -81,13 +105,24 @@ struct SensorState
 SensorState sensors;
 bool mpuReady = false;
 bool pca9685Ready = false;
+bool oledReady = false;
+bool motorDriverAwake = false;
 uint8_t mpuAddress = 0;
+uint8_t oledAddress = 0;
 bool startButtonPressed = false;
+bool calibrationActive = false;
+bool calibrationStopLatched = false;
 bool dashboardArmed = false;
 bool emergencyStopActive = false;
+bool tractionFaultActive = false;
+TractionFaultSide tractionFaultSide = TractionFaultSide::None;
 float currentLeftPower = 0.0f;
 float currentRightPower = 0.0f;
+float gyroYBias = 0.0f;
 float gyroZBias = 0.0f;
+float filteredGyroZ = 0.0f;
+bool gyroFilterInitialized = false;
+bool rampAngleInitialized = false;
 ControlSource controlSource = ControlSource::None;
 
 uint32_t lastMotorCommandMs = 0;
@@ -97,7 +132,10 @@ uint32_t lastBatteryReadMs = 0;
 uint32_t lastEncoderRateMs = 0;
 uint32_t lastUltrasonicTriggerMs = 0;
 uint32_t lastButtonChangeMs = 0;
+uint32_t startButtonPressedSinceMs = 0;
 uint32_t lastMpuIntegrationUs = 0;
+uint32_t lastOledRefreshMs = 0;
+bool startButtonLongPressHandled = false;
 
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 volatile int32_t leftEncoderCount = 0;
@@ -106,6 +144,12 @@ volatile uint8_t previousLeftEncoderState = 0;
 volatile uint8_t previousRightEncoderState = 0;
 int32_t lastLeftEncoderRateCount = 0;
 int32_t lastRightEncoderRateCount = 0;
+bool tractionMonitorActive = false;
+uint32_t tractionMonitorStartMs = 0;
+int32_t tractionMonitorLeftStartCount = 0;
+int32_t tractionMonitorRightStartCount = 0;
+int8_t tractionMonitorLeftDirection = 0;
+int8_t tractionMonitorRightDirection = 0;
 
 portMUX_TYPE ultrasonicMux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool ultrasonicWaitingForEcho = false;
@@ -188,27 +232,94 @@ void writeMotorPwm(uint8_t pin, uint8_t channel, uint16_t duty)
 #endif
 }
 
-float safeMotorPower(float power)
+float safeMotorPower(float command)
 {
-  if (!isfinite(power))
+  if (!isfinite(command))
   {
     return 0.0f;
   }
 
-  power = constrain(power, -kMaximumMotorPower, kMaximumMotorPower);
-  return fabs(power) < kMotorDeadband ? 0.0f : power;
+  command = constrain(command, -kMaximumMotorPower, kMaximumMotorPower);
+  const float magnitude = fabs(command);
+  if (magnitude < kMotorCommandDeadband)
+  {
+    return 0.0f;
+  }
+
+  // Elimina a faixa morta física observada nos motores. O comando preserva
+  // toda a resolução do slider, mas a saída útil passa a variar de 60% a 100%.
+  const float usefulPower = kMinimumMovingMotorPower +
+                            magnitude * (kMaximumMotorPower - kMinimumMovingMotorPower);
+  return command > 0.0f ? usefulPower : -usefulPower;
 }
 
-void stopMotorOutputs()
+void zeroMotorPwmOutputs()
 {
-  // IN1 e IN2 em zero colocam o DRV8833 em coast. Esta função é usada
-  // na inicialização, no timeout, no E-Stop e antes de trocar o sentido.
   writeMotorPwm(kLeftMotorIn1Pin, kLeftMotorIn1Channel, 0);
   writeMotorPwm(kLeftMotorIn2Pin, kLeftMotorIn2Channel, 0);
   writeMotorPwm(kRightMotorIn1Pin, kRightMotorIn1Channel, 0);
   writeMotorPwm(kRightMotorIn2Pin, kRightMotorIn2Channel, 0);
   currentLeftPower = 0.0f;
   currentRightPower = 0.0f;
+}
+
+void stopMotorOutputs()
+{
+  // A parada mantém o DRV8833 habilitado e zera somente IN1/IN2. Isso evita
+  // repetir o tempo de inicialização do driver a cada novo movimento.
+  zeroMotorPwmOutputs();
+}
+
+void resetTractionMonitor()
+{
+  portENTER_CRITICAL(&encoderMux);
+  tractionMonitorLeftStartCount = leftEncoderCount;
+  tractionMonitorRightStartCount = rightEncoderCount;
+  portEXIT_CRITICAL(&encoderMux);
+  tractionMonitorStartMs = millis();
+  tractionMonitorActive = false;
+  tractionMonitorLeftDirection = 0;
+  tractionMonitorRightDirection = 0;
+}
+
+void clearTractionFault()
+{
+  // O rearme exige um comando humano explícito. Apenas parar os motores não
+  // apaga a falha, pois comandos antigos poderiam voltar a arrastar um lado.
+  tractionFaultActive = false;
+  tractionFaultSide = TractionFaultSide::None;
+  resetTractionMonitor();
+}
+
+void latchTractionFault(TractionFaultSide side)
+{
+  tractionFaultActive = true;
+  tractionFaultSide = side;
+  dashboardArmed = false;
+  controlSource = ControlSource::None;
+  stopMotorOutputs();
+  resetTractionMonitor();
+
+  Serial.print("TRACTION_FAULT,");
+  Serial.println(side == TractionFaultSide::Left ? "LEFT" : "RIGHT");
+}
+
+void keepMotorDriverEnabled()
+{
+  // Reafirma HIGH sem alternar nSLEEP e sem repetir o tempo de wake. Esta
+  // escrita ocorre em todo comando para garantir a habilitação do driver
+  // mesmo quando somente um dos lados recebe potência.
+  gpio_set_level(static_cast<gpio_num_t>(kMotorSleepPin), 1);
+  motorDriverAwake = true;
+}
+
+void enableMotorDriver()
+{
+  // O driver é habilitado uma única vez, depois que os quatro PWMs já estão
+  // em zero. O tempo de estabilização ocorre apenas durante o setup().
+  zeroMotorPwmOutputs();
+  keepMotorDriverEnabled();
+  delayMicroseconds(kMotorDriverWakeDelayUs);
 }
 
 void setMotorSide(uint8_t in1Pin, uint8_t in1Channel, uint8_t in2Pin,
@@ -238,32 +349,64 @@ void setMotorSide(uint8_t in1Pin, uint8_t in1Channel, uint8_t in2Pin,
 
 void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
 {
-  if (emergencyStopActive || (source == ControlSource::Dashboard && !dashboardArmed))
+  if (emergencyStopActive || tractionFaultActive || calibrationActive || calibrationStopLatched ||
+      (source == ControlSource::Dashboard && !dashboardArmed))
   {
     stopMotorOutputs();
     return;
   }
 
-  currentLeftPower = safeMotorPower(leftPower);
-  currentRightPower = safeMotorPower(rightPower);
+  keepMotorDriverEnabled();
+
+  float safeLeftPower = safeMotorPower(leftPower);
+  float safeRightPower = safeMotorPower(rightPower);
+
+  // A elétrica agrupa dois motores em cada lado do robô. Nunca permite que
+  // apenas um lado se mova, pois as rodas de borracha travariam e fariam o robô
+  // vibrar. Um comando unilateral é convertido em giro com os lados opostos.
+  const bool leftSideStopped = safeLeftPower == 0.0f;
+  const bool rightSideStopped = safeRightPower == 0.0f;
+  if (leftSideStopped != rightSideStopped)
+  {
+    if (leftSideStopped)
+    {
+      safeLeftPower = -safeRightPower;
+    }
+    else
+    {
+      safeRightPower = -safeLeftPower;
+    }
+  }
+
+  if (safeLeftPower == 0.0f && safeRightPower == 0.0f)
+  {
+    stopMotorOutputs();
+    resetTractionMonitor();
+    controlSource = source;
+    lastMotorCommandMs = millis();
+    return;
+  }
+
   setMotorSide(kLeftMotorIn1Pin, kLeftMotorIn1Channel, kLeftMotorIn2Pin,
-               kLeftMotorIn2Channel, currentLeftPower, kLeftMotorInverted);
+               kLeftMotorIn2Channel, safeLeftPower, kLeftMotorInverted);
   setMotorSide(kRightMotorIn1Pin, kRightMotorIn1Channel, kRightMotorIn2Pin,
-               kRightMotorIn2Channel, currentRightPower, kRightMotorInverted);
+               kRightMotorIn2Channel, safeRightPower, kRightMotorInverted);
+  currentLeftPower = safeLeftPower;
+  currentRightPower = safeRightPower;
   controlSource = source;
   lastMotorCommandMs = millis();
 }
 
 void setupMotors()
 {
-  // Repete a parada imediatamente antes de entregar os pinos ao periférico
-  // PWM. A redundância é intencional porque esta etapa afeta movimento real.
+  // Mantém nSLEEP em LOW até que o periférico PWM esteja configurado e com
+  // as quatro saídas zeradas. Depois disso, o driver permanece habilitado.
   forceMotorPinsLowImmediately();
   attachMotorPwm(kLeftMotorIn1Pin, kLeftMotorIn1Channel);
   attachMotorPwm(kLeftMotorIn2Pin, kLeftMotorIn2Channel);
   attachMotorPwm(kRightMotorIn1Pin, kRightMotorIn1Channel);
   attachMotorPwm(kRightMotorIn2Pin, kRightMotorIn2Channel);
-  stopMotorOutputs();
+  enableMotorDriver();
 }
 
 bool i2cDeviceResponds(uint8_t address)
@@ -272,27 +415,236 @@ bool i2cDeviceResponds(uint8_t address)
   return Wire.endTransmission() == 0;
 }
 
-void calibrateGyroZ()
+void setupOled()
 {
-  // A calibração ocorre apenas no boot. O robô deve permanecer parado
-  // durante aproximadamente um segundo para o yaw iniciar com menos deriva.
+  if (i2cDeviceResponds(kOledPrimaryAddress))
+  {
+    oledAddress = kOledPrimaryAddress;
+  }
+  else if (i2cDeviceResponds(kOledSecondaryAddress))
+  {
+    oledAddress = kOledSecondaryAddress;
+  }
+
+  if (oledAddress == 0)
+  {
+    return;
+  }
+
+  // O Wire já usa SDA13/SCL14. periphBegin=false impede a biblioteca do OLED
+  // de reiniciar o I2C nos pinos padrão da placa e desconectar MPU/PCA9685.
+  oledReady = oled.begin(SSD1306_SWITCHCAPVCC, oledAddress, true, false);
+  if (!oledReady)
+  {
+    oledAddress = 0;
+    return;
+  }
+
+  oled.clearDisplay();
+  oled.setTextWrap(false);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(25, 16);
+  oled.print(F("OBR 2026"));
+  oled.setCursor(19, 38);
+  oled.print(F("INICIALIZANDO"));
+  oled.display();
+}
+
+void drawCalibrationProgress(int completedSamples, int totalSamples)
+{
+  if (!oledReady)
+  {
+    return;
+  }
+
+  // Os pontos ao redor do centro formam uma animação circular. A posição
+  // preenchida avança junto com as amostras reais coletadas pelo MPU6050.
+  constexpr int8_t kOrbitX[] = {0, 6, 8, 6, 0, -6, -8, -6};
+  constexpr int8_t kOrbitY[] = {-8, -6, 0, 6, 8, 6, 0, -6};
+  constexpr int kOrbitPointCount = sizeof(kOrbitX) / sizeof(kOrbitX[0]);
+  const int animationFrame =
+      (completedSamples * kOrbitPointCount / totalSamples) % kOrbitPointCount;
+  const int progressWidth = constrain(completedSamples * 100 / totalSamples, 0, 100);
+
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(34, 4);
+  oled.print(F("CALIBRANDO"));
+
+  for (int point = 0; point < kOrbitPointCount; ++point)
+  {
+    const int16_t pointX = 64 + kOrbitX[point];
+    const int16_t pointY = 27 + kOrbitY[point];
+    if (point == animationFrame)
+    {
+      oled.fillCircle(pointX, pointY, 2, SSD1306_WHITE);
+    }
+    else
+    {
+      oled.drawPixel(pointX, pointY, SSD1306_WHITE);
+    }
+  }
+
+  oled.setCursor(40, 39);
+  oled.print(F("NAO MOVA"));
+  oled.drawRoundRect(12, 52, 104, 8, 3, SSD1306_WHITE);
+  if (progressWidth > 0)
+  {
+    oled.fillRoundRect(14, 54, progressWidth, 4, 1, SSD1306_WHITE);
+  }
+  oled.display();
+}
+
+void drawCalibrationResult(bool succeeded)
+{
+  if (!oledReady)
+  {
+    return;
+  }
+
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(34, 4);
+  oled.print(F("CALIBRACAO"));
+  oled.drawCircle(23, 36, 12, SSD1306_WHITE);
+
+  if (succeeded)
+  {
+    // O símbolo de confirmação permanece grande e legível mesmo à distância.
+    oled.drawLine(16, 36, 21, 42, SSD1306_WHITE);
+    oled.drawLine(21, 42, 31, 30, SSD1306_WHITE);
+    oled.setTextSize(2);
+    oled.setCursor(43, 24);
+    oled.print(F("PRONTO"));
+    oled.setTextSize(1);
+    oled.setCursor(47, 45);
+    oled.print(F("SENSORES OK"));
+  }
+  else
+  {
+    oled.drawLine(17, 30, 29, 42, SSD1306_WHITE);
+    oled.drawLine(29, 30, 17, 42, SSD1306_WHITE);
+    oled.setTextSize(2);
+    oled.setCursor(43, 24);
+    oled.print(F("FALHOU"));
+    oled.setTextSize(1);
+    oled.setCursor(47, 45);
+    oled.print(F("VERIFIQUE MPU"));
+  }
+  oled.display();
+}
+
+void calibrateGyroscopeBias()
+{
+  // A calibração ocorre no boot ou após uma solicitação de reset. O robô deve
+  // permanecer parado para reduzir a deriva nas leituras de giro e rampa.
   constexpr int kCalibrationSamples = 300;
-  float sum = 0.0f;
+  constexpr int kOledProgressUpdateSamples = 25;
+  float gyroYSum = 0.0f;
+  float gyroZSum = 0.0f;
   for (int sample = 0; sample < kCalibrationSamples; ++sample)
   {
+    if (sample % kOledProgressUpdateSamples == 0)
+    {
+      drawCalibrationProgress(sample, kCalibrationSamples);
+    }
+
     sensors_event_t accel;
     sensors_event_t gyro;
     sensors_event_t temperature;
     mpu.getEvent(&accel, &gyro, &temperature);
-    sum += gyro.gyro.z;
+    gyroYSum += gyro.gyro.y;
+    gyroZSum += gyro.gyro.z;
     delay(3);
   }
-  gyroZBias = sum / kCalibrationSamples;
+  gyroYBias = gyroYSum / kCalibrationSamples;
+  gyroZBias = gyroZSum / kCalibrationSamples;
+  drawCalibrationProgress(kCalibrationSamples, kCalibrationSamples);
+}
+
+void resetEncoderData()
+{
+  portENTER_CRITICAL(&encoderMux);
+  leftEncoderCount = 0;
+  rightEncoderCount = 0;
+  portEXIT_CRITICAL(&encoderMux);
+  lastLeftEncoderRateCount = 0;
+  lastRightEncoderRateCount = 0;
+  sensors.leftEncoderRate = 0.0f;
+  sensors.rightEncoderRate = 0.0f;
+  lastEncoderRateMs = millis();
+  resetTractionMonitor();
+}
+
+void resetSensorMeasurements()
+{
+  // Mantém a tensão da bateria disponível, mas limpa medidas de navegação que
+  // dependem de posição, movimento ou de uma referência inicial do MPU6050.
+  sensors.ultrasonicDistanceCm = -1.0f;
+  sensors.ultrasonicValid = false;
+  sensors.accelX = 0.0f;
+  sensors.accelY = 0.0f;
+  sensors.accelZ = 0.0f;
+  sensors.gyroX = 0.0f;
+  sensors.gyroY = 0.0f;
+  sensors.gyroZ = 0.0f;
+  sensors.yawZ = 0.0f;
+  sensors.rampAngleDegrees = 0.0f;
+  sensors.imuTemperatureCelsius = 0.0f;
+  filteredGyroZ = 0.0f;
+  gyroFilterInitialized = false;
+  rampAngleInitialized = false;
+  lastMpuIntegrationUs = micros();
+
+  portENTER_CRITICAL(&ultrasonicMux);
+  ultrasonicWaitingForEcho = false;
+  ultrasonicSampleAvailable = false;
+  ultrasonicEchoStartUs = 0;
+  ultrasonicEchoDurationUs = 0;
+  portEXIT_CRITICAL(&ultrasonicMux);
+
+  resetEncoderData();
+}
+
+void runSensorCalibration()
+{
+  // A calibração sempre começa com os motores parados e desabilita o controle
+  // de bancada. O E-Stop existente é preservado e nunca é liberado aqui.
+  dashboardArmed = false;
+  stopMotorOutputs();
+  controlSource = ControlSource::None;
+  calibrationActive = true;
+  calibrationStopLatched = true;
+  Serial.println("CALIBRATION,START");
+
+  resetSensorMeasurements();
+  if (mpuReady)
+  {
+    calibrateGyroscopeBias();
+  }
+
+  drawCalibrationResult(mpuReady);
+  if (oledReady)
+  {
+    // Mantém o resultado visível sem liberar os motores durante a mensagem.
+    delay(kOledCalibrationResultDurationMs);
+  }
+
+  lastMotorCommandMs = millis();
+  calibrationActive = false;
+  Serial.println(mpuReady ? "CALIBRATION,DONE" : "CALIBRATION,FAILED");
 }
 
 void setupI2cDevices()
 {
   Wire.begin(kI2cSdaPin, kI2cSclPin, kI2cFrequencyHz);
+  setupOled();
 
   if (mpu.begin(kMpu6050PrimaryAddress, &Wire))
   {
@@ -310,7 +662,13 @@ void setupI2cDevices()
     mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
     mpu.setGyroRange(MPU6050_RANGE_500_DEG);
     mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-    calibrateGyroZ();
+    calibrateGyroscopeBias();
+  }
+
+  drawCalibrationResult(mpuReady);
+  if (oledReady)
+  {
+    delay(kOledCalibrationResultDurationMs);
   }
 
   pca9685Ready = i2cDeviceResponds(kPca9685Address) && pca9685.begin();
@@ -324,6 +682,83 @@ void setupI2cDevices()
       pca9685.setPWM(channel, 0, 0);
     }
   }
+}
+
+void updateOledIfDue()
+{
+  const uint32_t nowMs = millis();
+  if (!oledReady || nowMs - lastOledRefreshMs < kOledRefreshIntervalMs)
+  {
+    return;
+  }
+  lastOledRefreshMs = nowMs;
+
+  char batteryText[10] = "--.--V";
+  char yawText[8] = "  --";
+  char rampText[8] = "  --";
+  if (isfinite(sensors.batteryVoltage))
+  {
+    snprintf(batteryText, sizeof(batteryText), "%5.2fV", sensors.batteryVoltage);
+  }
+  if (mpuReady && isfinite(sensors.yawZ))
+  {
+    snprintf(yawText, sizeof(yawText), "%+4.0f", sensors.yawZ);
+  }
+  if (mpuReady && isfinite(sensors.rampAngleDegrees))
+  {
+    snprintf(rampText, sizeof(rampText), "%+4.0f", sensors.rampAngleDegrees);
+  }
+
+  const float batteryGauge = constrain(
+      (sensors.batteryVoltage - kBatteryGaugeMinimumVoltage) /
+          (kBatteryGaugeMaximumVoltage - kBatteryGaugeMinimumVoltage),
+      0.0f, 1.0f);
+  const int16_t batteryFillWidth = static_cast<int16_t>(batteryGauge * 67.0f);
+
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+
+  // Nos OLEDs bicolores, as primeiras 16 linhas são fisicamente amarelas.
+  // Título e barra ficam nessa faixa para criar contraste sem cortar a tensão.
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(4, 4);
+  oled.print(F("BATERIA"));
+
+  oled.drawRoundRect(50, 3, 73, 9, 3, SSD1306_WHITE);
+  if (batteryFillWidth > 0)
+  {
+    oled.fillRoundRect(53, 6, batteryFillWidth, 3, 1, SSD1306_WHITE);
+  }
+
+  // A tensão começa abaixo da linha 16 para permanecer completamente azul
+  // nos displays SSD1306 que possuem duas cores definidas pelo próprio painel.
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(2);
+  int16_t textX;
+  int16_t textY;
+  uint16_t textWidth;
+  uint16_t textHeight;
+  oled.getTextBounds(batteryText, 0, 0, &textX, &textY, &textWidth, &textHeight);
+  oled.setCursor((kOledWidth - textWidth) / 2, 18);
+  oled.print(batteryText);
+
+  // A faixa inferior mantém giro e rampa disponíveis como informações
+  // secundárias. Os sinais positivos e negativos facilitam testes de sentido.
+  oled.drawLine(3, 39, 124, 39, SSD1306_WHITE);
+  oled.drawLine(64, 42, 64, 60, SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(5, 48);
+  oled.print(F("GIR"));
+  oled.setCursor(25, 48);
+  oled.print(yawText);
+  oled.drawCircle(57, 48, 1, SSD1306_WHITE);
+  oled.setCursor(68, 48);
+  oled.print(F("RMP"));
+  oled.setCursor(89, 48);
+  oled.print(rampText);
+  oled.drawCircle(121, 48, 1, SSD1306_WHITE);
+  oled.display();
 }
 
 void setupEncoders()
@@ -447,9 +882,43 @@ void readImuIfDue()
   sensors.accelY = accel.acceleration.y;
   sensors.accelZ = accel.acceleration.z;
   sensors.gyroX = gyro.gyro.x * RAD_TO_DEG;
-  sensors.gyroY = gyro.gyro.y * RAD_TO_DEG;
-  sensors.gyroZ = (gyro.gyro.z - gyroZBias) * RAD_TO_DEG;
+  sensors.gyroY = (gyro.gyro.y - gyroYBias) * RAD_TO_DEG;
+  const float correctedGyroZ = (gyro.gyro.z - gyroZBias) * RAD_TO_DEG;
+
+  if (!gyroFilterInitialized)
+  {
+    filteredGyroZ = correctedGyroZ;
+    gyroFilterInitialized = true;
+  }
+  else
+  {
+    filteredGyroZ = kGyroLowPassAlpha * filteredGyroZ +
+                    (1.0f - kGyroLowPassAlpha) * correctedGyroZ;
+  }
+  sensors.gyroZ = fabs(filteredGyroZ) < kGyroDeadbandDegreesPerSecond
+                      ? 0.0f
+                      : filteredGyroZ;
   sensors.imuTemperatureCelsius = temperature.temperature;
+
+  const float accelRampAngle =
+      atan2f(-sensors.accelX,
+             sqrtf(sensors.accelY * sensors.accelY + sensors.accelZ * sensors.accelZ)) *
+      RAD_TO_DEG * kRampAngleSign;
+  const float rampGyroRate = sensors.gyroY * kRampAngleSign;
+  if (!rampAngleInitialized || deltaSeconds <= 0.0f || deltaSeconds > 0.20f)
+  {
+    sensors.rampAngleDegrees = accelRampAngle;
+    rampAngleInitialized = true;
+  }
+  else
+  {
+    const float filterAlpha =
+        kRampFilterTimeConstantSeconds / (kRampFilterTimeConstantSeconds + deltaSeconds);
+    sensors.rampAngleDegrees =
+        filterAlpha * (sensors.rampAngleDegrees + rampGyroRate * deltaSeconds) +
+        (1.0f - filterAlpha) * accelRampAngle;
+  }
+
   sensors.yawZ += sensors.gyroZ * deltaSeconds;
   if (sensors.yawZ > 180.0f)
   {
@@ -486,17 +955,115 @@ void updateEncoderRatesIfDue()
   lastEncoderRateMs = nowMs;
 }
 
+void enforceTractionSafety()
+{
+  const bool bothSidesCommanded = currentLeftPower != 0.0f && currentRightPower != 0.0f;
+  if (tractionFaultActive || !bothSidesCommanded)
+  {
+    resetTractionMonitor();
+    return;
+  }
+
+  const int8_t leftDirection = currentLeftPower > 0.0f ? 1 : -1;
+  const int8_t rightDirection = currentRightPower > 0.0f ? 1 : -1;
+
+  if (!tractionMonitorActive || leftDirection != tractionMonitorLeftDirection ||
+      rightDirection != tractionMonitorRightDirection)
+  {
+    portENTER_CRITICAL(&encoderMux);
+    tractionMonitorLeftStartCount = leftEncoderCount;
+    tractionMonitorRightStartCount = rightEncoderCount;
+    portEXIT_CRITICAL(&encoderMux);
+    tractionMonitorStartMs = millis();
+    tractionMonitorActive = true;
+    tractionMonitorLeftDirection = leftDirection;
+    tractionMonitorRightDirection = rightDirection;
+    return;
+  }
+
+  const uint32_t elapsedMs = millis() - tractionMonitorStartMs;
+  if (elapsedMs < kTractionMonitorWindowMs)
+  {
+    return;
+  }
+
+  int32_t currentLeftCount;
+  int32_t currentRightCount;
+  portENTER_CRITICAL(&encoderMux);
+  currentLeftCount = leftEncoderCount;
+  currentRightCount = rightEncoderCount;
+  portEXIT_CRITICAL(&encoderMux);
+
+  const int32_t leftDelta = abs(currentLeftCount - tractionMonitorLeftStartCount);
+  const int32_t rightDelta = abs(currentRightCount - tractionMonitorRightStartCount);
+  const int32_t leadingCounts = max(leftDelta, rightDelta);
+  if (leadingCounts < kTractionMinimumLeadingCounts)
+  {
+    // Preserva a referência para acumular movimento lento. Reiniciar a janela
+    // aqui poderia fazer uma falha escapar para sempre com poucos pulsos.
+    return;
+  }
+
+  // Divide a contagem pela potência aplicada para permitir curvas normais, nas
+  // quais os dois lados giram de propósito em velocidades diferentes.
+  const float leftProgress = leftDelta / fabs(currentLeftPower);
+  const float rightProgress = rightDelta / fabs(currentRightPower);
+  const float leadingProgress = max(leftProgress, rightProgress);
+
+  if (leftProgress < leadingProgress * kTractionMinimumProgressRatio)
+  {
+    latchTractionFault(TractionFaultSide::Left);
+    return;
+  }
+  if (rightProgress < leadingProgress * kTractionMinimumProgressRatio)
+  {
+    latchTractionFault(TractionFaultSide::Right);
+    return;
+  }
+
+  tractionMonitorLeftStartCount = currentLeftCount;
+  tractionMonitorRightStartCount = currentRightCount;
+  tractionMonitorStartMs = millis();
+}
+
 void updateStartButton()
 {
   constexpr uint32_t kDebounceMs = 30;
+  const uint32_t nowMs = millis();
   const bool rawPressed = digitalRead(kStartButtonPin) == LOW;
-  if (rawPressed != startButtonPressed && millis() - lastButtonChangeMs >= kDebounceMs)
+  if (rawPressed != startButtonPressed && nowMs - lastButtonChangeMs >= kDebounceMs)
   {
     startButtonPressed = rawPressed;
-    lastButtonChangeMs = millis();
+    lastButtonChangeMs = nowMs;
+    if (startButtonPressed)
+    {
+      startButtonPressedSinceMs = nowMs;
+      startButtonLongPressHandled = false;
+    }
+    else
+    {
+      const uint32_t pressDurationMs = nowMs - startButtonPressedSinceMs;
+      if (!startButtonLongPressHandled && startButtonPressedSinceMs != 0 &&
+          pressDurationMs >= kStartButtonMinimumPressMs)
+      {
+        // O evento só é emitido ao soltar para distinguir um toque curto da
+        // pressão de 5 segundos reservada à calibração dos sensores.
+        Serial.println("START_BUTTON,SHORT");
+      }
+      startButtonPressedSinceMs = 0;
+      startButtonLongPressHandled = false;
+    }
+  }
+
+  if (startButtonPressed && !startButtonLongPressHandled &&
+      nowMs - startButtonPressedSinceMs >= kSensorCalibrationHoldMs)
+  {
+    startButtonLongPressHandled = true;
+    runSensorCalibration();
   }
 }
 
+#ifndef OBR_ESP32_RASPBERRY_MODE
 const char* controlSourceName()
 {
   if (controlSource == ControlSource::Dashboard)
@@ -533,11 +1100,19 @@ String telemetryJson()
   json += "\"uptimeMs\":" + String(millis());
   json += ",\"wifiClients\":" + String(WiFi.softAPgetStationNum());
   json += ",\"emergencyStop\":" + String(emergencyStopActive ? "true" : "false");
+  json += ",\"tractionFaultActive\":" + String(tractionFaultActive ? "true" : "false");
+  json += ",\"tractionFaultSide\":" + String(static_cast<uint8_t>(tractionFaultSide));
   json += ",\"dashboardArmed\":" + String(dashboardArmed ? "true" : "false");
   json += ",\"startButtonPressed\":" + String(startButtonPressed ? "true" : "false");
+  json += ",\"calibrationActive\":" + String(calibrationActive ? "true" : "false");
   json += ",\"mpuReady\":" + String(mpuReady ? "true" : "false");
   json += ",\"mpuAddress\":" + String(mpuAddress);
   json += ",\"pca9685Ready\":" + String(pca9685Ready ? "true" : "false");
+  json += ",\"oledReady\":" + String(oledReady ? "true" : "false");
+  json += ",\"oledAddress\":" + String(oledAddress);
+  json += ",\"motorDriverAwake\":" + String(motorDriverAwake ? "true" : "false");
+  json += ",\"motorSleepPinHigh\":" +
+          String(gpio_get_level(static_cast<gpio_num_t>(kMotorSleepPin)) ? "true" : "false");
   json += ",\"ultrasonicValid\":" + String(sensors.ultrasonicValid ? "true" : "false");
   json += ",\"controlSource\":\"" + String(controlSourceName()) + "\"";
   json += ",\"lastCommandAgeMs\":" + String(millis() - lastMotorCommandMs);
@@ -557,6 +1132,7 @@ String telemetryJson()
   addJsonFloat(json, "gyroY", sensors.gyroY);
   addJsonFloat(json, "gyroZ", sensors.gyroZ);
   addJsonFloat(json, "yawZ", sensors.yawZ);
+  addJsonFloat(json, "rampAngleDegrees", sensors.rampAngleDegrees);
   addJsonFloat(json, "imuTemperatureCelsius", sensors.imuTemperatureCelsius);
   json += '}';
   return json;
@@ -600,6 +1176,8 @@ void setupDashboardRoutes()
                 sendJsonResponse(409, "{\"error\":\"Libere o E-Stop antes de habilitar\"}");
                 return;
               }
+              clearTractionFault();
+              calibrationStopLatched = false;
               dashboardArmed = true;
               controlSource = ControlSource::Dashboard;
               lastMotorCommandMs = millis();
@@ -642,17 +1220,18 @@ void setupDashboardRoutes()
               sendJsonResponse(200, "{\"ok\":true}"); });
   server.on("/api/reset-encoders", HTTP_POST, []()
             {
-              portENTER_CRITICAL(&encoderMux);
-              leftEncoderCount = 0;
-              rightEncoderCount = 0;
-              portEXIT_CRITICAL(&encoderMux);
-              lastLeftEncoderRateCount = 0;
-              lastRightEncoderRateCount = 0;
+              resetEncoderData();
               sendJsonResponse(200, "{\"ok\":true}"); });
+  server.on("/api/calibrate-sensors", HTTP_POST, []()
+            {
+              runSensorCalibration();
+              sendJsonResponse(mpuReady ? 200 : 503,
+                               mpuReady ? "{\"ok\":true}" : "{\"error\":\"MPU6050 indisponivel\"}"); });
   server.onNotFound([]()
                     { sendJsonResponse(404, "{\"error\":\"Endpoint nao encontrado\"}"); });
   server.begin();
 }
+#endif
 
 void sendUartError(const char* message)
 {
@@ -685,6 +1264,18 @@ void handleUartCommand(const char* line)
   {
     stopMotorOutputs();
     emergencyStopActive = false;
+    calibrationStopLatched = false;
+    clearTractionFault();
+    return;
+  }
+  if (strcmp(line, "RESET_ENCODERS") == 0)
+  {
+    resetEncoderData();
+    return;
+  }
+  if (strcmp(line, "CALIBRATE_SENSORS") == 0)
+  {
+    runSensorCalibration();
     return;
   }
 
@@ -792,7 +1383,31 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(sensors.leftEncoderRate, 1);
   Serial.print(',');
-  Serial.println(sensors.rightEncoderRate, 1);
+  Serial.print(sensors.rightEncoderRate, 1);
+  Serial.print(',');
+  Serial.print(sensors.rampAngleDegrees, 2);
+  Serial.print(',');
+  Serial.print(sensors.gyroX, 2);
+  Serial.print(',');
+  Serial.print(sensors.gyroY, 2);
+  Serial.print(',');
+  Serial.print(sensors.imuTemperatureCelsius, 2);
+  Serial.print(',');
+  Serial.print(oledReady ? 1 : 0);
+  Serial.print(',');
+  Serial.print(gpio_get_level(static_cast<gpio_num_t>(kMotorSleepPin)) ? 1 : 0);
+  Serial.print(',');
+  Serial.print(emergencyStopActive ? 1 : 0);
+  Serial.print(',');
+  Serial.print(sensors.batteryAdcMillivolts);
+  Serial.print(',');
+  Serial.print(millis());
+  Serial.print(',');
+  Serial.print(calibrationActive ? 1 : 0);
+  Serial.print(',');
+  Serial.print(tractionFaultActive ? 1 : 0);
+  Serial.print(',');
+  Serial.println(static_cast<uint8_t>(tractionFaultSide));
 }
 
 void enforceMotorTimeout()
@@ -814,7 +1429,7 @@ void enforceMotorTimeout()
 void setup()
 {
   // Os motores são a primeira parte configurada pelo setup(). Sensores, UART
-  // e Wi-Fi só podem iniciar depois que todas as entradas do driver estão LOW.
+  // e o modo opcional de bancada só iniciam depois que as entradas estão LOW.
   setupMotors();
 
   // A UART0 usa exatamente GPIO1/GPIO3, conforme a fiação com a Raspberry.
@@ -829,9 +1444,11 @@ void setup()
   analogSetPinAttenuation(kBatteryAdcPin, ADC_11db);
   setupI2cDevices();
 
+#ifndef OBR_ESP32_RASPBERRY_MODE
   WiFi.mode(WIFI_AP);
   WiFi.softAP(kWifiSsid, kWifiPassword);
   setupDashboardRoutes();
+#endif
 
   lastMotorCommandMs = millis();
   lastEncoderRateMs = millis();
@@ -840,12 +1457,16 @@ void setup()
 
 void loop()
 {
+#ifndef OBR_ESP32_RASPBERRY_MODE
   server.handleClient();
+#endif
   readUartCommands();
   updateStartButton();
   readImuIfDue();
   readBatteryIfDue();
+  updateOledIfDue();
   updateEncoderRatesIfDue();
+  enforceTractionSafety();
   triggerUltrasonicIfDue();
   consumeUltrasonicSample();
   enforceMotorTimeout();

@@ -28,16 +28,22 @@ double currentUnixSeconds()
 }
 }
 
-void LineFollower::update(RobotState& robotState)
+void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& esp32Telemetry)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
     {
-        phase_ = Phase::Following;
-        activeGreenAction_ = "NENHUM";
-        lastLineError_ = 0.0;
+        resetMissionState();
         return;
     }
+
+    if (snapshot.autonomousMission == AutonomousMission::TurnRight90)
+    {
+        updateTurnRight90(robotState, esp32Telemetry);
+        return;
+    }
+
+    turn90Active_ = false;
 
     const auto now = std::chrono::steady_clock::now();
     if (phase_ != Phase::Following)
@@ -64,6 +70,80 @@ void LineFollower::update(RobotState& robotState)
     followLine(robotState, status);
 }
 
+void LineFollower::updateTurnRight90(
+    RobotState& robotState, const Esp32TelemetrySnapshot& esp32Telemetry)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const bool imuReady = esp32Telemetry.sensorFresh && esp32Telemetry.mpuOk &&
+                          std::isfinite(esp32Telemetry.yawZDeg);
+
+    if (!turn90Active_)
+    {
+        if (!imuReady)
+        {
+            // Sem uma referência angular válida, a missão não pode iniciar.
+            robotState.driveAutonomous(0.0, 0.0);
+            return;
+        }
+
+        turn90Active_ = true;
+        turn90StartYawDegrees_ = esp32Telemetry.yawZDeg;
+        turn90StartedAt_ = now;
+        std::cout << "Turn-right-90 mission started at yaw="
+                  << turn90StartYawDegrees_ << " deg\n";
+    }
+
+    const auto elapsed = now - turn90StartedAt_;
+    if (elapsed > std::chrono::milliseconds(config::kTurn90TimeoutMs))
+    {
+        // O timeout evita manter os motores ativos se o ângulo parar de mudar.
+        robotState.stop();
+        turn90Active_ = false;
+        std::cout << "Turn-right-90 mission stopped by timeout\n";
+        return;
+    }
+
+    if (!imuReady)
+    {
+        // Uma leitura perdida durante o giro para os motores imediatamente.
+        robotState.driveAutonomous(0.0, 0.0);
+        return;
+    }
+
+    const double turnedDegrees = angularDistanceDegrees(
+        turn90StartYawDegrees_, esp32Telemetry.yawZDeg);
+    const double remainingDegrees = config::kTurn90TargetDegrees - turnedDegrees;
+    if (remainingDegrees <= config::kTurn90StopToleranceDegrees)
+    {
+        robotState.stop();
+        turn90Active_ = false;
+        std::cout << "Turn-right-90 mission completed at "
+                  << turnedDegrees << " deg\n";
+        return;
+    }
+
+    const double turnPower = remainingDegrees <= config::kTurn90SlowdownDegrees
+                                 ? config::kTurn90FinePower
+                                 : config::kTurn90Power;
+    // Potência positiva à esquerda e negativa à direita gira no mesmo sentido
+    // usado pelas manobras de curva à direita já existentes.
+    robotState.driveAutonomous(turnPower, -turnPower);
+}
+
+void LineFollower::resetMissionState()
+{
+    phase_ = Phase::Following;
+    activeGreenAction_ = "NENHUM";
+    lastLineError_ = 0.0;
+    turn90Active_ = false;
+}
+
+bool LineFollower::cameraReady() const
+{
+    const CameraStatus status = readCameraStatus();
+    return status.valid && status.active && status.fps > 0.0 && isFresh(status);
+}
+
 LineFollower::CameraStatus LineFollower::readCameraStatus() const
 {
     std::ifstream file(config::kCameraStatusPath);
@@ -84,6 +164,7 @@ LineFollower::CameraStatus LineFollower::readCameraStatus() const
     status.valid = true;
     status.active = getJsonBool(json, "active", true);
     status.lineDetected = getJsonBool(json, "lineDetected", false);
+    status.fps = getJsonNumber(json, "fps", 0.0);
     status.lineError = getJsonNumber(json, "lineError", 0.0);
     status.timestampSeconds = getJsonNumber(json, "timestamp", 0.0);
     status.greenAction = getJsonString(json, "greenAction", "NENHUM");
@@ -188,6 +269,14 @@ bool LineFollower::isFresh(const CameraStatus& status)
 bool LineFollower::isGreenAction(const std::string& action)
 {
     return action == "ESQUERDA" || action == "DIREITA" || action == "MEIA VOLTA";
+}
+
+double LineFollower::angularDistanceDegrees(double first, double second)
+{
+    // Normaliza a diferença para [-180, 180]. Isso mantém a medição correta
+    // quando o yaw atravessa a transição entre +180 e -180 graus.
+    double difference = std::fmod(second - first + 540.0, 360.0) - 180.0;
+    return std::abs(difference);
 }
 
 double LineFollower::getJsonNumber(const std::string& json, const std::string& key, double fallback)

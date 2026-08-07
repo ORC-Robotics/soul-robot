@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.102",
+    [string]$HostName = "192.168.0.106",
     [string]$User = "obr",
     [string]$RemoteDir = "/home/obr/OBR2026K",
     [string]$Target = "robot_test",
@@ -27,6 +27,7 @@ function Invoke-Checked {
 $workspace = Split-Path -Parent $PSScriptRoot
 $remote = "$User@$HostName"
 $remoteBuild = "$RemoteDir/build"
+$remoteStagingBuild = "$RemoteDir/.build-staging"
 $remoteCameraPattern = "$RemoteDir/scripts/[c]amera_line_frame.py"
 $remoteRunScript = "$RemoteDir/scripts/run_robot.sh"
 $sshArgs = @()
@@ -42,6 +43,10 @@ if (Test-Path $KeyPath) {
 Write-Host "Deploying to ${remote}:$RemoteDir"
 
 Invoke-Checked ssh @($sshArgs + @($remote, "mkdir -p '$RemoteDir' '$remoteBuild'"))
+
+# Para o serviço antes de trocar código ou binário. Se o build falhar, o robô
+# permanece parado e o executável válido anterior não é substituído.
+Invoke-Checked ssh @($sshArgs + @($remote, "sudo systemctl stop '$ServiceName.service' >/dev/null 2>&1 || true"))
 Invoke-Checked scp @(
     $scpArgs +
     "$workspace/CMakeLists.txt",
@@ -65,11 +70,8 @@ Invoke-Checked scp @(
     "$workspace/scripts",
     "${remote}:$RemoteDir/"
 )
-Invoke-Checked ssh @(
-    $sshArgs +
-    $remote,
-    "cd '$RemoteDir' && cmake -S . -B build && cmake --build build"
-)
+$atomicBuildCommand = "cd '$RemoteDir' && cmake -S . -B '$remoteStagingBuild' && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
+Invoke-Checked ssh @($sshArgs + @($remote, $atomicBuildCommand))
 
 Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"
 
@@ -77,7 +79,7 @@ $stopOldCameraCommand = "pkill -f '$remoteCameraPattern' >/dev/null 2>&1 || true
 $prepareScriptsCommand = "cd '$RemoteDir' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$remoteRunScript'"
 $installServiceCommand = "$prepareScriptsCommand && sudo cp '$RemoteDir/scripts/$ServiceName.service' '/etc/systemd/system/$ServiceName.service' && sudo systemctl daemon-reload && sudo systemctl enable $ServiceName.service >/dev/null 2>&1"
 $restartServiceCommand = "$installServiceCommand && sudo systemctl restart $ServiceName.service"
-$statusServiceCommand = "sudo systemctl status $ServiceName.service --no-pager || true"
+$statusServiceCommand = "sudo systemctl is-active --quiet $ServiceName.service && sudo systemctl status $ServiceName.service --no-pager"
 
 if ($NoRun) {
     Write-Host "Robot was deployed but is not running."

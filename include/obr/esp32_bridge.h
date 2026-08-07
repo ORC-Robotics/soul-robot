@@ -20,6 +20,39 @@ struct Esp32TelemetrySnapshot
     double accelX = 0.0;
     double accelY = 0.0;
     double accelZ = 0.0;
+    double gyroXDegPerSec = 0.0;
+    double gyroYDegPerSec = 0.0;
+    double rampAngleDeg = 0.0;
+    double imuTemperatureCelsius = 0.0;
+    double batteryVoltage = 0.0;
+    long long batteryAdcMillivolts = 0;
+    long long leftEncoderCount = 0;
+    long long rightEncoderCount = 0;
+    double leftEncoderRate = 0.0;
+    double rightEncoderRate = 0.0;
+    double appliedLeftPower = 0.0;
+    double appliedRightPower = 0.0;
+    bool startButtonPressed = false;
+    unsigned long long startButtonPressSequence = 0;
+    bool pca9685Ok = false;
+    bool oledOk = false;
+    bool motorSleepPinHigh = false;
+    bool emergencyStopActive = false;
+    bool tractionFaultActive = false;
+    int tractionFaultSide = 0;
+    bool calibrationActive = false;
+    bool calibrationStatusKnown = false;
+    bool lastCalibrationSucceeded = false;
+    long long esp32UptimeMs = 0;
+
+    // Indica se a ESP32 está comunicando e se o driver pode operar com segurança.
+    // Falta de telemetria, nSLEEP baixo ou E-Stop local impedem o estado pronto.
+    bool readyForOperation() const
+    {
+        return serialOpen && sensorFresh && motorSleepPinHigh &&
+               !tractionFaultActive &&
+               !emergencyStopActive && !calibrationActive;
+    }
 };
 
 // Faz a comunicação UART entre a Raspberry Pi e a ESP32.
@@ -37,6 +70,8 @@ public:
     bool sendStop();
     bool sendEmergencyStop();
     bool sendClearEmergencyStop();
+    bool sendResetEncoders();
+    bool sendCalibrateSensors();
 
     Esp32TelemetrySnapshot telemetrySnapshot() const;
 

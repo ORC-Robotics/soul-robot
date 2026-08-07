@@ -2,6 +2,7 @@
 
 #include "obr/esp32_bridge.h"
 #include "obr/robot_state.h"
+#include "obr/status_led.h"
 #include "obr/telemetry.h"
 
 #include <atomic>
@@ -103,7 +104,8 @@ using SocketLength = socklen_t;
 class DashboardServer
 {
 public:
-    DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32);
+    DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
+                    StatusLed& readyLed);
     ~DashboardServer();
 
     bool start();
@@ -113,6 +115,7 @@ private:
     RobotState& robotState_;
     Telemetry& telemetry_;
     Esp32Bridge& esp32_;
+    StatusLed& readyLed_;
     std::atomic<bool> running_{false};
     SocketHandle server_{};
     std::thread acceptThread_;

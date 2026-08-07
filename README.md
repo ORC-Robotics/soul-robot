@@ -1,9 +1,12 @@
 # OBR2026K
 
-Código do robô OBR 2026. A etapa atual pode ser testada somente com a ESP32: ela
-cria a própria rede Wi-Fi, serve um dashboard, controla os DRV8833 e lê MPU6050,
-PCA9685, ultrassônico, encoders, botão de partida e tensão da bateria. A ponte
-UART e o programa C++ da Raspberry Pi permanecem no projeto para a próxima etapa.
+> Para conhecer arquitetura, eletrônica, protocolos, operação, segurança,
+> limitações e informações que ainda precisam ser preenchidas pela equipe, leia
+> o [Guia completo do projeto](docs/GUIA_COMPLETO_DO_PROJETO.md).
+
+Código do robô OBR 2026. Existem dois firmwares para a ESP32: um modo de bancada
+com Wi-Fi e dashboard local, e o modo principal controlado pela Raspberry Pi via
+UART. Os dois compartilham pinos, sensores, filtros e proteções de motor.
 
 ## Visão geral
 
@@ -11,7 +14,7 @@ O dashboard autônomo da ESP32 permite:
 
 - acionar os motores esquerdo e direito em teste de bancada;
 - ver distância frontal e tensão da bateria;
-- acompanhar aceleração, giro, yaw e temperatura do MPU6050;
+- acompanhar aceleração, giro, inclinação de rampa e temperatura do MPU6050;
 - acompanhar contagem e taxa dos dois encoders;
 - ver o estado do botão, do PCA9685 e dos clientes Wi-Fi;
 - usar parada de emergência e timeout de comando sem depender da Raspberry Pi.
@@ -38,7 +41,11 @@ src/telemetry/
   Leituras simples de telemetria.
 
 esp32/obr_esp32_bridge/
-  Sketch principal da ESP32, dashboard e configuração centralizada de pinos.
+  Firmware de bancada da ESP32 com Wi-Fi e dashboard local.
+
+esp32/obr_esp32_main/
+  Firmware principal da ESP32 para trabalhar com a Raspberry exclusivamente
+  pela UART, sem Wi-Fi, HTTP ou dashboard local.
 
 include/obr/config.h
   Pinos, portas, limites e constantes do robô.
@@ -51,7 +58,9 @@ placa ESP32 compatível e instale:
 
 - `Adafruit MPU6050`;
 - `Adafruit Unified Sensor`;
-- `Adafruit PWM Servo Driver Library`.
+- `Adafruit PWM Servo Driver Library`;
+- `Adafruit GFX Library`;
+- `Adafruit SSD1306`.
 
 Depois de gravar o sketch:
 
@@ -62,14 +71,47 @@ Depois de gravar o sketch:
 5. Levante as rodas, energize os drivers e clique em `Habilitar motores`.
 
 Os sliders e os botões de frente e ré permitem controlar cada lado de -100% a
-100%. Se o navegador deixar de enviar comandos por 500 ms, a ESP32 zera os
-motores e remove a habilitação. O
+100%. Como os motores reais não iniciam abaixo de 60% de PWM, o firmware remapeia
+qualquer comando diferente de zero para a faixa útil de 60% a 100%. O DRV8833
+é habilitado uma única vez durante o `setup()` e permanece ativo. Parar,
+desabilitar, acionar o E-Stop ou atingir o timeout apenas zera os quatro PWMs,
+sem repetir a inicialização do driver. Se o navegador deixar de enviar comandos
+por 500 ms, a ESP32 zera os motores e remove a habilitação. O
 E-Stop permanece travado até o botão `Liberar E-Stop` ser usado; liberar não
 volta a movimentar o robô.
 
-O botão do GPIO27 é lido e aparece na telemetria, mas não inicia movimento
-sozinho. A ação de competição desse botão será ligada ao modo autônomo quando a
-estratégia correspondente for implementada.
+Os botões de curva comandam os lados em sentidos opostos e com 100% de PWM.
+Essa potência evita que o lado com maior atrito permaneça dentro da faixa em
+que o motor recebe corrente, mas ainda não consegue iniciar o movimento.
+Depois de usar `Habilitar motores`, o teclado também pode controlar o robô:
+`W` avança, `S` recua, `A` gira para a esquerda e `D` gira para a direita.
+Durante um giro, os dois lados se movem em sentidos opostos; A/D têm prioridade
+sobre W/S quando duas teclas são pressionadas. Soltar as teclas, trocar de janela
+ou ocultar a página zera imediatamente os dois comandos de motor.
+
+O firmware nunca permite que somente um lado seja movimentado. Se o dashboard
+ou a futura Raspberry enviar um lado diferente de zero e o outro em zero, o
+comando unilateral será convertido em giro com os dois lados em sentidos opostos.
+Os sliders aplicam a mesma regra e mostram imediatamente o comando convertido.
+
+Além de validar o comando, a ESP32 confirma a resposta física pelos encoders. Se
+um lado avançar e o outro praticamente não responder durante 250 ms, ela zera os
+quatro PWMs e trava a proteção de tração. O dashboard da Raspberry informa qual
+lado falhou. Depois de verificar driver, fiação e mecânica, use `Manual` ou
+`Autônomo` para fazer um rearme explícito; apenas `Parar` não apaga a falha.
+
+> **Atenção:** a medição de uma bateria de 12 V no GPIO36 não significa que
+> essa tensão possa alimentar diretamente o DRV8833. O VM do driver deve ficar
+> dentro da faixa recomendada de 2,7 V a 10,8 V. A bateria de níquel pode chegar
+> a 14,0 V, portanto o regulador de 8 V dos motores deve permanecer no circuito.
+
+O botão do GPIO27 é lido e aparece na telemetria. Um toque curto, confirmado ao
+soltar o botão, inicia na Raspberry a missão autônoma selecionada no dashboard,
+desde que o sistema esteja pronto, sem E-Stop e com o robô parado. Ao mantê-lo
+pressionado continuamente por 5 segundos, a ESP32 para os motores, zera
+encoders, ângulos e filtros de navegação e recalibra o MPU6050. Durante esse
+procedimento, mantenha o robô completamente imóvel. Ao terminar, os motores
+continuam bloqueados até um novo comando explícito de Manual ou Auto.
 
 ## Pinagem da ESP32
 
@@ -80,7 +122,8 @@ As constantes ficam em `esp32/obr_esp32_bridge/robot_config.h`.
 | GPIO32 | Ultrassônico TRIG | Disparo frontal |
 | GPIO33 | Ultrassônico ECHO | Leitura frontal, somente até 3,3 V |
 | GPIO27 | Start button | Entrada com pull-up, botão para GND |
-| GPIO14 / GPIO13 | I2C SCL / SDA | MPU6050, PCA9685 e futuro SSD1306 |
+| GPIO14 / GPIO13 | I2C SCL / SDA | MPU6050, PCA9685 e SSD1306 128×64 |
+| GPIO26 | DRV8833 nSLEEP | LOW desliga as pontes; HIGH libera o driver |
 | GPIO5 / GPIO18 | DRV8833 esquerdo IN1 / IN2 | Dois motores do lado esquerdo |
 | GPIO16 / GPIO17 | DRV8833 direito IN1 / IN2 | Dois motores do lado direito |
 | GPIO19 / GPIO21 | Encoder esquerdo A / B | Contagem quadrature nas quatro bordas |
@@ -109,9 +152,26 @@ As constantes ficam em `esp32/obr_esp32_bridge/robot_config.h`.
 
 O PCA9685 é detectado em `0x40`, configurado em 50 Hz e inicia com os 16 canais
 desligados. Ainda não há movimento de servo porque os atuadores e limites de
-pulso não foram informados. O MPU6050 é procurado em `0x68` e `0x69`.
+pulso não foram informados. O MPU6050 é procurado em `0x68` e `0x69`. O OLED
+SSD1306 128×64 é procurado em `0x3C` e `0x3D` e mostra tensão da bateria,
+ângulo de giro e inclinação frontal da rampa. A inclinação usa um filtro
+complementar que combina acelerômetro e giroscópio; o giro usa calibração no
+boot, filtro passa-baixas e zona morta para reduzir variações quando parado.
+A bateria ocupa a área principal do OLED, com tensão grande e uma barra visual;
+giro e rampa permanecem em uma faixa compacta na parte inferior.
+A barra usa 10,5 V como vazio e 14,0 V como cheio para a bateria de níquel de
+12 V instalada no robô. Ela é uma referência visual e não uma estimativa exata
+de capacidade restante sob todas as condições de carga.
+Durante a calibração, a OLED substitui temporariamente essa tela por um indicador
+animado e uma barra baseada nas amostras reais do MPU6050. Ao terminar, mostra
+`PRONTO` ou `FALHOU` por aproximadamente 900 ms e volta automaticamente à tensão
+da bateria e aos ângulos.
 
-## Comunicação futura com a Raspberry Pi
+## Firmware principal com Raspberry Pi
+
+Abra `esp32/obr_esp32_main/obr_esp32_main.ino` no Arduino IDE para gravar a
+versão principal. Esse firmware não cria rede Wi-Fi e aceita movimento somente
+pela UART da Raspberry, mantendo timeout e E-Stop locais na ESP32.
 
 A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 `/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
@@ -120,7 +180,16 @@ A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 | --- | --- | --- |
 | GPIO14 / TXD | RX / GPIO3 | comandos para a ESP32 |
 | GPIO15 / RXD | TX / GPIO1 | telemetria da ESP32 |
+| GPIO26 | — | LED ativo em HIGH que indica sistema pronto e telemetria recente |
 | GND | GND | referência elétrica comum |
+
+O LED da Raspberry inicia apagado. Ele só acende quando `/dev/serial0` está
+aberta, a Raspberry recebe telemetria recente, o `nSLEEP` está em HIGH, nenhum
+E-Stop ou calibração está ativo e a câmera já publicou estado recente com FPS
+maior que zero. Se uma dessas condições deixar de ser atendida, o LED apaga
+automaticamente. O navegador ainda pode levar uma pequena fração de segundo para
+abrir e decodificar o stream MJPEG, mas, quando o LED acende, o processo da câmera
+na Raspberry já está produzindo quadros.
 
 Ative a UART serial da Raspberry sem console de login antes de integrar:
 
@@ -137,11 +206,15 @@ O comportamento esperado é:
 
 - ao ligar, os GPIOs dos motores são forçados para LOW antes do `setup()` e
   permanecem parados até receber um comando válido;
-- `Desabilitar` e `Parar` zeram os comandos;
-- comandos do dashboard direto só são aceitos depois de `Habilitar motores`;
-- se o dashboard parar de enviar comandos, os motores param por timeout;
+- o GPIO26 mantém o DRV8833 em sleep somente enquanto os PWMs são configurados no boot;
+- depois do `setup()`, o GPIO26 permanece em HIGH e todas as paradas zeram os quatro PWMs;
+- no firmware de bancada, comandos do dashboard só são aceitos depois de `Habilitar motores`;
+- no firmware principal, somente comandos recebidos da Raspberry pela UART controlam movimento;
+- se o dashboard de bancada ou a Raspberry parar de enviar comandos, os motores param por timeout;
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
+- se somente um lado responder pelos encoders, a ESP32 zera os quatro PWMs e
+  mantém a falha de tração travada até um rearme explícito;
 - o E-Stop tem prioridade sobre dashboard e UART;
 - ao encerrar o programa, o código envia `STOP` para a ESP32.
 
@@ -181,8 +254,12 @@ Na pasta do projeto:
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1
 ```
 
-O deploy copia o código para `/home/obr/OBR2026K`, compila na Raspberry e
-reinicia o serviço `obr-robot` quando ele já está instalado.
+O deploy copia o código para `/home/obr/OBR2026K`, para o serviço e compila em
+`.build-staging`. O executável em uso só é substituído depois que o novo build
+termina e passa pela validação de tamanho e permissão. A troca é atômica: se a
+compilação falhar ou for interrompida, um binário parcial ou vazio nunca é
+instalado e o robô permanece parado. Depois da troca, o deploy reinicia o serviço
+`obr-robot` e falha claramente se ele não ficar ativo.
 
 Se precisar escolher o host manualmente:
 
@@ -262,6 +339,11 @@ bash scripts/install-service.sh
 Depois disso, a Raspberry inicia o programa automaticamente no boot. O deploy
 normal já reinicia o serviço com a versão nova.
 
+Antes de iniciar câmera e controle, `run_robot.sh` também confirma que
+`build/robot_test` existe, não está vazio e possui permissão de execução. Em caso
+de falha, o motivo aparece no `journalctl` e o systemd limita reinicializações
+rápidas para não permanecer em um ciclo infinito.
+
 Comandos úteis na Raspberry:
 
 ```sh
@@ -283,6 +365,29 @@ Se o nome não resolver na rede, use o IP atual da Raspberry:
 ```txt
 http://192.168.0.104:8080
 ```
+
+No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
+ré; `A/D` giram usando os dois lados em sentidos opostos. Soltar a tecla, trocar
+de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
+nos modos Parado, Autônomo ou E-Stop.
+
+O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
+é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
+por um toque curto no Start físico. Trocar a seleção força o robô para o modo
+Parado antes de armar a nova estratégia.
+
+O modo de teste `GIRO 90° À DIREITA` usa o yaw do MPU6050 como referência
+relativa. Ele reduz a potência perto do alvo, para automaticamente próximo de
+90° e possui timeout de 3,5 segundos. Se os dados do MPU6050 ficarem inválidos
+durante o giro, os motores são zerados. Faça o primeiro teste com as rodas
+suspensas e depois ajuste potência e tolerância em `include/obr/config.h`.
+
+O botão `Resetar e calibrar sensores` para o robô, zera encoders e referências
+de orientação e recalibra o giroscópio do MPU6050. O mesmo procedimento pode ser
+iniciado sem o dashboard ao manter o botão Start da ESP32 pressionado por 5
+segundos. Em ambos os casos, deixe o robô imóvel durante a calibração. O painel
+mostra quando ela está em andamento e se terminou com sucesso; o movimento só é
+liberado novamente por uma ação explícita em Manual ou Auto.
 
 ### Imagem da câmera
 
@@ -314,7 +419,9 @@ Esse script usa a Pi Camera, detecta a linha preta, desenha o contorno e o erro
 horizontal, e transmite vídeo em MJPEG para o dashboard. A configuração padrão
 usa `960x540`, JPEG `82` e stream alvo de `30 FPS`. A detecção da linha roda em
 uma cópia menor da imagem para preservar FPS sem borrar a visualização do
-dashboard. Se o script não estiver rodando ou a câmera falhar, o painel continua
+dashboard. Como a câmera está montada de cabeça para baixo, o pipeline do
+Picamera2 aplica rotação de 180° antes da visualização e do processamento da
+linha. Se o script não estiver rodando ou a câmera falhar, o painel continua
 funcionando e mostra o aviso de câmera indisponível.
 
 Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
