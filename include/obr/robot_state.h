@@ -13,6 +13,19 @@ enum class AutonomousMission
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
 const char* autonomousMissionName(AutonomousMission mission);
 
+// Descreve a etapa atual da missão para telemetria e diagnóstico no dashboard.
+// Estes dados não comandam os motores; apenas refletem a decisão já tomada pelo controle autônomo.
+struct AutonomousStatus
+{
+    std::string phase = "stopped";
+    std::string action = "Missão parada";
+    bool lineDetected = false;
+    double rawLineError = 0.0;
+    double filteredLineError = 0.0;
+    double steeringCorrection = 0.0;
+    double progressPercent = 0.0;
+};
+
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
 struct RobotSnapshot
 {
@@ -21,6 +34,9 @@ struct RobotSnapshot
     bool emergencyStop = false;
     double left = 0.0;
     double right = 0.0;
+    bool rawMotorCommand = false;
+    unsigned long long autonomousRunSequence = 0;
+    AutonomousStatus autonomousStatus;
 };
 
 // Guarda modo, parada de emergência e comandos de motor recebidos do dashboard.
@@ -32,11 +48,14 @@ public:
 
     void start();
     void startAutonomous();
+    bool tryStartAutonomous();
     void setAutonomousMission(AutonomousMission mission);
     void stop();
     void emergencyStop();
     void drive(double left, double right);
+    void driveRawDiagnostic(double left, double right);
     void driveAutonomous(double left, double right);
+    void updateAutonomousStatus(const AutonomousStatus& status);
     void enforceCommandTimeout(std::chrono::milliseconds timeout);
 
 private:

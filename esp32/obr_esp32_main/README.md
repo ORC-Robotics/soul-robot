@@ -20,7 +20,7 @@ da ESP32, mantenha a Raspberry desligada ou desconectada da UART0.
 ## Comandos recebidos
 
 ```text
-MOTOR,<esquerda>,<direita>,<emergencia>,<retaMin>,<retaMax>,<giroMin>,<giroMax>
+MOTOR,<esquerda>,<direita>,<emergencia>
 STOP
 ESTOP
 CLEAR_ESTOP
@@ -29,22 +29,16 @@ CALIBRATE_SENSORS
 PING
 ```
 
-As potências e os limites ficam entre `-1.000` e `1.000`. O perfil padrão usa
-55%–60% em reta e 70%–80% em giro. O firmware bloqueia movimento unilateral: se
-somente um lado for diferente de zero, o comando é convertido em giro com os
-dois lados em sentidos opostos. O formato antigo de `MOTOR` com três campos
-continua aceito e preserva os limites já ativos na ESP32.
+As potências ficam entre `-1.000` e `1.000` e são aplicadas diretamente ao PWM.
+Os lados esquerdo e direito são independentes: `MOTOR,0.050,0.000,0` aplica 5%
+somente ao lado esquerdo. Não existe perfil, mínimo, boost ou recuperação automática.
 
 Se nenhum comando de motor chegar durante 500 ms, os dois lados são zerados.
 O E-Stop permanece travado até `CLEAR_ESTOP` e tem prioridade sobre qualquer
 comando de movimento.
 
-Enquanto os dois lados recebem potência, a ESP32 também compara o avanço dos
-dois encoders em janelas de 250 ms. Duas janelas desequilibradas iniciam uma
-recuperação automática: o nSLEEP continua HIGH, os dois PWMs são sincronizados e
-recebem um pulso de 100% por 180 ms. O comando original volta automaticamente,
-sem travar Manual ou Autônomo. E-Stop, `STOP` e timeout continuam interrompendo
-qualquer recuperação imediatamente.
+O nSLEEP permanece HIGH durante a operação. Partidas e inversões aplicam diretamente
+a potência recebida. E-Stop, `STOP` e timeout continuam zerando os motores imediatamente.
 
 `CALIBRATE_SENSORS` para os motores, zera encoders, ângulos e filtros de
 navegação e mede novamente os desvios do giroscópio. O mesmo processo começa ao
@@ -63,20 +57,19 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
-TRACTION_RECOVERY,LEFT
-TRACTION_RECOVERY,RIGHT
 SENSOR,<campos CSV...>
 ```
 
 `START_BUTTON,SHORT` é emitido ao soltar o botão depois de um toque válido. A
-Raspberry usa esse evento para iniciar a missão autônoma selecionada. O evento
-não é emitido quando a pressão alcança os 5 segundos da calibração, impedindo que
-uma tentativa de calibrar também coloque o robô em movimento.
+Raspberry usa esse evento para iniciar a missão selecionada quando estiver parada.
+Em Manual/Autônomo, a telemetria do botão pressionado para o robô imediatamente
+e o evento curto posterior é consumido. O evento não é emitido quando a pressão
+alcança os 5 segundos da calibração, impedindo que uma tentativa de calibrar
+também coloque o robô em movimento.
 
 Os primeiros campos de `SENSOR` preservam o protocolo anterior. Os demais
 incluem bateria, encoders, botão, PCA9685, potências aplicadas, velocidades dos
-encoders, rampa, giroscópio, temperatura, OLED, nSLEEP, E-Stop, uptime e a
-recuperação de tração.
+encoders, rampa, giroscópio, temperatura, OLED, nSLEEP, E-Stop e uptime.
 
 Ordem completa dos campos:
 
@@ -86,8 +79,7 @@ distanciaCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 bateriaV,encoderEsquerdo,encoderDireito,startButton,pcaOk,
 potenciaEsquerda,potenciaDireita,taxaEsquerda,taxaDireita,
 rampa,gyroX,gyroY,temperaturaImu,oledOk,nSleepHigh,estop,
-bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,recuperacaoTracao,ladoRecuperacao,
-retaMin,retaMax,giroMin,giroMax
+bateriaAdcMillivolts,uptimeMs,calibracaoAtiva
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

@@ -106,11 +106,9 @@ flowchart LR
 2. `DashboardServer` valida o tipo do comando e atualiza `RobotState`.
 3. `RobotState` aceita movimento somente no modo manual e limita a faixa.
 4. `MotorController` lê uma cópia do estado e envia `MOTOR` pela UART.
-5. A ESP32 valida novamente o comando, aplica a regra dos dois lados, remapeia a
-   faixa útil de PWM e escreve nos DRV8833.
-6. Os encoders confirmam se ambos os lados responderam.
-7. Um desequilíbrio confirmado aciona recuperação sincronizada; timeout e
-   E-Stop continuam zerando imediatamente os quatro PWMs.
+5. A ESP32 valida novamente o comando e escreve o mesmo valor nos PWMs dos DRV8833.
+6. Os encoders informam no dashboard como cada lado respondeu.
+7. Timeout e E-Stop continuam zerando imediatamente os quatro PWMs.
 
 ### Fluxo autônomo principal
 
@@ -173,8 +171,8 @@ flowchart LR
 | 26 | DRV8833 nSLEEP | LOW desliga pontes; HIGH habilita após PWMs zerados |
 | 5 / 18 | Motor esquerdo IN1 / IN2 | Um comando lógico para os dois motores esquerdos |
 | 16 / 17 | Motor direito IN1 / IN2 | Um comando lógico para os dois motores direitos |
-| 19 / 21 | Encoder esquerdo A / B | Quadrature nas quatro bordas |
-| 22 / 23 | Encoder direito A / B | Quadrature nas quatro bordas |
+| 22 / 23 | Encoder esquerdo A / B | Lado físico validado na PCB; quadrature nas quatro bordas |
+| 19 / 21 | Encoder direito A / B | Lado físico validado na PCB; quadrature nas quatro bordas |
 | 1 | UART TX | ESP32 envia telemetria à Raspberry |
 | 3 | UART RX | ESP32 recebe comandos da Raspberry |
 | 36 | ADC da bateria | Divisor de 47 kΩ / 10 kΩ |
@@ -271,7 +269,7 @@ scripts/obr-robot.service
 | `RobotState` | Guarda modo, missão, E-Stop, potências e idade do comando |
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
-| `MotorController` | Converte estado seguro em mensagens para a ESP32 |
+| `MotorController` | Aplica perfil operacional/calibração e envia comandos seguros para a ESP32 |
 | `LineFollower` | Missão principal, verdes e giro de 90° |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
@@ -334,44 +332,28 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Resolução: 10 bits.
 - Duty máximo: 1023.
 - Saída máxima: 100%.
-- Comandos abaixo de 0,5% são tratados como zero.
-- Reta: comandos úteis são remapeados linearmente para 55%–60%.
-- Giro com os lados opostos: saída contínua entre 70% e 80%.
-- Partidas e recuperações: pulso sincronizado de 100% por 180 ms.
-- Nos testes pelo slider da Raspberry, os traseiros iniciaram em `0.05` e os
-  dianteiros somente em `0.15`. Com o remapeamento anterior, isso correspondia a
-  aproximadamente 62% e 66% de PWM físico. O pulso inicial atual fornece a
-  margem de partida, enquanto a reta pode continuar em potência menor.
+- A ESP32 mantém relação direta: `0.05` é 5%, `0.50` é 50% e `1.00` é 100% de duty.
+- No controle normal, a Raspberry eleva qualquer comando não nulo para pelo menos
+  `0.65` e limita a referência a aproximadamente `0.97` antes da calibração.
+- O lado direito recebe ganho proporcional `0.67 / 0.65`, medido pelos encoders.
+- Os campos exatos do dashboard usam `drive_raw` e ignoram o perfil operacional.
+- A missão isolada de giro de 90° usa comando lógico `0.01`; o perfil o eleva
+  para aproximadamente `0.65 / -0.67`, garantindo a partida dos motores.
+- Zero permanece exatamente zero em parada, timeout, calibração e E-Stop.
 
-Esse remapeamento significa que `0.10` não equivale a 10% de PWM físico. Ele vira
-55,5% em reta e 71% em giro. A interface mostra o valor aplicado pela ESP32.
-Os quatro limites ficam em `include/obr/config.h` e são enviados pela Raspberry
-em cada mensagem `MOTOR`, permitindo ajustá-los com deploy sem regravar a ESP32.
+O software de navegação escolhe uma referência operacional. A interface mostra
+lado a lado essa referência e o PWM efetivamente aplicado pela ESP32.
 
-### Regra contra movimento unilateral
+### Controle independente dos lados
 
-Se apenas um lado receber valor diferente de zero, Raspberry e ESP32 convertem o
-comando em giro no próprio eixo, aplicando potência de módulo equivalente no
-lado parado e sentido oposto. Isso evita arrastar duas rodas de borracha paradas.
+As rodas omni dianteiras eliminam a antiga preocupação com arraste. A Raspberry
+e a ESP32 aceitam um lado em zero e o outro em movimento sem alterar o comando.
 
-### Proteção por encoders
+### Diagnóstico por encoders
 
-Quando os dois lados recebem potência, a ESP32 compara o avanço normalizado:
-
-- janela inicial: 250 ms;
-- decisão somente após pelo menos quatro transições no lado que avançou;
-- o lado mais lento deve alcançar ao menos 20% do progresso do outro;
-- são necessárias duas janelas consecutivas para confirmar o desequilíbrio;
-- após partidas e inversões, existe uma tolerância adicional de 450 ms;
-- uma inversão zera ambos os lados por 15 ms sem baixar o nSLEEP;
-- a recuperação aplica 100% nos dois lados por 180 ms;
-- o comando original volta automaticamente, sem desarmar Manual ou Autônomo;
-- recuperações adicionais são tentadas se o desequilíbrio continuar.
-
-Essa proteção corrige atrasos transitórios sem transformar uma diferença normal
-de partida em parada permanente. Ela compara os lados entre si; se ambos ficarem
-completamente travados, não há um lado de referência e essa condição não é
-atualmente classificada como desequilíbrio de tração.
+A ESP32 envia contagem e taxa dos dois encoders para o dashboard, mas não altera
+a potência automaticamente. A lógica de navegação na Raspberry pode usar esses
+dados futuramente para implementar o controle que a equipe decidir.
 
 ## 11. Camadas de segurança
 
@@ -381,8 +363,8 @@ atualmente classificada como desequilíbrio de tração.
 | Startup normal | Driver só é habilitado após os quatro PWMs estarem em zero |
 | Estado parado | Raspberry envia `STOP`; ESP32 zera os quatro PWMs |
 | Limites | Raspberry e ESP32 limitam comandos a `[-1, 1]` |
-| Regra bilateral | Um comando unilateral vira giro com os dois lados |
-| Feedback de tração | Encoders acionam uma recuperação sincronizada sem baixar o nSLEEP |
+| Controle independente | Cada lado mantém sinal próprio; o perfil operacional calibra o PWM direito |
+| Feedback dos encoders | Contagens e taxas são exibidas sem alterar automaticamente o PWM |
 | Timeout Raspberry | Após 2000 ms sem comando válido, `RobotState` zera potências |
 | Timeout ESP32 | Após 500 ms sem comando, os PWMs são zerados |
 | E-Stop | Tem prioridade sobre manual, autônomo e dashboard |
@@ -486,15 +468,20 @@ O botão está entre GPIO27 e GND com pull-up interno.
 ### Toque curto
 
 - Debounce: 30 ms.
-- Pressões menores que 80 ms são ignoradas.
+- Pressões menores que 80 ms não geram `START_BUTTON,SHORT`; se a borda for
+  amostrada enquanto houver movimento, ela ainda pode parar o robô por segurança.
 - O evento é enviado somente ao soltar.
-- Na Raspberry, inicia a missão autônoma selecionada se:
-  - o robô estiver parado;
+- Se o robô estiver em Manual ou Autônomo, a borda de pressão recebida pela
+  telemetria para o movimento sem aguardar a soltura.
+- O evento curto posterior é consumido para não reiniciar a missão.
+- Com E-Stop ativo, é ignorado e não libera a emergência.
+- Se o robô estiver parado, inicia a missão autônoma selecionada quando:
   - não houver E-Stop;
   - ESP32 e telemetria estiverem prontas;
   - nSLEEP estiver HIGH;
   - não houver calibração;
-  - câmera estiver ativa e recente.
+  - na missão principal, a câmera estiver ativa e recente;
+  - no giro de 90°, yaw e giroscópio estiverem válidos e recentes.
 
 ### Pressão por cinco segundos
 
@@ -519,7 +506,7 @@ O botão está entre GPIO27 e GND com pull-up interno.
 ### Comandos enviados à ESP32
 
 ```text
-MOTOR,<left>,<right>,<emergency>,<straightMin>,<straightMax>,<turnMin>,<turnMax>
+MOTOR,<left>,<right>,<emergency>
 STOP
 ESTOP
 CLEAR_ESTOP
@@ -543,8 +530,6 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
-TRACTION_RECOVERY,LEFT
-TRACTION_RECOVERY,RIGHT
 SENSOR,<campos CSV...>
 ```
 
@@ -556,16 +541,8 @@ distanceCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 batteryV,leftEncoder,rightEncoder,startButton,pcaOk,
 appliedLeft,appliedRight,leftRate,rightRate,
 ramp,gyroX,gyroY,imuTemperature,oledOk,nSleepHigh,estop,
-batteryAdcMillivolts,uptimeMs,calibrationActive,
-tractionRecovery,tractionRecoverySide,
-straightMinimum,straightMaximum,turnMinimum,turnMaximum
+batteryAdcMillivolts,uptimeMs,calibrationActive
 ```
-
-Valores de `tractionRecoverySide`:
-
-- `0`: nenhuma recuperação ativa;
-- `1`: lado esquerdo;
-- `2`: lado direito.
 
 Os campos extras são tratados como opcionais pelo parser da Raspberry para
 preservar compatibilidade com versões antigas do firmware.
@@ -593,10 +570,15 @@ Executa seguidor de linha e interpretação de marcações verdes.
 - Salva o yaw inicial do MPU6050.
 - Comanda esquerda positiva e direita negativa.
 - Alvo: 90°.
-- Reduz potência nos últimos 25°.
-- Tolerância de parada: 2°.
-- Timeout: 3,5 s.
-- Para se o MPU ficar indisponível.
+- Usa comando lógico `0.01 / -0.01` durante todo o giro e nas correções.
+- O perfil operacional aplica aproximadamente `0.65 / -0.67` nos motores.
+- Antecipa o corte do PWM usando velocidade angular, idade da amostra e inércia.
+- Aguarda 180 ms e velocidade angular de até 3°/s antes de avaliar o resultado.
+- Permite até três pulsos de 60 ms, sempre separados por estabilização.
+- Se faltar ângulo, o pulso mantém o sentido; se ultrapassar, o pulso é reverso.
+- Tolerância de parada: ±2°.
+- Timeout: 5 s.
+- Encerra a missão e zera os motores se o MPU ficar indisponível ou a amostra passar de 200 ms.
 
 > **Em validação:** potência, tolerância e inércia precisam ser confirmadas no
 > piso real, com bateria em diferentes tensões. A medição angular atual usa o
@@ -648,30 +630,37 @@ precise acessar diretamente a porta 8090.
 
 ### Seguidor de linha
 
-- Potência base lógica: 0,30.
-- Ganho proporcional: 0,0005 por pixel.
-- Correção limitada a ±0,35.
+- Referência base: `0.65`; após calibração, a reta aplica aproximadamente
+  `0.65` à esquerda e `0.67` à direita.
+- Ganho proporcional: 0,0008 por pixel.
+- Correção limitada a `0.30`.
+- Filtro exponencial do erro com peso 0,20 para cada quadro novo.
+- Zona morta central: 18 pixels.
+- Variação máxima da correção: `0.015` por ciclo de 20 ms.
+- Em curvas, o lado interno permanece em `0.65` e somente o lado externo acelera.
+  Isso impede que uma correção derrube qualquer conjunto abaixo da faixa confiável.
 - Se a linha sumir e existir erro anterior relevante, gira para o último lado.
-- Potência de busca: 0,22.
+- Potência de busca: `0.65`.
 - Deadband do erro anterior: 35 pixels.
-- Se não houver direção anterior confiável, avança com metade da potência base.
+- Se não houver direção anterior confiável, avança em `0.65`.
 - Se o JSON da câmera passar de 400 ms, para.
 
 ### Marcações verdes
 
-1. Avança por 220 ms para aproximar o centro da interseção.
-2. Gira com potência lógica 0,35.
-3. Curva simples dura 650 ms.
-4. Meia-volta dura 1200 ms.
+1. Avança por 170 ms para aproximar o centro da interseção.
+2. Gira com potência lógica mínima de `0.65`.
+3. Curva simples parte de 350 ms.
+4. Meia-volta parte de 650 ms.
 5. Ignora novo verde por 900 ms após a manobra.
 
-As manobras verdes são temporizadas, ainda sem fechamento por encoder ou IMU.
+Os tempos foram reduzidos proporcionalmente ao aumento de potência, mas são apenas
+um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU.
 
 ### Recursos ainda não usados pela missão principal
 
 - Ultrassônico não interrompe movimento nem desvia de obstáculos.
 - Inclinação de rampa é apenas telemetria/OLED.
-- Encoders protegem tração, mas não fazem controle de velocidade ou odometria.
+- Encoders medem o equilíbrio, mas não fazem controle fechado de velocidade ou odometria.
 - PCA9685 não aciona mecanismos.
 - Não existe lógica documentada para área de resgate, vítimas ou kit.
 
@@ -698,6 +687,13 @@ As manobras verdes são temporizadas, ainda sem fechamento por encoder ou IMU.
 - Seletor de missão: `MISSÃO PRINCIPAL` ou `GIRO 90° À DIREITA`.
 - WASD: W/S para frente/ré; A/D para giro com os dois lados.
 - Sliders: frente/ré e giro.
+- Sliders e WASD: perfil operacional com mínimo `0.65` e ganho no lado direito.
+- Giro autônomo de 90°: comando `0.01` elevado pelo perfil operacional.
+- Ajuste exato: PWM direto e independente por lado em passos de `0.01`, destinado
+  somente a diagnóstico consciente.
+- Sincronização: taxas filtradas dos encoders, diferença percentual e indicação
+  do lado mais lento. O painel sugere um comando direito tomando a esquerda como
+  referência, mas só o aplica após confirmação do operador.
 
 Perder foco, ocultar a aba, soltar teclas ou perder WebSocket zera comandos do
 navegador. A segurança não depende apenas disso: os timeouts inferiores continuam
@@ -715,7 +711,7 @@ ativos.
 - ultrassônico;
 - MPU6050, yaw, rampa, gyro, aceleração e temperatura;
 - PCA9685 e OLED;
-- nSLEEP, E-Stop, calibração e recuperação de tração;
+- nSLEEP, E-Stop e calibração;
 - LED de pronto, UART e timeouts.
 
 ## 19. LED de sistema pronto
@@ -875,6 +871,7 @@ de iniciar câmera ou programa principal.
 - Selecione a missão no dashboard; `MISSÃO PRINCIPAL` é o padrão.
 - Use `Autônomo` ou toque curto no Start físico.
 - O Start físico é ignorado se o sistema não estiver pronto.
+- Durante Manual ou Autônomo, pressionar Start para o robô sem aguardar a soltura.
 
 ### Para calibrar
 
@@ -918,8 +915,9 @@ de iniciar câmera ou programa principal.
 | E-Stop zera os quatro motores | **PREENCHER teste físico** | |
 | Timeout Raspberry zera motores | **PREENCHER** | |
 | Timeout ESP32 zera motores | **PREENCHER** | |
-| Recuperação do lado esquerdo é acionada | **PREENCHER** | |
-| Recuperação do lado direito é acionada | **PREENCHER** | |
+| Diagnóstico raw 0,05 aplica aproximadamente 5% de PWM | **PREENCHER** | |
+| Controle normal não nulo aplica no mínimo 0,65 / 0,67 | **PREENCHER** | Rodas suspensas |
+| Cada lado pode ser acionado independentemente | **PREENCHER** | Rodas omni dianteiras |
 | Ambos os lados giram em W/S | **PREENCHER** | |
 | Ambos os lados giram opostos em A/D | **PREENCHER** | |
 | Giro de 90° para no alvo | **PREENCHER** | |
@@ -991,7 +989,7 @@ Confirme:
 1. Pare imediatamente.
 2. Leia no dashboard qual potência foi solicitada e aplicada.
 3. Observe contagem/taxa dos dois encoders.
-4. Verifique o aviso de recuperação e o lado indicado.
+4. Compare a potência aplicada com o limite físico em que os quatro motores começam a girar.
 5. Desligue a potência antes de trocar cabos.
 6. Teste motor, saída do driver, conector e entrada da PCB separadamente.
 7. Após corrigir, teste novamente com as rodas suspensas.

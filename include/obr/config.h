@@ -39,45 +39,84 @@ constexpr int kCommandTimeoutMs = 2000;
 // Intervalo, em milissegundos, do loop principal que aplica os comandos aos motores.
 constexpr int kMainLoopPeriodMs = 20;
 
+// Faixa normalizada do protocolo de motor: -1,0 é ré total e 1,0 é frente total.
+// Esses limites impedem que comandos inválidos cheguem ao PWM da ESP32.
+constexpr double kMinMotorOutput = -1.0;
+constexpr double kMaxMotorOutput = 1.0;
+
+// Menor potência operacional usada para mover qualquer lado do robô.
+// Zero continua sendo parada real; comandos não nulos menores são elevados a 0,65.
+constexpr double kOperationalMinimumMotorPower = 0.65;
+
+// O lado direito precisa de 0,67 para acompanhar o lado esquerdo em 0,65.
+// O ganho proporcional preserva essa relação também em outras velocidades e sentidos.
+constexpr double kRightMotorCalibrationGain = 0.67 / 0.65;
+
+// Maior referência operacional antes da compensação do lado direito.
+// Esse limite mantém a calibração dentro do PWM máximo de 100%.
+constexpr double kOperationalMaximumReferencePower =
+    kMaxMotorOutput / kRightMotorCalibrationGain;
+
+static_assert(kOperationalMinimumMotorPower > 0.0 &&
+                  kOperationalMinimumMotorPower < kOperationalMaximumReferencePower,
+              "A potência mínima operacional deve caber na faixa calibrada.");
+static_assert(kRightMotorCalibrationGain >= 1.0,
+              "O ganho direito deve representar o lado que precisa de mais PWM.");
+static_assert(kOperationalMinimumMotorPower * kRightMotorCalibrationGain > 0.6699 &&
+                  kOperationalMinimumMotorPower * kRightMotorCalibrationGain < 0.6701,
+              "A calibração mínima direita deve resultar em 0,67.");
+
 // Tempo máximo, em milissegundos, para aceitar dados da câmera no modo autônomo.
 // Se a câmera travar ou parar de atualizar o JSON, o robô deve parar.
 constexpr int kCameraStatusTimeoutMs = 400;
 
-// Potência lógica base usada para seguir linha no modo autônomo. Com o perfil
-// de reta abaixo, 0,10 corresponde a aproximadamente 55,5% de PWM físico.
-constexpr double kLineFollowerBasePower = 0.10;
+// Menor referência operacional do seguidor de linha.
+// Na reta, ela produz 0,65 à esquerda e aproximadamente 0,67 à direita.
+constexpr double kLineFollowerBasePower = kOperationalMinimumMotorPower;
 
 // Ganho proporcional aplicado ao erro horizontal da linha, em pixels.
-// Valores altos fazem o robô virar mais forte, mas podem causar oscilação.
-constexpr double kLineFollowerTurnGain = 0.0005;
+// O filtro e o limite de variação abaixo reduzem oscilações causadas pela câmera.
+constexpr double kLineFollowerTurnGain = 0.0008;
 
-// Potência máxima de correção usada pelo seguidor de linha.
-// Esse limite evita comandos bruscos quando a linha aparece perto da borda da imagem.
-constexpr double kLineFollowerMaxTurnCorrection = 0.35;
+// Acréscimo máximo aplicado somente ao lado externo da curva.
+// A base nunca é reduzida, e 0,30 mantém a referência abaixo do limite calibrado.
+constexpr double kLineFollowerMaxTurnCorrection = 0.30;
+
+// Peso da amostra nova no filtro exponencial do erro da câmera. Valores menores
+// deixam a direção mais suave, mas aumentam o atraso para entrar nas curvas.
+constexpr double kLineFollowerErrorFilterAlpha = 0.20;
+
+// Erros menores que esta quantidade de pixels não geram correção. A zona morta
+// impede que ruído próximo ao centro faça o robô alternar esquerda e direita.
+constexpr double kLineFollowerErrorDeadbandPixels = 18.0;
+
+// Variação lógica máxima da correção a cada ciclo de 20 ms. Esse limite evita
+// trancos mesmo quando a câmera muda a posição da linha entre dois quadros.
+constexpr double kLineFollowerCorrectionSlewPerCycle = 0.015;
 
 // Potência usada para procurar a linha quando ela some em uma curva fechada.
-// Mantenha este valor baixo: ele pode fazer o robô girar no próprio eixo.
-constexpr double kLineFollowerLostLineTurnPower = 0.22;
+// É igual ao mínimo operacional porque valores menores não movem o conjunto com confiança.
+constexpr double kLineFollowerLostLineTurnPower = kOperationalMinimumMotorPower;
 
 // Erro mínimo, em pixels, para decidir o lado de busca quando a linha some.
 // Abaixo deste valor, o robô ainda segue devagar para evitar giro sem direção.
 constexpr double kLineFollowerLostLineDeadbandPixels = 35.0;
 
 // Potência usada nas manobras temporizadas ao detectar marcações verdes.
-// Teste com as rodas suspensas antes de aumentar esse valor.
-constexpr double kGreenTurnPower = 0.35;
+// As durações precisam ser validadas novamente porque o giro agora parte de 0,65.
+constexpr double kGreenTurnPower = kOperationalMinimumMotorPower;
 
 // Tempo, em milissegundos, para avançar um pouco antes de girar no verde.
-// Isso ajuda o centro do robô a chegar na interseção antes da curva.
-constexpr int kGreenApproachMs = 220;
+// Foi reduzido para compensar a nova base de 0,65 e preservar a distância aproximada.
+constexpr int kGreenApproachMs = 170;
 
-// Tempo, em milissegundos, para curvas de 90 graus acionadas pelo verde.
-// Ajuste este valor no robô real conforme velocidade, piso e bateria.
-constexpr int kGreenTurnMs = 650;
+// Tempo inicial, em milissegundos, para curvas acionadas pelo verde.
+// A proporção 0,35/0,65 preserva aproximadamente o impulso da configuração anterior.
+constexpr int kGreenTurnMs = 350;
 
-// Tempo, em milissegundos, para meia-volta quando há verde dos dois lados.
-// Deve ser maior que a curva simples, mas ainda precisa ser validado no piso.
-constexpr int kGreenUTurnMs = 1200;
+// Tempo inicial, em milissegundos, para meia-volta quando há verde dos dois lados.
+// Foi reduzido junto com a curva simples e ainda precisa ser validado no piso.
+constexpr int kGreenUTurnMs = 650;
 
 // Tempo, em milissegundos, para ignorar o mesmo verde após concluir uma manobra.
 // Sem esse bloqueio, o robô pode detectar o mesmo marcador várias vezes.
@@ -90,49 +129,47 @@ constexpr double kTurn90TargetDegrees = 90.0;
 // Ajuste após testar a inércia real das rodas no piso da competição.
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
-// Abaixo desta distância angular, o giro usa potência menor para reduzir a
-// ultrapassagem do alvo causada pela inércia dos quatro motores.
-constexpr double kTurn90SlowdownDegrees = 25.0;
+// Comando lógico usado durante todo o giro de 90 graus e nas correções.
+// O perfil operacional transforma 0,01 em 0,65 à esquerda e 0,67 à direita.
+constexpr double kTurn90CommandPower = 0.01;
 
-// Potências enviadas durante as fases rápida e fina do giro de 90 graus.
-// A ESP32 ainda aplica seu remapeamento físico e todos os limites de segurança.
-constexpr double kTurn90Power = 0.25;
-constexpr double kTurn90FinePower = 0.08;
+static_assert(kTurn90CommandPower > 0.0 && kTurn90CommandPower <= kMaxMotorOutput,
+              "O comando do giro deve permanecer na faixa normalizada.");
+
+// Tempo de inércia, em segundos, somado à idade da telemetria na projeção angular.
+// A projeção corta o PWM antes do alvo para compensar movimento e atraso da UART.
+constexpr double kTurn90BrakePredictionSeconds = 0.16;
+
+// Limite, em graus, da antecipação de frenagem. Ele impede que um pico isolado
+// do giroscópio faça o robô parar cedo demais.
+constexpr double kTurn90MaximumBrakeLeadDegrees = 18.0;
+
+// Tempo, em milissegundos, sem PWM para a inércia terminar antes de conferir o yaw.
+constexpr int kTurn90SettleMs = 180;
+
+// Duração, em milissegundos, de cada correção curta para completar
+// um giro insuficiente ou reduzir uma ultrapassagem do alvo.
+constexpr int kTurn90CorrectionPulseMs = 60;
+
+// Quantidade máxima de pulsos de correção. O limite evita insistir no
+// movimento se o yaw não responder como esperado.
+constexpr int kTurn90MaximumCorrectionPulses = 3;
+
+// Velocidade angular máxima, em graus por segundo, para considerar o robô estabilizado.
+constexpr double kTurn90StationaryRateDegPerSec = 3.0;
+
+// Idade máxima, em milissegundos, da amostra do MPU6050 usada para controlar o giro.
+// O painel aceita telemetria mais antiga, mas movimento autônomo exige dado recente.
+constexpr int kTurn90ImuFreshnessMs = 200;
 
 // Tempo máximo, em milissegundos, permitido para o giro de teste.
-// Se o MPU6050 falhar ou o robô travar, a missão para ao atingir esse limite.
-constexpr int kTurn90TimeoutMs = 3500;
+// Inclui frenagem, estabilização e correções; se o MPU6050 falhar ou o robô
+// travar, a missão para ao atingir esse limite.
+constexpr int kTurn90TimeoutMs = 5000;
 
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;
-
-// Limites seguros para comandos de motor.
-// O dashboard pode enviar valores fora da faixa, então o código limita antes
-// de atualizar o estado do robô ou acionar os drivers de motor.
-constexpr double kMinMotorOutput = -1.0;
-constexpr double kMaxMotorOutput = 1.0;
-
-// Zona morta do motor.
-// Comandos com módulo menor que este valor são tratados como parada.
-constexpr double kMotorDeadband = 0.005;
-
-// Perfis físicos enviados em cada comando para a ESP32. Alterar estes valores
-// exige somente novo deploy da Raspberry, sem regravar o firmware da ESP32.
-// A reta preserva resolução entre 55% e 60%; giros variam entre 70% e 80%.
-constexpr double kEsp32StraightMinimumMotorPower = 0.55;
-constexpr double kEsp32StraightMaximumMotorPower = 0.60;
-constexpr double kEsp32TurnMinimumMotorPower = 0.70;
-constexpr double kEsp32TurnMaximumMotorPower = 0.80;
-
-static_assert(kEsp32StraightMinimumMotorPower >= 0.0 &&
-                  kEsp32StraightMinimumMotorPower <= kEsp32StraightMaximumMotorPower &&
-                  kEsp32StraightMaximumMotorPower <= 1.0,
-              "Invalid straight motor profile");
-static_assert(kEsp32TurnMinimumMotorPower >= 0.0 &&
-                  kEsp32TurnMinimumMotorPower <= kEsp32TurnMaximumMotorPower &&
-                  kEsp32TurnMaximumMotorPower <= 1.0,
-              "Invalid turn motor profile");
 
 // Dispositivo UART usado pela Raspberry Pi para falar com a ESP32.
 // Em uma Raspberry Pi comum, /dev/serial0 usa GPIO14 como TXD e GPIO15 como RXD.
@@ -181,11 +218,11 @@ constexpr int kEsp32I2cSclPin = 14;
 constexpr int kEsp32UltrasonicTrigPin = 32;
 constexpr int kEsp32UltrasonicEchoPin = 33;
 
-// Pinos dos encoders em quadrature dos lados esquerdo e direito.
-constexpr int kEsp32LeftEncoderAPin = 19;
-constexpr int kEsp32LeftEncoderBPin = 21;
-constexpr int kEsp32RightEncoderAPin = 22;
-constexpr int kEsp32RightEncoderBPin = 23;
+// Pinos dos encoders em quadrature conforme o lado físico validado na PCB.
+constexpr int kEsp32LeftEncoderAPin = 22;
+constexpr int kEsp32LeftEncoderBPin = 23;
+constexpr int kEsp32RightEncoderAPin = 19;
+constexpr int kEsp32RightEncoderBPin = 21;
 
 // Botão de partida e entrada ADC1 do divisor de tensão da bateria.
 constexpr int kEsp32StartButtonPin = 27;

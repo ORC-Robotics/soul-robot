@@ -22,6 +22,14 @@ private:
         TurningGreen
     };
 
+    enum class Turn90Phase
+    {
+        Idle,
+        Turning,
+        Settling,
+        CorrectionPulse
+    };
+
     struct CameraStatus
     {
         bool valid = false;
@@ -38,9 +46,17 @@ private:
     std::chrono::steady_clock::time_point phaseUntil_{};
     std::chrono::steady_clock::time_point greenCooldownUntil_{};
     double lastLineError_ = 0.0;
-    bool turn90Active_ = false;
+    double filteredLineError_ = 0.0;
+    double lastSteeringCorrection_ = 0.0;
+    double lastCameraTimestampSeconds_ = 0.0;
+    bool lineErrorFilterInitialized_ = false;
+    Turn90Phase turn90Phase_ = Turn90Phase::Idle;
     double turn90StartYawDegrees_ = 0.0;
     std::chrono::steady_clock::time_point turn90StartedAt_{};
+    std::chrono::steady_clock::time_point turn90PhaseStartedAt_{};
+    int turn90CorrectionPulseCount_ = 0;
+    double turn90CorrectionDirection_ = 1.0;
+    unsigned long long activeAutonomousRunSequence_ = 0;
 
     CameraStatus readCameraStatus() const;
     void followLine(RobotState& robotState, const CameraStatus& status);
@@ -48,6 +64,7 @@ private:
     void updateGreenManeuver(RobotState& robotState, std::chrono::steady_clock::time_point now);
     void updateTurnRight90(RobotState& robotState, const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetMissionState();
+    void resetLineControl();
 
     static bool isFresh(const CameraStatus& status);
     static bool isGreenAction(const std::string& action);

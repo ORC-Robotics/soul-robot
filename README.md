@@ -70,38 +70,29 @@ Depois de gravar o sketch:
 4. Confira os sensores com os motores sem alimentação.
 5. Levante as rodas, energize os drivers e clique em `Habilitar motores`.
 
-Os sliders e os botões de frente e ré permitem controlar cada lado de -100% a
-100% lógico. Depois do pulso inicial de 100%, movimentos em reta são remapeados
-para 55%–60% de PWM físico e giros com os lados opostos usam 70%–80%. A
-Raspberry envia esses quatro limites em cada comando e pode alterá-los sem nova
-gravação da ESP32. O DRV8833 é habilitado uma única vez durante o `setup()` e
+Os sliders e os botões permitem controlar cada lado diretamente de -100% a 100%.
+Um comando de `0.05` produz 5% de PWM, `0.50` produz 50% e `1.00` produz 100%,
+sem mínimo, perfil, boost ou remapeamento. O DRV8833 é habilitado uma única vez durante o `setup()` e
 permanece ativo. Parar,
 desabilitar, acionar o E-Stop ou atingir o timeout apenas zera os quatro PWMs,
 sem repetir a inicialização do driver. Se o navegador deixar de enviar comandos
-por 500 ms, a ESP32 zera os motores e remove a habilitação. O
+por 500 ms, a ESP32 zera os PWMs e mantém o driver habilitado. O
 E-Stop permanece travado até o botão `Liberar E-Stop` ser usado; liberar não
 volta a movimentar o robô.
 
-Os botões de curva comandam os lados em sentidos opostos. O pulso inicial usa
-100% e o giro contínuo fica limitado a 80%, evitando manter força máxima durante toda a
-manobra.
+Os botões de curva comandam os lados em sentidos opostos usando o valor solicitado.
 Depois de usar `Habilitar motores`, o teclado também pode controlar o robô:
 `W` avança, `S` recua, `A` gira para a esquerda e `D` gira para a direita.
 Durante um giro, os dois lados se movem em sentidos opostos; A/D têm prioridade
 sobre W/S quando duas teclas são pressionadas. Soltar as teclas, trocar de janela
 ou ocultar a página zera imediatamente os dois comandos de motor.
 
-O firmware nunca permite que somente um lado seja movimentado. Se o dashboard
-ou a futura Raspberry enviar um lado diferente de zero e o outro em zero, o
-comando unilateral será convertido em giro com os dois lados em sentidos opostos.
-Os sliders aplicam a mesma regra e mostram imediatamente o comando convertido.
+Os lados são independentes. As rodas omni dianteiras permitem movimentar apenas
+um lado quando a estratégia de software solicitar isso.
 
-Além de validar o comando, a ESP32 confirma a resposta física pelos encoders.
-Partidas e inversões usam os dois lados de forma sincronizada: o nSLEEP permanece
-HIGH, uma inversão zera os PWMs por 15 ms e ambos recebem um pulso de 100% por
-180 ms. Se duas janelas consecutivas confirmarem que um lado atrasou, a ESP32
-repete essa recuperação automaticamente e retoma o comando original sem
-desarmar o modo manual ou autônomo.
+Além de validar o comando, a ESP32 envia a contagem dos encoders para diagnóstico.
+Partidas e inversões aplicam diretamente o valor solicitado, enquanto o nSLEEP
+permanece HIGH. Não existe correção automática baseada nos encoders.
 
 > **Atenção:** a medição de uma bateria de 12 V no GPIO36 não significa que
 > essa tensão possa alimentar diretamente o DRV8833. O VM do driver deve ficar
@@ -109,8 +100,10 @@ desarmar o modo manual ou autônomo.
 > a 14,0 V, portanto o regulador de 8 V dos motores deve permanecer no circuito.
 
 O botão do GPIO27 é lido e aparece na telemetria. Um toque curto, confirmado ao
-soltar o botão, inicia na Raspberry a missão autônoma selecionada no dashboard,
-desde que o sistema esteja pronto, sem E-Stop e com o robô parado. Ao mantê-lo
+soltar o botão, inicia na Raspberry a missão autônoma selecionada quando o robô
+está parado. Durante controle manual ou autônomo, a borda de pressão para o robô
+imediatamente e o evento da soltura é consumido para não reiniciar a missão;
+com E-Stop, ele é ignorado e não libera a emergência. Ao mantê-lo
 pressionado continuamente por 5 segundos, a ESP32 para os motores, zera
 encoders, ângulos e filtros de navegação e recalibra o MPU6050. Durante esse
 procedimento, mantenha o robô completamente imóvel. Ao terminar, os motores
@@ -129,8 +122,8 @@ As constantes ficam em `esp32/obr_esp32_bridge/robot_config.h`.
 | GPIO26 | DRV8833 nSLEEP | LOW desliga as pontes; HIGH libera o driver |
 | GPIO5 / GPIO18 | DRV8833 esquerdo IN1 / IN2 | Dois motores do lado esquerdo |
 | GPIO16 / GPIO17 | DRV8833 direito IN1 / IN2 | Dois motores do lado direito |
-| GPIO19 / GPIO21 | Encoder esquerdo A / B | Contagem quadrature nas quatro bordas |
-| GPIO22 / GPIO23 | Encoder direito A / B | Contagem quadrature nas quatro bordas |
+| GPIO22 / GPIO23 | Encoder esquerdo A / B | Lado físico validado na PCB; quadrature nas quatro bordas |
+| GPIO19 / GPIO21 | Encoder direito A / B | Lado físico validado na PCB; quadrature nas quatro bordas |
 | GPIO1 / GPIO3 | UART TX / RX | Reservados para a futura Raspberry Pi |
 | GPIO36 | Divisor 47 kΩ / 10 kΩ | Leitura ADC1 da bateria de 12 V |
 
@@ -179,11 +172,8 @@ pela UART da Raspberry, mantendo timeout e E-Stop locais na ESP32.
 A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 `/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
 
-Os perfis de potência podem ser alterados em `include/obr/config.h` pelas
-constantes `kEsp32StraightMinimumMotorPower`,
-`kEsp32StraightMaximumMotorPower`, `kEsp32TurnMinimumMotorPower` e
-`kEsp32TurnMaximumMotorPower`. Cada mensagem `MOTOR` leva os quatro valores para
-a ESP32; depois de alterá-los, basta fazer novo deploy da Raspberry.
+As potências são definidas diretamente pelo controle manual ou autônomo na
+Raspberry. O protocolo UART apenas transmite os valores esquerdo e direito.
 
 | Raspberry Pi | ESP32 | Função |
 | --- | --- | --- |
@@ -222,9 +212,12 @@ O comportamento esperado é:
 - se o dashboard de bancada ou a Raspberry parar de enviar comandos, os motores param por timeout;
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
-- partidas e inversões aplicam um pulso sincronizado nos dois lados;
-- se somente um lado responder pelos encoders em duas janelas consecutivas, a
-  ESP32 repete a recuperação automaticamente sem alternar o nSLEEP;
+- a ESP32 converte diretamente o comando UART para PWM, sem remapeamento próprio;
+- a Raspberry aplica no controle normal o mínimo operacional de `0.65`, limita a
+  referência calibrada perto de `0.97` e multiplica o lado direito por `0.67 / 0.65`;
+- os campos exatos do dashboard usam um caminho de diagnóstico direto, sem esse perfil;
+- o teste autônomo de giro de 90° usa comando lógico `0.01` pelo perfil operacional;
+- os lados esquerdo e direito podem ser controlados independentemente;
 - o E-Stop tem prioridade sobre dashboard e UART;
 - ao encerrar o programa, o código envia `STOP` para a ESP32.
 
@@ -381,16 +374,35 @@ ré; `A/D` giram usando os dois lados em sentidos opostos. Soltar a tecla, troca
 de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
 nos modos Parado, Autônomo ou E-Stop.
 
+Os campos de ajuste exato permitem comandar esquerda e direita separadamente em
+passos de `0.01`. O painel de sincronização compara o módulo das taxas dos dois
+encoders, filtra apenas a visualização e indica qual lado está mais lento. Uma
+diferença de até 2% aparece como equilíbrio preciso; entre 2% e 5%, o painel pede
+ajuste fino. O painel também estima um novo comando direito usando a esquerda
+como referência, mas só aplica a sugestão quando o operador pressiona o botão;
+nenhuma dessas indicações altera o PWM automaticamente.
+
+Os sliders, WASD e a missão principal usam o perfil operacional: zero permanece
+parada, qualquer movimento parte de `0.65` e o lado direito recebe o ganho
+`0.67 / 0.65`. Na reta do seguidor, isso resulta em aproximadamente `0.65` à
+esquerda e `0.67` à direita. Os campos exatos ignoram esse perfil para permitir
+calibração de bancada consciente. A missão isolada de giro de 90° também usa
+comando lógico `0.01` pelo mesmo perfil, resultando em aproximadamente
+`0.65 / -0.67` nos motores.
+
 O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
 é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
 por um toque curto no Start físico. Trocar a seleção força o robô para o modo
 Parado antes de armar a nova estratégia.
 
-O modo de teste `GIRO 90° À DIREITA` usa o yaw do MPU6050 como referência
-relativa. Ele reduz a potência perto do alvo, para automaticamente próximo de
-90° e possui timeout de 3,5 segundos. Se os dados do MPU6050 ficarem inválidos
-durante o giro, os motores são zerados. Faça o primeiro teste com as rodas
-suspensas e depois ajuste potência e tolerância em `include/obr/config.h`.
+O modo de teste `GIRO 90° À DIREITA` usa yaw e velocidade angular do MPU6050.
+Ele mantém comando lógico `0.01`, convertido pelo perfil operacional em potência
+suficiente para partir, prevê a inércia antes do alvo e zera o PWM para
+estabilizar e pode aplicar até três correções curtas: continua no mesmo sentido
+se faltar ângulo ou reverte se ultrapassar. A tolerância real é de ±2° e o
+timeout total é de 5 segundos. Se a amostra do MPU6050 ficar inválida ou tiver
+mais de 200 ms, a missão é encerrada com os motores zerados. Faça o primeiro teste com as rodas
+suspensas e ajuste a projeção de inércia em `include/obr/config.h` se necessário.
 
 O botão `Resetar e calibrar sensores` para o robô, zera encoders e referências
 de orientação e recalibra o giroscópio do MPU6050. O mesmo procedimento pode ser

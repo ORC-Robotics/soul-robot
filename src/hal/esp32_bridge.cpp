@@ -102,39 +102,13 @@ void Esp32Bridge::stop()
 
 bool Esp32Bridge::sendMotorCommand(double left, double right, bool emergencyStop)
 {
-    double safeLeft = emergencyStop ? 0.0 : safeMotorPower(left);
-    double safeRight = emergencyStop ? 0.0 : safeMotorPower(right);
-
-    if (std::abs(safeLeft) < config::kMotorDeadband)
-    {
-        safeLeft = 0.0;
-    }
-    if (std::abs(safeRight) < config::kMotorDeadband)
-    {
-        safeRight = 0.0;
-    }
-
-    // Nunca envia somente um lado. A ESP32 repete esta validação, mas a
-    // Raspberry já transmite um giro válido para manter o protocolo previsível.
-    if ((safeLeft == 0.0) != (safeRight == 0.0))
-    {
-        if (safeLeft == 0.0)
-        {
-            safeLeft = -safeRight;
-        }
-        else
-        {
-            safeRight = -safeLeft;
-        }
-    }
+    const double safeLeft = emergencyStop ? 0.0 : safeMotorPower(left);
+    const double safeRight = emergencyStop ? 0.0 : safeMotorPower(right);
 
     std::ostringstream command;
     command << std::fixed << std::setprecision(3)
-            << "MOTOR," << safeLeft << "," << safeRight << "," << (emergencyStop ? 1 : 0)
-            << "," << config::kEsp32StraightMinimumMotorPower
-            << "," << config::kEsp32StraightMaximumMotorPower
-            << "," << config::kEsp32TurnMinimumMotorPower
-            << "," << config::kEsp32TurnMaximumMotorPower << "\n";
+            << "MOTOR," << safeLeft << "," << safeRight << ","
+            << (emergencyStop ? 1 : 0) << "\n";
 
     return writeLine(command.str());
 }
@@ -374,17 +348,6 @@ void Esp32Bridge::handleLine(const std::string& line)
         return;
     }
 
-    if (startsWith(line, "TRACTION_RECOVERY,") || startsWith(line, "TRACTION_FAULT,"))
-    {
-        std::lock_guard<std::mutex> lock(telemetryMutex_);
-        telemetry_.tractionRecoveryActive = true;
-        telemetry_.tractionRecoverySide = line.find("LEFT") != std::string::npos ? 1 : 2;
-        std::cout << "ESP32 traction recovery: "
-                  << (telemetry_.tractionRecoverySide == 1 ? "boosting left side" : "boosting right side")
-                  << "\n";
-        return;
-    }
-
     if (line == "CALIBRATION,DONE" || line == "CALIBRATION,FAILED")
     {
         std::lock_guard<std::mutex> lock(telemetryMutex_);
@@ -461,29 +424,10 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
             next.calibrationActive = std::stoi(values[26]) != 0;
         }
 
-        if (values.size() >= 29)
-        {
-            next.tractionRecoveryActive = std::stoi(values[27]) != 0;
-            next.tractionRecoverySide = std::stoi(values[28]);
-        }
-
-        if (values.size() >= 33)
-        {
-            next.straightMinimumMotorPower = std::stod(values[29]);
-            next.straightMaximumMotorPower = std::stod(values[30]);
-            next.turnMinimumMotorPower = std::stod(values[31]);
-            next.turnMaximumMotorPower = std::stod(values[32]);
-        }
-
         std::lock_guard<std::mutex> lock(telemetryMutex_);
         next.startButtonPressSequence = telemetry_.startButtonPressSequence;
         next.calibrationStatusKnown = telemetry_.calibrationStatusKnown;
         next.lastCalibrationSucceeded = telemetry_.lastCalibrationSucceeded;
-        if (values.size() < 29)
-        {
-            next.tractionRecoveryActive = telemetry_.tractionRecoveryActive;
-            next.tractionRecoverySide = telemetry_.tractionRecoverySide;
-        }
         if (values.size() < 27)
         {
             next.calibrationActive = telemetry_.calibrationActive;

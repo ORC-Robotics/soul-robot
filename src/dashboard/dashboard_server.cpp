@@ -375,6 +375,13 @@ void DashboardServer::handleCommand(const std::string& message)
             std::cout << "Sensor calibration requested\n";
         }
     }
+    else if (message.find("\"command\":\"drive_raw\"") != std::string::npos)
+    {
+        const double left = getJsonNumber(message, "left", 0.0);
+        const double right = getJsonNumber(message, "right", 0.0);
+        robotState_.driveRawDiagnostic(left, right);
+        std::cout << "Raw diagnostic drive left=" << left << " right=" << right << "\n";
+    }
     else if (message.find("\"command\":\"drive\"") != std::string::npos)
     {
         double left = getJsonNumber(message, "left", 0.0);
@@ -396,6 +403,15 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"ram\":" << sample.ramUsage
          << ",\"mode\":\"" << state.mode << "\""
          << ",\"autonomousMission\":\"" << autonomousMissionName(state.autonomousMission) << "\""
+         << ",\"autonomousRunSequence\":" << state.autonomousRunSequence
+         << ",\"rawMotorCommand\":" << (state.rawMotorCommand ? "true" : "false")
+         << ",\"autonomousPhase\":\"" << state.autonomousStatus.phase << "\""
+         << ",\"autonomousAction\":\"" << state.autonomousStatus.action << "\""
+         << ",\"autonomousLineDetected\":" << (state.autonomousStatus.lineDetected ? "true" : "false")
+         << ",\"autonomousRawLineError\":" << state.autonomousStatus.rawLineError
+         << ",\"autonomousFilteredLineError\":" << state.autonomousStatus.filteredLineError
+         << ",\"autonomousSteeringCorrection\":" << state.autonomousStatus.steeringCorrection
+         << ",\"autonomousProgressPercent\":" << state.autonomousStatus.progressPercent
          << ",\"left\":" << state.left
          << ",\"right\":" << state.right
          << ",\"emergency\":" << (state.emergencyStop ? "true" : "false")
@@ -422,23 +438,21 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"rightEncoderRate\":" << esp32.rightEncoderRate
          << ",\"esp32AppliedLeftPower\":" << esp32.appliedLeftPower
          << ",\"esp32AppliedRightPower\":" << esp32.appliedRightPower
-         << ",\"straightMinimumMotorPower\":" << esp32.straightMinimumMotorPower
-         << ",\"straightMaximumMotorPower\":" << esp32.straightMaximumMotorPower
-         << ",\"turnMinimumMotorPower\":" << esp32.turnMinimumMotorPower
-         << ",\"turnMaximumMotorPower\":" << esp32.turnMaximumMotorPower
          << ",\"startButtonPressed\":" << (esp32.startButtonPressed ? "true" : "false")
          << ",\"pca9685Ok\":" << (esp32.pca9685Ok ? "true" : "false")
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
          << ",\"motorSleepPinHigh\":" << (esp32.motorSleepPinHigh ? "true" : "false")
          << ",\"esp32EmergencyStop\":" << (esp32.emergencyStopActive ? "true" : "false")
-         << ",\"tractionRecoveryActive\":" << (esp32.tractionRecoveryActive ? "true" : "false")
-         << ",\"tractionRecoverySide\":" << esp32.tractionRecoverySide
          << ",\"esp32CalibrationActive\":" << (esp32.calibrationActive ? "true" : "false")
          << ",\"esp32CalibrationStatusKnown\":" << (esp32.calibrationStatusKnown ? "true" : "false")
          << ",\"esp32LastCalibrationSucceeded\":" << (esp32.lastCalibrationSucceeded ? "true" : "false")
          << ",\"esp32UptimeMs\":" << esp32.esp32UptimeMs
          << ",\"raspberryCommandTimeoutMs\":" << config::kCommandTimeoutMs
          << ",\"esp32MotorCommandTimeoutMs\":" << config::kEsp32MotorCommandTimeoutMs
+         << ",\"operationalMinimumMotorPower\":" << config::kOperationalMinimumMotorPower
+         << ",\"rightMotorCalibrationGain\":" << std::setprecision(4)
+         << config::kRightMotorCalibrationGain
+         << ",\"operationalMaximumReferencePower\":" << config::kOperationalMaximumReferencePower
          << "}";
 
     return json.str();
@@ -519,7 +533,8 @@ std::string DashboardServer::dashboardHtml()
     .metric-fill { width: 0; height: 100%; border-radius: inherit; background: var(--metric); box-shadow: 0 0 9px var(--metric); transition: width .3s ease, background .2s; }
     .raspberry-role { display: flex; align-items: center; gap: 6px; margin: 9px 0 0; color: var(--muted); font-size: .68rem; }
     .raspberry-role::before { content: ""; width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; background: #a78bfa; box-shadow: 0 0 8px #a78bfa; }
-    .main-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(300px, .8fr); gap: 12px; margin-bottom: 24px; }
+    .main-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(360px, .85fr); gap: 12px; margin-bottom: 24px; align-items: start; }
+    .side-stack { display: grid; gap: 12px; min-width: 0; }
     .section-card { padding: 16px; }
     .section-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
     .section-title { display: flex; align-items: center; gap: 9px; margin: 0; font-size: .86rem; letter-spacing: .1em; text-transform: uppercase; }
@@ -533,6 +548,29 @@ std::string DashboardServer::dashboardHtml()
     .camera-frame.offline img { opacity: 0; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
     .camera-frame:not(.offline) .camera-message { display: none; }
+    .mission-state-card { --state-color: var(--cyan); background: radial-gradient(circle at 100% 0, #22d3ee14, transparent 38%), linear-gradient(145deg, #10202a, #0b171f); }
+    .mission-state-card[data-tone="active"] { --state-color: var(--green); }
+    .mission-state-card[data-tone="warn"] { --state-color: var(--yellow); }
+    .mission-state-card[data-tone="danger"] { --state-color: var(--danger); }
+    .mission-state-card .section-title::before { background: var(--state-color); box-shadow: 0 0 12px color-mix(in srgb, var(--state-color) 55%, transparent); }
+    .machine-badge { display: inline-flex; align-items: center; gap: 7px; max-width: 52%; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--state-color) 45%, #233945); border-radius: 999px; color: var(--state-color); background: color-mix(in srgb, var(--state-color) 9%, #08141b); font-size: .62rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .machine-badge::before { content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--state-color); box-shadow: 0 0 11px var(--state-color); }
+    .machine-action { min-height: 72px; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--state-color) 30%, var(--line)); border-radius: 12px; background: linear-gradient(135deg, color-mix(in srgb, var(--state-color) 10%, #09151d), #09151d); }
+    .machine-action span { display: block; color: var(--muted); font-size: .62rem; font-weight: 850; letter-spacing: .11em; text-transform: uppercase; }
+    .machine-action strong { display: block; margin-top: 7px; color: var(--text); font-size: 1.05rem; line-height: 1.25; }
+    .machine-progress { margin: 11px 1px 13px; }
+    .machine-progress-label { display: flex; justify-content: space-between; gap: 10px; margin-bottom: 6px; color: var(--muted); font-size: .65rem; }
+    .machine-progress-label strong { color: var(--state-color); font-variant-numeric: tabular-nums; }
+    .machine-progress-track { height: 6px; border-radius: 99px; background: #061118; overflow: hidden; }
+    .machine-progress-fill { width: 0; height: 100%; border-radius: inherit; background: var(--state-color); box-shadow: 0 0 10px var(--state-color); transition: width .18s ease; }
+    .machine-flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 12px; }
+    .machine-step { position: relative; min-width: 0; padding: 8px 3px; border: 1px solid var(--line-soft); border-radius: 8px; color: #668493; background: #08141b; text-align: center; font-size: .55rem; font-weight: 850; letter-spacing: .055em; text-transform: uppercase; transition: .2s; }
+    .machine-step.active { color: #061217; border-color: var(--state-color); background: var(--state-color); box-shadow: 0 0 14px color-mix(in srgb, var(--state-color) 35%, transparent); }
+    .machine-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+    .machine-metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--line-soft); border-radius: 9px; background: #09151d; }
+    .machine-metric span { display: block; color: var(--muted); font-size: .58rem; letter-spacing: .06em; text-transform: uppercase; }
+    .machine-metric strong { display: block; margin-top: 5px; color: var(--text); font-size: .82rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .machine-metric strong.accent { color: var(--state-color); }
     .command-card { display: flex; flex-direction: column; gap: 14px; }
     .mission-selector { padding: 12px; border: 1px solid #315464; border-radius: 12px; background: linear-gradient(145deg, #0c2531, #09161d); box-shadow: inset 0 1px 0 #ffffff0a; }
     .mission-selector label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: #9be8f3; font-size: .68rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
@@ -558,7 +596,25 @@ std::string DashboardServer::dashboardHtml()
     .requested-drive { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .request-value { padding: 11px; border: 1px solid var(--line-soft); border-radius: 10px; background: #0a171e; }
     .request-value span { display: block; color: var(--muted); font-size: .67rem; text-transform: uppercase; }
-    .request-value strong { display: block; margin-top: 4px; font-size: 1.35rem; font-variant-numeric: tabular-nums; }
+    .request-adjustment { display: grid; grid-template-columns: 34px minmax(0, 1fr) 34px; gap: 5px; margin-top: 5px; }
+    .request-value input { width: 100%; min-width: 0; padding: 5px 4px; border: 1px solid #315464; border-radius: 7px; outline: none; color: var(--text); background: #07151c; font: inherit; font-size: 1.12rem; font-weight: 900; text-align: center; font-variant-numeric: tabular-nums; }
+    .request-value input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1c; }
+    .trim-button { min-height: 34px; padding: 0; border-radius: 7px; font-size: .74rem; }
+    .encoder-balance { padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: linear-gradient(145deg, #0a1921, #08141b); }
+    .encoder-balance-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .encoder-balance-header strong { font-size: .73rem; letter-spacing: .07em; text-transform: uppercase; }
+    .balance-status { padding: 4px 7px; border: 1px solid var(--line); border-radius: 99px; font-size: .59rem; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
+    .balance-readings { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+    .balance-reading { padding: 9px; border: 1px solid var(--line-soft); border-radius: 9px; background: #07151c; }
+    .balance-reading span { display: block; color: var(--muted); font-size: .59rem; text-transform: uppercase; }
+    .balance-reading strong { display: block; margin-top: 4px; font-size: 1rem; font-variant-numeric: tabular-nums; }
+    .balance-track { height: 4px; margin-top: 7px; border-radius: 99px; background: #112631; overflow: hidden; }
+    .balance-track div { width: 0; height: 100%; border-radius: inherit; background: var(--cyan); transition: width .2s ease; }
+    .balance-detail { display: flex; justify-content: space-between; gap: 10px; margin-top: 9px; color: var(--muted); font-size: .65rem; }
+    .balance-detail strong { color: var(--text); font-variant-numeric: tabular-nums; }
+    .balance-recommendation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+    .balance-recommendation span { color: var(--muted); font-size: .65rem; line-height: 1.35; }
+    .balance-recommendation button { min-height: 34px; padding: 0 10px; font-size: .65rem; }
     .keyboard-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: #09151d; }
     .keyboard-copy strong { display: block; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
     .keyboard-copy span { display: block; max-width: 190px; margin-top: 4px; color: var(--muted); font-size: .7rem; line-height: 1.35; }
@@ -686,6 +742,38 @@ std::string DashboardServer::dashboardHtml()
         </div>
       </section>
 
+      <div class="side-stack">
+      <aside id="missionStateCard" class="card section-card mission-state-card" data-tone="idle">
+        <div class="section-header">
+          <h2 class="section-title">Máquina de estados</h2>
+          <span id="machineStateBadge" class="machine-badge">PARADO</span>
+        </div>
+        <div class="machine-action">
+          <span>Ação atual</span>
+          <strong id="machineAction">Missão parada</strong>
+        </div>
+        <div class="machine-progress">
+          <div class="machine-progress-label"><span>Progresso da etapa</span><strong id="machineProgressValue">0%</strong></div>
+          <div class="machine-progress-track"><div id="machineProgressFill" class="machine-progress-fill"></div></div>
+        </div>
+        <div class="machine-flow" aria-label="Fluxo da máquina de estados">
+          <span id="machineStepPerception" class="machine-step">Percepção</span>
+          <span id="machineStepDecision" class="machine-step">Decisão</span>
+          <span id="machineStepMotion" class="machine-step">Movimento</span>
+          <span id="machineStepFeedback" class="machine-step">Feedback</span>
+        </div>
+        <div class="machine-metrics">
+          <div class="machine-metric"><span>Missão</span><strong id="machineMission">Principal</strong></div>
+          <div class="machine-metric"><span>Linha</span><strong id="machineLine">--</strong></div>
+          <div class="machine-metric"><span>Comando E / D</span><strong id="machineRequestedSpeed" class="accent">0.00 / 0.00</strong></div>
+          <div class="machine-metric"><span>Potência real E / D</span><strong id="machineAppliedSpeed">-- / --</strong></div>
+          <div class="machine-metric"><span>Encoder E / D</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
+          <div class="machine-metric"><span>Erro bruto / filtrado</span><strong id="machineLineError">0.0 / 0.0 px</strong></div>
+          <div class="machine-metric"><span>Correção de giro</span><strong id="machineCorrection">0.000</strong></div>
+          <div class="machine-metric"><span>Modo</span><strong id="machineMode">PARADO</strong></div>
+        </div>
+      </aside>
+
       <aside class="card section-card command-card">
         <div class="section-header"><h2 class="section-title">Comando</h2></div>
         <div class="mission-selector">
@@ -711,18 +799,28 @@ std::string DashboardServer::dashboardHtml()
         </div>
         <div class="drive-control">
           <label for="throttle"><span>Frente / ré</span><output id="throttleValue">0.00</output></label>
-          <input id="throttle" type="range" min="-1" max="1" step="0.05" value="0">
+          <input id="throttle" type="range" min="-1" max="1" step="0.01" value="0">
         </div>
         <div class="drive-control">
           <label for="turn"><span>Giro</span><output id="turnValue">0.00</output></label>
-          <input id="turn" type="range" min="-1" max="1" step="0.05" value="0">
+          <input id="turn" type="range" min="-1" max="1" step="0.01" value="0">
         </div>
         <div class="requested-drive">
-          <div class="request-value"><span>Lado esquerdo</span><strong id="leftValue">0.00</strong></div>
-          <div class="request-value"><span>Lado direito</span><strong id="rightValue">0.00</strong></div>
+          <div class="request-value"><span>Lado esquerdo · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="left" data-delta="-0.01" aria-label="Reduzir lado esquerdo em 0,01">−.01</button><input id="leftValue" aria-label="Potência exata do lado esquerdo" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="left" data-delta="0.01" aria-label="Aumentar lado esquerdo em 0,01">+.01</button></div></div>
+          <div class="request-value"><span>Lado direito · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="right" data-delta="-0.01" aria-label="Reduzir lado direito em 0,01">−.01</button><input id="rightValue" aria-label="Potência exata do lado direito" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="right" data-delta="0.01" aria-label="Aumentar lado direito em 0,01">+.01</button></div></div>
         </div>
-        <div class="safety-note">Os dois lados sempre recebem comando juntos. Se um encoder atrasar, a ESP32 aplica uma recuperação sincronizada sem desarmar o robô.</div>
+        <div class="encoder-balance">
+          <div class="encoder-balance-header"><strong>Sincronização pelos encoders</strong><span id="balanceStatus" class="balance-status state-warn">AGUARDANDO</span></div>
+          <div class="balance-readings">
+            <div class="balance-reading"><span>Esquerda</span><strong id="balanceLeftRate">-- cont/s</strong><div class="balance-track"><div id="balanceLeftBar"></div></div></div>
+            <div class="balance-reading"><span>Direita</span><strong id="balanceRightRate">-- cont/s</strong><div class="balance-track"><div id="balanceRightBar"></div></div></div>
+          </div>
+          <div class="balance-detail"><span>Diferença entre os lados</span><strong id="balanceDifference">--%</strong></div>
+          <div class="balance-recommendation"><span id="balanceRecommendation">Mantenha os dois lados acionados para calcular.</span><button id="applyBalanceRecommendation" disabled>Aplicar sugestão</button></div>
+        </div>
+        <div class="safety-note">Controle normal: qualquer valor não nulo parte de 0.65, com ganho de equilíbrio no lado direito. Os campos exatos usam PWM direto para diagnóstico; clamp, E-Stop e timeouts continuam ativos.</div>
       </aside>
+      </div>
     </section>
 
     <div class="telemetry-heading">
@@ -740,8 +838,7 @@ std::string DashboardServer::dashboardHtml()
         <div class="telemetry-list">
           <div class="telemetry-row"><span>Solicitado pela Raspberry</span><strong><span id="requestedLeft">0.00</span> / <span id="requestedRight">0.00</span></strong></div>
           <div class="telemetry-row"><span>DRV8833 nSLEEP · GPIO26</span><strong id="sleepState">--</strong></div>
-          <div class="telemetry-row"><span>Perfil de reta</span><strong id="straightMotorProfile">--</strong></div>
-          <div class="telemetry-row"><span>Perfil de giro</span><strong id="turnMotorProfile">--</strong></div>
+          <div class="telemetry-row"><span>Perfil de potência</span><strong id="motorCommandProfile">--</strong></div>
           <div class="telemetry-row"><span>E-Stop local da ESP32</span><strong id="esp32Estop">--</strong></div>
         </div>
       </article>
@@ -801,8 +898,8 @@ std::string DashboardServer::dashboardHtml()
           <div class="telemetry-row"><span>LED de sistema · BCM GPIO26</span><strong id="readyLedState">--</strong></div>
           <div class="telemetry-row"><span>Idade da telemetria</span><strong id="telemetryAge">-- ms</strong></div>
           <div class="telemetry-row"><span>Uptime ESP32</span><strong id="diagnosticUptime">--</strong></div>
-          <div class="telemetry-row"><span>Comando unilateral</span><strong class="state-good">bloqueado</strong></div>
-          <div class="telemetry-row"><span>Proteção pelos encoders</span><strong id="tractionProtectionState">--</strong></div>
+          <div class="telemetry-row"><span>Controle independente</span><strong class="state-good">esquerda / direita</strong></div>
+          <div class="telemetry-row"><span>Encoders</span><strong class="state-good">somente telemetria</strong></div>
           <div class="telemetry-row"><span>Timeout de comando · Raspberry</span><strong id="raspberryCommandTimeout">-- ms</strong></div>
           <div class="telemetry-row"><span>Watchdog de motor · ESP32</span><strong id="esp32MotorTimeout">-- ms</strong></div>
         </div>
@@ -822,6 +919,8 @@ std::string DashboardServer::dashboardHtml()
     const connection = element("connection");
     const throttle = element("throttle");
     const turn = element("turn");
+    const leftValue = element("leftValue");
+    const rightValue = element("rightValue");
     const cameraFrame = element("cameraFrame");
     const cameraImage = element("cameraImage");
     const cameraFps = element("cameraFps");
@@ -829,6 +928,12 @@ std::string DashboardServer::dashboardHtml()
     const cameraResolution = element("cameraResolution");
     const cameraFormat = element("cameraFormat");
     const autonomousMission = element("autonomousMission");
+    let requestedLeft = 0;
+    let requestedRight = 0;
+    let rawDiagnosticDrive = false;
+    let filteredLeftEncoderRate = null;
+    let filteredRightEncoderRate = null;
+    let recommendedRightCommand = null;
 
     function setPill(target, text, state) {
       target.textContent = text;
@@ -877,8 +982,85 @@ std::string DashboardServer::dashboardHtml()
       const mission = String(data.autonomousMission || "main_mission");
       if (document.activeElement !== autonomousMission) autonomousMission.value = mission;
       element("missionHint").textContent = mission === "turn_right_90"
-        ? "Usa o MPU6050, gira à direita e para automaticamente próximo de 90°."
+        ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : "Robô de Resgate.";
+    }
+
+    function updateStateMachine(data) {
+      const phases = {
+        stopped: ["PARADO", "idle", "machineStepFeedback"],
+        manual: ["CONTROLE MANUAL", "active", "machineStepDecision"],
+        ready: ["MISSÃO PRONTA", "idle", "machineStepDecision"],
+        starting: ["INICIALIZANDO", "warn", "machineStepPerception"],
+        emergency: ["EMERGÊNCIA", "danger", "machineStepFeedback"],
+        calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
+        waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
+        waiting_camera: ["AGUARDANDO CÂMERA", "warn", "machineStepPerception"],
+        waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
+        invalid_vision: ["VISÃO INVÁLIDA", "danger", "machineStepPerception"],
+        following_straight: ["SEGUINDO RETA", "active", "machineStepMotion"],
+        correcting_left: ["CORRIGINDO ESQUERDA", "active", "machineStepMotion"],
+        correcting_right: ["CORRIGINDO DIREITA", "active", "machineStepMotion"],
+        searching_left: ["BUSCANDO À ESQUERDA", "warn", "machineStepDecision"],
+        searching_right: ["BUSCANDO À DIREITA", "warn", "machineStepDecision"],
+        searching_forward: ["BUSCANDO EM FRENTE", "warn", "machineStepDecision"],
+        approaching_green: ["MARCA VERDE", "warn", "machineStepMotion"],
+        green_turn_left: ["VERDE · ESQUERDA", "active", "machineStepMotion"],
+        green_turn_right: ["VERDE · DIREITA", "active", "machineStepMotion"],
+        green_u_turn: ["VERDE · MEIA-VOLTA", "active", "machineStepMotion"],
+        green_completed: ["VERDE CONCLUÍDO", "active", "machineStepFeedback"],
+        turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
+        turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
+        turn_correction: ["CORRIGINDO GIRO", "active", "machineStepMotion"],
+        completed: ["MISSÃO CONCLUÍDA", "active", "machineStepFeedback"],
+        turn_timeout: ["TEMPO LIMITE", "danger", "machineStepFeedback"],
+        turn_imu_lost: ["IMU PERDIDA", "danger", "machineStepFeedback"],
+        turn_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"]
+      };
+      let phase = String(data.autonomousPhase || "stopped");
+      let action = String(data.autonomousAction || "Aguardando estado da missão");
+      if (data.emergency === true || data.esp32EmergencyStop === true) {
+        phase = "emergency";
+        action = "Movimento bloqueado pela parada de emergência";
+      } else if (data.esp32CalibrationActive === true) {
+        phase = "calibrating";
+        action = "Calibrando sensores: mantenha o robô parado";
+      } else if (data.mode === "autonomous" && data.esp32SerialOpen !== true) {
+        phase = "waiting_esp32";
+        action = "Missão sem comunicação com a ESP32: motores protegidos";
+      }
+      const phaseInfo = phases[phase] || [phase.replaceAll("_", " ").toUpperCase(), "idle", "machineStepDecision"];
+      const card = element("missionStateCard");
+      card.dataset.tone = phaseInfo[1];
+      element("machineStateBadge").textContent = phaseInfo[0];
+      element("machineAction").textContent = action;
+
+      ["machineStepPerception", "machineStepDecision", "machineStepMotion", "machineStepFeedback"]
+        .forEach(id => element(id).classList.toggle("active", id === phaseInfo[2]));
+
+      const continuousPhases = ["following_straight", "correcting_left", "correcting_right", "searching_left", "searching_right", "searching_forward"];
+      const continuous = continuousPhases.includes(phase);
+      const progress = Math.max(0, Math.min(100, Number(data.autonomousProgressPercent) || 0));
+      element("machineProgressValue").textContent = continuous ? "CONTÍNUO" : `${formatNumber(progress, 0)}%`;
+      element("machineProgressFill").style.width = `${continuous ? 100 : progress}%`;
+
+      const mission = String(data.autonomousMission || "main_mission");
+      element("machineMission").textContent = mission === "turn_right_90" ? "Giro 90° à direita" : "Missão principal";
+      element("machineLine").textContent = data.autonomousLineDetected === true ? "DETECTADA" : "NÃO DETECTADA";
+      element("machineLine").className = data.autonomousLineDetected === true ? "state-good" : "state-warn";
+      element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
+      const fresh = data.esp32SensorFresh === true;
+      element("machineAppliedSpeed").textContent = fresh
+        ? `${formatNumber(data.esp32AppliedLeftPower, 2)} / ${formatNumber(data.esp32AppliedRightPower, 2)}`
+        : "-- / --";
+      element("machineEncoderSpeed").textContent = fresh
+        ? `${formatNumber(data.leftEncoderRate, 0)} / ${formatNumber(data.rightEncoderRate, 0)} cont/s`
+        : "-- / -- cont/s";
+      element("machineLineError").textContent = `${formatNumber(data.autonomousRawLineError, 1)} / ${formatNumber(data.autonomousFilteredLineError, 1)} px`;
+      const correction = Number(data.autonomousSteeringCorrection);
+      element("machineCorrection").textContent = Number.isFinite(correction) ? `${correction >= 0 ? "+" : ""}${correction.toFixed(3)}` : "--";
+      const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
+      element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
 
     function updateSystemMetric(metricId, fillId, value, warningValue, dangerValue) {
@@ -888,21 +1070,89 @@ std::string DashboardServer::dashboardHtml()
       element(fillId).style.width = `${Math.max(0, Math.min(100, safeValue))}%`;
     }
 
+    function updateMotorBalance(data, fresh) {
+      const appliedLeft = Math.abs(Number(data.esp32AppliedLeftPower));
+      const appliedRight = Math.abs(Number(data.esp32AppliedRightPower));
+      const rawLeftRate = Math.abs(Number(data.leftEncoderRate));
+      const rawRightRate = Math.abs(Number(data.rightEncoderRate));
+      const movingCommand = appliedLeft > 0.01 && appliedRight > 0.01;
+      const valuesValid = fresh && Number.isFinite(rawLeftRate) && Number.isFinite(rawRightRate);
+      const status = element("balanceStatus");
+
+      if (!valuesValid || !movingCommand) {
+        filteredLeftEncoderRate = null;
+        filteredRightEncoderRate = null;
+        recommendedRightCommand = null;
+        element("balanceLeftRate").textContent = "-- cont/s";
+        element("balanceRightRate").textContent = "-- cont/s";
+        element("balanceLeftBar").style.width = "0%";
+        element("balanceRightBar").style.width = "0%";
+        element("balanceDifference").textContent = "--%";
+        element("balanceRecommendation").textContent = "Mantenha os dois lados acionados para calcular.";
+        element("applyBalanceRecommendation").disabled = true;
+        status.textContent = fresh ? "ACIONE OS DOIS LADOS" : "SEM TELEMETRIA";
+        status.className = "balance-status state-warn";
+        return;
+      }
+
+      const smoothing = 0.25;
+      filteredLeftEncoderRate = filteredLeftEncoderRate === null
+        ? rawLeftRate
+        : filteredLeftEncoderRate + smoothing * (rawLeftRate - filteredLeftEncoderRate);
+      filteredRightEncoderRate = filteredRightEncoderRate === null
+        ? rawRightRate
+        : filteredRightEncoderRate + smoothing * (rawRightRate - filteredRightEncoderRate);
+
+      const fasterRate = Math.max(filteredLeftEncoderRate, filteredRightEncoderRate);
+      const differencePercent = fasterRate > 1
+        ? Math.abs(filteredLeftEncoderRate - filteredRightEncoderRate) / fasterRate * 100
+        : 0;
+      element("balanceLeftRate").textContent = `${filteredLeftEncoderRate.toFixed(0)} cont/s`;
+      element("balanceRightRate").textContent = `${filteredRightEncoderRate.toFixed(0)} cont/s`;
+      element("balanceLeftBar").style.width = `${fasterRate > 0 ? filteredLeftEncoderRate / fasterRate * 100 : 0}%`;
+      element("balanceRightBar").style.width = `${fasterRate > 0 ? filteredRightEncoderRate / fasterRate * 100 : 0}%`;
+      element("balanceDifference").textContent = `${differencePercent.toFixed(1)}%`;
+
+      const rightDirection = Number(data.esp32AppliedRightPower) < 0 ? -1 : 1;
+      const suggestedRightMagnitude = filteredRightEncoderRate > 1
+        ? Math.abs(Number(data.esp32AppliedRightPower)) * filteredLeftEncoderRate / filteredRightEncoderRate
+        : Math.abs(Number(data.esp32AppliedRightPower));
+      recommendedRightCommand = rightDirection * Math.round(clamp(suggestedRightMagnitude) * 100) / 100;
+      element("balanceRecommendation").textContent = `Usando a esquerda como referência: teste direita em ${recommendedRightCommand.toFixed(2)}.`;
+      element("applyBalanceRecommendation").disabled = !manualEnabled;
+
+      if (fasterRate <= 1) {
+        status.textContent = "SEM MOVIMENTO";
+        status.className = "balance-status state-bad";
+      } else if (differencePercent <= 2) {
+        status.textContent = "EQUILÍBRIO PRECISO";
+        status.className = "balance-status state-good";
+      } else if (differencePercent <= 5) {
+        status.textContent = "AJUSTE FINO";
+        status.className = "balance-status state-warn";
+      } else {
+        status.textContent = filteredLeftEncoderRate > filteredRightEncoderRate
+          ? "DIREITA MAIS LENTA"
+          : "ESQUERDA MAIS LENTA";
+        status.className = differencePercent <= 12
+          ? "balance-status state-warn"
+          : "balance-status state-bad";
+      }
+    }
+
     function updateEsp32Telemetry(data) {
       const fresh = data.esp32SensorFresh === true;
       const serialOpen = data.esp32SerialOpen === true;
       const calibrating = data.esp32CalibrationActive === true;
       const mpuOk = fresh && !calibrating && data.mpuOk === true;
       const localEmergency = data.esp32EmergencyStop === true;
-      const tractionRecovery = data.tractionRecoveryActive === true;
       const systemEmergency = data.emergency === true || localEmergency;
       const battery = Number(data.batteryVoltage);
       const distance = Number(data.ultrasonicDistanceCm);
       const age = Number(data.esp32LastSensorAgeMs);
 
       setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE"), calibrating ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
-      const tractionSide = Number(data.tractionRecoverySide) === 1 ? "ESQUERDA" : "DIREITA";
-      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (tractionRecovery ? `RECUPERANDO TRAÇÃO · ${tractionSide}` : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO"))), systemEmergency ? "danger" : ((tractionRecovery || calibrating || data.mode === "stopped") ? "warn" : "ok"));
+      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO")), systemEmergency ? "danger" : ((calibrating || data.mode === "stopped") ? "warn" : "ok"));
       const esp32Status = element("esp32Status");
       esp32Status.textContent = calibrating ? "CALIBRANDO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE"));
       esp32Status.className = `hero-value ${calibrating ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"))}`;
@@ -916,9 +1166,6 @@ std::string DashboardServer::dashboardHtml()
       element("readyLedState").className = data.systemReady === true ? "state-good" : "state-warn";
       element("raspberryCommandTimeout").textContent = `${formatNumber(data.raspberryCommandTimeoutMs, 0)} ms`;
       element("esp32MotorTimeout").textContent = `${formatNumber(data.esp32MotorCommandTimeoutMs, 0)} ms`;
-      const tractionState = element("tractionProtectionState");
-      tractionState.textContent = tractionRecovery ? `pulso sincronizado · ${tractionSide}` : (fresh ? "monitorando" : "sem dados");
-      tractionState.className = tractionRecovery ? "state-warn" : (fresh ? "state-good" : "state-warn");
 
       element("batteryVoltage").textContent = fresh ? `${formatNumber(battery, 2)} V` : "--.-- V";
       element("batteryAdc").textContent = fresh ? `${formatNumber(data.batteryAdcMillivolts, 0)} mV` : "-- mV";
@@ -929,10 +1176,13 @@ std::string DashboardServer::dashboardHtml()
       element("diagnosticUptime").textContent = fresh ? formatUptime(data.esp32UptimeMs) : "--";
       element("requestedLeft").textContent = formatNumber(data.left, 2);
       element("requestedRight").textContent = formatNumber(data.right, 2);
+      const motorCommandProfile = element("motorCommandProfile");
+      motorCommandProfile.textContent = data.rawMotorCommand === true
+        ? "diagnóstico · PWM direto"
+        : `operacional · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · direita ×${formatNumber(data.rightMotorCalibrationGain, 3)}`;
+      motorCommandProfile.className = data.rawMotorCommand === true ? "state-warn" : "state-good";
       element("appliedLeft").textContent = fresh ? formatNumber(data.esp32AppliedLeftPower, 2) : "--";
       element("appliedRight").textContent = fresh ? formatNumber(data.esp32AppliedRightPower, 2) : "--";
-      element("straightMotorProfile").textContent = fresh ? `${formatNumber(Number(data.straightMinimumMotorPower) * 100, 0)}–${formatNumber(Number(data.straightMaximumMotorPower) * 100, 0)}%` : "--";
-      element("turnMotorProfile").textContent = fresh ? `${formatNumber(Number(data.turnMinimumMotorPower) * 100, 0)}–${formatNumber(Number(data.turnMaximumMotorPower) * 100, 0)}%` : "--";
       element("leftMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedLeftPower)) * 100)}%` : "0%";
       element("rightMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedRightPower)) * 100)}%` : "0%";
       if (fresh) {
@@ -981,6 +1231,7 @@ std::string DashboardServer::dashboardHtml()
       setState("mpuState", mpuOk, "online", "indisponível");
       setState("pcaState", fresh && data.pca9685Ok === true, "online", "indisponível");
       setState("oledState", fresh && data.oledOk === true, "online", "indisponível");
+      updateMotorBalance(data, fresh);
     }
 
     function connect() {
@@ -991,6 +1242,7 @@ std::string DashboardServer::dashboardHtml()
         const data = JSON.parse(event.data);
         updateMode(data);
         updateAutonomousMission(data);
+        updateStateMachine(data);
         element("cpu").textContent = `${formatNumber(data.cpu, 1)}%`;
         element("temp").textContent = `${formatNumber(data.temperature, 1)} °C`;
         element("ram").textContent = `${formatNumber(data.ram, 1)}%`;
@@ -1024,29 +1276,66 @@ std::string DashboardServer::dashboardHtml()
 
     function clamp(value) { return Math.max(-1, Math.min(1, value)); }
 
-    function keepBothSidesMoving(leftValue, rightValue) {
-      if (leftValue === 0 && rightValue !== 0) leftValue = -rightValue;
-      else if (rightValue === 0 && leftValue !== 0) rightValue = -leftValue;
-      return [leftValue, rightValue];
+    function sendCurrentDrive() {
+      if (manualEnabled) {
+        send({ command: rawDiagnosticDrive ? "drive_raw" : "drive", left: requestedLeft, right: requestedRight });
+      }
     }
 
-    function sendDrive() {
+    function updateDriveFromMixer() {
       const throttleValue = Number(throttle.value);
       const turnValue = Number(turn.value);
-      let leftValue = clamp(throttleValue + turnValue);
-      let rightValue = clamp(throttleValue - turnValue);
-      [leftValue, rightValue] = keepBothSidesMoving(leftValue, rightValue);
+      requestedLeft = clamp(throttleValue + turnValue);
+      requestedRight = clamp(throttleValue - turnValue);
+      rawDiagnosticDrive = false;
       element("throttleValue").textContent = throttleValue.toFixed(2);
       element("turnValue").textContent = turnValue.toFixed(2);
-      element("leftValue").textContent = leftValue.toFixed(2);
-      element("rightValue").textContent = rightValue.toFixed(2);
-      if (manualEnabled) send({ command: "drive", left: leftValue, right: rightValue });
+      leftValue.value = requestedLeft.toFixed(2);
+      rightValue.value = requestedRight.toFixed(2);
+      sendCurrentDrive();
+    }
+
+    function updateDriveFromExactInputs() {
+      const parsedLeft = Number(leftValue.value);
+      const parsedRight = Number(rightValue.value);
+      if (!Number.isFinite(parsedLeft) || !Number.isFinite(parsedRight)) {
+        leftValue.value = requestedLeft.toFixed(2);
+        rightValue.value = requestedRight.toFixed(2);
+        return;
+      }
+      requestedLeft = clamp(parsedLeft);
+      requestedRight = clamp(parsedRight);
+      rawDiagnosticDrive = true;
+      leftValue.value = requestedLeft.toFixed(2);
+      rightValue.value = requestedRight.toFixed(2);
+      sendCurrentDrive();
+    }
+
+    function adjustExactSide(side, delta) {
+      const target = side === "left" ? leftValue : rightValue;
+      const currentValue = Number(target.value);
+      if (!Number.isFinite(currentValue)) return;
+      target.value = (Math.round(clamp(currentValue + delta) * 100) / 100).toFixed(2);
+      updateDriveFromExactInputs();
+    }
+
+    function applyBalanceRecommendation() {
+      if (!manualEnabled || recommendedRightCommand === null) return;
+      rightValue.value = recommendedRightCommand.toFixed(2);
+      updateDriveFromExactInputs();
     }
 
     function resetDrive() {
       throttle.value = "0";
       turn.value = "0";
-      sendDrive();
+      requestedLeft = 0;
+      requestedRight = 0;
+      rawDiagnosticDrive = false;
+      element("throttleValue").textContent = "0.00";
+      element("turnValue").textContent = "0.00";
+      leftValue.value = "0.00";
+      rightValue.value = "0.00";
+      sendCurrentDrive();
     }
 
     function updateKeyboardIndicators() {
@@ -1066,7 +1355,7 @@ std::string DashboardServer::dashboardHtml()
       const turnValue = (pressedDriveKeys.has("KeyD") ? 1 : 0) - (pressedDriveKeys.has("KeyA") ? 1 : 0);
       throttle.value = turnValue === 0 ? String(forward) : "0";
       turn.value = String(turnValue);
-      sendDrive();
+      updateDriveFromMixer();
     }
 
     function stopDriveOnFocusLoss() {
@@ -1096,8 +1385,14 @@ std::string DashboardServer::dashboardHtml()
 
     cameraImage.addEventListener("load", () => cameraFrame.classList.remove("offline"));
     cameraImage.addEventListener("error", () => { cameraFrame.classList.add("offline"); cameraReconnectTimer = window.setTimeout(startCameraStream, 1000); });
-    throttle.addEventListener("input", sendDrive);
-    turn.addEventListener("input", sendDrive);
+    throttle.addEventListener("input", updateDriveFromMixer);
+    turn.addEventListener("input", updateDriveFromMixer);
+    leftValue.addEventListener("change", updateDriveFromExactInputs);
+    rightValue.addEventListener("change", updateDriveFromExactInputs);
+    document.querySelectorAll("[data-side][data-delta]").forEach(button => {
+      button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
+    });
+    element("applyBalanceRecommendation").addEventListener("click", applyBalanceRecommendation);
     autonomousMission.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
       if (!driveKeyCodes.includes(event.code) || event.ctrlKey || event.altKey || event.metaKey) return;
@@ -1119,7 +1414,7 @@ std::string DashboardServer::dashboardHtml()
     });
     window.addEventListener("blur", stopDriveOnFocusLoss);
     document.addEventListener("visibilitychange", () => { if (document.hidden) stopDriveOnFocusLoss(); });
-    window.setInterval(sendDrive, 100);
+    window.setInterval(sendCurrentDrive, 100);
     window.setInterval(refreshCameraStatus, 500);
     startCameraStream();
     refreshCameraStatus();

@@ -41,6 +41,10 @@ void RobotState::start()
     std::lock_guard<std::mutex> lock(mutex_);
     state_.emergencyStop = false;
     state_.mode = "manual";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.autonomousStatus = {"manual", "Controle manual ativo"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
@@ -51,7 +55,31 @@ void RobotState::startAutonomous()
     state_.mode = "autonomous";
     state_.left = 0.0;
     state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    ++state_.autonomousRunSequence;
+    state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
+}
+
+bool RobotState::tryStartAutonomous()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // O botão físico não libera E-Stop. A condição é revalidada dentro
+    // do mutex para que uma emergência concorrente nunca seja apagada pela partida.
+    if (state_.emergencyStop || state_.mode != "stopped")
+    {
+        return false;
+    }
+
+    state_.mode = "autonomous";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    ++state_.autonomousRunSequence;
+    state_.autonomousStatus = {"starting", "Inicializando missão"};
+    lastCommand_ = std::chrono::steady_clock::now();
+    return true;
 }
 
 void RobotState::setAutonomousMission(AutonomousMission mission)
@@ -63,7 +91,9 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     state_.mode = state_.emergencyStop ? "emergency" : "stopped";
     state_.left = 0.0;
     state_.right = 0.0;
+    state_.rawMotorCommand = false;
     state_.autonomousMission = mission;
+    state_.autonomousStatus = {"ready", "Missão selecionada e pronta"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
@@ -73,6 +103,8 @@ void RobotState::stop()
     state_.mode = "stopped";
     state_.left = 0.0;
     state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.autonomousStatus = {"stopped", "Missão parada"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
@@ -83,6 +115,8 @@ void RobotState::emergencyStop()
     state_.emergencyStop = true;
     state_.left = 0.0;
     state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.autonomousStatus = {"emergency", "Parada de emergência ativa"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
@@ -97,11 +131,33 @@ void RobotState::drive(double left, double right)
         // Isso impede que o dashboard tire o robô do modo parado por acidente.
         state_.left = 0.0;
         state_.right = 0.0;
+        state_.rawMotorCommand = false;
         return;
     }
 
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
+    state_.rawMotorCommand = false;
+}
+
+void RobotState::driveRawDiagnostic(double left, double right)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    lastCommand_ = std::chrono::steady_clock::now();
+
+    if (state_.emergencyStop || state_.mode != "manual")
+    {
+        // O diagnóstico direto continua bloqueado fora do modo manual para não
+        // permitir que o dashboard contorne a parada ou o E-Stop.
+        state_.left = 0.0;
+        state_.right = 0.0;
+        state_.rawMotorCommand = false;
+        return;
+    }
+
+    state_.left = clampMotorCommand(left);
+    state_.right = clampMotorCommand(right);
+    state_.rawMotorCommand = true;
 }
 
 void RobotState::driveAutonomous(double left, double right)
@@ -118,6 +174,44 @@ void RobotState::driveAutonomous(double left, double right)
 
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
+    state_.rawMotorCommand = false;
+}
+
+void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Uma atualização atrasada do controlador autônomo não pode substituir no painel
+    // um estado manual, parado ou de emergência que acabou de ser solicitado.
+    const bool terminalMissionStatus = status.phase == "completed" ||
+                                       status.phase == "turn_timeout" ||
+                                       status.phase == "turn_imu_lost" ||
+                                       status.phase == "turn_correction_failed";
+    if (state_.mode != "autonomous" && !terminalMissionStatus)
+    {
+        return;
+    }
+    state_.autonomousStatus = status;
+
+    // Evita que valores inválidos prejudiquem o JSON enviado continuamente ao dashboard.
+    if (!std::isfinite(state_.autonomousStatus.rawLineError))
+    {
+        state_.autonomousStatus.rawLineError = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.filteredLineError))
+    {
+        state_.autonomousStatus.filteredLineError = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.steeringCorrection))
+    {
+        state_.autonomousStatus.steeringCorrection = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.progressPercent))
+    {
+        state_.autonomousStatus.progressPercent = 0.0;
+    }
+    state_.autonomousStatus.progressPercent = std::clamp(
+        state_.autonomousStatus.progressPercent, 0.0, 100.0);
 }
 
 void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)
@@ -129,5 +223,6 @@ void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)
     {
         state_.left = 0.0;
         state_.right = 0.0;
+        state_.rawMotorCommand = false;
     }
 }

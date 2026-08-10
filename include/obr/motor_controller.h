@@ -18,4 +18,5 @@ private:
     Esp32Bridge& esp32_;
 
     static double safeMotorPower(double command);
+    static double operationalMotorPower(double command, double calibrationGain);
 };

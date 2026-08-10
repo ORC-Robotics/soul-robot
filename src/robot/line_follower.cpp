@@ -11,20 +11,30 @@
 
 namespace
 {
-double clampOutput(double value)
-{
-    if (!std::isfinite(value))
-    {
-        return 0.0;
-    }
-
-    return std::clamp(value, config::kMinMotorOutput, config::kMaxMotorOutput);
-}
-
 double currentUnixSeconds()
 {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return std::chrono::duration<double>(now).count();
+}
+
+AutonomousStatus makeAutonomousStatus(
+    const std::string& phase,
+    const std::string& action,
+    bool lineDetected = false,
+    double rawLineError = 0.0,
+    double filteredLineError = 0.0,
+    double steeringCorrection = 0.0,
+    double progressPercent = 0.0)
+{
+    AutonomousStatus status;
+    status.phase = phase;
+    status.action = action;
+    status.lineDetected = lineDetected;
+    status.rawLineError = rawLineError;
+    status.filteredLineError = filteredLineError;
+    status.steeringCorrection = steeringCorrection;
+    status.progressPercent = progressPercent;
+    return status;
 }
 }
 
@@ -34,7 +44,16 @@ void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& 
     if (snapshot.mode != "autonomous")
     {
         resetMissionState();
+        activeAutonomousRunSequence_ = 0;
         return;
+    }
+
+    if (activeAutonomousRunSequence_ != snapshot.autonomousRunSequence)
+    {
+        // Cada nova partida recebe um identificador. Assim, Stop seguido de Auto
+        // entre dois ciclos nunca reutiliza yaw ou fase da execução anterior.
+        resetMissionState();
+        activeAutonomousRunSequence_ = snapshot.autonomousRunSequence;
     }
 
     if (snapshot.autonomousMission == AutonomousMission::TurnRight90)
@@ -43,7 +62,8 @@ void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& 
         return;
     }
 
-    turn90Active_ = false;
+    turn90Phase_ = Turn90Phase::Idle;
+    turn90CorrectionPulseCount_ = 0;
 
     const auto now = std::chrono::steady_clock::now();
     if (phase_ != Phase::Following)
@@ -56,7 +76,10 @@ void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& 
     if (!status.valid || !status.active || !isFresh(status))
     {
         // Se a câmera falhar ou o JSON ficar antigo, a ação segura é parar.
+        resetLineControl();
         robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "waiting_camera", "Aguardando dados válidos da câmera"));
         return;
     }
 
@@ -75,20 +98,28 @@ void LineFollower::updateTurnRight90(
 {
     const auto now = std::chrono::steady_clock::now();
     const bool imuReady = esp32Telemetry.sensorFresh && esp32Telemetry.mpuOk &&
-                          std::isfinite(esp32Telemetry.yawZDeg);
+                          esp32Telemetry.lastSensorAgeMs >= 0 &&
+                          esp32Telemetry.lastSensorAgeMs <= config::kTurn90ImuFreshnessMs &&
+                          std::isfinite(esp32Telemetry.yawZDeg) &&
+                          std::isfinite(esp32Telemetry.gyroZDegPerSec);
 
-    if (!turn90Active_)
+    if (turn90Phase_ == Turn90Phase::Idle)
     {
         if (!imuReady)
         {
             // Sem uma referência angular válida, a missão não pode iniciar.
             robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "waiting_imu", "Aguardando referência angular do MPU6050"));
             return;
         }
 
-        turn90Active_ = true;
+        turn90Phase_ = Turn90Phase::Turning;
         turn90StartYawDegrees_ = esp32Telemetry.yawZDeg;
         turn90StartedAt_ = now;
+        turn90PhaseStartedAt_ = now;
+        turn90CorrectionPulseCount_ = 0;
+        turn90CorrectionDirection_ = 1.0;
         std::cout << "Turn-right-90 mission started at yaw="
                   << turn90StartYawDegrees_ << " deg\n";
     }
@@ -98,44 +129,175 @@ void LineFollower::updateTurnRight90(
     {
         // O timeout evita manter os motores ativos se o ângulo parar de mudar.
         robotState.stop();
-        turn90Active_ = false;
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "turn_timeout", "Giro interrompido pelo tempo limite"));
+        turn90Phase_ = Turn90Phase::Idle;
         std::cout << "Turn-right-90 mission stopped by timeout\n";
         return;
     }
 
     if (!imuReady)
     {
-        // Uma leitura perdida durante o giro para os motores imediatamente.
-        robotState.driveAutonomous(0.0, 0.0);
+        // Depois que o giro começa, perder sua referência angular encerra a
+        // missão. Retomar sozinho poderia usar uma posição que mudou sem medição.
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "turn_imu_lost", "Giro interrompido: amostra recente do MPU6050 indisponível"));
+        turn90Phase_ = Turn90Phase::Idle;
+        std::cout << "Turn-right-90 mission stopped after losing IMU data\n";
         return;
     }
 
     const double turnedDegrees = angularDistanceDegrees(
         turn90StartYawDegrees_, esp32Telemetry.yawZDeg);
     const double remainingDegrees = config::kTurn90TargetDegrees - turnedDegrees;
-    if (remainingDegrees <= config::kTurn90StopToleranceDegrees)
+    const double progressPercent = std::clamp(
+        turnedDegrees / config::kTurn90TargetDegrees * 100.0, 0.0, 100.0);
+
+    if (turn90Phase_ == Turn90Phase::Turning)
+    {
+        const double predictionSeconds = config::kTurn90BrakePredictionSeconds +
+                                         esp32Telemetry.lastSensorAgeMs / 1000.0;
+        const double brakeLeadDegrees = std::clamp(
+            std::abs(esp32Telemetry.gyroZDegPerSec) * predictionSeconds,
+            config::kTurn90StopToleranceDegrees,
+            config::kTurn90MaximumBrakeLeadDegrees);
+
+        if (remainingDegrees <= brakeLeadDegrees)
+        {
+            // O DRV8833 fica habilitado, mas recebe PWM zero antes do alvo. A
+            // pausa permite medir quanto a inércia ainda moveu o robô.
+            robotState.driveAutonomous(0.0, 0.0);
+            turn90Phase_ = Turn90Phase::Settling;
+            turn90PhaseStartedAt_ = now;
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "turn_settling", "PWM zerado: aguardando o giro estabilizar",
+                false, 0.0, 0.0, 0.0, progressPercent));
+            return;
+        }
+
+        // O comando lógico de 0,01 passa pelo perfil operacional. Isso garante
+        // a partida com aproximadamente 0,65 / -0,67 de PWM efetivo.
+        robotState.driveAutonomous(
+            config::kTurn90CommandPower, -config::kTurn90CommandPower);
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "turning_right_90", "Girando 90° à direita com comando lógico de 0,01",
+            false, 0.0, 0.0, config::kTurn90CommandPower, progressPercent));
+        return;
+    }
+
+    if (turn90Phase_ == Turn90Phase::CorrectionPulse)
+    {
+        const bool targetReached =
+            std::abs(remainingDegrees) <= config::kTurn90StopToleranceDegrees;
+        const bool targetCrossedDuringPulse =
+            remainingDegrees * turn90CorrectionDirection_ <= 0.0;
+        if (targetReached || targetCrossedDuringPulse)
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+            turn90Phase_ = Turn90Phase::Settling;
+            turn90PhaseStartedAt_ = now;
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "turn_settling", "Alvo alcançado: aguardando o giro estabilizar",
+                false, 0.0, 0.0, 0.0, progressPercent));
+            return;
+        }
+
+        const auto pulseElapsed = now - turn90PhaseStartedAt_;
+        if (pulseElapsed < std::chrono::milliseconds(config::kTurn90CorrectionPulseMs))
+        {
+            robotState.driveAutonomous(
+                turn90CorrectionDirection_ * config::kTurn90CommandPower,
+                -turn90CorrectionDirection_ * config::kTurn90CommandPower);
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "turn_correction",
+                std::string(turn90CorrectionDirection_ > 0.0
+                                ? "Completando ângulo com correção curta nº "
+                                : "Reduzindo excesso com correção reversa nº ") +
+                    std::to_string(turn90CorrectionPulseCount_),
+                false, 0.0, 0.0,
+                turn90CorrectionDirection_ * config::kTurn90CommandPower,
+                progressPercent));
+            return;
+        }
+
+        robotState.driveAutonomous(0.0, 0.0);
+        turn90Phase_ = Turn90Phase::Settling;
+        turn90PhaseStartedAt_ = now;
+    }
+
+    // A estabilização é não bloqueante: o loop continua cuidando do
+    // E-Stop, do botão físico, da UART e do timeout enquanto o PWM permanece zero.
+    robotState.driveAutonomous(0.0, 0.0);
+    const auto settleElapsed = now - turn90PhaseStartedAt_;
+    const bool angularMotionStopped =
+        std::abs(esp32Telemetry.gyroZDegPerSec) <= config::kTurn90StationaryRateDegPerSec;
+    if (settleElapsed < std::chrono::milliseconds(config::kTurn90SettleMs) ||
+        !angularMotionStopped)
+    {
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "turn_settling", "Aguardando a leitura angular estabilizar",
+            false, 0.0, 0.0, 0.0, progressPercent));
+        return;
+    }
+
+    if (std::abs(remainingDegrees) <= config::kTurn90StopToleranceDegrees)
     {
         robotState.stop();
-        turn90Active_ = false;
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "completed", "Giro de 90° concluído", false, 0.0, 0.0, 0.0, 100.0));
+        turn90Phase_ = Turn90Phase::Idle;
         std::cout << "Turn-right-90 mission completed at "
                   << turnedDegrees << " deg\n";
         return;
     }
 
-    const double turnPower = remainingDegrees <= config::kTurn90SlowdownDegrees
-                                 ? config::kTurn90FinePower
-                                 : config::kTurn90Power;
-    // Potência positiva à esquerda e negativa à direita gira no mesmo sentido
-    // usado pelas manobras de curva à direita já existentes.
-    robotState.driveAutonomous(turnPower, -turnPower);
+    if (turn90CorrectionPulseCount_ >= config::kTurn90MaximumCorrectionPulses)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "turn_correction_failed", "Giro parado: correções não alcançaram 90°",
+            false, 0.0, 0.0, 0.0, progressPercent));
+        turn90Phase_ = Turn90Phase::Idle;
+        std::cout << "Turn-right-90 mission stopped after correction limit at "
+                  << turnedDegrees << " deg\n";
+        return;
+    }
+
+    ++turn90CorrectionPulseCount_;
+    turn90CorrectionDirection_ = remainingDegrees > 0.0 ? 1.0 : -1.0;
+    turn90Phase_ = Turn90Phase::CorrectionPulse;
+    turn90PhaseStartedAt_ = now;
+    robotState.driveAutonomous(
+        turn90CorrectionDirection_ * config::kTurn90CommandPower,
+        -turn90CorrectionDirection_ * config::kTurn90CommandPower);
+    robotState.updateAutonomousStatus(makeAutonomousStatus(
+        "turn_correction",
+        turn90CorrectionDirection_ > 0.0
+            ? "Aplicando correção para completar o ângulo"
+            : "Aplicando correção reversa para reduzir o excesso",
+        false, 0.0, 0.0,
+        turn90CorrectionDirection_ * config::kTurn90CommandPower,
+        progressPercent));
 }
 
 void LineFollower::resetMissionState()
 {
     phase_ = Phase::Following;
     activeGreenAction_ = "NENHUM";
+    resetLineControl();
+    turn90Phase_ = Turn90Phase::Idle;
+    turn90CorrectionPulseCount_ = 0;
+    turn90CorrectionDirection_ = 1.0;
+}
+
+void LineFollower::resetLineControl()
+{
     lastLineError_ = 0.0;
-    turn90Active_ = false;
+    filteredLineError_ = 0.0;
+    lastSteeringCorrection_ = 0.0;
+    lastCameraTimestampSeconds_ = 0.0;
+    lineErrorFilterInitialized_ = false;
 }
 
 bool LineFollower::cameraReady() const
@@ -173,6 +335,16 @@ LineFollower::CameraStatus LineFollower::readCameraStatus() const
 
 void LineFollower::followLine(RobotState& robotState, const CameraStatus& status)
 {
+    if (status.lineDetected && !std::isfinite(status.lineError))
+    {
+        // Um erro visual inválido não pode chegar à mistura dos motores.
+        resetLineControl();
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "invalid_vision", "Erro visual inválido: motores parados"));
+        return;
+    }
+
     if (!status.lineDetected)
     {
         // Em curvas de 90 graus, a linha pode sair da imagem por alguns ciclos.
@@ -184,32 +356,96 @@ void LineFollower::followLine(RobotState& robotState, const CameraStatus& status
             if (lastLineError_ > 0.0)
             {
                 robotState.driveAutonomous(turnPower, -turnPower);
+                robotState.updateAutonomousStatus(makeAutonomousStatus(
+                    "searching_right", "Linha perdida: procurando à direita",
+                    false, status.lineError, filteredLineError_, turnPower));
             }
             else
             {
                 robotState.driveAutonomous(-turnPower, turnPower);
+                robotState.updateAutonomousStatus(makeAutonomousStatus(
+                    "searching_left", "Linha perdida: procurando à esquerda",
+                    false, status.lineError, filteredLineError_, -turnPower));
             }
             return;
         }
 
-        robotState.driveAutonomous(config::kLineFollowerBasePower * 0.5, config::kLineFollowerBasePower * 0.5);
+        // A busca em frente também usa o mínimo operacional. Reduzir a base pela
+        // metade produziria um comando incapaz de mover os quatro motores.
+        robotState.driveAutonomous(config::kLineFollowerBasePower, config::kLineFollowerBasePower);
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "searching_forward", "Linha perdida: avançando para reencontrá-la"));
         return;
     }
 
-    lastLineError_ = status.lineError;
+    if (!lineErrorFilterInitialized_)
+    {
+        filteredLineError_ = status.lineError;
+        lineErrorFilterInitialized_ = true;
+    }
+    else if (status.timestampSeconds != lastCameraTimestampSeconds_)
+    {
+        filteredLineError_ += config::kLineFollowerErrorFilterAlpha *
+                              (status.lineError - filteredLineError_);
+    }
+    lastCameraTimestampSeconds_ = status.timestampSeconds;
+    lastLineError_ = filteredLineError_;
 
-    const double correction = std::clamp(
-        status.lineError * config::kLineFollowerTurnGain,
+    const double controlledError = std::abs(filteredLineError_) <
+                                           config::kLineFollowerErrorDeadbandPixels
+                                       ? 0.0
+                                       : filteredLineError_;
+    const double targetCorrection = std::clamp(
+        controlledError * config::kLineFollowerTurnGain,
         -config::kLineFollowerMaxTurnCorrection,
         config::kLineFollowerMaxTurnCorrection);
 
-    const double left = clampOutput(config::kLineFollowerBasePower + correction);
-    const double right = clampOutput(config::kLineFollowerBasePower - correction);
+    // Limita a rapidez da mudança para que ruído visual não alterne o torque
+    // entre os lados e faça as rodas de borracha tremerem.
+    const double correctionStep = std::clamp(
+        targetCorrection - lastSteeringCorrection_,
+        -config::kLineFollowerCorrectionSlewPerCycle,
+        config::kLineFollowerCorrectionSlewPerCycle);
+    lastSteeringCorrection_ += correctionStep;
+
+    // A base de 0,65 é mantida no lado interno da curva. Somente o lado externo
+    // acelera, evitando que uma correção faça um conjunto cair abaixo da faixa
+    // em que os motores conseguem girar de forma confiável.
+    double left = config::kLineFollowerBasePower;
+    double right = config::kLineFollowerBasePower;
+    if (lastSteeringCorrection_ > 0.0)
+    {
+        left = std::min(
+            config::kLineFollowerBasePower + lastSteeringCorrection_,
+            config::kOperationalMaximumReferencePower);
+    }
+    else if (lastSteeringCorrection_ < 0.0)
+    {
+        right = std::min(
+            config::kLineFollowerBasePower - lastSteeringCorrection_,
+            config::kOperationalMaximumReferencePower);
+    }
     robotState.driveAutonomous(left, right);
+
+    std::string phase = "following_straight";
+    std::string action = "Seguindo a linha em frente";
+    if (lastSteeringCorrection_ > 0.001)
+    {
+        phase = "correcting_right";
+        action = "Corrigindo trajetória para a direita";
+    }
+    else if (lastSteeringCorrection_ < -0.001)
+    {
+        phase = "correcting_left";
+        action = "Corrigindo trajetória para a esquerda";
+    }
+    robotState.updateAutonomousStatus(makeAutonomousStatus(
+        phase, action, true, status.lineError, filteredLineError_, lastSteeringCorrection_));
 }
 
 void LineFollower::startGreenManeuver(const std::string& action, std::chrono::steady_clock::time_point now)
 {
+    resetLineControl();
     activeGreenAction_ = action;
     phase_ = Phase::ApproachingGreen;
     phaseUntil_ = now + std::chrono::milliseconds(config::kGreenApproachMs);
@@ -224,6 +460,8 @@ void LineFollower::updateGreenManeuver(RobotState& robotState, std::chrono::stea
         {
             // Avança devagar para alinhar o centro do robô com a interseção.
             robotState.driveAutonomous(config::kLineFollowerBasePower, config::kLineFollowerBasePower);
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "approaching_green", "Avançando para alinhar com a marca verde"));
             return;
         }
 
@@ -239,11 +477,20 @@ void LineFollower::updateGreenManeuver(RobotState& robotState, std::chrono::stea
             if (activeGreenAction_ == "ESQUERDA")
             {
                 robotState.driveAutonomous(-config::kGreenTurnPower, config::kGreenTurnPower);
+                robotState.updateAutonomousStatus(makeAutonomousStatus(
+                    "green_turn_left", "Executando decisão verde: esquerda",
+                    false, 0.0, 0.0, -config::kGreenTurnPower));
             }
             else
             {
                 // Direita e meia-volta usam o mesmo sentido inicial de giro.
                 robotState.driveAutonomous(config::kGreenTurnPower, -config::kGreenTurnPower);
+                const bool uTurn = activeGreenAction_ == "MEIA VOLTA";
+                robotState.updateAutonomousStatus(makeAutonomousStatus(
+                    uTurn ? "green_u_turn" : "green_turn_right",
+                    uTurn ? "Executando decisão verde: meia-volta"
+                          : "Executando decisão verde: direita",
+                    false, 0.0, 0.0, config::kGreenTurnPower));
             }
             return;
         }
@@ -252,6 +499,8 @@ void LineFollower::updateGreenManeuver(RobotState& robotState, std::chrono::stea
         activeGreenAction_ = "NENHUM";
         greenCooldownUntil_ = now + std::chrono::milliseconds(config::kGreenCooldownMs);
         robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "green_completed", "Decisão verde concluída"));
     }
 }
 

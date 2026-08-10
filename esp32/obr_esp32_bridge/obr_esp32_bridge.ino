@@ -33,20 +33,6 @@ enum class ControlSource
   Raspberry
 };
 
-enum class TractionRecoverySide : uint8_t
-{
-  None = 0,
-  Left = 1,
-  Right = 2
-};
-
-enum class MotorTransitionPhase : uint8_t
-{
-  Idle,
-  DirectionDeadTime,
-  SynchronizedBoost
-};
-
 void forceMotorPinsLowImmediately()
 {
   // Mantém o driver dormindo antes de configurar qualquer entrada de motor.
@@ -121,17 +107,8 @@ bool calibrationActive = false;
 bool calibrationStopLatched = false;
 bool dashboardArmed = false;
 bool emergencyStopActive = false;
-bool tractionRecoveryActive = false;
-TractionRecoverySide tractionRecoverySide = TractionRecoverySide::None;
-MotorTransitionPhase motorTransitionPhase = MotorTransitionPhase::Idle;
 float currentLeftPower = 0.0f;
 float currentRightPower = 0.0f;
-float requestedLeftPower = 0.0f;
-float requestedRightPower = 0.0f;
-float straightMinimumMotorPower = kDefaultStraightMinimumMotorPower;
-float straightMaximumMotorPower = kDefaultStraightMaximumMotorPower;
-float turnMinimumMotorPower = kDefaultTurnMinimumMotorPower;
-float turnMaximumMotorPower = kDefaultTurnMaximumMotorPower;
 float gyroYBias = 0.0f;
 float gyroZBias = 0.0f;
 float filteredGyroZ = 0.0f;
@@ -158,16 +135,6 @@ volatile uint8_t previousLeftEncoderState = 0;
 volatile uint8_t previousRightEncoderState = 0;
 int32_t lastLeftEncoderRateCount = 0;
 int32_t lastRightEncoderRateCount = 0;
-bool tractionMonitorActive = false;
-uint32_t tractionMonitorStartMs = 0;
-int32_t tractionMonitorLeftStartCount = 0;
-int32_t tractionMonitorRightStartCount = 0;
-int8_t tractionMonitorLeftDirection = 0;
-int8_t tractionMonitorRightDirection = 0;
-uint8_t tractionImbalanceCount = 0;
-uint32_t motorTransitionStartedMs = 0;
-uint32_t tractionMonitorResumeMs = 0;
-
 portMUX_TYPE ultrasonicMux = portMUX_INITIALIZER_UNLOCKED;
 volatile bool ultrasonicWaitingForEcho = false;
 volatile bool ultrasonicSampleAvailable = false;
@@ -256,39 +223,9 @@ float safeMotorCommand(float command)
     return 0.0f;
   }
 
-  command = constrain(command, -kMaximumMotorPower, kMaximumMotorPower);
-  const float magnitude = fabs(command);
-  if (magnitude < kMotorCommandDeadband)
-  {
-    return 0.0f;
-  }
-
-  return command;
-}
-
-float mapMotorPower(float command, float minimumPower, float maximumPower)
-{
-  if (command == 0.0f)
-  {
-    return 0.0f;
-  }
-
-  // Distribui a resolução lógica do comando dentro do perfil físico escolhido.
-  // Reta e giro usam faixas diferentes porque o atrito nas curvas é maior.
-  const float magnitude = fabs(command);
-  const float usefulPower = minimumPower + magnitude * (maximumPower - minimumPower);
-  return command > 0.0f ? usefulPower : -usefulPower;
-}
-
-bool validMotorProfile(float straightMinimum, float straightMaximum,
-                       float turnMinimum, float turnMaximum)
-{
-  return isfinite(straightMinimum) && isfinite(straightMaximum) &&
-         isfinite(turnMinimum) && isfinite(turnMaximum) &&
-         straightMinimum >= 0.0f && straightMinimum <= straightMaximum &&
-         straightMaximum <= kMaximumMotorPower &&
-         turnMinimum >= 0.0f && turnMinimum <= turnMaximum &&
-         turnMaximum <= kMaximumMotorPower;
+  // A faixa de -1 a 1 é o próprio formato do protocolo: 0,05 corresponde
+  // diretamente a 5% do duty e não recebe remapeamento, mínimo ou boost.
+  return constrain(command, -kMaximumMotorPower, kMaximumMotorPower);
 }
 
 void zeroMotorPwmOutputs()
@@ -308,25 +245,7 @@ void stopMotorOutputs()
   // A parada mantém o DRV8833 habilitado e zera somente IN1/IN2. Isso evita
   // repetir o tempo de inicialização do driver a cada novo movimento.
   keepMotorDriverEnabled();
-  requestedLeftPower = 0.0f;
-  requestedRightPower = 0.0f;
-  motorTransitionPhase = MotorTransitionPhase::Idle;
-  tractionRecoveryActive = false;
-  tractionRecoverySide = TractionRecoverySide::None;
-  tractionImbalanceCount = 0;
   zeroMotorPwmOutputs();
-}
-
-void resetTractionMonitor()
-{
-  portENTER_CRITICAL(&encoderMux);
-  tractionMonitorLeftStartCount = leftEncoderCount;
-  tractionMonitorRightStartCount = rightEncoderCount;
-  portEXIT_CRITICAL(&encoderMux);
-  tractionMonitorStartMs = millis();
-  tractionMonitorActive = false;
-  tractionMonitorLeftDirection = 0;
-  tractionMonitorRightDirection = 0;
 }
 
 void keepMotorDriverEnabled()
@@ -372,19 +291,6 @@ void setMotorSide(uint8_t in1Pin, uint8_t in1Channel, uint8_t in2Pin,
   }
 }
 
-int8_t motorDirection(float power)
-{
-  if (power > 0.0f)
-  {
-    return 1;
-  }
-  if (power < 0.0f)
-  {
-    return -1;
-  }
-  return 0;
-}
-
 void applyMotorPowers(float leftPower, float rightPower)
 {
   // Os dois lados são atualizados na mesma passagem do loop. A diferença entre
@@ -395,77 +301,6 @@ void applyMotorPowers(float leftPower, float rightPower)
                kRightMotorIn2Channel, rightPower, kRightMotorInverted);
   currentLeftPower = leftPower;
   currentRightPower = rightPower;
-}
-
-void beginSynchronizedMotorStart(bool directionChange,
-                                 bool recovery,
-                                 TractionRecoverySide recoverySide)
-{
-  // O driver continua acordado durante toda a transição. Somente IN1/IN2 são
-  // zerados quando uma direção precisa ser invertida.
-  keepMotorDriverEnabled();
-  resetTractionMonitor();
-  tractionImbalanceCount = 0;
-  tractionRecoveryActive = recovery;
-  tractionRecoverySide = recovery ? recoverySide : TractionRecoverySide::None;
-  motorTransitionStartedMs = millis();
-
-  if (directionChange)
-  {
-    zeroMotorPwmOutputs();
-    motorTransitionPhase = MotorTransitionPhase::DirectionDeadTime;
-    return;
-  }
-
-  const float boostLeft = motorDirection(requestedLeftPower) * kMaximumMotorPower;
-  const float boostRight = motorDirection(requestedRightPower) * kMaximumMotorPower;
-  applyMotorPowers(boostLeft, boostRight);
-  motorTransitionPhase = MotorTransitionPhase::SynchronizedBoost;
-}
-
-void updateSynchronizedMotorStart()
-{
-  if (motorTransitionPhase == MotorTransitionPhase::Idle)
-  {
-    return;
-  }
-
-  if (emergencyStopActive || calibrationActive || calibrationStopLatched ||
-      (controlSource == ControlSource::Dashboard && !dashboardArmed) ||
-      requestedLeftPower == 0.0f || requestedRightPower == 0.0f)
-  {
-    stopMotorOutputs();
-    return;
-  }
-
-  keepMotorDriverEnabled();
-  const uint32_t nowMs = millis();
-  if (motorTransitionPhase == MotorTransitionPhase::DirectionDeadTime)
-  {
-    if (nowMs - motorTransitionStartedMs < kMotorDirectionDeadTimeMs)
-    {
-      return;
-    }
-
-    const float boostLeft = motorDirection(requestedLeftPower) * kMaximumMotorPower;
-    const float boostRight = motorDirection(requestedRightPower) * kMaximumMotorPower;
-    applyMotorPowers(boostLeft, boostRight);
-    motorTransitionPhase = MotorTransitionPhase::SynchronizedBoost;
-    motorTransitionStartedMs = nowMs;
-    return;
-  }
-
-  if (nowMs - motorTransitionStartedMs < kMotorSynchronizedBoostMs)
-  {
-    return;
-  }
-
-  applyMotorPowers(requestedLeftPower, requestedRightPower);
-  motorTransitionPhase = MotorTransitionPhase::Idle;
-  tractionRecoveryActive = false;
-  tractionRecoverySide = TractionRecoverySide::None;
-  tractionMonitorResumeMs = nowMs + kTractionStartupGraceMs;
-  resetTractionMonitor();
 }
 
 void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
@@ -479,63 +314,23 @@ void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
 
   keepMotorDriverEnabled();
 
-  float safeLeftCommand = safeMotorCommand(leftPower);
-  float safeRightCommand = safeMotorCommand(rightPower);
-
-  // A elétrica agrupa dois motores em cada lado do robô. Nunca permite que
-  // apenas um lado se mova, pois as rodas de borracha travariam e fariam o robô
-  // vibrar. Um comando unilateral é convertido em giro com os lados opostos.
-  const bool leftSideStopped = safeLeftCommand == 0.0f;
-  const bool rightSideStopped = safeRightCommand == 0.0f;
-  if (leftSideStopped != rightSideStopped)
-  {
-    if (leftSideStopped)
-    {
-      safeLeftCommand = -safeRightCommand;
-    }
-    else
-    {
-      safeRightCommand = -safeLeftCommand;
-    }
-  }
+  const float safeLeftCommand = safeMotorCommand(leftPower);
+  const float safeRightCommand = safeMotorCommand(rightPower);
 
   if (safeLeftCommand == 0.0f && safeRightCommand == 0.0f)
   {
     stopMotorOutputs();
-    resetTractionMonitor();
     controlSource = source;
     lastMotorCommandMs = millis();
     return;
   }
 
-  const bool turningInPlace = motorDirection(safeLeftCommand) !=
-                              motorDirection(safeRightCommand);
-  const float minimumPower = turningInPlace ? turnMinimumMotorPower
-                                            : straightMinimumMotorPower;
-  const float maximumPower = turningInPlace ? turnMaximumMotorPower
-                                            : straightMaximumMotorPower;
-  const float safeLeftPower = mapMotorPower(safeLeftCommand, minimumPower, maximumPower);
-  const float safeRightPower = mapMotorPower(safeRightCommand, minimumPower, maximumPower);
-
-  const bool wasStopped = requestedLeftPower == 0.0f && requestedRightPower == 0.0f;
-  const bool directionChanged = !wasStopped &&
-                                (motorDirection(safeLeftPower) != motorDirection(requestedLeftPower) ||
-                                 motorDirection(safeRightPower) != motorDirection(requestedRightPower));
-  requestedLeftPower = safeLeftPower;
-  requestedRightPower = safeRightPower;
   controlSource = source;
   lastMotorCommandMs = millis();
 
-  if (wasStopped || directionChanged)
-  {
-    beginSynchronizedMotorStart(directionChanged, false, TractionRecoverySide::None);
-    return;
-  }
-
-  if (motorTransitionPhase == MotorTransitionPhase::Idle)
-  {
-    applyMotorPowers(requestedLeftPower, requestedRightPower);
-  }
+  // Cada lado é independente. As rodas omni permitem parar um lado sem que o
+  // firmware invente movimento no outro, e o duty aplicado é exatamente o recebido.
+  applyMotorPowers(safeLeftCommand, safeRightCommand);
 }
 
 void setupMotors()
@@ -720,7 +515,6 @@ void resetEncoderData()
   sensors.leftEncoderRate = 0.0f;
   sensors.rightEncoderRate = 0.0f;
   lastEncoderRateMs = millis();
-  resetTractionMonitor();
 }
 
 void resetSensorMeasurements()
@@ -1096,99 +890,6 @@ void updateEncoderRatesIfDue()
   lastEncoderRateMs = nowMs;
 }
 
-void enforceTractionSafety()
-{
-  const bool bothSidesCommanded = currentLeftPower != 0.0f && currentRightPower != 0.0f;
-  const uint32_t nowMs = millis();
-  const bool startupGraceActive = static_cast<int32_t>(nowMs - tractionMonitorResumeMs) < 0;
-  if (!bothSidesCommanded || motorTransitionPhase != MotorTransitionPhase::Idle ||
-      startupGraceActive)
-  {
-    resetTractionMonitor();
-    return;
-  }
-
-  const int8_t leftDirection = currentLeftPower > 0.0f ? 1 : -1;
-  const int8_t rightDirection = currentRightPower > 0.0f ? 1 : -1;
-
-  if (!tractionMonitorActive || leftDirection != tractionMonitorLeftDirection ||
-      rightDirection != tractionMonitorRightDirection)
-  {
-    portENTER_CRITICAL(&encoderMux);
-    tractionMonitorLeftStartCount = leftEncoderCount;
-    tractionMonitorRightStartCount = rightEncoderCount;
-    portEXIT_CRITICAL(&encoderMux);
-    tractionMonitorStartMs = nowMs;
-    tractionMonitorActive = true;
-    tractionMonitorLeftDirection = leftDirection;
-    tractionMonitorRightDirection = rightDirection;
-    return;
-  }
-
-  const uint32_t elapsedMs = nowMs - tractionMonitorStartMs;
-  if (elapsedMs < kTractionMonitorWindowMs)
-  {
-    return;
-  }
-
-  int32_t currentLeftCount;
-  int32_t currentRightCount;
-  portENTER_CRITICAL(&encoderMux);
-  currentLeftCount = leftEncoderCount;
-  currentRightCount = rightEncoderCount;
-  portEXIT_CRITICAL(&encoderMux);
-
-  const int32_t leftDelta = abs(currentLeftCount - tractionMonitorLeftStartCount);
-  const int32_t rightDelta = abs(currentRightCount - tractionMonitorRightStartCount);
-  const int32_t leadingCounts = max(leftDelta, rightDelta);
-  if (leadingCounts < kTractionMinimumLeadingCounts)
-  {
-    // Preserva a referência para acumular movimento lento. Reiniciar a janela
-    // aqui poderia fazer uma falha escapar para sempre com poucos pulsos.
-    return;
-  }
-
-  // Divide a contagem pela potência aplicada para permitir curvas normais, nas
-  // quais os dois lados giram de propósito em velocidades diferentes.
-  const float leftProgress = leftDelta / fabs(currentLeftPower);
-  const float rightProgress = rightDelta / fabs(currentRightPower);
-  const float leadingProgress = max(leftProgress, rightProgress);
-
-  TractionRecoverySide slowSide = TractionRecoverySide::None;
-  if (leftProgress < leadingProgress * kTractionMinimumProgressRatio)
-  {
-    slowSide = TractionRecoverySide::Left;
-  }
-  else if (rightProgress < leadingProgress * kTractionMinimumProgressRatio)
-  {
-    slowSide = TractionRecoverySide::Right;
-  }
-
-  if (slowSide != TractionRecoverySide::None)
-  {
-    ++tractionImbalanceCount;
-    tractionMonitorLeftStartCount = currentLeftCount;
-    tractionMonitorRightStartCount = currentRightCount;
-    tractionMonitorStartMs = nowMs;
-    if (tractionImbalanceCount < kTractionImbalanceConfirmations)
-    {
-      return;
-    }
-
-    // Em vez de travar o robô, interrompe os dois lados pelo mesmo intervalo e
-    // reaplica um pulso de 100%. O comando original volta automaticamente.
-    beginSynchronizedMotorStart(true, true, slowSide);
-    Serial.print("TRACTION_RECOVERY,");
-    Serial.println(slowSide == TractionRecoverySide::Left ? "LEFT" : "RIGHT");
-    return;
-  }
-
-  tractionImbalanceCount = 0;
-  tractionMonitorLeftStartCount = currentLeftCount;
-  tractionMonitorRightStartCount = currentRightCount;
-  tractionMonitorStartMs = nowMs;
-}
-
 void updateStartButton()
 {
   constexpr uint32_t kDebounceMs = 30;
@@ -1263,8 +964,6 @@ String telemetryJson()
   json += "\"uptimeMs\":" + String(millis());
   json += ",\"wifiClients\":" + String(WiFi.softAPgetStationNum());
   json += ",\"emergencyStop\":" + String(emergencyStopActive ? "true" : "false");
-  json += ",\"tractionRecoveryActive\":" + String(tractionRecoveryActive ? "true" : "false");
-  json += ",\"tractionRecoverySide\":" + String(static_cast<uint8_t>(tractionRecoverySide));
   json += ",\"dashboardArmed\":" + String(dashboardArmed ? "true" : "false");
   json += ",\"startButtonPressed\":" + String(startButtonPressed ? "true" : "false");
   json += ",\"calibrationActive\":" + String(calibrationActive ? "true" : "false");
@@ -1286,10 +985,6 @@ String telemetryJson()
   addJsonFloat(json, "ultrasonicDistanceCm", sensors.ultrasonicDistanceCm);
   addJsonFloat(json, "leftMotorPower", currentLeftPower);
   addJsonFloat(json, "rightMotorPower", currentRightPower);
-  addJsonFloat(json, "straightMinimumMotorPower", straightMinimumMotorPower);
-  addJsonFloat(json, "straightMaximumMotorPower", straightMaximumMotorPower);
-  addJsonFloat(json, "turnMinimumMotorPower", turnMinimumMotorPower);
-  addJsonFloat(json, "turnMaximumMotorPower", turnMaximumMotorPower);
   addJsonFloat(json, "leftEncoderRate", sensors.leftEncoderRate);
   addJsonFloat(json, "rightEncoderRate", sensors.rightEncoderRate);
   addJsonFloat(json, "accelX", sensors.accelX);
@@ -1343,7 +1038,6 @@ void setupDashboardRoutes()
                 sendJsonResponse(409, "{\"error\":\"Libere o E-Stop antes de habilitar\"}");
                 return;
               }
-              resetTractionMonitor();
               calibrationStopLatched = false;
               dashboardArmed = true;
               controlSource = ControlSource::Dashboard;
@@ -1432,7 +1126,6 @@ void handleUartCommand(const char* line)
     stopMotorOutputs();
     emergencyStopActive = false;
     calibrationStopLatched = false;
-    resetTractionMonitor();
     return;
   }
   if (strcmp(line, "RESET_ENCODERS") == 0)
@@ -1448,16 +1141,10 @@ void handleUartCommand(const char* line)
 
   float leftPower = 0.0f;
   float rightPower = 0.0f;
-  float straightMinimum = 0.0f;
-  float straightMaximum = 0.0f;
-  float turnMinimum = 0.0f;
-  float turnMaximum = 0.0f;
   int emergencyFlag = 0;
-  const int parsedFields = sscanf(line, "MOTOR,%f,%f,%d,%f,%f,%f,%f",
-                                  &leftPower, &rightPower, &emergencyFlag,
-                                  &straightMinimum, &straightMaximum,
-                                  &turnMinimum, &turnMaximum);
-  if (parsedFields == 3 || parsedFields == 7)
+  const int parsedFields = sscanf(line, "MOTOR,%f,%f,%d",
+                                  &leftPower, &rightPower, &emergencyFlag);
+  if (parsedFields == 3)
   {
     if (emergencyFlag != 0)
     {
@@ -1473,20 +1160,6 @@ void handleUartCommand(const char* line)
       stopMotorOutputs();
       sendUartError("invalid_motor_power");
       return;
-    }
-    if (parsedFields == 7)
-    {
-      if (!validMotorProfile(straightMinimum, straightMaximum,
-                             turnMinimum, turnMaximum))
-      {
-        stopMotorOutputs();
-        sendUartError("invalid_motor_profile");
-        return;
-      }
-      straightMinimumMotorPower = straightMinimum;
-      straightMaximumMotorPower = straightMaximum;
-      turnMinimumMotorPower = turnMinimum;
-      turnMaximumMotorPower = turnMaximum;
     }
     applyMotorCommand(leftPower, rightPower, ControlSource::Raspberry);
     return;
@@ -1592,19 +1265,7 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(millis());
   Serial.print(',');
-  Serial.print(calibrationActive ? 1 : 0);
-  Serial.print(',');
-  Serial.print(tractionRecoveryActive ? 1 : 0);
-  Serial.print(',');
-  Serial.print(static_cast<uint8_t>(tractionRecoverySide));
-  Serial.print(',');
-  Serial.print(straightMinimumMotorPower, 3);
-  Serial.print(',');
-  Serial.print(straightMaximumMotorPower, 3);
-  Serial.print(',');
-  Serial.print(turnMinimumMotorPower, 3);
-  Serial.print(',');
-  Serial.println(turnMaximumMotorPower, 3);
+  Serial.println(calibrationActive ? 1 : 0);
 }
 
 void enforceMotorTimeout()
@@ -1658,13 +1319,11 @@ void loop()
   server.handleClient();
 #endif
   readUartCommands();
-  updateSynchronizedMotorStart();
   updateStartButton();
   readImuIfDue();
   readBatteryIfDue();
   updateOledIfDue();
   updateEncoderRatesIfDue();
-  enforceTractionSafety();
   triggerUltrasonicIfDue();
   consumeUltrasonicSample();
   enforceMotorTimeout();

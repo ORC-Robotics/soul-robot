@@ -40,7 +40,19 @@ void MotorController::apply(const RobotSnapshot& state)
         return;
     }
 
-    esp32_.sendMotorCommand(safeMotorPower(state.left), safeMotorPower(state.right), false);
+    double leftPower = safeMotorPower(state.left);
+    double rightPower = safeMotorPower(state.right);
+
+    if (!state.rawMotorCommand)
+    {
+        // O perfil operacional garante partida confiável a partir de 0,65.
+        // O lado direito recebe o ganho medido pelos encoders para acompanhar
+        // o lado esquerdo sem obrigar o seguidor de linha a corrigir uma reta.
+        leftPower = operationalMotorPower(leftPower, 1.0);
+        rightPower = operationalMotorPower(rightPower, config::kRightMotorCalibrationGain);
+    }
+
+    esp32_.sendMotorCommand(leftPower, rightPower, false);
 }
 
 void MotorController::stop()
@@ -57,4 +69,25 @@ double MotorController::safeMotorPower(double command)
     }
 
     return std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
+}
+
+double MotorController::operationalMotorPower(double command, double calibrationGain)
+{
+    const double safeCommand = safeMotorPower(command);
+    if (std::abs(safeCommand) < 0.000001)
+    {
+        // Zero permanece zero para que parada, timeout e E-Stop nunca acionem
+        // o piso operacional de potência.
+        return 0.0;
+    }
+
+    const double referenceMagnitude = std::clamp(
+        std::abs(safeCommand),
+        config::kOperationalMinimumMotorPower,
+        config::kOperationalMaximumReferencePower);
+    const double calibratedMagnitude = std::clamp(
+        referenceMagnitude * calibrationGain,
+        0.0,
+        config::kMaxMotorOutput);
+    return std::copysign(calibratedMagnitude, safeCommand);
 }

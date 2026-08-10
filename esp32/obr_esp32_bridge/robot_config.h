@@ -32,11 +32,12 @@ constexpr uint8_t kLeftMotorIn2Pin = 18;
 constexpr uint8_t kRightMotorIn1Pin = 16;
 constexpr uint8_t kRightMotorIn2Pin = 17;
 
-// Canais A e B dos encoders. A contagem usa as quatro bordas do quadrature.
-constexpr uint8_t kLeftEncoderAPin = 19;
-constexpr uint8_t kLeftEncoderBPin = 21;
-constexpr uint8_t kRightEncoderAPin = 22;
-constexpr uint8_t kRightEncoderBPin = 23;
+// Canais A e B dos encoders conforme o lado físico validado na PCB.
+// A contagem usa as quatro bordas do quadrature.
+constexpr uint8_t kLeftEncoderAPin = 22;
+constexpr uint8_t kLeftEncoderBPin = 23;
+constexpr uint8_t kRightEncoderAPin = 19;
+constexpr uint8_t kRightEncoderBPin = 21;
 
 // UART0 ligada à Raspberry Pi. Esses pinos também são usados para gravar
 // a ESP32; desconecte ou mantenha a Raspberry silenciosa durante a gravação.
@@ -79,60 +80,16 @@ constexpr uint8_t kRightMotorIn2Channel = 3;
 // Tempo de estabilização do DRV8833 depois que nSLEEP volta para HIGH.
 constexpr uint32_t kMotorDriverWakeDelayUs = 1000;
 
-// Intervalo, em milissegundos, com os quatro PWMs zerados antes de inverter
-// qualquer lado. O nSLEEP permanece HIGH; essa pausa curta permite que os dois
-// lados terminem a direção anterior antes da nova partida sincronizada.
-constexpr uint32_t kMotorDirectionDeadTimeMs = 15;
-
-// Duração, em milissegundos, do pulso de 100% aplicado aos dois lados durante
-// uma partida ou recuperação. Um valor muito alto aumenta trancos e desgaste.
-constexpr uint32_t kMotorSynchronizedBoostMs = 180;
-
 // Inverta somente o lado que girar ao contrário no teste com as rodas suspensas.
 constexpr bool kLeftMotorInverted = false;
 constexpr bool kRightMotorInverted = false;
 
-// Potência máxima disponível para os motores. O valor 1,0 corresponde a 100%
-// do ciclo de trabalho do PWM e só deve ser testado com as rodas suspensas.
+// Extremo da faixa normalizada do protocolo. O valor 1,0 corresponde diretamente
+// a 100% do duty; não há outro limite ou perfil aplicado depois desta validação.
 constexpr float kMaximumMotorPower = 1.00f;
-
-// Perfil padrão para movimentos em linha reta. Depois do pulso inicial, o
-// comando lógico é distribuído entre 55% e 60% do PWM físico.
-constexpr float kDefaultStraightMinimumMotorPower = 0.55f;
-constexpr float kDefaultStraightMaximumMotorPower = 0.60f;
-
-// Perfil padrão para giros com os lados em sentidos opostos. A faixa começa em
-// 70% para vencer o atrito e limita a potência contínua máxima a 80%.
-constexpr float kDefaultTurnMinimumMotorPower = 0.70f;
-constexpr float kDefaultTurnMaximumMotorPower = 0.80f;
-
-// Comandos abaixo de 0,5% são tratados como zero para evitar movimento causado
-// por ruído numérico sem remover posições úteis dos sliders.
-constexpr float kMotorCommandDeadband = 0.005f;
 
 // Tempo máximo sem comando de movimento antes de zerar os quatro motores.
 constexpr uint32_t kMotorCommandTimeoutMs = 500;
-
-// Janela, em milissegundos, usada para confirmar pelos encoders que os dois
-// lados responderam ao comando. Um valor menor reduz o tempo de arraste, mas
-// aumenta a chance de uma partida lenta ser interpretada como falha.
-constexpr uint32_t kTractionMonitorWindowMs = 250;
-
-// Tempo, em milissegundos, durante o qual diferenças de partida são ignoradas
-// depois do pulso sincronizado. Isso evita confundir inércia com falha física.
-constexpr uint32_t kTractionStartupGraceMs = 450;
-
-// Quantidade mínima de transições no lado que está girando antes de comparar
-// os encoders. Isso evita disparos falsos enquanto o robô ainda está parado.
-constexpr int32_t kTractionMinimumLeadingCounts = 4;
-
-// O lado mais lento deve registrar ao menos 20% do movimento normalizado do
-// outro lado. Abaixo disso, a ESP32 tenta uma nova partida sincronizada.
-constexpr float kTractionMinimumProgressRatio = 0.20f;
-
-// Quantidade de janelas desequilibradas necessárias para iniciar a recuperação.
-// A recuperação é automática e nunca desarma o robô ou alterna o nSLEEP.
-constexpr uint8_t kTractionImbalanceConfirmations = 2;
 
 // Tempo, em milissegundos, que o botão Start deve permanecer pressionado para
 // iniciar a calibração. A espera longa evita resets acidentais durante a prova.
