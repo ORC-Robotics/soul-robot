@@ -351,9 +351,15 @@ e a ESP32 aceitam um lado em zero e o outro em movimento sem alterar o comando.
 
 ### Diagnóstico por encoders
 
-A ESP32 envia contagem e taxa dos dois encoders para o dashboard, mas não altera
-a potência automaticamente. A lógica de navegação na Raspberry pode usar esses
-dados futuramente para implementar o controle que a equipe decidir.
+A ESP32 envia contagem e taxa dos dois encoders para o dashboard. A taxa, em
+`cont/s`, representa velocidade instantânea e volta a zero quando a roda para; a
+contagem acumulada só é zerada por reset ou calibração explícita. O painel também
+converte a contagem em posição desde o último reset usando a calibração atual de
+`3600 contagens = 18,7 cm`, equivalente a aproximadamente `192,51 contagens/cm`.
+
+O perfil normal não altera potência automaticamente com esse feedback. A exceção
+é a missão isolada `drive_distance`, que usa os encoders para decidir quando
+zerar o PWM e concluir o trecho solicitado.
 
 ## 11. Camadas de segurança
 
@@ -364,7 +370,7 @@ dados futuramente para implementar o controle que a equipe decidir.
 | Estado parado | Raspberry envia `STOP`; ESP32 zera os quatro PWMs |
 | Limites | Raspberry e ESP32 limitam comandos a `[-1, 1]` |
 | Controle independente | Cada lado mantém sinal próprio; o perfil operacional calibra o PWM direito |
-| Feedback dos encoders | Contagens e taxas são exibidas sem alterar automaticamente o PWM |
+| Feedback dos encoders | Contagens e taxas são exibidas; a missão de distância usa os dois lados |
 | Timeout Raspberry | Após 2000 ms sem comando válido, `RobotState` zera potências |
 | Timeout ESP32 | Após 500 ms sem comando, os PWMs são zerados |
 | E-Stop | Tem prioridade sobre manual, autônomo e dashboard |
@@ -584,6 +590,24 @@ Executa seguidor de linha e interpretação de marcações verdes.
 > piso real, com bateria em diferentes tensões. A medição angular atual usa o
 > módulo da diferença; confirmar também o sinal físico do giro.
 
+#### `drive_distance`
+
+- Aceita alvo de 1 a 300 cm; o padrão é 20 cm.
+- Usa a calibração empírica `3600 contagens = 18,7 cm` com rodas de 68 mm.
+- Captura as duas contagens no início sem zerar o histórico da ESP32.
+- Considera o menor avanço entre esquerda e direita, exigindo que ambos os lados
+  percorram o trecho.
+- Usa comando lógico `0.01 / 0.01`, convertido pelo perfil operacional.
+- Antecipa a parada usando a taxa de cada encoder e a idade da telemetria.
+- Aguarda 300 ms com PWM zero e permite até três correções curtas.
+- Tolerância atual: 0,5 cm.
+- Para se a telemetria passar de 300 ms, se um lado ficar 1,5 s sem avanço ou se
+  a missão ultrapassar 60 s.
+
+> **Em validação:** confirme a distância no piso em vários alvos e tensões de
+> bateria. Ajuste `kEncoderCalibrationCounts`, `kEncoderCalibrationDistanceCm` e
+> a previsão de frenagem em `include/obr/config.h` com novas medições.
+
 ## 16. Visão computacional
 
 Arquivo: `scripts/camera_line_frame.py`.
@@ -660,7 +684,8 @@ um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU
 
 - Ultrassônico não interrompe movimento nem desvia de obstáculos.
 - Inclinação de rampa é apenas telemetria/OLED.
-- Encoders medem o equilíbrio, mas não fazem controle fechado de velocidade ou odometria.
+- Encoders medem equilíbrio e executam a missão isolada de distância, mas ainda
+  não fecham a velocidade da missão principal.
 - PCA9685 não aciona mecanismos.
 - Não existe lógica documentada para área de resgate, vítimas ou kit.
 
@@ -684,7 +709,9 @@ um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU
 - `Parar`: zera movimento sem travar E-Stop.
 - `E-Stop`: trava emergência.
 - `Resetar e calibrar sensores`: para e calibra a ESP32.
-- Seletor de missão: `MISSÃO PRINCIPAL` ou `GIRO 90° À DIREITA`.
+- Seletor de missão: `MISSÃO PRINCIPAL`, `GIRO 90° À DIREITA` ou
+  `PERCORRER DISTÂNCIA`.
+- Missão de distância: campo de 1 a 300 cm e progresso independente dos dois lados.
 - WASD: W/S para frente/ré; A/D para giro com os dois lados.
 - Sliders: frente/ré e giro.
 - Sliders e WASD: perfil operacional com mínimo `0.65` e ganho no lado direito.
@@ -1021,7 +1048,8 @@ Confirme:
 - Bateria baixa não gera parada automática.
 - Não há detecção explícita de travamento simultâneo dos dois lados.
 - Não há controle fechado de velocidade por encoder.
-- Não há odometria em distância física.
+- A distância física usa uma calibração empírica única; ainda não existe odometria
+  2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
 - PCA9685 ainda não controla mecanismos.
 - Parâmetros de visão ainda precisam de conjunto de imagens/testes reproduzíveis.

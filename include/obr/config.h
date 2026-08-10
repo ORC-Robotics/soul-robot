@@ -167,6 +167,55 @@ constexpr int kTurn90ImuFreshnessMs = 200;
 // travar, a missão para ao atingir esse limite.
 constexpr int kTurn90TimeoutMs = 5000;
 
+// Calibração empírica informada no teste: 3600 contagens produziram
+// 18,7 cm de deslocamento com rodas de 68 mm de diâmetro.
+constexpr double kEncoderCalibrationCounts = 3600.0;
+constexpr double kEncoderCalibrationDistanceCm = 18.7;
+constexpr double kEncoderCountsPerCentimeter =
+    kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
+
+// Distância inicial e faixa aceitas pelo modo de percurso por encoder.
+// O limite evita comandos acidentais excessivamente longos pelo dashboard.
+constexpr double kDriveDistanceDefaultTargetCm = 20.0;
+constexpr double kDriveDistanceMinimumTargetCm = 1.0;
+constexpr double kDriveDistanceMaximumTargetCm = 300.0;
+
+// Comando lógico para andar em linha reta no teste de distância.
+// O perfil operacional o converte para aproximadamente 0,65 / 0,67.
+constexpr double kDriveDistanceCommandPower = 0.01;
+
+// Horizonte, em segundos, somado à idade da telemetria para prever quantas
+// contagens ainda ocorrerão antes de o robô parar por inércia.
+constexpr double kDriveDistanceBrakePredictionSeconds = 0.14;
+
+// Tempo sem PWM antes de registrar o resultado final dos dois encoders.
+constexpr int kDriveDistanceSettleMs = 300;
+
+// Margem, em centímetros, aceita após a estabilização. Se ainda faltar
+// mais que isso, a missão aplica uma correção curta.
+constexpr double kDriveDistanceToleranceCm = 0.5;
+
+// Duração e quantidade máxima das correções de distância.
+constexpr int kDriveDistanceCorrectionPulseMs = 60;
+constexpr int kDriveDistanceMaximumCorrectionPulses = 3;
+
+// Idade máxima da amostra usada para decidir a parada por distância.
+constexpr int kDriveDistanceEncoderFreshnessMs = 300;
+
+// Tempo máximo sem avanço dos dois encoders durante um comando de movimento.
+// Se um lado não responder, a missão para em vez de percorrer distância indefinida.
+constexpr int kDriveDistanceStallTimeoutMs = 1500;
+constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
+
+// Tempo máximo da missão. Evita movimento indefinido se um encoder falhar.
+constexpr int kDriveDistanceTimeoutMs = 60000;
+
+static_assert(kEncoderCountsPerCentimeter > 0.0,
+              "A calibração do encoder deve produzir contagens por centímetro positivas.");
+static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
+                  kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
+              "A faixa da missão de distância deve ser válida.");
+
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;

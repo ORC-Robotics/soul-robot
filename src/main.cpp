@@ -33,6 +33,31 @@ bool turn90ImuReady(const Esp32TelemetrySnapshot& telemetry)
            std::isfinite(telemetry.yawZDeg) &&
            std::isfinite(telemetry.gyroZDegPerSec);
 }
+
+bool driveDistanceEncodersReady(const Esp32TelemetrySnapshot& telemetry)
+{
+    // A missão de distância usa os dois encoders e não depende da câmera.
+    return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
+           telemetry.lastSensorAgeMs <= config::kDriveDistanceEncoderFreshnessMs &&
+           std::isfinite(telemetry.leftEncoderRate) &&
+           std::isfinite(telemetry.rightEncoderRate);
+}
+
+bool selectedMissionReady(
+    AutonomousMission mission,
+    const Esp32TelemetrySnapshot& telemetry,
+    bool cameraReady)
+{
+    if (mission == AutonomousMission::TurnRight90)
+    {
+        return turn90ImuReady(telemetry);
+    }
+    if (mission == AutonomousMission::DriveDistance)
+    {
+        return driveDistanceEncodersReady(telemetry);
+    }
+    return cameraReady;
+}
 }
 
 int main()
@@ -118,10 +143,8 @@ int main()
                 }
                 else
                 {
-                    const bool missionReady =
-                        stateBeforeStart.autonomousMission == AutonomousMission::TurnRight90
-                            ? turn90ImuReady(esp32Telemetry)
-                            : cameraReady;
+                    const bool missionReady = selectedMissionReady(
+                        stateBeforeStart.autonomousMission, esp32Telemetry, cameraReady);
                     const bool startAllowed = stateBeforeStart.mode == "stopped" &&
                                               !stateBeforeStart.emergencyStop &&
                                               esp32Telemetry.readyForOperation() && missionReady;

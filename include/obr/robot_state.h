@@ -1,5 +1,7 @@
 #pragma once
 
+#include "obr/config.h"
+
 #include <chrono>
 #include <mutex>
 #include <string>
@@ -7,7 +9,8 @@
 enum class AutonomousMission
 {
     MainMission,
-    TurnRight90
+    TurnRight90,
+    DriveDistance
 };
 
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
@@ -24,6 +27,10 @@ struct AutonomousStatus
     double filteredLineError = 0.0;
     double steeringCorrection = 0.0;
     double progressPercent = 0.0;
+    double targetDistanceCm = 0.0;
+    double leftDistanceCm = 0.0;
+    double rightDistanceCm = 0.0;
+    double averageDistanceCm = 0.0;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
@@ -36,6 +43,7 @@ struct RobotSnapshot
     double right = 0.0;
     bool rawMotorCommand = false;
     unsigned long long autonomousRunSequence = 0;
+    double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
     AutonomousStatus autonomousStatus;
 };
 
@@ -50,6 +58,7 @@ public:
     void startAutonomous();
     bool tryStartAutonomous();
     void setAutonomousMission(AutonomousMission mission);
+    bool setDriveDistanceTargetCm(double targetCm);
     void stop();
     void emergencyStop();
     void drive(double left, double right);

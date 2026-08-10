@@ -36,6 +36,23 @@ AutonomousStatus makeAutonomousStatus(
     status.progressPercent = progressPercent;
     return status;
 }
+
+AutonomousStatus makeDistanceStatus(
+    const std::string& phase,
+    const std::string& action,
+    double targetDistanceCm,
+    double leftDistanceCm,
+    double rightDistanceCm,
+    double progressPercent)
+{
+    AutonomousStatus status = makeAutonomousStatus(
+        phase, action, false, 0.0, 0.0, 0.0, progressPercent);
+    status.targetDistanceCm = targetDistanceCm;
+    status.leftDistanceCm = leftDistanceCm;
+    status.rightDistanceCm = rightDistanceCm;
+    status.averageDistanceCm = (leftDistanceCm + rightDistanceCm) * 0.5;
+    return status;
+}
 }
 
 void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& esp32Telemetry)
@@ -62,8 +79,15 @@ void LineFollower::update(RobotState& robotState, const Esp32TelemetrySnapshot& 
         return;
     }
 
+    if (snapshot.autonomousMission == AutonomousMission::DriveDistance)
+    {
+        updateDriveDistance(robotState, esp32Telemetry, snapshot.driveDistanceTargetCm);
+        return;
+    }
+
     turn90Phase_ = Turn90Phase::Idle;
     turn90CorrectionPulseCount_ = 0;
+    distancePhase_ = DistancePhase::Idle;
 
     const auto now = std::chrono::steady_clock::now();
     if (phase_ != Phase::Following)
@@ -281,6 +305,221 @@ void LineFollower::updateTurnRight90(
         progressPercent));
 }
 
+void LineFollower::updateDriveDistance(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    double targetDistanceCm)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const bool encoderReady = esp32Telemetry.sensorFresh &&
+                              esp32Telemetry.lastSensorAgeMs >= 0 &&
+                              esp32Telemetry.lastSensorAgeMs <=
+                                  config::kDriveDistanceEncoderFreshnessMs &&
+                              std::isfinite(esp32Telemetry.leftEncoderRate) &&
+                              std::isfinite(esp32Telemetry.rightEncoderRate);
+
+    if (distancePhase_ == DistancePhase::Idle)
+    {
+        if (!std::isfinite(targetDistanceCm) ||
+            targetDistanceCm < config::kDriveDistanceMinimumTargetCm ||
+            targetDistanceCm > config::kDriveDistanceMaximumTargetCm)
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeDistanceStatus(
+                "distance_invalid_target", "Distância solicitada fora da faixa segura",
+                targetDistanceCm, 0.0, 0.0, 0.0));
+            return;
+        }
+
+        if (!encoderReady)
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeDistanceStatus(
+                "waiting_encoders", "Aguardando telemetria recente dos encoders",
+                targetDistanceCm, 0.0, 0.0, 0.0));
+            return;
+        }
+
+        distancePhase_ = DistancePhase::Driving;
+        distanceStartLeftCount_ = esp32Telemetry.leftEncoderCount;
+        distanceStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        activeDistanceTargetCm_ = targetDistanceCm;
+        distanceStartedAt_ = now;
+        distancePhaseStartedAt_ = now;
+        distanceLastProgressAt_ = now;
+        lastDistanceProgressCounts_ = 0.0;
+        distanceCorrectionPulseCount_ = 0;
+        std::cout << "Drive-distance mission started: target="
+                  << activeDistanceTargetCm_ << " cm, counts/cm="
+                  << config::kEncoderCountsPerCentimeter << "\n";
+    }
+
+    const double leftCounts = std::abs(
+        static_cast<double>(esp32Telemetry.leftEncoderCount - distanceStartLeftCount_));
+    const double rightCounts = std::abs(
+        static_cast<double>(esp32Telemetry.rightEncoderCount - distanceStartRightCount_));
+    const double leftDistanceCm = leftCounts / config::kEncoderCountsPerCentimeter;
+    const double rightDistanceCm = rightCounts / config::kEncoderCountsPerCentimeter;
+    const double minimumDistanceCm = std::min(leftDistanceCm, rightDistanceCm);
+    const double targetCounts =
+        activeDistanceTargetCm_ * config::kEncoderCountsPerCentimeter;
+    const double progressPercent = std::clamp(
+        minimumDistanceCm / activeDistanceTargetCm_ * 100.0, 0.0, 100.0);
+
+    if (now - distanceStartedAt_ >
+        std::chrono::milliseconds(config::kDriveDistanceTimeoutMs))
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_timeout", "Percurso interrompido pelo tempo limite",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        distancePhase_ = DistancePhase::Idle;
+        std::cout << "Drive-distance mission stopped by timeout\n";
+        return;
+    }
+
+    if (!encoderReady)
+    {
+        // Sem amostras recentes, a Raspberry não consegue saber quanto o robô
+        // percorreu. Continuar poderia ultrapassar indefinidamente o alvo.
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_encoder_lost", "Percurso interrompido: encoders sem dados recentes",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        distancePhase_ = DistancePhase::Idle;
+        std::cout << "Drive-distance mission stopped after losing encoder telemetry\n";
+        return;
+    }
+
+    const bool movementPhase = distancePhase_ == DistancePhase::Driving ||
+                               distancePhase_ == DistancePhase::CorrectionPulse;
+    const double minimumCounts = std::min(leftCounts, rightCounts);
+    if (movementPhase &&
+        minimumCounts >= lastDistanceProgressCounts_ +
+                             config::kDriveDistanceMinimumProgressCounts)
+    {
+        lastDistanceProgressCounts_ = minimumCounts;
+        distanceLastProgressAt_ = now;
+    }
+    if (movementPhase &&
+        now - distanceLastProgressAt_ >
+            std::chrono::milliseconds(config::kDriveDistanceStallTimeoutMs))
+    {
+        // Os dois lados precisam avançar. Se um encoder parar de responder, usar
+        // somente o outro poderia dobrar a distância real antes da parada.
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_encoder_stall", "Percurso interrompido: um lado não avançou",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        distancePhase_ = DistancePhase::Idle;
+        std::cout << "Drive-distance mission stopped after encoder stall\n";
+        return;
+    }
+
+    if (distancePhase_ == DistancePhase::Driving)
+    {
+        const double predictionSeconds = config::kDriveDistanceBrakePredictionSeconds +
+                                         esp32Telemetry.lastSensorAgeMs / 1000.0;
+        const double projectedLeftCounts =
+            leftCounts + std::abs(esp32Telemetry.leftEncoderRate) * predictionSeconds;
+        const double projectedRightCounts =
+            rightCounts + std::abs(esp32Telemetry.rightEncoderRate) * predictionSeconds;
+
+        if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+            distancePhase_ = DistancePhase::Settling;
+            distancePhaseStartedAt_ = now;
+            robotState.updateAutonomousStatus(makeDistanceStatus(
+                "distance_settling", "PWM zerado: aguardando o percurso estabilizar",
+                activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+            return;
+        }
+
+        robotState.driveAutonomous(
+            config::kDriveDistanceCommandPower,
+            config::kDriveDistanceCommandPower);
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "driving_distance", "Avançando até a distância selecionada",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        return;
+    }
+
+    if (distancePhase_ == DistancePhase::CorrectionPulse)
+    {
+        if (minimumDistanceCm >=
+            activeDistanceTargetCm_ - config::kDriveDistanceToleranceCm)
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+            distancePhase_ = DistancePhase::Settling;
+            distancePhaseStartedAt_ = now;
+            return;
+        }
+
+        if (now - distancePhaseStartedAt_ <
+            std::chrono::milliseconds(config::kDriveDistanceCorrectionPulseMs))
+        {
+            robotState.driveAutonomous(
+                config::kDriveDistanceCommandPower,
+                config::kDriveDistanceCommandPower);
+            robotState.updateAutonomousStatus(makeDistanceStatus(
+                "distance_correction", "Aplicando correção curta de distância",
+                activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+            return;
+        }
+
+        robotState.driveAutonomous(0.0, 0.0);
+        distancePhase_ = DistancePhase::Settling;
+        distancePhaseStartedAt_ = now;
+    }
+
+    robotState.driveAutonomous(0.0, 0.0);
+    if (now - distancePhaseStartedAt_ <
+        std::chrono::milliseconds(config::kDriveDistanceSettleMs))
+    {
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_settling", "Aguardando os encoders estabilizarem",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        return;
+    }
+
+    if (minimumDistanceCm >=
+        activeDistanceTargetCm_ - config::kDriveDistanceToleranceCm)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_completed", "Distância concluída e registrada",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, 100.0));
+        distancePhase_ = DistancePhase::Idle;
+        std::cout << "Drive-distance mission completed: left=" << leftDistanceCm
+                  << " cm, right=" << rightDistanceCm << " cm\n";
+        return;
+    }
+
+    if (distanceCorrectionPulseCount_ >=
+        config::kDriveDistanceMaximumCorrectionPulses)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_correction_failed", "Percurso parado: correções insuficientes",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+        distancePhase_ = DistancePhase::Idle;
+        return;
+    }
+
+    ++distanceCorrectionPulseCount_;
+    distancePhase_ = DistancePhase::CorrectionPulse;
+    distancePhaseStartedAt_ = now;
+    distanceLastProgressAt_ = now;
+    lastDistanceProgressCounts_ = minimumCounts;
+    robotState.driveAutonomous(
+        config::kDriveDistanceCommandPower,
+        config::kDriveDistanceCommandPower);
+    robotState.updateAutonomousStatus(makeDistanceStatus(
+        "distance_correction", "Completando os centímetros restantes",
+        activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm, progressPercent));
+}
+
 void LineFollower::resetMissionState()
 {
     phase_ = Phase::Following;
@@ -289,6 +528,10 @@ void LineFollower::resetMissionState()
     turn90Phase_ = Turn90Phase::Idle;
     turn90CorrectionPulseCount_ = 0;
     turn90CorrectionDirection_ = 1.0;
+    distancePhase_ = DistancePhase::Idle;
+    activeDistanceTargetCm_ = 0.0;
+    lastDistanceProgressCounts_ = 0.0;
+    distanceCorrectionPulseCount_ = 0;
 }
 
 void LineFollower::resetLineControl()

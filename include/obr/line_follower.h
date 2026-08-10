@@ -30,6 +30,14 @@ private:
         CorrectionPulse
     };
 
+    enum class DistancePhase
+    {
+        Idle,
+        Driving,
+        Settling,
+        CorrectionPulse
+    };
+
     struct CameraStatus
     {
         bool valid = false;
@@ -56,6 +64,15 @@ private:
     std::chrono::steady_clock::time_point turn90PhaseStartedAt_{};
     int turn90CorrectionPulseCount_ = 0;
     double turn90CorrectionDirection_ = 1.0;
+    DistancePhase distancePhase_ = DistancePhase::Idle;
+    long long distanceStartLeftCount_ = 0;
+    long long distanceStartRightCount_ = 0;
+    double activeDistanceTargetCm_ = 0.0;
+    std::chrono::steady_clock::time_point distanceStartedAt_{};
+    std::chrono::steady_clock::time_point distancePhaseStartedAt_{};
+    std::chrono::steady_clock::time_point distanceLastProgressAt_{};
+    double lastDistanceProgressCounts_ = 0.0;
+    int distanceCorrectionPulseCount_ = 0;
     unsigned long long activeAutonomousRunSequence_ = 0;
 
     CameraStatus readCameraStatus() const;
@@ -63,6 +80,10 @@ private:
     void startGreenManeuver(const std::string& action, std::chrono::steady_clock::time_point now);
     void updateGreenManeuver(RobotState& robotState, std::chrono::steady_clock::time_point now);
     void updateTurnRight90(RobotState& robotState, const Esp32TelemetrySnapshot& esp32Telemetry);
+    void updateDriveDistance(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        double targetDistanceCm);
     void resetMissionState();
     void resetLineControl();
 

@@ -404,6 +404,19 @@ timeout total é de 5 segundos. Se a amostra do MPU6050 ficar inválida ou tiver
 mais de 200 ms, a missão é encerrada com os motores zerados. Faça o primeiro teste com as rodas
 suspensas e ajuste a projeção de inércia em `include/obr/config.h` se necessário.
 
+O modo `PERCORRER DISTÂNCIA` aceita um alvo de 1 a 300 cm no dashboard. A
+calibração empírica atual é `3600 contagens = 18,7 cm`, ou aproximadamente
+`192,51 contagens/cm`, medida com rodas de 68 mm. Ao iniciar, a Raspberry guarda
+as contagens atuais como referência, move os dois lados para a frente e considera
+o menor avanço entre eles; assim, um lado sozinho não conclui o percurso. A
+frenagem usa a taxa dos encoders para antecipar a inércia, seguida de estabilização
+e até três correções curtas. Telemetria ausente, falta de avanço ou timeout sempre
+zeram os motores.
+
+No cartão `Encoders`, `cont/s` é a taxa instantânea e naturalmente volta a zero
+quando as rodas param. As contagens e posições em centímetros são acumuladas desde
+o último reset ou calibração e não são zeradas pelo botão `Parar`.
+
 O botão `Resetar e calibrar sensores` para o robô, zera encoders e referências
 de orientação e recalibra o giroscópio do MPU6050. O mesmo procedimento pode ser
 iniciado sem o dashboard ao manter o botão Start da ESP32 pressionado por 5

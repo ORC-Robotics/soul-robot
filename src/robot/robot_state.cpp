@@ -22,6 +22,8 @@ const char* autonomousMissionName(AutonomousMission mission)
 {
     switch (mission)
     {
+    case AutonomousMission::DriveDistance:
+        return "drive_distance";
     case AutonomousMission::TurnRight90:
         return "turn_right_90";
     case AutonomousMission::MainMission:
@@ -95,6 +97,20 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     state_.autonomousMission = mission;
     state_.autonomousStatus = {"ready", "Missão selecionada e pronta"};
     lastCommand_ = std::chrono::steady_clock::now();
+}
+
+bool RobotState::setDriveDistanceTargetCm(double targetCm)
+{
+    if (!std::isfinite(targetCm) ||
+        targetCm < config::kDriveDistanceMinimumTargetCm ||
+        targetCm > config::kDriveDistanceMaximumTargetCm)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.driveDistanceTargetCm = targetCm;
+    return true;
 }
 
 void RobotState::stop()
@@ -186,7 +202,13 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     const bool terminalMissionStatus = status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||
-                                       status.phase == "turn_correction_failed";
+                                       status.phase == "turn_correction_failed" ||
+                                       status.phase == "distance_completed" ||
+                                       status.phase == "distance_timeout" ||
+                                       status.phase == "distance_encoder_lost" ||
+                                       status.phase == "distance_encoder_stall" ||
+                                       status.phase == "distance_correction_failed" ||
+                                       status.phase == "distance_invalid_target";
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;
@@ -212,6 +234,23 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     }
     state_.autonomousStatus.progressPercent = std::clamp(
         state_.autonomousStatus.progressPercent, 0.0, 100.0);
+
+    if (!std::isfinite(state_.autonomousStatus.targetDistanceCm))
+    {
+        state_.autonomousStatus.targetDistanceCm = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.leftDistanceCm))
+    {
+        state_.autonomousStatus.leftDistanceCm = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.rightDistanceCm))
+    {
+        state_.autonomousStatus.rightDistanceCm = 0.0;
+    }
+    if (!std::isfinite(state_.autonomousStatus.averageDistanceCm))
+    {
+        state_.autonomousStatus.averageDistanceCm = 0.0;
+    }
 }
 
 void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)

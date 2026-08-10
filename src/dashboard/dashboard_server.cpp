@@ -349,6 +349,22 @@ void DashboardServer::handleCommand(const std::string& message)
             robotState_.setAutonomousMission(AutonomousMission::TurnRight90);
             std::cout << "Autonomous mission selected: turn_right_90\n";
         }
+        else if (message.find("\"mission\":\"drive_distance\"") != std::string::npos)
+        {
+            const double targetCm = getJsonNumber(
+                message, "distanceCm", config::kDriveDistanceDefaultTargetCm);
+            if (robotState_.setDriveDistanceTargetCm(targetCm))
+            {
+                robotState_.setAutonomousMission(AutonomousMission::DriveDistance);
+                std::cout << "Autonomous mission selected: drive_distance, target="
+                          << targetCm << " cm\n";
+            }
+            else
+            {
+                // Alvos inválidos não podem substituir a missão segura atual.
+                std::cerr << "Invalid drive-distance target ignored\n";
+            }
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
@@ -412,6 +428,10 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"autonomousFilteredLineError\":" << state.autonomousStatus.filteredLineError
          << ",\"autonomousSteeringCorrection\":" << state.autonomousStatus.steeringCorrection
          << ",\"autonomousProgressPercent\":" << state.autonomousStatus.progressPercent
+         << ",\"driveDistanceTargetCm\":" << state.driveDistanceTargetCm
+         << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
+         << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
+         << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
          << ",\"left\":" << state.left
          << ",\"right\":" << state.right
          << ",\"emergency\":" << (state.emergencyStop ? "true" : "false")
@@ -453,6 +473,7 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"rightMotorCalibrationGain\":" << std::setprecision(4)
          << config::kRightMotorCalibrationGain
          << ",\"operationalMaximumReferencePower\":" << config::kOperationalMaximumReferencePower
+         << ",\"encoderCountsPerCentimeter\":" << config::kEncoderCountsPerCentimeter
          << "}";
 
     return json.str();
@@ -573,12 +594,20 @@ std::string DashboardServer::dashboardHtml()
     .machine-metric strong.accent { color: var(--state-color); }
     .command-card { display: flex; flex-direction: column; gap: 14px; }
     .mission-selector { padding: 12px; border: 1px solid #315464; border-radius: 12px; background: linear-gradient(145deg, #0c2531, #09161d); box-shadow: inset 0 1px 0 #ffffff0a; }
-    .mission-selector label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: #9be8f3; font-size: .68rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
-    .mission-selector label::after { content: "PADRÃO: PRINCIPAL"; padding: 3px 6px; border: 1px solid #315464; border-radius: 99px; color: var(--muted); background: #07151c; font-size: .55rem; letter-spacing: .06em; }
+    .mission-selector > label { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; color: #9be8f3; font-size: .68rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .mission-selector > label::after { content: "PADRÃO: PRINCIPAL"; padding: 3px 6px; border: 1px solid #315464; border-radius: 99px; color: var(--muted); background: #07151c; font-size: .55rem; letter-spacing: .06em; }
     .mission-selector select { width: 100%; min-height: 44px; padding: 0 36px 0 12px; border: 1px solid #347085; border-radius: 9px; outline: none; color: var(--text); background: #0b202a; font: inherit; font-size: .78rem; font-weight: 850; letter-spacing: .035em; cursor: pointer; }
     .mission-selector select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1c; }
     .mission-selector option { color: var(--text); background: #0b202a; }
     .mission-hint { display: block; margin-top: 7px; color: var(--muted); font-size: .66rem; line-height: 1.35; }
+    .distance-mission-settings { margin-top: 10px; padding: 10px; border: 1px solid #2b596b; border-radius: 9px; background: #07171f; }
+    .distance-mission-settings[hidden] { display: none; }
+    .distance-input-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .distance-input { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+    .distance-input input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #347085; border-radius: 8px; outline: none; color: var(--text); background: #0b202a; font: inherit; font-size: 1rem; font-weight: 900; font-variant-numeric: tabular-nums; }
+    .distance-input input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1c; }
+    .distance-input strong { color: var(--cyan); font-size: .75rem; }
+    .distance-calibration { display: block; margin-top: 7px; color: #76aab9; font-size: .59rem; line-height: 1.35; }
     .mode-buttons { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     button { min-height: 48px; border: 1px solid #285266; border-radius: 10px; color: #dff9ff; background: #123141; font-weight: 850; cursor: pointer; transition: transform .1s, border-color .1s, background .1s; }
     button:hover { transform: translateY(-1px); border-color: var(--cyan); }
@@ -768,6 +797,10 @@ std::string DashboardServer::dashboardHtml()
           <div class="machine-metric"><span>Comando E / D</span><strong id="machineRequestedSpeed" class="accent">0.00 / 0.00</strong></div>
           <div class="machine-metric"><span>Potência real E / D</span><strong id="machineAppliedSpeed">-- / --</strong></div>
           <div class="machine-metric"><span>Encoder E / D</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
+          <div class="machine-metric"><span>Alvo de distância</span><strong id="machineDistanceTarget">-- cm</strong></div>
+          <div class="machine-metric"><span>Distância E / D</span><strong id="machineDistanceSides">-- / -- cm</strong></div>
+          <div class="machine-metric"><span>Média percorrida</span><strong id="machineDistanceAverage">-- cm</strong></div>
+          <div class="machine-metric"><span>Calibração do encoder</span><strong id="machineEncoderCalibration">-- cont/cm</strong></div>
           <div class="machine-metric"><span>Erro bruto / filtrado</span><strong id="machineLineError">0.0 / 0.0 px</strong></div>
           <div class="machine-metric"><span>Correção de giro</span><strong id="machineCorrection">0.000</strong></div>
           <div class="machine-metric"><span>Modo</span><strong id="machineMode">PARADO</strong></div>
@@ -781,12 +814,21 @@ std::string DashboardServer::dashboardHtml()
           <select id="autonomousMission">
             <option value="main_mission" selected>MISSÃO PRINCIPAL</option>
             <option value="turn_right_90">GIRO 90° À DIREITA</option>
+            <option value="drive_distance">PERCORRER DISTÂNCIA</option>
           </select>
           <span id="missionHint" class="mission-hint">Seguidor de linha e decisões da prova.</span>
+          <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
+            <span class="distance-input-label">Distância alvo</span>
+            <div class="distance-input">
+              <input id="distanceTargetCm" type="number" min="1" max="300" step="1" value="20" inputmode="decimal" aria-label="Distância alvo em centímetros">
+              <strong>cm</strong>
+            </div>
+            <small class="distance-calibration">Calibração real: 3600 contagens = 18,7 cm · 192,51 cont/cm.</small>
+          </div>
         </div>
         <div class="mode-buttons">
           <button id="manualButton" onclick="sendCommand('start')">Manual</button>
-          <button id="autoButton" onclick="sendCommand('auto')">Autônomo</button>
+          <button id="autoButton" onclick="startAutonomousMission()">Autônomo</button>
           <button id="stopButton" class="stop" onclick="sendCommand('stop')">Parar</button>
           <button id="estopButton" class="danger" onclick="sendCommand('estop')">E-Stop</button>
           <button id="calibrationButton" class="calibrate" onclick="sendCommand('calibrate')" disabled>Resetar e calibrar sensores</button>
@@ -852,6 +894,8 @@ std::string DashboardServer::dashboardHtml()
         <div class="telemetry-list">
           <div class="telemetry-row"><span>Taxa esquerda</span><strong id="leftEncoderRate">-- cont/s</strong></div>
           <div class="telemetry-row"><span>Taxa direita</span><strong id="rightEncoderRate">-- cont/s</strong></div>
+          <div class="telemetry-row"><span>Posição esquerda desde o último reset</span><strong id="leftEncoderPosition">-- cm</strong></div>
+          <div class="telemetry-row"><span>Posição direita desde o último reset</span><strong id="rightEncoderPosition">-- cm</strong></div>
           <div class="telemetry-row"><span>Canais</span><strong>GPIO19/21 · GPIO22/23</strong></div>
         </div>
       </article>
@@ -928,6 +972,7 @@ std::string DashboardServer::dashboardHtml()
     const cameraResolution = element("cameraResolution");
     const cameraFormat = element("cameraFormat");
     const autonomousMission = element("autonomousMission");
+    const distanceTargetCm = element("distanceTargetCm");
     let requestedLeft = 0;
     let requestedRight = 0;
     let rawDiagnosticDrive = false;
@@ -965,7 +1010,12 @@ std::string DashboardServer::dashboardHtml()
       const labels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
       element("mode").textContent = labels[mode] || mode.toUpperCase();
       const selectedMission = String(data.autonomousMission || "main_mission");
-      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? (selectedMission === "turn_right_90" ? "Executando giro de 90° à direita" : "Missão principal em execução") : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
+      const autonomousDetail = selectedMission === "turn_right_90"
+        ? "Executando giro de 90° à direita"
+        : selectedMission === "drive_distance"
+          ? "Percorrendo a distância selecionada pelos encoders"
+          : "Missão principal em execução";
+      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
       if (mode === "manual") element("manualButton").classList.add("active");
       if (mode === "autonomous") element("autoButton").classList.add("active");
@@ -981,9 +1031,15 @@ std::string DashboardServer::dashboardHtml()
     function updateAutonomousMission(data) {
       const mission = String(data.autonomousMission || "main_mission");
       if (document.activeElement !== autonomousMission) autonomousMission.value = mission;
+      if (document.activeElement !== distanceTargetCm) {
+        distanceTargetCm.value = formatNumber(data.driveDistanceTargetCm, 1);
+      }
+      element("distanceMissionSettings").hidden = mission !== "drive_distance";
       element("missionHint").textContent = mission === "turn_right_90"
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
-        : "Robô de Resgate.";
+        : mission === "drive_distance"
+          ? "Avança os dois lados até o alvo medido pelos encoders."
+          : "Robô de Resgate.";
     }
 
     function updateStateMachine(data) {
@@ -1015,7 +1071,17 @@ std::string DashboardServer::dashboardHtml()
         completed: ["MISSÃO CONCLUÍDA", "active", "machineStepFeedback"],
         turn_timeout: ["TEMPO LIMITE", "danger", "machineStepFeedback"],
         turn_imu_lost: ["IMU PERDIDA", "danger", "machineStepFeedback"],
-        turn_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"]
+        turn_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
+        waiting_encoders: ["AGUARDANDO ENCODERS", "warn", "machineStepPerception"],
+        driving_distance: ["PERCORRENDO DISTÂNCIA", "active", "machineStepMotion"],
+        distance_settling: ["ESTABILIZANDO DISTÂNCIA", "warn", "machineStepFeedback"],
+        distance_correction: ["CORRIGINDO DISTÂNCIA", "active", "machineStepMotion"],
+        distance_completed: ["DISTÂNCIA CONCLUÍDA", "active", "machineStepFeedback"],
+        distance_timeout: ["TEMPO LIMITE", "danger", "machineStepFeedback"],
+        distance_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        distance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
+        distance_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
+        distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"]
       };
       let phase = String(data.autonomousPhase || "stopped");
       let action = String(data.autonomousAction || "Aguardando estado da missão");
@@ -1045,9 +1111,16 @@ std::string DashboardServer::dashboardHtml()
       element("machineProgressFill").style.width = `${continuous ? 100 : progress}%`;
 
       const mission = String(data.autonomousMission || "main_mission");
-      element("machineMission").textContent = mission === "turn_right_90" ? "Giro 90° à direita" : "Missão principal";
-      element("machineLine").textContent = data.autonomousLineDetected === true ? "DETECTADA" : "NÃO DETECTADA";
-      element("machineLine").className = data.autonomousLineDetected === true ? "state-good" : "state-warn";
+      element("machineMission").textContent = mission === "turn_right_90"
+        ? "Giro 90° à direita"
+        : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
+      const lineUsed = mission === "main_mission";
+      element("machineLine").textContent = lineUsed
+        ? (data.autonomousLineDetected === true ? "DETECTADA" : "NÃO DETECTADA")
+        : "NÃO USADA";
+      element("machineLine").className = lineUsed
+        ? (data.autonomousLineDetected === true ? "state-good" : "state-warn")
+        : "";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;
       element("machineAppliedSpeed").textContent = fresh
@@ -1056,9 +1129,16 @@ std::string DashboardServer::dashboardHtml()
       element("machineEncoderSpeed").textContent = fresh
         ? `${formatNumber(data.leftEncoderRate, 0)} / ${formatNumber(data.rightEncoderRate, 0)} cont/s`
         : "-- / -- cont/s";
-      element("machineLineError").textContent = `${formatNumber(data.autonomousRawLineError, 1)} / ${formatNumber(data.autonomousFilteredLineError, 1)} px`;
+      const distanceMission = mission === "drive_distance";
+      element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
+      element("machineDistanceSides").textContent = distanceMission
+        ? `${formatNumber(data.autonomousLeftDistanceCm, 1)} / ${formatNumber(data.autonomousRightDistanceCm, 1)} cm`
+        : "-- / -- cm";
+      element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
+      element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
+      element("machineLineError").textContent = lineUsed ? `${formatNumber(data.autonomousRawLineError, 1)} / ${formatNumber(data.autonomousFilteredLineError, 1)} px` : "--";
       const correction = Number(data.autonomousSteeringCorrection);
-      element("machineCorrection").textContent = Number.isFinite(correction) ? `${correction >= 0 ? "+" : ""}${correction.toFixed(3)}` : "--";
+      element("machineCorrection").textContent = lineUsed && Number.isFinite(correction) ? `${correction >= 0 ? "+" : ""}${correction.toFixed(3)}` : "--";
       const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
@@ -1199,6 +1279,14 @@ std::string DashboardServer::dashboardHtml()
       element("rightEncoderCount").textContent = fresh ? formatNumber(data.rightEncoderCount, 0) : "--";
       element("leftEncoderRate").textContent = fresh ? `${formatNumber(data.leftEncoderRate, 0)} cont/s` : "-- cont/s";
       element("rightEncoderRate").textContent = fresh ? `${formatNumber(data.rightEncoderRate, 0)} cont/s` : "-- cont/s";
+      const countsPerCentimeter = Number(data.encoderCountsPerCentimeter);
+      const encoderScaleValid = fresh && Number.isFinite(countsPerCentimeter) && countsPerCentimeter > 0;
+      element("leftEncoderPosition").textContent = encoderScaleValid
+        ? `${formatNumber(Number(data.leftEncoderCount) / countsPerCentimeter, 1)} cm`
+        : "-- cm";
+      element("rightEncoderPosition").textContent = encoderScaleValid
+        ? `${formatNumber(Number(data.rightEncoderCount) / countsPerCentimeter, 1)} cm`
+        : "-- cm";
 
       element("yawZ").textContent = mpuOk ? `${formatNumber(data.yawZDeg, 1)} °` : "-- °";
       element("rampAngle").textContent = mpuOk ? `${formatNumber(data.rampAngleDeg, 1)} °` : "-- °";
@@ -1271,7 +1359,16 @@ std::string DashboardServer::dashboardHtml()
       manualEnabled = false;
       resetKeyboardState();
       resetDrive();
-      send({ command: "set_autonomous_mission", mission: autonomousMission.value });
+      const targetCm = Math.max(1, Math.min(300, Number(distanceTargetCm.value) || 20));
+      distanceTargetCm.value = formatNumber(targetCm, 1);
+      element("distanceMissionSettings").hidden = autonomousMission.value !== "drive_distance";
+      send({ command: "set_autonomous_mission", mission: autonomousMission.value, distanceCm: targetCm });
+    }
+
+    function startAutonomousMission() {
+      // O WebSocket preserva a ordem: primeiro confirma missão e alvo, depois inicia.
+      selectAutonomousMission();
+      sendCommand("auto");
     }
 
     function clamp(value) { return Math.max(-1, Math.min(1, value)); }
@@ -1394,6 +1491,7 @@ std::string DashboardServer::dashboardHtml()
     });
     element("applyBalanceRecommendation").addEventListener("click", applyBalanceRecommendation);
     autonomousMission.addEventListener("change", selectAutonomousMission);
+    distanceTargetCm.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
       if (!driveKeyCodes.includes(event.code) || event.ctrlKey || event.altKey || event.metaKey) return;
       event.preventDefault();
