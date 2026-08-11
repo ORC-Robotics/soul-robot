@@ -36,6 +36,8 @@ struct Esp32TelemetrySnapshot
     unsigned long long startButtonPressSequence = 0;
     bool pca9685Ok = false;
     bool oledOk = false;
+    bool remoteOledActive = false;
+    bool raspberrySystemReady = false;
     bool motorSleepPinHigh = false;
     bool emergencyStopActive = false;
     bool calibrationActive = false;
@@ -69,6 +71,11 @@ public:
     bool sendClearEmergencyStop();
     bool sendResetEncoders();
     bool sendCalibrateSensors();
+    bool sendSystemStarting();
+    bool sendSystemReady();
+    bool sendOledMessage(const std::string& title, const std::string& firstLine,
+                         const std::string& secondLine, int durationMs);
+    bool clearOledMessage();
 
     Esp32TelemetrySnapshot telemetrySnapshot() const;
 

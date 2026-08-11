@@ -71,7 +71,7 @@ int main()
     LineFollower lineFollower;
     MotorController motors(esp32);
     StatusLed readyLed(config::kRaspberryReadyLedPin);
-    DashboardServer dashboard(robotState, telemetry, esp32, readyLed);
+    DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
 
     readyLed.begin();
     motors.begin();
@@ -88,6 +88,10 @@ int main()
     unsigned long long handledStartButtonPressSequence = 0;
     bool previousStartButtonPressed = false;
     bool consumeNextStartButtonShortPress = false;
+    bool startupComplete = false;
+    bool systemDisplayStatusSent = false;
+    bool lastSystemDisplayReady = false;
+    auto lastSystemDisplayStatusTime = std::chrono::steady_clock::now();
     while (running)
     {
         const Esp32TelemetrySnapshot esp32Telemetry = esp32.telemetrySnapshot();
@@ -188,12 +192,37 @@ int main()
         robotState.enforceCommandTimeout(std::chrono::milliseconds(config::kCommandTimeoutMs));
 
         const RobotSnapshot robotSnapshot = robotState.snapshot();
-        readyLed.setReady(esp32Telemetry.readyForOperation() &&
-                          !robotSnapshot.emergencyStop && cameraReady);
+        const bool systemReady = esp32Telemetry.readyForOperation() &&
+                                 !robotSnapshot.emergencyStop && cameraReady;
+        readyLed.setReady(systemReady);
+
+        // A conclusão do boot fica travada até o processo reiniciar. Uma falha
+        // posterior da câmera apaga o LED, mas não transforma operação em boot.
+        startupComplete = startupComplete || systemReady;
+        const auto now = std::chrono::steady_clock::now();
+        const bool heartbeatDue =
+            now - lastSystemDisplayStatusTime >=
+            std::chrono::milliseconds(config::kRaspberrySystemStatusHeartbeatMs);
+        if (!systemDisplayStatusSent ||
+            startupComplete != lastSystemDisplayReady || heartbeatDue)
+        {
+            const bool statusSent = startupComplete
+                                        ? esp32.sendSystemReady()
+                                        : esp32.sendSystemStarting();
+            if (statusSent)
+            {
+                systemDisplayStatusSent = true;
+                lastSystemDisplayReady = startupComplete;
+                lastSystemDisplayStatusTime = now;
+            }
+        }
         motors.apply(robotSnapshot);
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kMainLoopPeriodMs));
     }
 
+    // Se o serviço for reiniciado de forma limpa, a OLED informa imediatamente
+    // que a Raspberry voltou ao processo de inicialização.
+    esp32.sendSystemStarting();
     dashboard.stop();
     readyLed.off();
     motors.stop();

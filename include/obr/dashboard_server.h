@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/esp32_bridge.h"
+#include "obr/motor_controller.h"
 #include "obr/robot_state.h"
 #include "obr/status_led.h"
 #include "obr/telemetry.h"
@@ -105,7 +106,7 @@ class DashboardServer
 {
 public:
     DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
-                    StatusLed& readyLed);
+                    MotorController& motors, StatusLed& readyLed);
     ~DashboardServer();
 
     bool start();
@@ -115,6 +116,7 @@ private:
     RobotState& robotState_;
     Telemetry& telemetry_;
     Esp32Bridge& esp32_;
+    MotorController& motors_;
     StatusLed& readyLed_;
     std::atomic<bool> running_{false};
     SocketHandle server_{};
@@ -152,6 +154,8 @@ private:
     static bool sendWebSocketText(SocketHandle client, const std::string& message);
     static bool readWebSocketFrame(SocketHandle client, std::string& payload);
     static double getJsonNumber(const std::string& json, const std::string& key, double fallback);
+    static std::string getJsonString(const std::string& json, const std::string& key,
+                                     const std::string& fallback);
     static std::string sha1(const std::string& input);
     static std::string base64Encode(const std::string& input);
     static unsigned int leftRotate(unsigned int value, int bits);

@@ -127,6 +127,18 @@ uint32_t startButtonPressedSinceMs = 0;
 uint32_t lastMpuIntegrationUs = 0;
 uint32_t lastOledRefreshMs = 0;
 bool startButtonLongPressHandled = false;
+bool remoteOledActive = false;
+uint32_t remoteOledExpiresAtMs = 0;
+char remoteOledTitle[kRemoteOledTitleMaxLength + 1] = {};
+char remoteOledFirstLine[kRemoteOledLineMaxLength + 1] = {};
+char remoteOledSecondLine[kRemoteOledLineMaxLength + 1] = {};
+#ifdef OBR_ESP32_RASPBERRY_MODE
+bool raspberrySystemReady = false;
+#else
+// O firmware de bancada não depende da Raspberry e libera a tela imediatamente.
+bool raspberrySystemReady = true;
+#endif
+uint32_t lastRaspberrySystemReadyMs = 0;
 
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 volatile int32_t leftEncoderCount = 0;
@@ -142,6 +154,8 @@ volatile uint32_t ultrasonicTriggerUs = 0;
 volatile uint32_t ultrasonicEchoStartUs = 0;
 volatile uint32_t ultrasonicEchoDurationUs = 0;
 
+// O maior comando OLED ocupa menos de 128 bytes com os limites definidos em
+// robot_config.h. Comandos maiores são descartados antes de serem interpretados.
 constexpr size_t kCommandBufferSize = 128;
 char commandBuffer[kCommandBufferSize] = {};
 size_t commandLength = 0;
@@ -619,6 +633,149 @@ void setupI2cDevices()
   }
 }
 
+bool isRemoteOledPageActive(uint32_t nowMs)
+{
+  if (!remoteOledActive)
+  {
+    return false;
+  }
+
+  // A subtração com sinal mantém a comparação correta mesmo quando millis()
+  // ultrapassa o limite de 32 bits após várias semanas de funcionamento.
+  if (static_cast<int32_t>(nowMs - remoteOledExpiresAtMs) >= 0)
+  {
+    remoteOledActive = false;
+    return false;
+  }
+  return true;
+}
+
+bool isRaspberrySystemReady(uint32_t nowMs)
+{
+#ifdef OBR_ESP32_RASPBERRY_MODE
+  if (raspberrySystemReady &&
+      nowMs - lastRaspberrySystemReadyMs > kRaspberrySystemReadyTimeoutMs)
+  {
+    // A ausência do heartbeat indica que o serviço da Raspberry reiniciou ou
+    // caiu. A OLED volta ao boot, mas a segurança dos motores segue independente.
+    raspberrySystemReady = false;
+  }
+#else
+  (void)nowMs;
+#endif
+  return raspberrySystemReady;
+}
+
+void drawCenteredOledText(const char* text, int16_t y, uint8_t textSize)
+{
+  int16_t textX;
+  int16_t textY;
+  uint16_t textWidth;
+  uint16_t textHeight;
+  oled.setTextSize(textSize);
+  oled.getTextBounds(text, 0, 0, &textX, &textY, &textWidth, &textHeight);
+  int16_t centeredX = (kOledWidth - static_cast<int16_t>(textWidth)) / 2;
+  if (centeredX < 3)
+  {
+    centeredX = 3;
+  }
+  oled.setCursor(centeredX, y);
+  oled.print(text);
+}
+
+void drawEmergencyOledPage()
+{
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(28, 4);
+  oled.print(F("EMERGENCIA"));
+  oled.drawLine(3, 15, 124, 15, SSD1306_WHITE);
+  drawCenteredOledText("E-STOP ATIVO", 23, 1);
+  drawCenteredOledText("MOTORES", 37, 1);
+  drawCenteredOledText("BLOQUEADOS", 49, 1);
+  oled.display();
+}
+
+void drawSystemStartingOledPage(uint32_t nowMs)
+{
+  constexpr int8_t kSpinnerX[8] = {0, 6, 9, 6, 0, -6, -9, -6};
+  constexpr int8_t kSpinnerY[8] = {-9, -6, 0, 6, 9, 6, 0, -6};
+  const uint8_t activeDot = static_cast<uint8_t>((nowMs / 120) % 8);
+
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(25, 4);
+  oled.print(F("OBR | SISTEMA"));
+  oled.drawLine(3, 15, 124, 15, SSD1306_WHITE);
+
+  // O indicador circular e a barra são animações indeterminadas: mostram que
+  // o boot continua ativo sem inventar um percentual que a Raspberry não mede.
+  for (uint8_t index = 0; index < 8; ++index)
+  {
+    const int16_t x = 17 + kSpinnerX[index];
+    const int16_t y = 33 + kSpinnerY[index];
+    if (index == activeDot)
+    {
+      oled.fillCircle(x, y, 2, SSD1306_WHITE);
+    }
+    else
+    {
+      oled.drawPixel(x, y, SSD1306_WHITE);
+    }
+  }
+
+  oled.setCursor(34, 23);
+  oled.print(F("INICIALIZANDO"));
+  oled.setCursor(40, 37);
+  oled.print(F("RASPBERRY PI"));
+
+  constexpr uint8_t kBarTravel = 90;
+  uint8_t barPosition = static_cast<uint8_t>((nowMs / 35) % (kBarTravel * 2));
+  if (barPosition > kBarTravel)
+  {
+    barPosition = kBarTravel * 2 - barPosition;
+  }
+  oled.drawRoundRect(5, 50, 118, 8, 3, SSD1306_WHITE);
+  oled.fillRoundRect(8 + barPosition, 53, 20, 2, 1, SSD1306_WHITE);
+  oled.display();
+}
+
+void drawRemoteOledPage(uint32_t nowMs)
+{
+  oled.clearDisplay();
+  oled.drawRoundRect(0, 0, kOledWidth, kOledHeight, 4, SSD1306_WHITE);
+  oled.setTextColor(SSD1306_WHITE);
+  oled.setTextSize(1);
+  oled.setCursor(4, 4);
+  oled.print(F("RPI | "));
+  oled.print(remoteOledTitle[0] != '\0' ? remoteOledTitle : "MENSAGEM");
+  oled.drawLine(3, 15, 124, 15, SSD1306_WHITE);
+
+  // O conteúdo remoto usa somente a fonte nativa do SSD1306. Isso mantém o
+  // desenho leve e garante que a atualização não atrase sensores ou motores.
+  if (remoteOledSecondLine[0] == '\0')
+  {
+    drawCenteredOledText(remoteOledFirstLine, 30, 1);
+  }
+  else
+  {
+    drawCenteredOledText(remoteOledFirstLine, 23, 1);
+    drawCenteredOledText(remoteOledSecondLine, 37, 1);
+  }
+
+  const uint32_t remainingMs = remoteOledExpiresAtMs - nowMs;
+  char footer[18];
+  snprintf(footer, sizeof(footer), "REMOTO | %lus",
+           static_cast<unsigned long>((remainingMs + 999) / 1000));
+  oled.drawLine(3, 51, 124, 51, SSD1306_WHITE);
+  drawCenteredOledText(footer, 54, 1);
+  oled.display();
+}
+
 void updateOledIfDue()
 {
   const uint32_t nowMs = millis();
@@ -627,6 +784,27 @@ void updateOledIfDue()
     return;
   }
   lastOledRefreshMs = nowMs;
+
+  // Estados locais críticos sempre têm prioridade sobre mensagens da Raspberry.
+  if (emergencyStopActive)
+  {
+    drawEmergencyOledPage();
+    return;
+  }
+  if (calibrationActive)
+  {
+    return;
+  }
+  if (!isRaspberrySystemReady(nowMs))
+  {
+    drawSystemStartingOledPage(nowMs);
+    return;
+  }
+  if (isRemoteOledPageActive(nowMs))
+  {
+    drawRemoteOledPage(nowMs);
+    return;
+  }
 
   char batteryText[10] = "--.--V";
   char yawText[8] = "  --";
@@ -1100,6 +1278,101 @@ void sendUartError(const char* message)
   Serial.println(message);
 }
 
+int8_t hexadecimalNibble(char character)
+{
+  if (character >= '0' && character <= '9')
+  {
+    return character - '0';
+  }
+  if (character >= 'A' && character <= 'F')
+  {
+    return character - 'A' + 10;
+  }
+  if (character >= 'a' && character <= 'f')
+  {
+    return character - 'a' + 10;
+  }
+  return -1;
+}
+
+bool decodeRemoteOledText(const char* encoded, char* destination,
+                          size_t destinationSize)
+{
+  if (strcmp(encoded, "-") == 0)
+  {
+    destination[0] = '\0';
+    return true;
+  }
+
+  const size_t encodedLength = strlen(encoded);
+  if (encodedLength == 0 || (encodedLength % 2) != 0 ||
+      encodedLength / 2 >= destinationSize)
+  {
+    return false;
+  }
+
+  for (size_t index = 0; index < encodedLength; index += 2)
+  {
+    const int8_t high = hexadecimalNibble(encoded[index]);
+    const int8_t low = hexadecimalNibble(encoded[index + 1]);
+    if (high < 0 || low < 0)
+    {
+      return false;
+    }
+
+    const char decoded = static_cast<char>((high << 4) | low);
+    // A fonte padrão da biblioteca exibe ASCII imprimível. Outros bytes são
+    // rejeitados para não mostrar símbolos corrompidos nem controles na tela.
+    if (decoded < 32 || decoded > 126)
+    {
+      return false;
+    }
+    destination[index / 2] = decoded;
+  }
+  destination[encodedLength / 2] = '\0';
+  return true;
+}
+
+bool applyRemoteOledCommand(const char* line)
+{
+  unsigned long durationMs = 0;
+  char encodedTitle[kRemoteOledTitleMaxLength * 2 + 1] = {};
+  char encodedFirstLine[kRemoteOledLineMaxLength * 2 + 1] = {};
+  char encodedSecondLine[kRemoteOledLineMaxLength * 2 + 1] = {};
+  int consumedCharacters = 0;
+  const int parsedFields = sscanf(
+      line, "OLED,%lu,%24[^,],%40[^,],%40s%n", &durationMs, encodedTitle,
+      encodedFirstLine, encodedSecondLine, &consumedCharacters);
+  if (parsedFields != 4 ||
+      consumedCharacters != static_cast<int>(strlen(line)) ||
+      durationMs < kRemoteOledMinimumDurationMs ||
+      durationMs > kRemoteOledMaximumDurationMs)
+  {
+    return false;
+  }
+
+  char title[kRemoteOledTitleMaxLength + 1] = {};
+  char firstLine[kRemoteOledLineMaxLength + 1] = {};
+  char secondLine[kRemoteOledLineMaxLength + 1] = {};
+  if (!decodeRemoteOledText(encodedTitle, title, sizeof(title)) ||
+      !decodeRemoteOledText(encodedFirstLine, firstLine, sizeof(firstLine)) ||
+      !decodeRemoteOledText(encodedSecondLine, secondLine, sizeof(secondLine)))
+  {
+    return false;
+  }
+  if (title[0] == '\0' && firstLine[0] == '\0' && secondLine[0] == '\0')
+  {
+    return false;
+  }
+
+  memcpy(remoteOledTitle, title, sizeof(remoteOledTitle));
+  memcpy(remoteOledFirstLine, firstLine, sizeof(remoteOledFirstLine));
+  memcpy(remoteOledSecondLine, secondLine, sizeof(remoteOledSecondLine));
+  remoteOledExpiresAtMs = millis() + static_cast<uint32_t>(durationMs);
+  remoteOledActive = true;
+  return true;
+}
+
 void handleUartCommand(const char* line)
 {
   if (strcmp(line, "PING") == 0)
@@ -1136,6 +1409,36 @@ void handleUartCommand(const char* line)
   if (strcmp(line, "CALIBRATE_SENSORS") == 0)
   {
     runSensorCalibration();
+    return;
+  }
+  if (strcmp(line, "SYSTEM_STARTING") == 0)
+  {
+    raspberrySystemReady = false;
+    remoteOledActive = false;
+    return;
+  }
+  if (strcmp(line, "SYSTEM_READY") == 0)
+  {
+    raspberrySystemReady = true;
+    lastRaspberrySystemReadyMs = millis();
+    return;
+  }
+  if (strcmp(line, "OLED_CLEAR") == 0)
+  {
+    remoteOledActive = false;
+    Serial.println("OLED,CLEARED");
+    return;
+  }
+  if (strncmp(line, "OLED,", 5) == 0)
+  {
+    if (applyRemoteOledCommand(line))
+    {
+      Serial.println("OLED,OK");
+    }
+    else
+    {
+      sendUartError("invalid_oled_message");
+    }
     return;
   }
 
@@ -1265,7 +1568,11 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(millis());
   Serial.print(',');
-  Serial.println(calibrationActive ? 1 : 0);
+  Serial.print(calibrationActive ? 1 : 0);
+  Serial.print(',');
+  Serial.print(isRemoteOledPageActive(nowMs) ? 1 : 0);
+  Serial.print(',');
+  Serial.println(isRaspberrySystemReady(nowMs) ? 1 : 0);
 }
 
 void enforceMotorTimeout()

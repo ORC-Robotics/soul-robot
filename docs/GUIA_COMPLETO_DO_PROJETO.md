@@ -249,7 +249,10 @@ esp32/obr_esp32_bridge/
   Núcleo compartilhado e firmware de bancada com dashboard local.
 
 scripts/camera_line_frame.py
-  Captura, visão computacional, status JSON e stream MJPEG.
+  Captura, preprocessing, debug, status JSON e stream MJPEG.
+
+scripts/vision_path.py e scripts/test_vision_path.py
+  Geometria testável de CurrentPath/Preview e máscaras sintéticas offline.
 
 scripts/deploy.ps1 e scripts/deploy.sh
   Deploy atômico para a Raspberry.
@@ -269,8 +272,8 @@ scripts/obr-robot.service
 | `RobotState` | Guarda modo, missão, E-Stop, potências e idade do comando |
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
-| `MotorController` | Aplica perfil operacional/calibração e envia comandos seguros para a ESP32 |
-| `LineFollower` | Missão principal, verdes e giro de 90° |
+| `MotorController` | Aplica perfil operacional, sincroniza os lados pelos encoders e envia comandos seguros para a ESP32 |
+| `LineFollower` | Controle posição+heading, eventos visuais, verdes e missões isoladas |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
 | `StatusLed` | LED de sistema pronto |
@@ -334,11 +337,12 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Saída máxima: 100%.
 - A ESP32 mantém relação direta: `0.05` é 5%, `0.50` é 50% e `1.00` é 100% de duty.
 - No controle normal, a Raspberry eleva qualquer comando não nulo para pelo menos
-  `0.65` e limita a referência a aproximadamente `0.97` antes da calibração.
-- O lado direito recebe ganho proporcional `0.67 / 0.65`, medido pelos encoders.
+  `0.65` antes da sincronização automática.
+- O `MotorController` mede `cont/s por PWM` e reduz gradualmente somente o lado
+  mais eficiente. Não existe mais ganho fixo aplicado ao lado direito.
 - Os campos exatos do dashboard usam `drive_raw` e ignoram o perfil operacional.
 - A missão isolada de giro de 90° usa comando lógico `0.01`; o perfil o eleva
-  para aproximadamente `0.65 / -0.67`, garantindo a partida dos motores.
+  para aproximadamente `0.65 / -0.65`, garantindo a partida dos motores.
 - Zero permanece exatamente zero em parada, timeout, calibração e E-Stop.
 
 O software de navegação escolhe uma referência operacional. A interface mostra
@@ -466,6 +470,13 @@ continuar segura mesmo se navegador, Wi-Fi, Raspberry ou UART falharem.
 - Em OLED bicolor, título/barra ocupam a faixa amarela e a tensão fica abaixo da
   linha 16 para aparecer totalmente azul.
 - Durante calibração, mostra animação, progresso, `NÃO MOVA` e resultado.
+- No firmware principal, mostra uma animação indeterminada enquanto a Raspberry,
+  a câmera e os serviços ainda não concluíram a inicialização. A tela normal só
+  é liberada após o heartbeat `SYSTEM_READY`.
+- O dashboard da Raspberry pode mostrar temporariamente um título e duas linhas.
+  A página remota expira em até 30 segundos e volta automaticamente para bateria
+  e ângulos se a Raspberry desconectar ou deixar de renovar a mensagem.
+- E-Stop e calibração local têm prioridade sobre o conteúdo enviado pela Raspberry.
 
 ## 13. Botão Start físico
 
@@ -518,8 +529,21 @@ ESTOP
 CLEAR_ESTOP
 RESET_ENCODERS
 CALIBRATE_SENSORS
+SYSTEM_STARTING
+SYSTEM_READY
+OLED,<durationMs>,<titleHex>,<line1Hex>,<line2Hex>
+OLED_CLEAR
 PING
 ```
+
+O comando `OLED` aceita título de até 12 caracteres, duas linhas de até 20
+caracteres ASCII e duração entre 500 e 30.000 ms. Os campos de texto são
+codificados em hexadecimal e `-` representa texto vazio. `OLED_CLEAR` restaura
+a página padrão sem esperar o timeout.
+
+`SYSTEM_READY` é renovado pela Raspberry a cada segundo depois da primeira
+inicialização completa. Sem renovação por três segundos, a OLED retorna ao boot.
+`SYSTEM_STARTING` força esse estado imediatamente ao iniciar ou encerrar o serviço.
 
 `MOTOR` aceita potências finitas entre -1,000 e 1,000. Os quatro limites também
 devem permanecer ordenados e dentro de `[0, 1]`. Valores inválidos param os
@@ -536,6 +560,8 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
+OLED,OK
+OLED,CLEARED
 SENSOR,<campos CSV...>
 ```
 
@@ -577,7 +603,8 @@ Executa seguidor de linha e interpretação de marcações verdes.
 - Comanda esquerda positiva e direita negativa.
 - Alvo: 90°.
 - Usa comando lógico `0.01 / -0.01` durante todo o giro e nas correções.
-- O perfil operacional aplica aproximadamente `0.65 / -0.67` nos motores.
+- O perfil operacional aplica aproximadamente `0.65 / -0.65` nos motores.
+- O sincronismo fica desativado porque os lados giram em sentidos opostos.
 - Antecipa o corte do PWM usando velocidade angular, idade da amostra e inércia.
 - Aguarda 180 ms e velocidade angular de até 3°/s antes de avaliar o resultado.
 - Permite até três pulsos de 60 ms, sempre separados por estabilização.
@@ -622,7 +649,7 @@ Arquivo: `scripts/camera_line_frame.py`.
 | Stream MJPEG | Porta local 8090, `/stream.mjpg` |
 | Qualidade JPEG | 82 |
 | Snapshot compatível | 2 FPS em `/tmp/obr_camera_frame.jpg` |
-| Status JSON | 10 FPS em `/tmp/obr_camera_status.json` |
+| Status JSON | 20 FPS em `/tmp/obr_camera_status.json` |
 | Rotação | 180°, feita no pipeline com HFlip + VFlip |
 | Iluminação | BOARD 40 / BCM21 ativa enquanto o script roda |
 
@@ -632,20 +659,62 @@ precise acessar diretamente a porta 8090.
 ### Detecção da linha preta
 
 - Ignora os 20% superiores da imagem.
-- Usa canal V do HSV, blur Gaussiano e threshold invertido em 80.
+- Usa canal V do HSV, blur Gaussiano e Otsu invertido limitado entre 70 e 155.
+  O stream mostra o threshold efetivo, cobertura da máscara e número de blobs.
 - Aplica fechamento morfológico.
 - Ignora contornos menores que 80 pixels na imagem reduzida.
-- Entre contornos válidos, escolhe o mais próximo da posição anterior.
-- O erro é `centro da linha - centro da imagem` em pixels da imagem principal.
+- Mantém todos os contornos com área útil e extrai regiões pretas por bandas
+  horizontais. A raiz próxima decide qual geometria realmente chega ao robô;
+  o centro da bounding box de uma curva não escolhe mais o contorno inteiro.
+- A primeira região precisa passar pelos gates de centro esperado, previsão do
+  quadro anterior e largura plausível. Sem raiz próxima, `currentPathValid=false`.
+- Uma faixa central clara pode substituir uma previsão lateral antiga. Depois de
+  dois quadros inválidos, X e largura previstos são zerados e a recuperação passa
+  a procurar um pouco mais à frente, ainda limitada à região central.
+- Na imagem de processamento de 320 px, a largura absoluta da raiz aceita até
+  112 px. Esse limite acomoda a faixa próxima observada na câmera real; centro,
+  continuidade vertical e histórico ainda rejeitam blobs laterais.
+- As quatro primeiras bandas estabilizam a largura da raiz. Uma ponta estreita
+  cortada pela borda inferior pode crescer para a largura real sem ser separada
+  imediatamente como Preview; expansões posteriores ainda exigem predominância
+  lateral antes de representar corner.
+- Expansões abruptas de largura e saltos laterais são marcados como rejeitados,
+  terminam o `CurrentPath` e permanecem apenas como evidência de Preview.
+- `scripts/vision_path.py` devolve `PathSamples`, `CurrentPath`, `Preview`,
+  posição, heading, confiança e um possível corner.
+- O erro de posição usa regressão local na zona próxima e mantém a convenção
+  positivo = direita, negativo = esquerda.
+- O heading usa a inclinação da regressão `x=f(y)` somente na zona de controle.
+
+`CurrentPath` termina no lookahead normal ou antes de uma mudança angular
+concentrada. A parte restante fica no `Preview`; portanto, o trecho horizontal
+de um corner distante não participa do cálculo de steering.
+
+Corner é candidato apenas quando múltiplos sinais concordam: mudança local de
+heading, extensão lateral, descontinuidade do centro e aumento de largura. A
+extensão também precisa predominar claramente para esquerda ou direita; expansão
+simétrica causada por perspectiva, sombra ou proximidade não vira corner. O
+`Corner Anchor` usa o X projetado do último trecho estável e o centro robusto das
+bandas consecutivas onde a expansão começa. Sua proximidade deriva desse Y e
+continua normalizada em `[0,1]`, não em milímetros.
+
+O stream de debug usa azul para `CurrentPath`, amarelo para `Preview`, ciano para
+os samples e ponto de controle, magenta/vermelho para rejeições, vermelho para o
+Corner Anchor/zona de ação e verde para a marca validada. Ele também informa a
+validade da raiz, quantidade de samples de controle, motivo das rejeições, Y da
+âncora e proximidade. O dashboard mostra o `NavigationState` real sobre o vídeo.
 
 ### Detecção de verde
 
 - Faixa HSV atual: `[35, 50, 40]` até `[90, 255, 255]`.
 - Área mínima: 50 pixels na imagem reduzida.
 - O verde só é validado se houver preto imediatamente antes dele.
+- O lado é comparado com o X local do `CurrentPath` na altura da marca.
 - Verde à esquerda gera `ESQUERDA`.
 - Verde à direita gera `DIREITA`.
 - Verde nos dois lados gera `MEIA VOLTA`.
+- O status publica confiança e proximidade; o C++ exige três observações e só
+  inicia a regra quando a marca alcança a zona de ação.
 
 > **PREENCHER:** condições de iluminação usadas na calibração, amostras das cores
 > da pista, câmera/óptica exata e conjunto de imagens de teste versionado.
@@ -654,28 +723,69 @@ precise acessar diretamente a porta 8090.
 
 ### Seguidor de linha
 
-- Referência base: `0.65`; após calibração, a reta aplica aproximadamente
-  `0.65` à esquerda e `0.67` à direita.
-- Ganho proporcional: 0,0008 por pixel.
-- Correção limitada a `0.30`.
-- Filtro exponencial do erro com peso 0,20 para cada quadro novo.
-- Zona morta central: 18 pixels.
-- Variação máxima da correção: `0.015` por ciclo de 20 ms.
-- Em curvas, o lado interno permanece em `0.65` e somente o lado externo acelera.
-  Isso impede que uma correção derrube qualquer conjunto abaixo da faixa confiável.
-- Se a linha sumir e existir erro anterior relevante, gira para o último lado.
-- Potência de busca: `0.65`.
-- Deadband do erro anterior: 35 pixels.
-- Se não houver direção anterior confiável, avança em `0.65`.
+- Referência base: `0.65 / 0.65`; o sincronismo reduz o lado mais rápido usando
+  a eficiência observada nos encoders.
+- Ganho de posição: 0,0008 por pixel.
+- Ganho secundário de heading: 0,0002 por grau.
+- Quando posição e heading discordam, o heading cancela no máximo 50% da
+  correção lateral; ele não pode inverter o sentido que recentraliza o robô.
+- Correção limitada inicialmente a `0.01` para calibrar a visão em baixa velocidade.
+- Filtros separados: posição com peso 0,20 e heading com peso 0,25 por status novo.
+- Na partida, exige cinco status consecutivos com `CurrentPath` válido e mantém
+  PWM zero durante essa confirmação. Eventos visuais também ficam bloqueados.
+- Zona morta central suave: 6 pixels; somente o excesso entra no controle.
+- Variação máxima da correção: `0.002` por ciclo de 20 ms.
+- Em curvas suaves, o lado interno permanece na base e somente o lado externo
+  recebe até `+0.01`. Aumentar esse limite fortalece e acelera a correção.
+- Preview confirmado pode preparar velocidade, mas nunca entra diretamente no steering.
+- Corner e verde só acumulam confirmação quando o `CurrentPath` do mesmo status
+  está válido; ruído distante durante perda de linha não pode criar um evento.
+- Corner exige três status, usa latch e só executa a partir de proximidade 0,72.
+- Se a raiz reta desaparecer durante a transição de um corner confirmado e já
+  próximo, o corner latched inicia um avanço reto de 15 cm em vez de cair na busca
+  genérica de linha. A distância usa o menor deslocamento dos dois encoders e
+  termina com 200 ms de PWM zero antes do giro. Eventos não confirmados continuam
+  usando a parada e busca limitada.
+- Para calibrar a zona de ação, primeiro confirme no stream que a raiz azul e o
+  Corner Anchor vermelho estão corretos. Depois ajuste `kEventActionProximity`
+  em `include/obr/config.h` e mantenha `EVENT_ACTION_PROXIMITY` do debug Python
+  com o mesmo valor. Aumentar aproxima o gatilho da base da ROI; diminuir antecipa.
+- Durante o corner, gira até encontrar o novo segmento visual e então exige três
+  status válidos em `Reacquiring` antes de voltar a `Following`. Ao encontrar o
+  novo segmento, estabiliza a rotação, registra uma nova origem dos encoders,
+  recua 15 cm e estabiliza novamente. Só depois recalcula a trajetória e entra
+  em `Reacquiring`. Os motores permanecem zerados até três status coerentes
+  confirmarem o novo `CurrentPath`; se a linha não estiver válida, o timeout
+  encerra a missão em vez de iniciar outra busca cega.
+- Corners, decisões por verde e readquisição acionam os dois lados no mínimo
+  operacional e em sentidos opostos. A busca genérica de uma linha perdida é
+  diferente: mantém os dois lados para frente e conserva o último diferencial
+  de velocidade, portanto continua no ângulo observado sem virar no próprio eixo.
+  Os tempos iniciais do verde são 350 ms para curva e 650 ms para meia-volta e
+  ainda precisam ser calibrados no piso.
+- Giro visual possui timeout de 1800 ms; readquisição também possui 1800 ms.
+- Nos dois primeiros status sem linha, repete exatamente o último arco comandado.
+  Se continuar sem linha, reforça o mesmo sentido até o diferencial de `0.01`.
+- Se o último arco era central, continua procurando para frente em `0.65 / 0.65`
+  lógico, com a sincronização automática aplicada pelo `MotorController`.
+- A busca permanece ativa por no máximo 3000 ms. Depois disso, zera os motores
+  para não manter movimento indefinido sem referência visual.
 - Se o JSON da câmera passar de 400 ms, para.
+
+Estados explícitos: `Following`, `ApproachingEvent`, `AdvancingToCorner`,
+`ExecutingTurn`, `ReversingAfterCorner`, `Reacquiring` e `LineLost`. Não existe
+modo especial para zig-zag; somente o
+próximo evento confirmado é acompanhado.
 
 ### Marcações verdes
 
-1. Avança por 170 ms para aproximar o centro da interseção.
-2. Gira com potência lógica mínima de `0.65`.
-3. Curva simples parte de 350 ms.
-4. Meia-volta parte de 650 ms.
-5. Ignora novo verde por 900 ms após a manobra.
+1. Confirma a marca em três status e espera proximidade 0,72.
+2. Avança por 170 ms para aproximar o centro da interseção.
+3. Gira com potência lógica mínima de `0.65`.
+4. Curva simples parte de 350 ms.
+5. Meia-volta parte de 650 ms.
+6. Entra em `Reacquiring` e só libera `Following` após confirmar a nova linha.
+7. Ignora novo verde por 900 ms após a manobra.
 
 Os tempos foram reduzidos proporcionalmente ao aumento de potência, mas são apenas
 um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU.
@@ -712,15 +822,23 @@ um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU
 - Seletor de missão: `MISSÃO PRINCIPAL`, `GIRO 90° À DIREITA` ou
   `PERCORRER DISTÂNCIA`.
 - Missão de distância: campo de 1 a 300 cm e progresso independente dos dois lados.
-- WASD: W/S para frente/ré; A/D para giro com os dois lados.
+- WASD: W/S para frente/ré; A/D gira os dois lados em sentidos opostos e tem
+  prioridade sobre W/S, impedindo que combinações de teclas zerem um lado.
 - Sliders: frente/ré e giro.
-- Sliders e WASD: perfil operacional com mínimo `0.65` e ganho no lado direito.
+- Limites manuais separados: reta e curva, de `0.65` a `0.97`, persistidos no navegador.
+- Sliders e WASD: perfil operacional com mínimo `0.65` e sincronismo automático
+  quando os lados se movem juntos no mesmo sentido.
 - Giro autônomo de 90°: comando `0.01` elevado pelo perfil operacional.
-- Ajuste exato: PWM direto e independente por lado em passos de `0.01`, destinado
-  somente a diagnóstico consciente.
-- Sincronização: taxas filtradas dos encoders, diferença percentual e indicação
-  do lado mais lento. O painel sugere um comando direito tomando a esquerda como
-  referência, mas só o aplica após confirmação do operador.
+- Ajuste individual: independente por lado em passos de `0.01`, destinado
+  somente a diagnóstico consciente; qualquer valor não nulo é elevado a `0.65`.
+- Sincronização: calcula a eficiência de cada lado em `cont/s por PWM`, aguarda
+  três amostras válidas e reduz somente o lado mais rápido em passos de até 0,03.
+  A escala recebe um limite dinâmico para que a potência corrigida nunca atravesse
+  `0.65`. A correção aprendida é reutilizada entre paradas, mas é elevada
+  imediatamente ao novo limite quando a referência diminui. Giros opostos e
+  ajustes individuais não entram nessa malha.
+- A ESP32 atualiza a taxa dos encoders a cada 100 ms, sincronizada com o período
+  da telemetria UART; a Raspberry filtra essas amostras antes de ajustar a escala.
 
 Perder foco, ocultar a aba, soltar teclas ou perder WebSocket zera comandos do
 navegador. A segurança não depende apenas disso: os timeouts inferiores continuam
@@ -943,11 +1061,13 @@ de iniciar câmera ou programa principal.
 | Timeout Raspberry zera motores | **PREENCHER** | |
 | Timeout ESP32 zera motores | **PREENCHER** | |
 | Diagnóstico raw 0,05 aplica aproximadamente 5% de PWM | **PREENCHER** | |
-| Controle normal não nulo aplica no mínimo 0,65 / 0,67 | **PREENCHER** | Rodas suspensas |
+| Sincronismo reduz o lado mais rápido sem acelerar o lento | **PREENCHER** | Testar em reta no piso |
 | Cada lado pode ser acionado independentemente | **PREENCHER** | Rodas omni dianteiras |
 | Ambos os lados giram em W/S | **PREENCHER** | |
-| Ambos os lados giram opostos em A/D | **PREENCHER** | |
+| A/D gira com os dois lados em sentidos opostos | **PREENCHER** | Rodas suspensas |
 | Giro de 90° para no alvo | **PREENCHER** | |
+| Máscaras sintéticas da geometria visual | Confirmado | `python3 scripts/test_vision_path.py` |
+| Corner distante não altera steering atual | Confirmado sinteticamente | CurrentPath reto; evento no Preview |
 | Linha preta em diferentes luzes | **PREENCHER** | |
 | Verde esquerda/direita/meia-volta | **PREENCHER** | |
 | Rampa indica sinal correto | **PREENCHER** | |
@@ -955,7 +1075,12 @@ de iniciar câmera ou programa principal.
 | Autonomia completa de prova | **PREENCHER** | |
 
 Não existem testes automatizados no CMake atualmente. `ctest` não encontra
-casos cadastrados.
+casos cadastrados. A geometria Python possui testes offline independentes de
+câmera, GPIO e motores:
+
+```sh
+python3 scripts/test_vision_path.py
+```
 
 ## 24. Diagnóstico rápido
 
@@ -1038,7 +1163,7 @@ Confirme:
 
 ## 25. Limitações e dívidas técnicas conhecidas
 
-- Não há testes automatizados.
+- Não há testes automatizados de C++; a geometria visual possui testes sintéticos offline.
 - Dashboard não possui autenticação ou HTTPS.
 - Credencial do Wi-Fi de bancada está no firmware.
 - `robot_test` é um nome provisório para o binário principal.
@@ -1052,7 +1177,7 @@ Confirme:
   2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
 - PCA9685 ainda não controla mecanismos.
-- Parâmetros de visão ainda precisam de conjunto de imagens/testes reproduzíveis.
+- Parâmetros de visão ainda precisam de imagens reais versionadas e calibração no piso.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
   em kernels Linux recentes; funciona na configuração atual, mas deve ser
@@ -1067,7 +1192,7 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Registrar modelo e CPR dos encoders.
 - [ ] Calibrar bateria contra multímetro.
 - [ ] Criar testes automatizados para `RobotState`, protocolo e missões.
-- [ ] Criar reprodução offline da visão com imagens gravadas.
+- [ ] Complementar as máscaras sintéticas com reprodução de imagens reais gravadas.
 - [ ] Fechar giro verde usando IMU/encoder, não somente tempo.
 - [ ] Implementar detecção de travamento dos dois lados.
 - [ ] Definir limite de bateria baixa e política segura.

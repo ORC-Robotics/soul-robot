@@ -39,6 +39,42 @@ std::vector<std::string> splitCsv(const std::string& text)
     return values;
 }
 
+std::string sanitizeOledText(const std::string& text, size_t maximumLength)
+{
+    std::string sanitized;
+    sanitized.reserve(std::min(text.size(), maximumLength));
+    for (const unsigned char character : text)
+    {
+        if (character >= 32 && character <= 126)
+        {
+            sanitized.push_back(static_cast<char>(character));
+            if (sanitized.size() == maximumLength)
+            {
+                break;
+            }
+        }
+    }
+    return sanitized;
+}
+
+std::string hexEncodeOledField(const std::string& text)
+{
+    if (text.empty())
+    {
+        return "-";
+    }
+
+    constexpr char kHexDigits[] = "0123456789ABCDEF";
+    std::string encoded;
+    encoded.reserve(text.size() * 2);
+    for (const unsigned char character : text)
+    {
+        encoded.push_back(kHexDigits[character >> 4]);
+        encoded.push_back(kHexDigits[character & 0x0f]);
+    }
+    return encoded;
+}
+
 #ifndef _WIN32
 speed_t baudRateConstant(int baudRate)
 {
@@ -79,6 +115,7 @@ bool Esp32Bridge::begin()
     running_ = true;
     readThread_ = std::thread(&Esp32Bridge::readLoop, this);
     sendStop();
+    sendSystemStarting();
     return true;
 }
 
@@ -89,6 +126,7 @@ void Esp32Bridge::stop()
         return;
     }
 
+    sendSystemStarting();
     sendStop();
     running_ = false;
 
@@ -139,6 +177,55 @@ bool Esp32Bridge::sendCalibrateSensors()
 {
     // A ESP32 para os motores antes de apagar referências e recalibrar o IMU.
     return writeLine("CALIBRATE_SENSORS\n");
+}
+
+bool Esp32Bridge::sendSystemStarting()
+{
+    // Reiniciar o serviço da Raspberry devolve a OLED à animação de boot.
+    // Esse comando não altera GPIO, modo do robô nem saídas de motor.
+    return writeLine("SYSTEM_STARTING\n");
+}
+
+bool Esp32Bridge::sendSystemReady()
+{
+    // O comando funciona como heartbeat. A ESP32 exige renovações periódicas
+    // para não manter a tela normal se o processo principal deixar de executar.
+    return writeLine("SYSTEM_READY\n");
+}
+
+bool Esp32Bridge::sendOledMessage(const std::string& title,
+                                  const std::string& firstLine,
+                                  const std::string& secondLine,
+                                  int durationMs)
+{
+    // O texto é reduzido a ASCII porque a fonte padrão do SSD1306 não possui
+    // suporte confiável a UTF-8. O hexadecimal protege os separadores da UART.
+    const std::string safeTitle = sanitizeOledText(
+        title, static_cast<size_t>(config::kRemoteOledTitleMaxLength));
+    const std::string safeFirstLine = sanitizeOledText(
+        firstLine, static_cast<size_t>(config::kRemoteOledLineMaxLength));
+    const std::string safeSecondLine = sanitizeOledText(
+        secondLine, static_cast<size_t>(config::kRemoteOledLineMaxLength));
+    if (safeTitle.empty() && safeFirstLine.empty() && safeSecondLine.empty())
+    {
+        std::cerr << "OLED message ignored: all text fields are empty\n";
+        return false;
+    }
+
+    const int safeDurationMs = std::clamp(
+        durationMs, config::kRemoteOledMinimumDurationMs,
+        config::kRemoteOledMaximumDurationMs);
+    std::ostringstream command;
+    command << "OLED," << safeDurationMs << ','
+            << hexEncodeOledField(safeTitle) << ','
+            << hexEncodeOledField(safeFirstLine) << ','
+            << hexEncodeOledField(safeSecondLine) << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::clearOledMessage()
+{
+    return writeLine("OLED_CLEAR\n");
 }
 
 Esp32TelemetrySnapshot Esp32Bridge::telemetrySnapshot() const
@@ -360,6 +447,14 @@ void Esp32Bridge::handleLine(const std::string& line)
         return;
     }
 
+    if (line == "OLED,OK" || line == "OLED,CLEARED")
+    {
+        std::cout << (line == "OLED,OK"
+                          ? "ESP32 OLED remote message accepted\n"
+                          : "ESP32 OLED returned to the local screen\n");
+        return;
+    }
+
     if (startsWith(line, "SENSOR,"))
     {
         if (!parseSensorLine(line))
@@ -424,6 +519,15 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
             next.calibrationActive = std::stoi(values[26]) != 0;
         }
 
+        if (values.size() >= 28)
+        {
+            next.remoteOledActive = std::stoi(values[27]) != 0;
+        }
+        if (values.size() >= 29)
+        {
+            next.raspberrySystemReady = std::stoi(values[28]) != 0;
+        }
+
         std::lock_guard<std::mutex> lock(telemetryMutex_);
         next.startButtonPressSequence = telemetry_.startButtonPressSequence;
         next.calibrationStatusKnown = telemetry_.calibrationStatusKnown;
@@ -431,6 +535,14 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
         if (values.size() < 27)
         {
             next.calibrationActive = telemetry_.calibrationActive;
+        }
+        if (values.size() < 28)
+        {
+            next.remoteOledActive = telemetry_.remoteOledActive;
+        }
+        if (values.size() < 29)
+        {
+            next.raspberrySystemReady = telemetry_.raspberrySystemReady;
         }
         telemetry_ = next;
         hasSensorSample_ = true;

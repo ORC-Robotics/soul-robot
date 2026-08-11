@@ -213,8 +213,8 @@ O comportamento esperado é:
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
 - a ESP32 converte diretamente o comando UART para PWM, sem remapeamento próprio;
-- a Raspberry aplica no controle normal o mínimo operacional de `0.65`, limita a
-  referência calibrada perto de `0.97` e multiplica o lado direito por `0.67 / 0.65`;
+- a Raspberry aplica no controle normal o mínimo operacional de `0.65` e usa os
+  encoders para reduzir gradualmente somente o lado mecanicamente mais rápido;
 - os campos exatos do dashboard usam um caminho de diagnóstico direto, sem esse perfil;
 - o teste autônomo de giro de 90° usa comando lógico `0.01` pelo perfil operacional;
 - os lados esquerdo e direito podem ser controlados independentemente;
@@ -370,25 +370,63 @@ http://192.168.0.104:8080
 ```
 
 No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
-ré; `A/D` giram usando os dois lados em sentidos opostos. Soltar a tecla, trocar
+ré; `A/D` giram os dois lados em sentidos opostos e têm prioridade sobre `W/S`.
+Assim, uma combinação como `W+A` executa o giro completo, sem zerar um lado.
+Os limites separados de reta e
+curva começam em `0.65`, podem ser ajustados até `0.97` e ficam salvos no navegador. Soltar a tecla, trocar
 de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
 nos modos Parado, Autônomo ou E-Stop.
 
 Os campos de ajuste exato permitem comandar esquerda e direita separadamente em
 passos de `0.01`. O painel de sincronização compara o módulo das taxas dos dois
-encoders, filtra apenas a visualização e indica qual lado está mais lento. Uma
-diferença de até 2% aparece como equilíbrio preciso; entre 2% e 5%, o painel pede
-ajuste fino. O painel também estima um novo comando direito usando a esquerda
-como referência, mas só aplica a sugestão quando o operador pressiona o botão;
-nenhuma dessas indicações altera o PWM automaticamente.
+encoders e mostra a escala aprendida e o PWM corrigido. No controle normal, o
+`MotorController` mede a eficiência em `cont/s por PWM`, filtra três amostras e
+reduz somente o lado mais rápido em passos máximos de `0.03` por nova telemetria.
+O ajuste individual desativa essa malha para diagnóstico, mas todo valor não nulo
+continua respeitando o piso operacional de `0,65`.
+A ESP32 recalcula as taxas dos encoders no mesmo período de `100 ms` da UART para
+que cada atualização da escala use uma janela de velocidade realmente nova.
 
 Os sliders, WASD e a missão principal usam o perfil operacional: zero permanece
-parada, qualquer movimento parte de `0.65` e o lado direito recebe o ganho
-`0.67 / 0.65`. Na reta do seguidor, isso resulta em aproximadamente `0.65` à
-esquerda e `0.67` à direita. Os campos exatos ignoram esse perfil para permitir
-calibração de bancada consciente. A missão isolada de giro de 90° também usa
-comando lógico `0.01` pelo mesmo perfil, resultando em aproximadamente
-`0.65 / -0.67` nos motores.
+parada e qualquer movimento conjunto parte de `0.65 / 0.65`. A correção aprendida
+é reutilizada entre paradas e atualizada conforme bateria, atrito e carga mudam.
+Giros em sentidos opostos não recebem sincronização. A missão isolada de giro de
+90° usa comando lógico `0.01`, resultando em aproximadamente `0.65 / -0.65`.
+
+Para a calibração inicial da visão, o seguidor limita a correção suave a `+0.01`.
+A posição lateral é o sinal principal; o heading participa somente como antecipação
+leve e pode cancelar no máximo metade da correção quando os dois sinais apontam
+para lados opostos.
+Na partida autônoma, os motores permanecem zerados até a câmera publicar cinco
+status consecutivos com `CurrentPath` válido. Uma leitura isolada não pode mais
+armar a direção de busca nem iniciar uma rotação.
+Corners e decisões por verde usam os dois lados no mínimo operacional e em
+sentidos opostos. Ao perder a linha comum, o robô repete o último arco confiável
+com os dois lados para frente e reforça gradualmente o mesmo sentido. Somente após
+três segundos sem reencontrar a pista os motores são zerados por segurança.
+Esses limites devem ser aumentados somente depois que a geometria e o Corner
+Anchor estiverem estáveis. Os tempos iniciais do verde são 350 ms para curva e
+650 ms para meia-volta e precisam ser validados no piso.
+
+O corner geométrico só é aceito quando a expansão possui predominância clara
+para um lado; um alargamento aproximadamente simétrico da faixa não inicia mais
+uma manobra. Se o `CurrentPath` falhar por dois quadros, a câmera descarta a raiz
+anterior e procura novamente perto do centro e um pouco mais à frente. Durante
+esses dois status o robô mantém o avanço mínimo, em vez de virar para longe da
+linha. A transição para `Reacquiring` também não injeta mais um ciclo de PWM zero.
+Quando um corner já confirmado alcança a aproximação e a reta desaparece na
+entrada do ângulo, o latch inicia uma aproximação reta de 15 cm, medida pelo menor
+avanço dos dois encoders, antes do giro. Depois que a câmera encontra o novo
+segmento, o robô estabiliza, recua 15 cm usando uma nova referência dos encoders
+e só então recalcula o `CurrentPath`. Após a ré, os motores permanecem zerados
+até três status coerentes confirmarem a nova trajetória; depois o seguimento volta.
+As distâncias ficam em
+`kCornerAdvanceDistanceCm` e `kCornerReverseDistanceCm`; ambas podem ser
+calibradas sem alterar a detecção visual.
+Na resolução de processamento de 320 px, a raiz central aceita até 112 px de
+largura para acomodar a perspectiva próxima sem gerar `ROOT_REJECTED`.
+As quatro primeiras bandas estabilizam a largura antes de separar Preview: uma
+ponta estreita cortada pela borda inferior não invalida o restante da faixa.
 
 O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
 é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
@@ -436,8 +474,8 @@ http://raspberrypi.local:8080/camera-stream.mjpg
 O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
 para `/camera-stream.mjpg`. O endpoint antigo `/camera.jpg` continua disponível
 como snapshot de compatibilidade, lendo `/tmp/obr_camera_frame.jpg`. O FPS atual
-da câmera, a resolução, a qualidade JPEG, o erro horizontal da linha e a ação de
-verde detectada vêm de `/camera-status.json`.
+da câmera, a resolução, posição, heading, confiança, Preview e verde detectado
+vêm de `/camera-status.json`.
 
 ```sh
 cd /home/obr/OBR2026K
@@ -450,14 +488,40 @@ Se estiver em outra pasta, use o caminho completo:
 python3 /home/obr/OBR2026K/scripts/camera_line_frame.py
 ```
 
-Esse script usa a Pi Camera, detecta a linha preta, desenha o contorno e o erro
-horizontal, e transmite vídeo em MJPEG para o dashboard. A configuração padrão
+Esse script usa a Pi Camera, calcula um threshold preto automático limitado,
+mantém todos os contornos com área útil e chama `scripts/vision_path.py`. O módulo extrai
+uma centerline por scanlines bottom-up e separa `CurrentPath`, usado principalmente
+pela posição e secundariamente pelo heading, do `Preview`, usado apenas para
+observar corners futuros. Assim,
+uma curva distante pode ser detectada sem deslocar prematuramente o steering.
+
+A raiz do `CurrentPath` passa por gates de posição prevista, centro da câmera,
+salto lateral e largura. Uma expansão abrupta termina o caminho aceito e segue
+como Preview; se nenhuma raiz próxima for plausível, `currentPathValid=false` e
+o robô não aproveita uma branch distante como substituta.
+O stream informa o threshold efetivo, a cobertura da máscara e a quantidade de
+blobs, permitindo distinguir ausência de preto de rejeição geométrica.
+
+O debug MJPEG desenha CurrentPath em azul, Preview em amarelo, rejeições em
+magenta/vermelho, samples de controle em ciano, Corner Anchor em vermelho e
+verdes em verde. O dashboard sobrepõe o `NavigationState` real ao vídeo. A configuração padrão
 usa `960x540`, JPEG `82` e stream alvo de `30 FPS`. A detecção da linha roda em
 uma cópia menor da imagem para preservar FPS sem borrar a visualização do
 dashboard. Como a câmera está montada de cabeça para baixo, o pipeline do
 Picamera2 aplica rotação de 180° antes da visualização e do processamento da
 linha. Se o script não estiver rodando ou a câmera falhar, o painel continua
 funcionando e mostra o aviso de câmera indisponível.
+
+Os testes geométricos não precisam da câmera:
+
+```sh
+python3 scripts/test_vision_path.py
+```
+
+Eles cobrem reta central/deslocada, curva suave, corners distantes e próximos,
+blob largo, raiz lateral inválida, histórico contaminado, linha perdida, ruído e
+zig-zag. O caso principal garante que um corner distante apareça no Preview sem
+alterar posição ou heading do CurrentPath.
 
 Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
 ele inicia esse script automaticamente junto com o robô. Depois de atualizar o

@@ -64,6 +64,20 @@ constexpr uint8_t kOledSecondaryAddress = 0x3D;
 constexpr int16_t kOledWidth = 128;
 constexpr int16_t kOledHeight = 64;
 
+// Limites do texto remoto recebido da Raspberry Pi. O protocolo usa hexadecimal
+// para que vírgulas e outros caracteres não quebrem os campos da UART.
+constexpr size_t kRemoteOledTitleMaxLength = 12;
+constexpr size_t kRemoteOledLineMaxLength = 20;
+
+// A mensagem remota sempre expira. Assim, uma queda da Raspberry não deixa a
+// OLED presa em informação antiga; depois do prazo, bateria e ângulos retornam.
+constexpr uint32_t kRemoteOledMinimumDurationMs = 500;
+constexpr uint32_t kRemoteOledMaximumDurationMs = 30000;
+
+// O firmware principal exige um heartbeat periódico da Raspberry antes de
+// liberar a tela normal. Se o serviço cair, a animação de inicialização retorna.
+constexpr uint32_t kRaspberrySystemReadyTimeoutMs = 3000;
+
 // Frequência inicial segura do PCA9685 para servos. Todos os 16 canais
 // permanecem desligados até que uma função futura defina seus movimentos.
 constexpr float kPca9685FrequencyHz = 50.0f;
@@ -104,7 +118,9 @@ constexpr uint32_t kStartButtonMinimumPressMs = 80;
 constexpr uint32_t kImuReadIntervalMs = 20;
 constexpr uint32_t kTelemetryIntervalMs = 100;
 constexpr uint32_t kBatteryReadIntervalMs = 250;
-constexpr uint32_t kEncoderRateIntervalMs = 250;
+// A taxa dos encoders é atualizada junto com cada telemetria. A Raspberry usa
+// uma amostra nova por ajuste do sincronismo e filtra o ruído dessa janela.
+constexpr uint32_t kEncoderRateIntervalMs = kTelemetryIntervalMs;
 constexpr uint32_t kUltrasonicIntervalMs = 100;
 constexpr uint32_t kOledRefreshIntervalMs = 100;
 

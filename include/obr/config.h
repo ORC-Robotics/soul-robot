@@ -48,75 +48,218 @@ constexpr double kMaxMotorOutput = 1.0;
 // Zero continua sendo parada real; comandos não nulos menores são elevados a 0,65.
 constexpr double kOperationalMinimumMotorPower = 0.65;
 
-// O lado direito precisa de 0,67 para acompanhar o lado esquerdo em 0,65.
-// O ganho proporcional preserva essa relação também em outras velocidades e sentidos.
-constexpr double kRightMotorCalibrationGain = 0.67 / 0.65;
-
-// Maior referência operacional antes da compensação do lado direito.
-// Esse limite mantém a calibração dentro do PWM máximo de 100%.
-constexpr double kOperationalMaximumReferencePower =
-    kMaxMotorOutput / kRightMotorCalibrationGain;
+// Maior referência operacional aceita antes da correção pelos encoders.
+// A margem até 1,0 evita trabalhar continuamente no limite absoluto do PWM.
+constexpr double kOperationalMaximumReferencePower = 0.97;
 
 static_assert(kOperationalMinimumMotorPower > 0.0 &&
                   kOperationalMinimumMotorPower < kOperationalMaximumReferencePower,
-              "A potência mínima operacional deve caber na faixa calibrada.");
-static_assert(kRightMotorCalibrationGain >= 1.0,
-              "O ganho direito deve representar o lado que precisa de mais PWM.");
-static_assert(kOperationalMinimumMotorPower * kRightMotorCalibrationGain > 0.6699 &&
-                  kOperationalMinimumMotorPower * kRightMotorCalibrationGain < 0.6701,
-              "A calibração mínima direita deve resultar em 0,67.");
+              "A potência mínima deve caber na faixa operacional.");
+
+// O sincronismo atua somente quando os dois lados avançam ou recuam juntos.
+// Ele reduz gradualmente o lado mais rápido, mas o PWM corrigido nunca pode
+// ficar abaixo do piso operacional de 0,65 enquanto o comando for diferente de zero.
+constexpr int kEncoderSyncTelemetryMaxAgeMs = 250;
+constexpr double kEncoderSyncMinimumRateCountsPerSecond = 100.0;
+constexpr double kEncoderSyncMinimumAppliedPower = 0.10;
+constexpr double kEncoderSyncEfficiencyFilterAlpha = 0.25;
+constexpr int kEncoderSyncWarmupSamples = 3;
+constexpr double kEncoderSyncMaximumScaleStepPerSample = 0.03;
+// Mesmo na referência máxima, esta escala produz exatamente o piso de 0,65.
+// Para referências menores, o MotorController calcula um limite ainda maior.
+constexpr double kEncoderSyncMinimumScale =
+    kOperationalMinimumMotorPower / kOperationalMaximumReferencePower;
+constexpr double kEncoderSyncEfficiencyDeadbandRatio = 0.02;
+
+static_assert(kEncoderSyncTelemetryMaxAgeMs > 0 &&
+                  kEncoderSyncMinimumRateCountsPerSecond > 0.0 &&
+                  kEncoderSyncMinimumAppliedPower > 0.0,
+              "O sincronismo exige telemetria recente e movimento mensurável.");
+static_assert(kEncoderSyncEfficiencyFilterAlpha > 0.0 &&
+                  kEncoderSyncEfficiencyFilterAlpha <= 1.0 &&
+                  kEncoderSyncWarmupSamples > 0,
+              "O filtro e a aquisição do sincronismo devem ser positivos.");
+static_assert(kEncoderSyncMaximumScaleStepPerSample > 0.0 &&
+                  kEncoderSyncMinimumScale > 0.0 &&
+                  kEncoderSyncMinimumScale <= 1.0 &&
+                  kEncoderSyncEfficiencyDeadbandRatio >= 0.0,
+              "Os limites da correção automática devem permanecer seguros.");
 
 // Tempo máximo, em milissegundos, para aceitar dados da câmera no modo autônomo.
 // Se a câmera travar ou parar de atualizar o JSON, o robô deve parar.
 constexpr int kCameraStatusTimeoutMs = 400;
 
-// Menor referência operacional do seguidor de linha.
-// Na reta, ela produz 0,65 à esquerda e aproximadamente 0,67 à direita.
+// Menor referência operacional do seguidor de linha. Os dois lados partem de
+// 0,65 e o sincronismo reduz automaticamente somente o conjunto mais rápido.
 constexpr double kLineFollowerBasePower = kOperationalMinimumMotorPower;
 
-// Ganho proporcional aplicado ao erro horizontal da linha, em pixels.
-// O filtro e o limite de variação abaixo reduzem oscilações causadas pela câmera.
-constexpr double kLineFollowerTurnGain = 0.0008;
+// Ganho aplicado ao erro lateral da linha, em pixels do frame principal.
+// Aumentar corrige deslocamentos mais rápido, mas pode ampliar oscilações.
+constexpr double kLineFollowerPositionGain = 0.0008;
 
-// Acréscimo máximo aplicado somente ao lado externo da curva.
-// A base nunca é reduzida, e 0,30 mantém a referência abaixo do limite calibrado.
-constexpr double kLineFollowerMaxTurnCorrection = 0.30;
+// Ganho secundário aplicado ao heading local, em graus. A posição lateral deve
+// dominar a centralização; um ganho alto aqui pode mandar o robô para o lado
+// oposto quando a linha cruza a imagem em perspectiva.
+constexpr double kLineFollowerHeadingGain = 0.0002;
 
-// Peso da amostra nova no filtro exponencial do erro da câmera. Valores menores
-// deixam a direção mais suave, mas aumentam o atraso para entrar nas curvas.
-constexpr double kLineFollowerErrorFilterAlpha = 0.20;
+// Quando posição e heading discordam, o heading pode cancelar no máximo metade
+// da correção lateral. Isso garante que o robô primeiro volte para cima da linha.
+constexpr double kLineFollowerOpposingHeadingLimitRatio = 0.50;
 
-// Erros menores que esta quantidade de pixels não geram correção. A zona morta
-// impede que ruído próximo ao centro faça o robô alternar esquerda e direita.
-constexpr double kLineFollowerErrorDeadbandPixels = 18.0;
+static_assert(kLineFollowerOpposingHeadingLimitRatio >= 0.0 &&
+                  kLineFollowerOpposingHeadingLimitRatio <= 1.0,
+              "O limite relativo do heading deve permanecer entre zero e um.");
 
-// Variação lógica máxima da correção a cada ciclo de 20 ms. Esse limite evita
-// trancos mesmo quando a câmera muda a posição da linha entre dois quadros.
-constexpr double kLineFollowerCorrectionSlewPerCycle = 0.015;
+// Acréscimo máximo experimental aplicado somente ao lado externo da curva suave.
+// O valor inicial de 0,01 mantém o seguidor o mais lento possível para calibrar
+// a visão primeiro. Aumentar fortalece a correção e também acelera o lado externo.
+constexpr double kLineFollowerMaxTurnCorrection = 0.01;
 
-// Potência usada para procurar a linha quando ela some em uma curva fechada.
-// É igual ao mínimo operacional porque valores menores não movem o conjunto com confiança.
-constexpr double kLineFollowerLostLineTurnPower = kOperationalMinimumMotorPower;
+// Pesos das amostras novas nos filtros de posição e heading. Valores menores
+// suavizam ruído, mas aumentam o atraso da resposta do robô.
+constexpr double kLineFollowerPositionFilterAlpha = 0.20;
+constexpr double kLineFollowerHeadingFilterAlpha = 0.25;
 
-// Erro mínimo, em pixels, para decidir o lado de busca quando a linha some.
-// Abaixo deste valor, o robô ainda segue devagar para evitar giro sem direção.
-constexpr double kLineFollowerLostLineDeadbandPixels = 35.0;
+// Erros menores que esta quantidade de pixels não geram correção. Acima do
+// limite, apenas o excesso é controlado para a saída crescer sem degrau.
+constexpr double kLineFollowerErrorDeadbandPixels = 6.0;
 
-// Potência usada nas manobras temporizadas ao detectar marcações verdes.
-// As durações precisam ser validadas novamente porque o giro agora parte de 0,65.
+// Headings menores que este valor, em graus, não geram correção. A zona morta
+// evita que pequenas variações da regressão local façam o robô tremer na reta.
+constexpr double kLineFollowerHeadingDeadbandDegrees = 2.0;
+
+// Variação lógica máxima da correção a cada ciclo de 20 ms. Cinco ciclos são
+// necessários para chegar ao diferencial máximo de 0,01, evitando zigue-zague.
+constexpr double kLineFollowerCorrectionSlewPerCycle = 0.002;
+
+// Diferencial mínimo usado depois da tolerância inicial sem CurrentPath. Os dois
+// lados continuam para frente; somente o lado externo acelera para preservar o
+// último ângulo confiável sem transformar a busca em giro no próprio eixo.
+constexpr double kLineLostMinimumSteeringCorrection =
+    kLineFollowerMaxTurnCorrection;
+
+// Confiança mínima normalizada para aceitar o CurrentPath publicado pela câmera.
+// Aumentar rejeita geometrias fracas; diminuir aceita pistas mais degradadas.
+constexpr double kLineFollowerMinimumPathConfidence = 0.35;
+
+// Quantidade de status válidos exigida antes do primeiro comando de movimento.
+// Isso impede que um único quadro instável arme a busca lateral na partida.
+constexpr int kInitialLineAcquireFrames = 5;
+
+// Referências experimentais de velocidade por situação. Nesta primeira versão
+// todas preservam 0,65; os valores só devem mudar após ensaio físico controlado.
+constexpr double kLineFollowerStraightPower = kLineFollowerBasePower;
+constexpr double kLineFollowerApproachPower = kLineFollowerBasePower;
+constexpr double kLineFollowerCornerPower = kLineFollowerBasePower;
+
+// Quantidade de status distintos necessária para confirmar um corner e tolerância
+// a falhas antes/depois do latch. O status da câmera é publicado a 20 Hz.
+constexpr int kEventConfirmFrames = 3;
+constexpr int kEventMaxMissFrames = 3;
+constexpr int kEventLatchedMaxMissFrames = 8;
+
+// Confiança mínima e proximidades normalizadas do Preview. Zero representa o topo
+// da ROI e um representa a base. Estes limites são experimentais, não métricos.
+// Aumentar a ActionProximity faz o Corner Anchor chegar mais perto do robô antes
+// do giro; diminuir antecipa a execução e exige validação cuidadosa no piso.
+constexpr double kEventMinimumConfidence = 0.48;
+constexpr double kEventApproachProximity = 0.52;
+constexpr double kEventActionProximity = 0.72;
+constexpr double kEventExitProximity = 0.45;
+
+// Tempo máximo, em milissegundos, para manter um evento latched sem atualização.
+// Reduzir evita eventos antigos; aumentar tolera mais oclusões perto do robô.
+constexpr int kEventMaximumAgeMs = 2500;
+
+// Tempo, em milissegundos, para ignorar o corner recém-consumido depois da
+// readquisição. Aumentar evita repetição; valores excessivos podem ocultar o próximo corner.
+constexpr int kEventCooldownMs = 700;
+
+// Quantidade de status válidos exigida para devolver o controle normal após uma
+// curva e limites experimentais aceitos durante a readquisição visual.
+constexpr int kReacquireFrames = 3;
+constexpr double kReacquireMinimumPathConfidence = 0.45;
+constexpr double kReacquireMaxPositionErrorPixels = 85.0;
+constexpr double kReacquireMaxHeadingErrorDegrees = 32.0;
+constexpr int kReacquireTimeoutMs = 1800;
+
+// Durante dois status inválidos, o robô mantém exatamente o último arco confiável.
+// Depois disso, reforça o mesmo sentido de busca. O timeout longo continua sendo
+// a proteção contra movimento indefinido quando a pista realmente desaparece.
+constexpr int kLineLostGraceFrames = 2;
+constexpr int kLineLostSearchTimeoutMs = 3000;
+
+// Limites experimentais do giro visual de um corner. O tempo mínimo impede que
+// a linha antiga seja aceita antes de o robô começar a girar; o máximo evita giro infinito.
+constexpr int kCornerTurnMinimumMs = 180;
+constexpr int kCornerTurnTimeoutMs = 1800;
+constexpr double kCornerTurnPower = kLineFollowerCornerPower;
+
+// Distâncias percorridas antes e depois do giro visual de um corner. O avanço
+// posiciona o eixo traseiro na curva; a ré reposiciona o robô sobre o novo
+// segmento antes de recalcular a trajetória. Ambos usam o menor dos encoders.
+constexpr double kCornerAdvanceDistanceCm = 15.0;
+constexpr double kCornerReverseDistanceCm = 5.0;
+
+// Tempo, em milissegundos, com PWM zero nas transições da manobra. A pausa antes
+// da ré separa a inércia do giro; a pausa final estabiliza a leitura da linha.
+constexpr int kCornerReverseStartSettleMs = 200;
+constexpr int kCornerTranslationSettleMs = 200;
+
+// Tempo máximo, em milissegundos, para cada deslocamento de 15 cm. O limite é
+// independente para frente e ré e impede movimento indefinido se um encoder falhar.
+constexpr int kCornerTranslationTimeoutMs = 5000;
+
+// Contracomando do lado interno durante corner, busca e readquisição visual.
+// Os dois lados recebem a potência mínima em sentidos opostos, produzindo giro
+// no próprio eixo. Reduzir abaixo do mínimo não diminui o PWM por causa do perfil.
+constexpr double kLineFollowerCounterTurnPower = kLineFollowerCornerPower;
+
+static_assert(kEventApproachProximity > kEventExitProximity &&
+                  kEventActionProximity > kEventApproachProximity &&
+                  kEventActionProximity <= 1.0,
+              "As zonas normalizadas do evento devem manter ordem e histerese.");
+static_assert(kInitialLineAcquireFrames > 0,
+              "A aquisição inicial deve exigir pelo menos um status válido.");
+static_assert(kCornerAdvanceDistanceCm > 0.0 &&
+                  kCornerReverseDistanceCm > 0.0 &&
+                  kCornerReverseStartSettleMs >= 0 &&
+                  kCornerTranslationSettleMs >= 0 &&
+                  kCornerTranslationTimeoutMs >
+                      kCornerReverseStartSettleMs + kCornerTranslationSettleMs,
+              "Os deslocamentos do corner devem ter distâncias e timeout positivos.");
+static_assert(kLineLostSearchTimeoutMs > 0 &&
+                  kCornerTurnTimeoutMs > kCornerTurnMinimumMs,
+              "Os timeouts visuais devem permitir movimento limitado e seguro.");
+
+// Potência usada no lado externo das manobras com marcações verdes.
+// O lado interno recebe o contracomando acima para que os dois lados girem.
 constexpr double kGreenTurnPower = kOperationalMinimumMotorPower;
+
+// Confirmação temporal e zonas normalizadas do marcador verde. Os valores são
+// experimentais e impedem que um verde distante execute uma manobra imediatamente.
+constexpr int kGreenConfirmFrames = 3;
+constexpr int kGreenMaxMissFrames = 3;
+constexpr int kGreenLatchedMaxMissFrames = 8;
+constexpr double kGreenMinimumConfidence = 0.45;
+constexpr double kGreenApproachProximity = kEventApproachProximity;
+constexpr double kGreenActionProximity = kEventActionProximity;
+constexpr int kGreenMaximumAgeMs = 2500;
 
 // Tempo, em milissegundos, para avançar um pouco antes de girar no verde.
 // Foi reduzido para compensar a nova base de 0,65 e preservar a distância aproximada.
 constexpr int kGreenApproachMs = 170;
 
-// Tempo inicial, em milissegundos, para curvas acionadas pelo verde.
-// A proporção 0,35/0,65 preserva aproximadamente o impulso da configuração anterior.
+// Tempo inicial, em milissegundos, para curvas acionadas pelo verde. O valor foi
+// reduzido porque os dois lados agora giram em sentidos opostos.
 constexpr int kGreenTurnMs = 350;
 
 // Tempo inicial, em milissegundos, para meia-volta quando há verde dos dois lados.
-// Foi reduzido junto com a curva simples e ainda precisa ser validado no piso.
+// O valor também considera a rotação simultânea dos dois lados.
 constexpr int kGreenUTurnMs = 650;
+
+static_assert(kGreenApproachMs + kGreenUTurnMs < kCornerTurnTimeoutMs,
+              "A meia-volta verde deve terminar antes do timeout do giro visual.");
 
 // Tempo, em milissegundos, para ignorar o mesmo verde após concluir uma manobra.
 // Sem esse bloqueio, o robô pode detectar o mesmo marcador várias vezes.
@@ -130,7 +273,8 @@ constexpr double kTurn90TargetDegrees = 90.0;
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
 // Comando lógico usado durante todo o giro de 90 graus e nas correções.
-// O perfil operacional transforma 0,01 em 0,65 à esquerda e 0,67 à direita.
+// O perfil operacional transforma 0,01 em 0,65 nos dois lados; como eles giram
+// em sentidos opostos, o sincronismo por encoder permanece desativado.
 constexpr double kTurn90CommandPower = 0.01;
 
 static_assert(kTurn90CommandPower > 0.0 && kTurn90CommandPower <= kMaxMotorOutput,
@@ -180,8 +324,8 @@ constexpr double kDriveDistanceDefaultTargetCm = 20.0;
 constexpr double kDriveDistanceMinimumTargetCm = 1.0;
 constexpr double kDriveDistanceMaximumTargetCm = 300.0;
 
-// Comando lógico para andar em linha reta no teste de distância.
-// O perfil operacional o converte para aproximadamente 0,65 / 0,67.
+// Comando lógico para andar em linha reta no teste de distância. O perfil parte
+// de 0,65 / 0,65 e o sincronismo reduz o lado mecanicamente mais rápido.
 constexpr double kDriveDistanceCommandPower = 0.01;
 
 // Horizonte, em segundos, somado à idade da telemetria para prever quantas
@@ -231,6 +375,17 @@ constexpr int kEsp32SerialBaudRate = 115200;
 // Tempo máximo, em milissegundos, para considerar recente a telemetria da ESP32.
 // Se esse tempo estourar, o dashboard mostra os sensores como desatualizados.
 constexpr int kEsp32TelemetryTimeoutMs = 1000;
+
+// Limites compartilhados com o firmware da ESP32 para mensagens temporárias na
+// OLED. Textos maiores são cortados antes do envio para preservar a linha UART.
+constexpr int kRemoteOledTitleMaxLength = 12;
+constexpr int kRemoteOledLineMaxLength = 20;
+constexpr int kRemoteOledMinimumDurationMs = 500;
+constexpr int kRemoteOledMaximumDurationMs = 30000;
+
+// Intervalo do heartbeat que mantém a OLED fora da animação de inicialização.
+// A ESP32 tolera três períodos antes de considerar a Raspberry indisponível.
+constexpr int kRaspberrySystemStatusHeartbeatMs = 1000;
 
 // Tempo máximo, em milissegundos, que a ESP32 deve aceitar sem novo comando.
 // Este valor fica documentado aqui e deve ser mantido igual no sketch da ESP32.

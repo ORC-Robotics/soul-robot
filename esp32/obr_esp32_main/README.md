@@ -26,8 +26,24 @@ ESTOP
 CLEAR_ESTOP
 RESET_ENCODERS
 CALIBRATE_SENSORS
+SYSTEM_STARTING
+SYSTEM_READY
+OLED,<duracaoMs>,<tituloHex>,<linha1Hex>,<linha2Hex>
+OLED_CLEAR
 PING
 ```
+
+`OLED` mostra uma página temporária enviada pela Raspberry. O título aceita até
+12 caracteres ASCII, cada linha aceita até 20 e a duração fica entre 500 e
+30.000 ms. Os textos usam hexadecimal para não conflitar com as vírgulas do
+protocolo; um campo vazio é enviado como `-`. `OLED_CLEAR` retorna imediatamente
+à página local de bateria e ângulos. E-Stop e calibração continuam tendo
+prioridade visual sobre qualquer página remota.
+
+`SYSTEM_STARTING` mantém a animação de inicialização ativa. Depois que UART,
+câmera e serviços estão prontos, a Raspberry envia `SYSTEM_READY` a cada segundo.
+Se esse heartbeat desaparecer por mais de 3 segundos, a ESP32 volta à animação.
+Esse estado é apenas visual e não substitui os timeouts e travas dos motores.
 
 As potências ficam entre `-1.000` e `1.000` e são aplicadas diretamente ao PWM.
 Os lados esquerdo e direito são independentes: `MOTOR,0.050,0.000,0` aplica 5%
@@ -57,6 +73,8 @@ CALIBRATION,START
 CALIBRATION,DONE
 CALIBRATION,FAILED
 START_BUTTON,SHORT
+OLED,OK
+OLED,CLEARED
 SENSOR,<campos CSV...>
 ```
 
@@ -79,7 +97,7 @@ distanciaCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 bateriaV,encoderEsquerdo,encoderDireito,startButton,pcaOk,
 potenciaEsquerda,potenciaDireita,taxaEsquerda,taxaDireita,
 rampa,gyroX,gyroY,temperaturaImu,oledOk,nSleepHigh,estop,
-bateriaAdcMillivolts,uptimeMs,calibracaoAtiva
+bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,oledRemotaAtiva,sistemaRaspberryPronto
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

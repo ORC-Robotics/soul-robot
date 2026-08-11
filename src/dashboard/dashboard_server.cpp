@@ -25,8 +25,9 @@ std::string lowerCopy(std::string text)
 }
 
 DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
-                                 StatusLed& readyLed)
-    : robotState_(robotState), telemetry_(telemetry), esp32_(esp32), readyLed_(readyLed)
+                                 MotorController& motors, StatusLed& readyLed)
+    : robotState_(robotState), telemetry_(telemetry), esp32_(esp32),
+      motors_(motors), readyLed_(readyLed)
 {
 }
 
@@ -391,6 +392,29 @@ void DashboardServer::handleCommand(const std::string& message)
             std::cout << "Sensor calibration requested\n";
         }
     }
+    else if (message.find("\"command\":\"oled_message\"") != std::string::npos)
+    {
+        const std::string title = getJsonString(message, "title", "");
+        const std::string firstLine = getJsonString(message, "firstLine", "");
+        const std::string secondLine = getJsonString(message, "secondLine", "");
+        const double requestedDurationMs = getJsonNumber(
+            message, "durationMs", config::kRemoteOledMaximumDurationMs);
+        const int durationMs = static_cast<int>(std::clamp(
+            requestedDurationMs,
+            static_cast<double>(config::kRemoteOledMinimumDurationMs),
+            static_cast<double>(config::kRemoteOledMaximumDurationMs)));
+        if (!esp32_.sendOledMessage(title, firstLine, secondLine, durationMs))
+        {
+            std::cerr << "OLED message was not sent to ESP32\n";
+        }
+    }
+    else if (message.find("\"command\":\"oled_clear\"") != std::string::npos)
+    {
+        if (!esp32_.clearOledMessage())
+        {
+            std::cerr << "OLED clear command was not sent to ESP32\n";
+        }
+    }
     else if (message.find("\"command\":\"drive_raw\"") != std::string::npos)
     {
         const double left = getJsonNumber(message, "left", 0.0);
@@ -411,6 +435,7 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
 {
     RobotSnapshot state = robotState_.snapshot();
     Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+    MotorSynchronizationSnapshot motorSync = motors_.synchronizationSnapshot();
 
     std::ostringstream json;
     json << std::fixed << std::setprecision(2)
@@ -426,9 +451,21 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"autonomousLineDetected\":" << (state.autonomousStatus.lineDetected ? "true" : "false")
          << ",\"autonomousRawLineError\":" << state.autonomousStatus.rawLineError
          << ",\"autonomousFilteredLineError\":" << state.autonomousStatus.filteredLineError
+         << ",\"autonomousRawHeadingError\":" << state.autonomousStatus.rawHeadingError
+         << ",\"autonomousFilteredHeadingError\":" << state.autonomousStatus.filteredHeadingError
+         << ",\"autonomousPathConfidence\":" << state.autonomousStatus.pathConfidence
          << ",\"autonomousSteeringCorrection\":" << state.autonomousStatus.steeringCorrection
          << ",\"autonomousProgressPercent\":" << state.autonomousStatus.progressPercent
+         << ",\"autonomousNavigationState\":\"" << state.autonomousStatus.navigationState << "\""
+         << ",\"autonomousNextEventType\":\"" << state.autonomousStatus.nextEventType << "\""
+         << ",\"autonomousNextEventDirection\":\"" << state.autonomousStatus.nextEventDirection << "\""
+         << ",\"autonomousNextEventProximity\":" << state.autonomousStatus.nextEventProximity
+         << ",\"autonomousNextEventConfidence\":" << state.autonomousStatus.nextEventConfidence
+         << ",\"autonomousGreenAction\":\"" << state.autonomousStatus.greenAction << "\""
+         << ",\"autonomousGreenProximity\":" << state.autonomousStatus.greenProximity
+         << ",\"autonomousGreenConfidence\":" << state.autonomousStatus.greenConfidence
          << ",\"driveDistanceTargetCm\":" << state.driveDistanceTargetCm
+         << ",\"autonomousTargetDistanceCm\":" << state.autonomousStatus.targetDistanceCm
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
          << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
@@ -458,9 +495,25 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"rightEncoderRate\":" << esp32.rightEncoderRate
          << ",\"esp32AppliedLeftPower\":" << esp32.appliedLeftPower
          << ",\"esp32AppliedRightPower\":" << esp32.appliedRightPower
+         << ",\"motorSyncEligible\":" << (motorSync.eligible ? "true" : "false")
+         << ",\"motorSyncActive\":" << (motorSync.active ? "true" : "false")
+         << ",\"motorSyncEncoderDataValid\":"
+         << (motorSync.encoderDataValid ? "true" : "false")
+         << ",\"motorSyncCorrectionApplied\":"
+         << (motorSync.correctionApplied ? "true" : "false")
+         << ",\"motorSyncDirection\":" << motorSync.direction
+         << ",\"motorSyncValidSamples\":" << motorSync.validSamples
+         << ",\"motorSyncLeftScale\":" << motorSync.leftScale
+         << ",\"motorSyncRightScale\":" << motorSync.rightScale
+         << ",\"motorSyncLeftEfficiency\":" << motorSync.filteredLeftEfficiency
+         << ",\"motorSyncRightEfficiency\":" << motorSync.filteredRightEfficiency
+         << ",\"motorSyncCorrectedLeftPower\":" << motorSync.correctedLeftPower
+         << ",\"motorSyncCorrectedRightPower\":" << motorSync.correctedRightPower
          << ",\"startButtonPressed\":" << (esp32.startButtonPressed ? "true" : "false")
          << ",\"pca9685Ok\":" << (esp32.pca9685Ok ? "true" : "false")
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
+         << ",\"esp32RemoteOledActive\":" << (esp32.remoteOledActive ? "true" : "false")
+         << ",\"esp32RaspberrySystemReady\":" << (esp32.raspberrySystemReady ? "true" : "false")
          << ",\"motorSleepPinHigh\":" << (esp32.motorSleepPinHigh ? "true" : "false")
          << ",\"esp32EmergencyStop\":" << (esp32.emergencyStopActive ? "true" : "false")
          << ",\"esp32CalibrationActive\":" << (esp32.calibrationActive ? "true" : "false")
@@ -470,9 +523,8 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"raspberryCommandTimeoutMs\":" << config::kCommandTimeoutMs
          << ",\"esp32MotorCommandTimeoutMs\":" << config::kEsp32MotorCommandTimeoutMs
          << ",\"operationalMinimumMotorPower\":" << config::kOperationalMinimumMotorPower
-         << ",\"rightMotorCalibrationGain\":" << std::setprecision(4)
-         << config::kRightMotorCalibrationGain
          << ",\"operationalMaximumReferencePower\":" << config::kOperationalMaximumReferencePower
+         << ",\"encoderSyncWarmupSamples\":" << config::kEncoderSyncWarmupSamples
          << ",\"encoderCountsPerCentimeter\":" << config::kEncoderCountsPerCentimeter
          << "}";
 
@@ -567,6 +619,8 @@ std::string DashboardServer::dashboardHtml()
     .camera-frame::after { content: ""; pointer-events: none; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 49.8%, #22d3ee42 50%, transparent 50.2%); }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
+    .camera-navigation-overlay { position: absolute; right: 10px; bottom: 10px; z-index: 2; padding: 6px 9px; border: 1px solid #22d3ee88; border-radius: 7px; background: #061117dc; color: var(--cyan); font-size: .68rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    .camera-frame.offline .camera-navigation-overlay { display: none; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
     .camera-frame:not(.offline) .camera-message { display: none; }
     .mission-state-card { --state-color: var(--cyan); background: radial-gradient(circle at 100% 0, #22d3ee14, transparent 38%), linear-gradient(145deg, #10202a, #0b171f); }
@@ -600,6 +654,22 @@ std::string DashboardServer::dashboardHtml()
     .mission-selector select:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1c; }
     .mission-selector option { color: var(--text); background: #0b202a; }
     .mission-hint { display: block; margin-top: 7px; color: var(--muted); font-size: .66rem; line-height: 1.35; }
+    .oled-editor { border: 1px solid #315464; border-radius: 12px; background: linear-gradient(145deg, #0b202a, #09161d); overflow: hidden; }
+    .oled-editor summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; color: #9be8f3; font-size: .7rem; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; cursor: pointer; list-style: none; }
+    .oled-editor summary::-webkit-details-marker { display: none; }
+    .oled-editor summary::after { content: "+"; color: var(--cyan); font-size: 1.1rem; line-height: 1; }
+    .oled-editor[open] summary::after { content: "−"; }
+    .oled-editor-body { display: grid; gap: 9px; padding: 0 12px 12px; border-top: 1px solid var(--line-soft); }
+    .oled-editor-state { margin: 10px 0 0; color: var(--muted); font-size: .65rem; line-height: 1.35; }
+    .oled-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .oled-field { min-width: 0; }
+    .oled-field.wide { grid-column: 1 / -1; }
+    .oled-field label { display: block; margin-bottom: 5px; color: var(--muted); font-size: .59rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+    .oled-field input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid #347085; border-radius: 8px; outline: none; color: var(--text); background: #07171f; font: inherit; font-size: .78rem; }
+    .oled-field input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px #22d3ee1c; }
+    .oled-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 7px; }
+    .oled-actions button { min-height: 40px; font-size: .72rem; }
+    .oled-actions .oled-clear { border-color: #52632b; background: #293313; color: #ecfccb; }
     .distance-mission-settings { margin-top: 10px; padding: 10px; border: 1px solid #2b596b; border-radius: 9px; background: #07171f; }
     .distance-mission-settings[hidden] { display: none; }
     .distance-input-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: .62rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
@@ -622,6 +692,9 @@ std::string DashboardServer::dashboardHtml()
     .drive-control label { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 9px; color: var(--muted); font-size: .76rem; font-weight: 750; text-transform: uppercase; letter-spacing: .07em; }
     .drive-control output { color: var(--text); font-variant-numeric: tabular-nums; }
     input[type="range"] { width: 100%; accent-color: var(--cyan); }
+    .manual-speed-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .manual-speed-grid .drive-control { border-color: #2c596b; background: linear-gradient(145deg, #0a1b24, #09151d); }
+    .manual-speed-help { grid-column: 1 / -1; margin: -2px 2px 2px; color: var(--muted); font-size: .65rem; line-height: 1.4; }
     .requested-drive { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
     .request-value { padding: 11px; border: 1px solid var(--line-soft); border-radius: 10px; background: #0a171e; }
     .request-value span { display: block; color: var(--muted); font-size: .67rem; text-transform: uppercase; }
@@ -641,9 +714,8 @@ std::string DashboardServer::dashboardHtml()
     .balance-track div { width: 0; height: 100%; border-radius: inherit; background: var(--cyan); transition: width .2s ease; }
     .balance-detail { display: flex; justify-content: space-between; gap: 10px; margin-top: 9px; color: var(--muted); font-size: .65rem; }
     .balance-detail strong { color: var(--text); font-variant-numeric: tabular-nums; }
-    .balance-recommendation { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
+    .balance-recommendation { margin-top: 9px; padding-top: 9px; border-top: 1px solid var(--line-soft); }
     .balance-recommendation span { color: var(--muted); font-size: .65rem; line-height: 1.35; }
-    .balance-recommendation button { min-height: 34px; padding: 0 10px; font-size: .65rem; }
     .keyboard-panel { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--line-soft); border-radius: 12px; background: #09151d; }
     .keyboard-copy strong { display: block; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
     .keyboard-copy span { display: block; max-width: 190px; margin-top: 4px; color: var(--muted); font-size: .7rem; line-height: 1.35; }
@@ -693,6 +765,8 @@ std::string DashboardServer::dashboardHtml()
       .camera-meta { justify-content: flex-start; }
       .camera-message, .safety-note { overflow-wrap: anywhere; }
       .keyboard-copy span { max-width: none; }
+      .manual-speed-grid { grid-template-columns: 1fr; }
+      .manual-speed-help { grid-column: auto; }
       .telemetry-row { align-items: flex-start; flex-wrap: wrap; padding: 8px 0; }
       .telemetry-card, .telemetry-card.wide { grid-column: span 12; }
       footer { flex-direction: column; }
@@ -767,6 +841,7 @@ std::string DashboardServer::dashboardHtml()
         </div>
         <div id="cameraFrame" class="camera-frame offline">
           <img id="cameraImage" alt="Imagem processada da câmera frontal">
+          <div id="cameraNavigationState" class="camera-navigation-overlay">NAV · --</div>
           <div class="camera-message">Aguardando o stream processado da câmera</div>
         </div>
       </section>
@@ -802,6 +877,10 @@ std::string DashboardServer::dashboardHtml()
           <div class="machine-metric"><span>Média percorrida</span><strong id="machineDistanceAverage">-- cm</strong></div>
           <div class="machine-metric"><span>Calibração do encoder</span><strong id="machineEncoderCalibration">-- cont/cm</strong></div>
           <div class="machine-metric"><span>Erro bruto / filtrado</span><strong id="machineLineError">0.0 / 0.0 px</strong></div>
+          <div class="machine-metric"><span>Heading bruto / filtrado</span><strong id="machineHeadingError">0.0 / 0.0 °</strong></div>
+          <div class="machine-metric"><span>Confiança do caminho</span><strong id="machinePathConfidence">--</strong></div>
+          <div class="machine-metric"><span>Estado de navegação</span><strong id="machineNavigationState">--</strong></div>
+          <div class="machine-metric"><span>Próximo evento</span><strong id="machineNextEvent">NENHUM</strong></div>
           <div class="machine-metric"><span>Correção de giro</span><strong id="machineCorrection">0.000</strong></div>
           <div class="machine-metric"><span>Modo</span><strong id="machineMode">PARADO</strong></div>
         </div>
@@ -826,6 +905,22 @@ std::string DashboardServer::dashboardHtml()
             <small class="distance-calibration">Calibração real: 3600 contagens = 18,7 cm · 192,51 cont/cm.</small>
           </div>
         </div>
+        <details class="oled-editor">
+          <summary>Personalizar OLED pela Raspberry</summary>
+          <div class="oled-editor-body">
+            <p id="oledRemoteStatus" class="oled-editor-state">Aguardando telemetria da OLED.</p>
+            <div class="oled-fields">
+              <div class="oled-field wide"><label for="oledTitle">Título · até 12 caracteres</label><input id="oledTitle" maxlength="12" value="OBR 2026" placeholder="OBR 2026"></div>
+              <div class="oled-field"><label for="oledFirstLine">Linha 1 · até 20</label><input id="oledFirstLine" maxlength="20" value="ROBO PRONTO" placeholder="ROBO PRONTO"></div>
+              <div class="oled-field"><label for="oledSecondLine">Linha 2 · até 20</label><input id="oledSecondLine" maxlength="20" value="AGUARDANDO" placeholder="AGUARDANDO"></div>
+              <div class="oled-field wide"><label for="oledDurationSeconds">Duração · 0,5 a 30 segundos</label><input id="oledDurationSeconds" type="number" min="0.5" max="30" step="0.5" value="10" inputmode="decimal"></div>
+            </div>
+            <div class="oled-actions">
+              <button id="oledShowButton" type="button" onclick="showOledMessage()" disabled>Mostrar na OLED</button>
+              <button id="oledClearButton" type="button" class="oled-clear" onclick="clearOledMessage()" disabled>Tela padrão</button>
+            </div>
+          </div>
+        </details>
         <div class="mode-buttons">
           <button id="manualButton" onclick="sendCommand('start')">Manual</button>
           <button id="autoButton" onclick="startAutonomousMission()">Autônomo</button>
@@ -838,6 +933,17 @@ std::string DashboardServer::dashboardHtml()
           <div class="keys" aria-label="Teclas de movimento">
             <span id="keyW" class="keycap w">W</span><span id="keyA" class="keycap a">A</span><span id="keyS" class="keycap s">S</span><span id="keyD" class="keycap d">D</span>
           </div>
+        </div>
+        <div class="manual-speed-grid">
+          <div class="drive-control">
+            <label for="manualDrivePower"><span>Velocidade reta</span><output id="manualDrivePowerValue">0.65</output></label>
+            <input id="manualDrivePower" type="range" min="0.65" max="0.97" step="0.01" value="0.65">
+          </div>
+          <div class="drive-control">
+            <label for="manualTurnPower"><span>Velocidade em curva</span><output id="manualTurnPowerValue">0.65</output></label>
+            <input id="manualTurnPower" type="range" min="0.65" max="0.97" step="0.01" value="0.65">
+          </div>
+          <div class="manual-speed-help">Os dois limites começam no menor comando operacional real. A/D gira os dois lados em sentidos opostos e tem prioridade sobre W/S.</div>
         </div>
         <div class="drive-control">
           <label for="throttle"><span>Frente / ré</span><output id="throttleValue">0.00</output></label>
@@ -852,15 +958,15 @@ std::string DashboardServer::dashboardHtml()
           <div class="request-value"><span>Lado direito · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="right" data-delta="-0.01" aria-label="Reduzir lado direito em 0,01">−.01</button><input id="rightValue" aria-label="Potência exata do lado direito" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="right" data-delta="0.01" aria-label="Aumentar lado direito em 0,01">+.01</button></div></div>
         </div>
         <div class="encoder-balance">
-          <div class="encoder-balance-header"><strong>Sincronização pelos encoders</strong><span id="balanceStatus" class="balance-status state-warn">AGUARDANDO</span></div>
+          <div class="encoder-balance-header"><strong>Sincronização automática pelos encoders</strong><span id="balanceStatus" class="balance-status state-warn">AGUARDANDO</span></div>
           <div class="balance-readings">
             <div class="balance-reading"><span>Esquerda</span><strong id="balanceLeftRate">-- cont/s</strong><div class="balance-track"><div id="balanceLeftBar"></div></div></div>
             <div class="balance-reading"><span>Direita</span><strong id="balanceRightRate">-- cont/s</strong><div class="balance-track"><div id="balanceRightBar"></div></div></div>
           </div>
           <div class="balance-detail"><span>Diferença entre os lados</span><strong id="balanceDifference">--%</strong></div>
-          <div class="balance-recommendation"><span id="balanceRecommendation">Mantenha os dois lados acionados para calcular.</span><button id="applyBalanceRecommendation" disabled>Aplicar sugestão</button></div>
+          <div class="balance-recommendation"><span id="balanceRecommendation">O ajuste automático será ativado quando os dois lados avançarem ou recuarem juntos.</span></div>
         </div>
-        <div class="safety-note">Controle normal: qualquer valor não nulo parte de 0.65, com ganho de equilíbrio no lado direito. Os campos exatos usam PWM direto para diagnóstico; clamp, E-Stop e timeouts continuam ativos.</div>
+        <div class="safety-note">Todo comando não nulo respeita o piso real de 0,65. O sincronismo reduz apenas o lado mais rápido sem atravessar esse piso; os campos individuais desativam o sincronismo, mas preservam mínimo, clamp, E-Stop e timeouts.</div>
       </aside>
       </div>
     </section>
@@ -929,6 +1035,8 @@ std::string DashboardServer::dashboardHtml()
         <div class="telemetry-list">
           <div class="telemetry-row"><span>PCA9685 · 0x40</span><strong id="pcaState">--</strong></div>
           <div class="telemetry-row"><span>OLED SSD1306</span><strong id="oledState">--</strong></div>
+          <div class="telemetry-row"><span>Inicialização geral na OLED</span><strong id="oledBootState">--</strong></div>
+          <div class="telemetry-row"><span>Página enviada pela Raspberry</span><strong id="oledRemoteTelemetry">--</strong></div>
           <div class="telemetry-row"><span>Barramento I2C</span><strong>GPIO14 / GPIO13</strong></div>
           <div class="telemetry-row"><span>UART Raspberry</span><strong>115200 bps</strong></div>
           <div class="telemetry-row"><span>TX / RX ESP32</span><strong>GPIO1 / GPIO3</strong></div>
@@ -943,7 +1051,7 @@ std::string DashboardServer::dashboardHtml()
           <div class="telemetry-row"><span>Idade da telemetria</span><strong id="telemetryAge">-- ms</strong></div>
           <div class="telemetry-row"><span>Uptime ESP32</span><strong id="diagnosticUptime">--</strong></div>
           <div class="telemetry-row"><span>Controle independente</span><strong class="state-good">esquerda / direita</strong></div>
-          <div class="telemetry-row"><span>Encoders</span><strong class="state-good">somente telemetria</strong></div>
+          <div class="telemetry-row"><span>Encoders</span><strong class="state-good">sincronismo automático em movimento conjunto</strong></div>
           <div class="telemetry-row"><span>Timeout de comando · Raspberry</span><strong id="raspberryCommandTimeout">-- ms</strong></div>
           <div class="telemetry-row"><span>Watchdog de motor · ESP32</span><strong id="esp32MotorTimeout">-- ms</strong></div>
         </div>
@@ -963,6 +1071,8 @@ std::string DashboardServer::dashboardHtml()
     const connection = element("connection");
     const throttle = element("throttle");
     const turn = element("turn");
+    const manualDrivePower = element("manualDrivePower");
+    const manualTurnPower = element("manualTurnPower");
     const leftValue = element("leftValue");
     const rightValue = element("rightValue");
     const cameraFrame = element("cameraFrame");
@@ -973,12 +1083,17 @@ std::string DashboardServer::dashboardHtml()
     const cameraFormat = element("cameraFormat");
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
+    const oledTitle = element("oledTitle");
+    const oledFirstLine = element("oledFirstLine");
+    const oledSecondLine = element("oledSecondLine");
+    const oledDurationSeconds = element("oledDurationSeconds");
     let requestedLeft = 0;
     let requestedRight = 0;
     let rawDiagnosticDrive = false;
     let filteredLeftEncoderRate = null;
     let filteredRightEncoderRate = null;
-    let recommendedRightCommand = null;
+    let manualMinimumPower = 0.65;
+    let manualMaximumPower = 0.97;
 
     function setPill(target, text, state) {
       target.textContent = text;
@@ -1052,8 +1167,31 @@ std::string DashboardServer::dashboardHtml()
         calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         waiting_camera: ["AGUARDANDO CÂMERA", "warn", "machineStepPerception"],
+        waiting_line: ["AGUARDANDO LINHA", "warn", "machineStepPerception"],
+        acquiring_initial_line: ["VALIDANDO LINHA INICIAL", "warn", "machineStepPerception"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
         invalid_vision: ["VISÃO INVÁLIDA", "danger", "machineStepPerception"],
+        approaching_event: ["APROXIMANDO EVENTO", "warn", "machineStepDecision"],
+        corner_advance: ["AVANÇANDO AO CORNER", "active", "machineStepMotion"],
+        corner_advance_settling: ["PREPARANDO GIRO", "warn", "machineStepFeedback"],
+        corner_advance_timeout: ["AVANÇO EXPIRADO", "danger", "machineStepFeedback"],
+        corner_advance_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        corner_advance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
+        executing_corner_left: ["CORNER · ESQUERDA", "active", "machineStepMotion"],
+        executing_corner_right: ["CORNER · DIREITA", "active", "machineStepMotion"],
+        corner_reverse_preparing: ["PREPARANDO RÉ", "warn", "machineStepFeedback"],
+        corner_reverse: ["RECUANDO DO CORNER", "active", "machineStepMotion"],
+        corner_reverse_settling: ["RECALCULANDO LINHA", "warn", "machineStepPerception"],
+        corner_reverse_timeout: ["RÉ EXPIRADA", "danger", "machineStepFeedback"],
+        corner_reverse_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        corner_reverse_encoder_stall: ["SEM AVANÇO EM RÉ", "danger", "machineStepFeedback"],
+        waiting_line_after_corner: ["AGUARDANDO LINHA", "warn", "machineStepPerception"],
+        reacquiring_stationary: ["CALCULANDO TRAJETÓRIA", "warn", "machineStepPerception"],
+        reacquiring: ["READQUIRINDO LINHA", "warn", "machineStepPerception"],
+        line_lost_grace: ["LINHA PERDIDA", "warn", "machineStepPerception"],
+        line_search_timeout: ["BUSCA ENCERRADA", "danger", "machineStepFeedback"],
+        corner_turn_timeout: ["GIRO EXPIRADO", "danger", "machineStepFeedback"],
+        reacquire_timeout: ["READQUISIÇÃO EXPIRADA", "danger", "machineStepFeedback"],
         following_straight: ["SEGUINDO RETA", "active", "machineStepMotion"],
         correcting_left: ["CORRIGINDO ESQUERDA", "active", "machineStepMotion"],
         correcting_right: ["CORRIGINDO DIREITA", "active", "machineStepMotion"],
@@ -1130,13 +1268,41 @@ std::string DashboardServer::dashboardHtml()
         ? `${formatNumber(data.leftEncoderRate, 0)} / ${formatNumber(data.rightEncoderRate, 0)} cont/s`
         : "-- / -- cont/s";
       const distanceMission = mission === "drive_distance";
-      element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
-      element("machineDistanceSides").textContent = distanceMission
+      const cornerTranslation = phase.startsWith("corner_advance") || phase.startsWith("corner_reverse");
+      const distanceTelemetryVisible = distanceMission || cornerTranslation;
+      const activeDistanceTargetCm = distanceMission
+        ? data.driveDistanceTargetCm
+        : data.autonomousTargetDistanceCm;
+      element("machineDistanceTarget").textContent = distanceTelemetryVisible ? `${formatNumber(activeDistanceTargetCm, 1)} cm` : "-- cm";
+      element("machineDistanceSides").textContent = distanceTelemetryVisible
         ? `${formatNumber(data.autonomousLeftDistanceCm, 1)} / ${formatNumber(data.autonomousRightDistanceCm, 1)} cm`
         : "-- / -- cm";
-      element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
-      element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
+      element("machineDistanceAverage").textContent = distanceTelemetryVisible ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
+      element("machineEncoderCalibration").textContent = distanceTelemetryVisible ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
       element("machineLineError").textContent = lineUsed ? `${formatNumber(data.autonomousRawLineError, 1)} / ${formatNumber(data.autonomousFilteredLineError, 1)} px` : "--";
+      element("machineHeadingError").textContent = lineUsed ? `${formatNumber(data.autonomousRawHeadingError, 1)} / ${formatNumber(data.autonomousFilteredHeadingError, 1)} °` : "--";
+      element("machinePathConfidence").textContent = lineUsed ? formatNumber(data.autonomousPathConfidence, 2) : "--";
+      const navigationLabels = {
+        following: "SEGUINDO",
+        approaching_event: "APROXIMANDO EVENTO",
+        advancing_to_corner: "AVANÇANDO AO CORNER",
+        executing_turn: "EXECUTANDO CURVA",
+        reversing_after_corner: "RECUANDO APÓS CURVA",
+        reacquiring: "READQUIRINDO LINHA",
+        line_lost: "LINHA PERDIDA"
+      };
+      const navigationStateLabel = lineUsed
+        ? (navigationLabels[data.autonomousNavigationState] || "--")
+        : "--";
+      element("machineNavigationState").textContent = navigationStateLabel;
+      element("cameraNavigationState").textContent = `NAV · ${navigationStateLabel}`;
+      const eventType = String(data.autonomousNextEventType || "NONE");
+      const eventDirection = String(data.autonomousNextEventDirection || "NONE");
+      const eventTypeLabel = eventType === "CORNER" ? "CURVA FECHADA" : eventType === "GREEN" ? "VERDE" : eventType;
+      const eventDirectionLabels = { LEFT: "ESQUERDA", RIGHT: "DIREITA", ESQUERDA: "ESQUERDA", DIREITA: "DIREITA", "MEIA VOLTA": "MEIA-VOLTA" };
+      element("machineNextEvent").textContent = lineUsed && eventType !== "NONE"
+        ? `${eventTypeLabel} · ${eventDirectionLabels[eventDirection] || eventDirection} · ${formatNumber(Number(data.autonomousNextEventProximity) * 100, 0)}% · C${formatNumber(data.autonomousNextEventConfidence, 2)}`
+        : "NENHUM";
       const correction = Number(data.autonomousSteeringCorrection);
       element("machineCorrection").textContent = lineUsed && Number.isFinite(correction) ? `${correction >= 0 ? "+" : ""}${correction.toFixed(3)}` : "--";
       const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
@@ -1162,14 +1328,12 @@ std::string DashboardServer::dashboardHtml()
       if (!valuesValid || !movingCommand) {
         filteredLeftEncoderRate = null;
         filteredRightEncoderRate = null;
-        recommendedRightCommand = null;
         element("balanceLeftRate").textContent = "-- cont/s";
         element("balanceRightRate").textContent = "-- cont/s";
         element("balanceLeftBar").style.width = "0%";
         element("balanceRightBar").style.width = "0%";
         element("balanceDifference").textContent = "--%";
-        element("balanceRecommendation").textContent = "Mantenha os dois lados acionados para calcular.";
-        element("applyBalanceRecommendation").disabled = true;
+        element("balanceRecommendation").textContent = "Mantenha os dois lados acionados para acompanhar o sincronismo.";
         status.textContent = fresh ? "ACIONE OS DOIS LADOS" : "SEM TELEMETRIA";
         status.className = "balance-status state-warn";
         return;
@@ -1193,34 +1357,68 @@ std::string DashboardServer::dashboardHtml()
       element("balanceRightBar").style.width = `${fasterRate > 0 ? filteredRightEncoderRate / fasterRate * 100 : 0}%`;
       element("balanceDifference").textContent = `${differencePercent.toFixed(1)}%`;
 
-      const rightDirection = Number(data.esp32AppliedRightPower) < 0 ? -1 : 1;
-      const suggestedRightMagnitude = filteredRightEncoderRate > 1
-        ? Math.abs(Number(data.esp32AppliedRightPower)) * filteredLeftEncoderRate / filteredRightEncoderRate
-        : Math.abs(Number(data.esp32AppliedRightPower));
-      recommendedRightCommand = rightDirection * Math.round(clamp(suggestedRightMagnitude) * 100) / 100;
-      element("balanceRecommendation").textContent = `Usando a esquerda como referência: teste direita em ${recommendedRightCommand.toFixed(2)}.`;
-      element("applyBalanceRecommendation").disabled = !manualEnabled;
+      const syncEligible = data.motorSyncEligible === true;
+      const syncActive = data.motorSyncActive === true;
+      const syncEncoderValid = data.motorSyncEncoderDataValid === true;
+      const leftScale = Number(data.motorSyncLeftScale);
+      const rightScale = Number(data.motorSyncRightScale);
+      const correctedLeft = Number(data.motorSyncCorrectedLeftPower);
+      const correctedRight = Number(data.motorSyncCorrectedRightPower);
+      const scaleText = Number.isFinite(leftScale) && Number.isFinite(rightScale)
+        ? `${leftScale.toFixed(3)} / ${rightScale.toFixed(3)}`
+        : "-- / --";
+      const correctedText = Number.isFinite(correctedLeft) && Number.isFinite(correctedRight)
+        ? `${correctedLeft.toFixed(2)} / ${correctedRight.toFixed(2)}`
+        : "-- / --";
+      element("balanceRecommendation").textContent = data.rawMotorCommand === true
+        ? "Ajuste individual: sincronismo automático desativado; piso de 0,65 preservado."
+        : syncEligible
+          ? `Escala automática E/D: ${scaleText} · PWM corrigido: ${correctedText}.`
+          : "Sincronismo pausado: os lados não estão se movendo juntos no mesmo sentido.";
 
-      if (fasterRate <= 1) {
+      if (data.rawMotorCommand === true) {
+        status.textContent = "AJUSTE INDIVIDUAL";
+        status.className = "balance-status state-warn";
+      } else if (!syncEligible) {
+        status.textContent = "PAUSADO EM GIRO";
+        status.className = "balance-status state-warn";
+      } else if (!syncEncoderValid) {
+        status.textContent = "AGUARDANDO ENCODERS";
+        status.className = "balance-status state-warn";
+      } else if (!syncActive) {
+        status.textContent = `APRENDENDO ${Number(data.motorSyncValidSamples) || 0}/${Number(data.encoderSyncWarmupSamples) || 3}`;
+        status.className = "balance-status state-warn";
+      } else if (fasterRate <= 1) {
         status.textContent = "SEM MOVIMENTO";
         status.className = "balance-status state-bad";
       } else if (differencePercent <= 2) {
-        status.textContent = "EQUILÍBRIO PRECISO";
+        status.textContent = "SINCRONIZADO";
         status.className = "balance-status state-good";
-      } else if (differencePercent <= 5) {
-        status.textContent = "AJUSTE FINO";
+      } else if (data.motorSyncCorrectionApplied === true) {
+        status.textContent = "CORRIGINDO AUTOMATICAMENTE";
         status.className = "balance-status state-warn";
       } else {
-        status.textContent = filteredLeftEncoderRate > filteredRightEncoderRate
-          ? "DIREITA MAIS LENTA"
-          : "ESQUERDA MAIS LENTA";
-        status.className = differencePercent <= 12
-          ? "balance-status state-warn"
-          : "balance-status state-bad";
+        status.textContent = "MEDINDO DIFERENÇA";
+        status.className = "balance-status state-warn";
       }
     }
 
     function updateEsp32Telemetry(data) {
+      const receivedMinimumPower = Number(data.operationalMinimumMotorPower);
+      const receivedMaximumPower = Number(data.operationalMaximumReferencePower);
+      if (Number.isFinite(receivedMinimumPower) && Number.isFinite(receivedMaximumPower) &&
+          receivedMinimumPower > 0 && receivedMaximumPower >= receivedMinimumPower) {
+        manualMinimumPower = receivedMinimumPower;
+        manualMaximumPower = receivedMaximumPower;
+        manualDrivePower.min = manualMinimumPower.toFixed(2);
+        manualDrivePower.max = manualMaximumPower.toFixed(2);
+        manualTurnPower.min = manualMinimumPower.toFixed(2);
+        manualTurnPower.max = manualMaximumPower.toFixed(2);
+        manualDrivePower.value = clampManualPower(manualDrivePower.value).toFixed(2);
+        manualTurnPower.value = clampManualPower(manualTurnPower.value).toFixed(2);
+        element("manualDrivePowerValue").textContent = manualDrivePower.value;
+        element("manualTurnPowerValue").textContent = manualTurnPower.value;
+      }
       const fresh = data.esp32SensorFresh === true;
       const serialOpen = data.esp32SerialOpen === true;
       const calibrating = data.esp32CalibrationActive === true;
@@ -1258,8 +1456,8 @@ std::string DashboardServer::dashboardHtml()
       element("requestedRight").textContent = formatNumber(data.right, 2);
       const motorCommandProfile = element("motorCommandProfile");
       motorCommandProfile.textContent = data.rawMotorCommand === true
-        ? "diagnóstico · PWM direto"
-        : `operacional · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · direita ×${formatNumber(data.rightMotorCalibrationGain, 3)}`;
+        ? `ajuste individual · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · sem sincronismo`
+        : `operacional · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · sincronismo automático`;
       motorCommandProfile.className = data.rawMotorCommand === true ? "state-warn" : "state-good";
       element("appliedLeft").textContent = fresh ? formatNumber(data.esp32AppliedLeftPower, 2) : "--";
       element("appliedRight").textContent = fresh ? formatNumber(data.esp32AppliedRightPower, 2) : "--";
@@ -1319,6 +1517,28 @@ std::string DashboardServer::dashboardHtml()
       setState("mpuState", mpuOk, "online", "indisponível");
       setState("pcaState", fresh && data.pca9685Ok === true, "online", "indisponível");
       setState("oledState", fresh && data.oledOk === true, "online", "indisponível");
+      const oledAvailable = fresh && data.oledOk === true;
+      const oledBootReady = oledAvailable && data.esp32RaspberrySystemReady === true;
+      const remoteOledActive = oledBootReady && data.esp32RemoteOledActive === true;
+      element("oledShowButton").disabled = !oledBootReady;
+      element("oledClearButton").disabled = !oledAvailable || !remoteOledActive;
+      element("oledRemoteStatus").textContent = !oledAvailable
+        ? "OLED indisponível ou sem telemetria recente."
+        : !oledBootReady
+          ? "Inicializando Raspberry, câmera e serviços do robô."
+        : remoteOledActive
+          ? "Mensagem da Raspberry em exibição; depois do prazo, a tela padrão retorna."
+          : "Tela padrão ativa: bateria, giro e inclinação.";
+      element("oledRemoteStatus").className = `oled-editor-state ${remoteOledActive ? "state-good" : (oledBootReady ? "" : "state-warn")}`.trim();
+      element("oledBootState").textContent = !oledAvailable
+        ? "sem dados"
+        : oledBootReady ? "concluída · tela liberada" : "em andamento · animação ativa";
+      element("oledBootState").className = oledBootReady ? "state-good" : "state-warn";
+      element("oledRemoteTelemetry").textContent = !oledAvailable
+        ? "sem dados"
+        : !oledBootReady ? "bloqueada durante o boot" : remoteOledActive ? "ativa · temporária" : "inativa · tela local";
+      element("oledRemoteTelemetry").className = !oledAvailable
+        ? "state-warn" : remoteOledActive ? "state-good" : "";
       updateMotorBalance(data, fresh);
     }
 
@@ -1355,6 +1575,39 @@ std::string DashboardServer::dashboardHtml()
       updateKeyboardIndicators();
     }
 
+    function sanitizeOledText(value, maximumLength) {
+      return String(value || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^\x20-\x7E]/g, "")
+        .slice(0, maximumLength);
+    }
+
+    function showOledMessage() {
+      const title = sanitizeOledText(oledTitle.value, 12);
+      const firstLine = sanitizeOledText(oledFirstLine.value, 20);
+      const secondLine = sanitizeOledText(oledSecondLine.value, 20);
+      const durationSeconds = Math.max(0.5, Math.min(30, Number(oledDurationSeconds.value) || 10));
+      oledTitle.value = title;
+      oledFirstLine.value = firstLine;
+      oledSecondLine.value = secondLine;
+      oledDurationSeconds.value = durationSeconds.toFixed(1);
+      if (!title.trim() && !firstLine.trim() && !secondLine.trim()) {
+        element("oledRemoteStatus").textContent = "Digite pelo menos um texto antes de enviar.";
+        element("oledRemoteStatus").className = "oled-editor-state state-warn";
+        return;
+      }
+      send({ command: "oled_message", title, firstLine, secondLine, durationMs: Math.round(durationSeconds * 1000) });
+      element("oledRemoteStatus").textContent = "Mensagem enviada; aguardando confirmação na telemetria.";
+      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+    }
+
+    function clearOledMessage() {
+      send({ command: "oled_clear" });
+      element("oledRemoteStatus").textContent = "Retorno à tela padrão solicitado.";
+      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+    }
+
     function selectAutonomousMission() {
       manualEnabled = false;
       resetKeyboardState();
@@ -1373,6 +1626,41 @@ std::string DashboardServer::dashboardHtml()
 
     function clamp(value) { return Math.max(-1, Math.min(1, value)); }
 
+    function clampManualPower(value) {
+      return Math.max(manualMinimumPower, Math.min(manualMaximumPower, Number(value) || manualMinimumPower));
+    }
+
+    function scaleOperationalAxis(axis, maximumPower) {
+      const safeAxis = clamp(axis);
+      if (Math.abs(safeAxis) < 0.0001) return 0;
+      const magnitude = manualMinimumPower +
+        (clampManualPower(maximumPower) - manualMinimumPower) * Math.abs(safeAxis);
+      return Math.sign(safeAxis) * magnitude;
+    }
+
+    function updateManualPowerSettings() {
+      manualDrivePower.value = clampManualPower(manualDrivePower.value).toFixed(2);
+      manualTurnPower.value = clampManualPower(manualTurnPower.value).toFixed(2);
+      element("manualDrivePowerValue").textContent = manualDrivePower.value;
+      element("manualTurnPowerValue").textContent = manualTurnPower.value;
+      try {
+        localStorage.setItem("obrManualDrivePower", manualDrivePower.value);
+        localStorage.setItem("obrManualTurnPower", manualTurnPower.value);
+      } catch {}
+      updateDriveFromMixer();
+    }
+
+    function restoreManualPowerSettings() {
+      try {
+        manualDrivePower.value = localStorage.getItem("obrManualDrivePower") || "0.65";
+        manualTurnPower.value = localStorage.getItem("obrManualTurnPower") || "0.65";
+      } catch {
+        manualDrivePower.value = "0.65";
+        manualTurnPower.value = "0.65";
+      }
+      updateManualPowerSettings();
+    }
+
     function sendCurrentDrive() {
       if (manualEnabled) {
         send({ command: rawDiagnosticDrive ? "drive_raw" : "drive", left: requestedLeft, right: requestedRight });
@@ -1380,10 +1668,20 @@ std::string DashboardServer::dashboardHtml()
     }
 
     function updateDriveFromMixer() {
-      const throttleValue = Number(throttle.value);
-      const turnValue = Number(turn.value);
-      requestedLeft = clamp(throttleValue + turnValue);
-      requestedRight = clamp(throttleValue - turnValue);
+      const throttleValue = clamp(Number(throttle.value));
+      const turnValue = clamp(Number(turn.value));
+      const selectedPower = Math.abs(turnValue) > 0.0001
+        ? clampManualPower(manualTurnPower.value)
+        : clampManualPower(manualDrivePower.value);
+
+      // O giro tem prioridade sobre frente e ré. Isso impede que combinações
+      // como W+A zerem um lado e façam o robô curvar com metade da tração.
+      const turning = Math.abs(turnValue) > 0.0001;
+      const leftAxis = turning ? turnValue : throttleValue;
+      const rightAxis = turning ? -turnValue : throttleValue;
+
+      requestedLeft = scaleOperationalAxis(leftAxis, selectedPower);
+      requestedRight = scaleOperationalAxis(rightAxis, selectedPower);
       rawDiagnosticDrive = false;
       element("throttleValue").textContent = throttleValue.toFixed(2);
       element("turnValue").textContent = turnValue.toFixed(2);
@@ -1416,12 +1714,6 @@ std::string DashboardServer::dashboardHtml()
       updateDriveFromExactInputs();
     }
 
-    function applyBalanceRecommendation() {
-      if (!manualEnabled || recommendedRightCommand === null) return;
-      rightValue.value = recommendedRightCommand.toFixed(2);
-      updateDriveFromExactInputs();
-    }
-
     function resetDrive() {
       throttle.value = "0";
       turn.value = "0";
@@ -1439,7 +1731,7 @@ std::string DashboardServer::dashboardHtml()
       driveKeyCodes.forEach(code => element(code.replace("Key", "key")).classList.toggle("active", pressedDriveKeys.has(code)));
       element("keyboardState").textContent = !manualEnabled
         ? "Ative o modo Manual para usar o teclado."
-        : (pressedDriveKeys.size ? "Teclado comandando os dois lados." : "W/S: frente e ré · A/D: giro com os dois lados.");
+        : (pressedDriveKeys.size ? "Teclado comandando com os limites selecionados." : "W/S: frente e ré · A/D: giro dos dois lados com prioridade.");
     }
 
     function resetKeyboardState() {
@@ -1450,7 +1742,7 @@ std::string DashboardServer::dashboardHtml()
     function applyKeyboardDrive() {
       const forward = (pressedDriveKeys.has("KeyW") ? 1 : 0) - (pressedDriveKeys.has("KeyS") ? 1 : 0);
       const turnValue = (pressedDriveKeys.has("KeyD") ? 1 : 0) - (pressedDriveKeys.has("KeyA") ? 1 : 0);
-      throttle.value = turnValue === 0 ? String(forward) : "0";
+      throttle.value = String(forward);
       turn.value = String(turnValue);
       updateDriveFromMixer();
     }
@@ -1472,7 +1764,11 @@ std::string DashboardServer::dashboardHtml()
           cameraFps.textContent = "aguardando"; cameraLineError.textContent = "--"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; return;
         }
         cameraFps.textContent = Number(data.fps).toFixed(1);
-        cameraLineError.textContent = data.lineDetected === true ? Number(data.lineError).toFixed(0) : "perdida";
+        cameraLineError.textContent = data.currentPathValid === false
+          ? "raiz inválida"
+          : data.lineDetected === true
+            ? `P ${Number(data.positionErrorPixels ?? data.lineError).toFixed(0)} px · H ${Number(data.headingErrorDegrees || 0).toFixed(1)}°`
+            : "perdida";
         cameraResolution.textContent = Number(data.width) > 0 && Number(data.height) > 0 ? `${Number(data.width).toFixed(0)}×${Number(data.height).toFixed(0)}` : "--";
         cameraFormat.textContent = data.cameraFormat || "--";
       } catch {
@@ -1484,12 +1780,13 @@ std::string DashboardServer::dashboardHtml()
     cameraImage.addEventListener("error", () => { cameraFrame.classList.add("offline"); cameraReconnectTimer = window.setTimeout(startCameraStream, 1000); });
     throttle.addEventListener("input", updateDriveFromMixer);
     turn.addEventListener("input", updateDriveFromMixer);
+    manualDrivePower.addEventListener("input", updateManualPowerSettings);
+    manualTurnPower.addEventListener("input", updateManualPowerSettings);
     leftValue.addEventListener("change", updateDriveFromExactInputs);
     rightValue.addEventListener("change", updateDriveFromExactInputs);
     document.querySelectorAll("[data-side][data-delta]").forEach(button => {
       button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
     });
-    element("applyBalanceRecommendation").addEventListener("click", applyBalanceRecommendation);
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
@@ -1516,6 +1813,7 @@ std::string DashboardServer::dashboardHtml()
     window.setInterval(refreshCameraStatus, 500);
     startCameraStream();
     refreshCameraStatus();
+    restoreManualPowerSettings();
     updateKeyboardIndicators();
     connect();
   </script>
@@ -1848,6 +2146,65 @@ double DashboardServer::getJsonNumber(const std::string& json, const std::string
         std::cerr << "Dashboard command ignored: invalid numeric value for " << key << "\n";
         return fallback;
     }
+}
+
+std::string DashboardServer::getJsonString(const std::string& json,
+                                           const std::string& key,
+                                           const std::string& fallback)
+{
+    const std::string marker = "\"" + key + "\":";
+    size_t position = json.find(marker);
+    if (position == std::string::npos)
+    {
+        return fallback;
+    }
+
+    position += marker.size();
+    while (position < json.size() &&
+           (json[position] == ' ' || json[position] == '\t'))
+    {
+        ++position;
+    }
+    if (position >= json.size() || json[position] != '"')
+    {
+        return fallback;
+    }
+
+    std::string value;
+    for (++position; position < json.size(); ++position)
+    {
+        const char character = json[position];
+        if (character == '"')
+        {
+            return value;
+        }
+        if (character != '\\')
+        {
+            value.push_back(character);
+            continue;
+        }
+
+        if (++position >= json.size())
+        {
+            return fallback;
+        }
+        const char escaped = json[position];
+        if (escaped == '"' || escaped == '\\' || escaped == '/')
+        {
+            value.push_back(escaped);
+        }
+        else if (escaped == 'n' || escaped == 'r' || escaped == 't')
+        {
+            // Controles não são úteis na OLED e viram espaço antes da
+            // sanitização final feita pelo Esp32Bridge.
+            value.push_back(' ');
+        }
+        else
+        {
+            return fallback;
+        }
+    }
+    return fallback;
 }
 
 unsigned int DashboardServer::leftRotate(unsigned int value, int bits)
