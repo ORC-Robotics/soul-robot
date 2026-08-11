@@ -64,6 +64,19 @@ LINE_THRESHOLD = 100
 OPEN_KERNEL_SIZE = 3
 # O fechamento 5x5 preenche pequenos buracos dentro da faixa preta.
 CLOSE_KERNEL_SIZE = 5
+# A near_band ocupa os 30% inferiores da ROI já segmentada.
+NEAR_BAND_HEIGHT_RATIO = 0.30
+# A prévia usa a mesma escala normalizada de potência dos motores.
+# Com correção máxima, os lados ficam entre o piso operacional de 0,65 e 0,95.
+BASE_SPEED_PREVIEW = 0.80
+KP_PREVIEW = 0.30
+MAX_CORRECTION_PREVIEW = 0.15
+# A zona morta usa o erro normalizado, não a correção de potência.
+NEAR_DEADZONE = 0.10
+# A conversão aproximada considera a fita física de 2 cm apenas para debug.
+REFERENCE_LINE_WIDTH_CM = 2.0
+# Espaçamento, em pixels, entre as marcas pequenas da régua da near_band.
+PIXEL_RULER_STEP = 20
 
 running = True
 latest_jpeg = None
@@ -315,10 +328,152 @@ def main():
             frame = picam2.capture_array()
             filtered_mask, roi_start_y = create_filtered_line_mask(frame)
 
-            # O verde mostra somente os pixels aceitos pela máscara filtrada.
-            # Esse destaque é visual e não é usado para controlar os motores.
+            near_band_start_in_roi = int(
+                filtered_mask.shape[0] * (1.0 - NEAR_BAND_HEIGHT_RATIO)
+            )
+            near_band_start_y = roi_start_y + near_band_start_in_roi
+            near_band = filtered_mask[near_band_start_in_roi:, :]
+            near_contours, _ = cv2.findContours(
+                near_band.copy(),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+
+            selected_near_contour = None
+            near_contour_area = 0.0
+            near_moments = None
+            for near_contour in near_contours:
+                contour_area = cv2.contourArea(near_contour)
+                contour_moments = cv2.moments(near_contour)
+                if contour_area > near_contour_area and contour_moments["m00"] > 0.0:
+                    selected_near_contour = near_contour
+                    near_contour_area = contour_area
+                    near_moments = contour_moments
+
+            near_error = None
+            near_center = None
+            line_center_x = None
+            if selected_near_contour is not None and near_moments is not None:
+                center_x = near_moments["m10"] / near_moments["m00"]
+                center_y = near_moments["m01"] / near_moments["m00"]
+                frame_half_width = frame.shape[1] / 2.0
+                near_error = (center_x - frame_half_width) / frame_half_width
+                line_center_x = center_x
+                near_center = (
+                    int(round(center_x)),
+                    near_band_start_y + int(round(center_y)),
+                )
+
+            near_valid = near_error is not None
+            frame_width = frame.shape[1]
+            frame_center_x = frame_width / 2.0
+            safe_half_width_px = round(
+                NEAR_DEADZONE * frame_width / 2.0
+            )
+            safe_left_x = int(round(frame_center_x - safe_half_width_px))
+            safe_right_x = int(round(frame_center_x + safe_half_width_px))
+
+            if not near_valid:
+                control_error = 0.0
+                correction = 0.0
+                left_preview = 0.0
+                right_preview = 0.0
+                offset_px = None
+                preview_state = "LINHA INVALIDA"
+                preview_direction = "SEM COMANDO"
+            elif abs(near_error) <= NEAR_DEADZONE:
+                control_error = 0.0
+                correction = 0.0
+                left_preview = BASE_SPEED_PREVIEW
+                right_preview = BASE_SPEED_PREVIEW
+                offset_px = near_error * (frame_width / 2.0)
+                preview_state = "RETO SEGURO"
+                preview_direction = "RETO"
+            else:
+                error_sign = 1.0 if near_error > 0.0 else -1.0
+                control_error = error_sign * (
+                    (abs(near_error) - NEAR_DEADZONE)
+                    / (1.0 - NEAR_DEADZONE)
+                )
+                correction = max(
+                    -MAX_CORRECTION_PREVIEW,
+                    min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
+                )
+                left_preview = BASE_SPEED_PREVIEW + correction
+                right_preview = BASE_SPEED_PREVIEW - correction
+                offset_px = near_error * (frame_width / 2.0)
+                if correction > 0.0:
+                    preview_state = "CORRIGINDO DIREITA"
+                    preview_direction = "DIREITA"
+                else:
+                    preview_state = "CORRIGINDO ESQUERDA"
+                    preview_direction = "ESQUERDA"
+
+            # A largura é medida em uma única altura fixa da near_band.
+            # A estimativa em centímetros só é útil com a fita aproximadamente
+            # longitudinal e nunca participa do cálculo de controle.
+            measurement_y_in_band = near_band.shape[0] // 2
+            measurement_y_frame = near_band_start_y + measurement_y_in_band
+            measurement_row = near_band[measurement_y_in_band, :]
+            line_runs = []
+            run_start_x = None
+            for pixel_x in range(frame_width):
+                if measurement_row[pixel_x] != 0 and run_start_x is None:
+                    run_start_x = pixel_x
+                elif measurement_row[pixel_x] == 0 and run_start_x is not None:
+                    line_runs.append((run_start_x, pixel_x - 1))
+                    run_start_x = None
+            if run_start_x is not None:
+                line_runs.append((run_start_x, frame_width - 1))
+
+            line_left_x = None
+            line_right_x = None
+            line_width_px = None
+            if line_center_x is not None and line_runs:
+                nearest_run_distance = float("inf")
+                for run_left_x, run_right_x in line_runs:
+                    if run_left_x <= line_center_x <= run_right_x:
+                        run_distance = 0.0
+                    else:
+                        run_distance = min(
+                            abs(line_center_x - run_left_x),
+                            abs(line_center_x - run_right_x),
+                        )
+                    if run_distance < nearest_run_distance:
+                        nearest_run_distance = run_distance
+                        line_left_x = run_left_x
+                        line_right_x = run_right_x
+
+            px_per_cm_approx = None
+            offset_cm_approx = None
+            if line_left_x is not None and line_right_x is not None:
+                line_width_px = line_right_x - line_left_x + 1
+                px_per_cm_approx = line_width_px / REFERENCE_LINE_WIDTH_CM
+                if offset_px is not None and px_per_cm_approx > 0.0:
+                    offset_cm_approx = offset_px / px_per_cm_approx
+
+            # O fundo preto elimina da visualização tudo que não pertence à linha.
+            # A máscara permanece inalterada e seus pixels ativos aparecem em branco.
+            frame[:] = (0, 0, 0)
             line_roi_debug = frame[roi_start_y:frame.shape[0], :]
-            line_roi_debug[filtered_mask > 0] = (0, 255, 0)
+            line_roi_debug[filtered_mask > 0] = (255, 255, 255)
+
+            # O preenchimento usa somente o recorte estreito da zona segura
+            # para reduzir cópias de imagem e preservar o FPS do stream.
+            safe_zone_debug = frame[
+                near_band_start_y:frame.shape[0],
+                safe_left_x:safe_right_x,
+            ]
+            safe_zone_green = safe_zone_debug.copy()
+            safe_zone_green[:] = (0, 255, 0)
+            cv2.addWeighted(
+                safe_zone_green,
+                0.20,
+                safe_zone_debug,
+                0.80,
+                0.0,
+                safe_zone_debug,
+            )
 
             # A linha amarela marca onde começam os 25% processados da imagem.
             cv2.line(
@@ -328,9 +483,109 @@ def main():
                 (0, 255, 255),
                 2,
             )
+            # A near_band e seu centro são apenas referências visuais em azul.
+            cv2.rectangle(
+                frame,
+                (0, near_band_start_y),
+                (frame.shape[1] - 1, frame.shape[0] - 1),
+                (255, 0, 0),
+                2,
+            )
+
+            if not near_valid:
+                safe_limit_color = (0, 0, 255)
+            elif abs(near_error) > NEAR_DEADZONE:
+                safe_limit_color = (0, 255, 255)
+            else:
+                safe_limit_color = (0, 255, 0)
+            cv2.line(
+                frame,
+                (int(round(frame_center_x)), near_band_start_y),
+                (int(round(frame_center_x)), frame.shape[0] - 1),
+                (255, 255, 0),
+                2,
+            )
+            for safe_limit_x in (safe_left_x, safe_right_x):
+                cv2.line(
+                    frame,
+                    (safe_limit_x, near_band_start_y),
+                    (safe_limit_x, frame.shape[0] - 1),
+                    safe_limit_color,
+                    2,
+                )
+
+            cv2.line(
+                frame,
+                (0, measurement_y_frame),
+                (frame_width - 1, measurement_y_frame),
+                (180, 180, 180),
+                1,
+            )
+            if line_left_x is not None and line_right_x is not None:
+                cv2.line(
+                    frame,
+                    (line_left_x, measurement_y_frame),
+                    (line_right_x, measurement_y_frame),
+                    (255, 0, 255),
+                    2,
+                )
+                cv2.circle(
+                    frame,
+                    (line_left_x, measurement_y_frame),
+                    4,
+                    (255, 0, 255),
+                    -1,
+                )
+                cv2.circle(
+                    frame,
+                    (line_right_x, measurement_y_frame),
+                    4,
+                    (255, 0, 255),
+                    -1,
+                )
+
+            ruler_bottom_y = frame.shape[0] - 3
+            first_ruler_offset = -(
+                int(frame_center_x) // PIXEL_RULER_STEP
+            ) * PIXEL_RULER_STEP
+            for ruler_offset in range(
+                first_ruler_offset,
+                frame_width,
+                PIXEL_RULER_STEP,
+            ):
+                ruler_x = int(round(frame_center_x + ruler_offset))
+                if ruler_x < 0 or ruler_x >= frame_width:
+                    continue
+                labeled_tick = ruler_offset % (PIXEL_RULER_STEP * 2) == 0
+                tick_height = 11 if labeled_tick else 6
+                cv2.line(
+                    frame,
+                    (ruler_x, ruler_bottom_y),
+                    (ruler_x, ruler_bottom_y - tick_height),
+                    (255, 255, 255),
+                    1,
+                )
+                if labeled_tick:
+                    ruler_label = (
+                        f"+{ruler_offset}" if ruler_offset > 0 else str(ruler_offset)
+                    )
+                    cv2.putText(
+                        frame,
+                        ruler_label,
+                        (max(0, ruler_x - 11), ruler_bottom_y - 14),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.30,
+                        (255, 255, 255),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+            if near_center is not None:
+                cv2.circle(frame, near_center, 6, (255, 0, 0), -1)
+
             active_pixel_count = cv2.countNonZero(filtered_mask)
             debug_lines = (
-                "MÁSCARA EXPERIMENTAL",
+                "MASCARA EXPERIMENTAL",
                 f"THRESHOLD: {LINE_THRESHOLD}",
                 f"PIXELS ATIVOS: {active_pixel_count}",
             )
@@ -344,6 +599,132 @@ def main():
                     (255, 255, 255),
                     2,
                     cv2.LINE_AA,
+                )
+
+            offset_px_text = (
+                f"{offset_px:+.1f}" if offset_px is not None else "INVALIDO"
+            )
+            line_center_text = (
+                f"{line_center_x:.1f}" if line_center_x is not None else "INVALIDO"
+            )
+            control_debug_lines = (
+                f"CONTROL ERROR: {control_error:+.3f}",
+                f"OFFSET PX: {offset_px_text}",
+                f"SAFE ZONE: +/-{safe_half_width_px} PX",
+                f"CENTER X: {frame_center_x:.1f}",
+                f"LINE CENTER X: {line_center_text}",
+                f"ESTADO: {preview_state}",
+            )
+            control_debug_x = max(12, int(frame_width * 0.36))
+            for index, debug_text in enumerate(control_debug_lines):
+                cv2.putText(
+                    frame,
+                    debug_text,
+                    (control_debug_x, 30 + index * 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (230, 230, 230),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+            line_width_text = (
+                str(line_width_px) if line_width_px is not None else "INVALIDO"
+            )
+            px_per_cm_text = (
+                f"{px_per_cm_approx:.2f}"
+                if px_per_cm_approx is not None
+                else "INVALIDO"
+            )
+            offset_cm_text = (
+                f"{offset_cm_approx:+.2f}"
+                if offset_cm_approx is not None
+                else "INVALIDO"
+            )
+            measurement_debug_lines = (
+                f"LINE WIDTH PX: {line_width_text}",
+                f"PX/CM APROX: {px_per_cm_text}",
+                f"OFFSET CM APROX: {offset_cm_text}",
+                "APROX: VALIDA SO NESTA ALTURA",
+                "FITA APROX. LONGITUDINAL",
+            )
+            for index, debug_text in enumerate(measurement_debug_lines):
+                cv2.putText(
+                    frame,
+                    debug_text,
+                    (12, 30 + index * 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (255, 0, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+            near_debug_lines = (
+                (
+                    f"NEAR ERROR: {near_error:+.3f}"
+                    if near_error is not None
+                    else "NEAR ERROR: INVALIDO"
+                ),
+                f"NEAR VALID: {'SIM' if near_error is not None else 'NAO'}",
+                f"NEAR AREA: {near_contour_area:.1f}",
+            )
+            near_debug_x = max(12, frame.shape[1] - 330)
+            for index, debug_text in enumerate(near_debug_lines):
+                cv2.putText(
+                    frame,
+                    debug_text,
+                    (near_debug_x, 30 + index * 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            preview_debug_lines = (
+                f"CORRECTION: {correction:+.3f}",
+                f"LEFT PREVIEW: {left_preview:.3f}",
+                f"RIGHT PREVIEW: {right_preview:.3f}",
+            )
+            for index, debug_text in enumerate(preview_debug_lines):
+                cv2.putText(
+                    frame,
+                    debug_text,
+                    (near_debug_x, 120 + index * 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            cv2.putText(
+                frame,
+                preview_direction,
+                (near_debug_x, 215),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            if near_valid:
+                arrow_start = (frame.shape[1] - 80, 245)
+                if preview_direction == "ESQUERDA":
+                    arrow_end = (arrow_start[0] - 60, arrow_start[1])
+                elif preview_direction == "DIREITA":
+                    arrow_end = (arrow_start[0] + 60, arrow_start[1])
+                else:
+                    arrow_end = (arrow_start[0], arrow_start[1] - 50)
+                cv2.arrowedLine(
+                    frame,
+                    arrow_start,
+                    arrow_end,
+                    (0, 255, 255),
+                    3,
+                    cv2.LINE_AA,
+                    tipLength=0.30,
                 )
 
             now = time.monotonic()
