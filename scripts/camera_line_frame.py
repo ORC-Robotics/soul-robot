@@ -1,8 +1,7 @@
-"""Publica somente a imagem bruta da câmera frontal no dashboard.
+"""Publica a imagem da câmera frontal no dashboard.
 
-Este processo não detecta faixas, cores, obstáculos ou eventos. Qualquer visão
-computacional futura deve viver em um módulo separado e consumir os frames sem
-alterar a responsabilidade deste serviço de captura.
+A segmentação experimental destaca a linha preta apenas na imagem de debug.
+Ela não calcula comandos nem interfere no controle do robô.
 """
 
 import json
@@ -54,6 +53,17 @@ CAMERA_SHARPNESS = 1.2
 CAMERA_CONTRAST = 1.05
 CAMERA_SATURATION = 1.0
 CAMERA_EXPOSURE_VALUE = 0.4
+
+# A segmentação experimental usa somente os 25% inferiores do frame.
+# Alterar este valor muda apenas a região destacada no vídeo de debug.
+LINE_ROI_START_RATIO = 0.75
+# Pixels abaixo deste valor são considerados parte da linha preta.
+# Este threshold é fixo e não altera a exposição configurada da câmera.
+LINE_THRESHOLD = 100
+# A abertura 3x3 remove pequenos ruídos isolados do piso.
+OPEN_KERNEL_SIZE = 3
+# O fechamento 5x5 preenche pequenos buracos dentro da faixa preta.
+CLOSE_KERNEL_SIZE = 5
 
 running = True
 latest_jpeg = None
@@ -189,8 +199,36 @@ def tune_camera_image(picam2):
             print(f"Controle de câmera {name} não foi aplicado: {error}", flush=True)
 
 
+def create_filtered_line_mask(frame):
+    """Segmenta a linha preta na parte inferior sem gerar decisões de controle."""
+
+    frame_height = frame.shape[0]
+    roi_start_y = int(frame_height * LINE_ROI_START_RATIO)
+    line_roi = frame[roi_start_y:frame_height, :]
+    gray_roi = cv2.cvtColor(line_roi, cv2.COLOR_BGR2GRAY)
+
+    _, binary_mask = cv2.threshold(
+        gray_roi,
+        LINE_THRESHOLD,
+        255,
+        cv2.THRESH_BINARY_INV,
+    )
+
+    open_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (OPEN_KERNEL_SIZE, OPEN_KERNEL_SIZE),
+    )
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (CLOSE_KERNEL_SIZE, CLOSE_KERNEL_SIZE),
+    )
+    filtered_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, open_kernel)
+    filtered_mask = cv2.morphologyEx(filtered_mask, cv2.MORPH_CLOSE, close_kernel)
+    return filtered_mask, roi_start_y
+
+
 def encode_frame(frame):
-    """Converte o frame bruto para JPEG sem desenhar overlays."""
+    """Converte para JPEG o frame com a visualização experimental."""
 
     parameters = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
     ok, encoded = cv2.imencode(".jpg", frame, parameters)
@@ -275,6 +313,39 @@ def main():
 
         while running:
             frame = picam2.capture_array()
+            filtered_mask, roi_start_y = create_filtered_line_mask(frame)
+
+            # O verde mostra somente os pixels aceitos pela máscara filtrada.
+            # Esse destaque é visual e não é usado para controlar os motores.
+            line_roi_debug = frame[roi_start_y:frame.shape[0], :]
+            line_roi_debug[filtered_mask > 0] = (0, 255, 0)
+
+            # A linha amarela marca onde começam os 25% processados da imagem.
+            cv2.line(
+                frame,
+                (0, roi_start_y),
+                (frame.shape[1] - 1, roi_start_y),
+                (0, 255, 255),
+                2,
+            )
+            active_pixel_count = cv2.countNonZero(filtered_mask)
+            debug_lines = (
+                "MÁSCARA EXPERIMENTAL",
+                f"THRESHOLD: {LINE_THRESHOLD}",
+                f"PIXELS ATIVOS: {active_pixel_count}",
+            )
+            for index, debug_text in enumerate(debug_lines):
+                cv2.putText(
+                    frame,
+                    debug_text,
+                    (12, roi_start_y + 28 + index * 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
             now = time.monotonic()
             elapsed = now - previous_time
             previous_time = now
