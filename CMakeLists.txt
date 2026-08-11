@@ -8,11 +8,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(robot_test
     src/main.cpp
     src/dashboard/dashboard_server.cpp
+    src/hal/camera_monitor.cpp
     src/hal/esp32_bridge.cpp
     src/hal/gpio.cpp
     src/hal/status_led.cpp
     src/robot/motor_controller.cpp
-    src/robot/line_follower.cpp
+    src/robot/main_mission.cpp
+    src/robot/mission_controller.cpp
     src/robot/robot_state.cpp
     src/telemetry/telemetry.cpp
 )

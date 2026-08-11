@@ -448,22 +448,7 @@ std::string DashboardServer::buildTelemetryJson(const TelemetrySample& sample) c
          << ",\"rawMotorCommand\":" << (state.rawMotorCommand ? "true" : "false")
          << ",\"autonomousPhase\":\"" << state.autonomousStatus.phase << "\""
          << ",\"autonomousAction\":\"" << state.autonomousStatus.action << "\""
-         << ",\"autonomousLineDetected\":" << (state.autonomousStatus.lineDetected ? "true" : "false")
-         << ",\"autonomousRawLineError\":" << state.autonomousStatus.rawLineError
-         << ",\"autonomousFilteredLineError\":" << state.autonomousStatus.filteredLineError
-         << ",\"autonomousRawHeadingError\":" << state.autonomousStatus.rawHeadingError
-         << ",\"autonomousFilteredHeadingError\":" << state.autonomousStatus.filteredHeadingError
-         << ",\"autonomousPathConfidence\":" << state.autonomousStatus.pathConfidence
-         << ",\"autonomousSteeringCorrection\":" << state.autonomousStatus.steeringCorrection
          << ",\"autonomousProgressPercent\":" << state.autonomousStatus.progressPercent
-         << ",\"autonomousNavigationState\":\"" << state.autonomousStatus.navigationState << "\""
-         << ",\"autonomousNextEventType\":\"" << state.autonomousStatus.nextEventType << "\""
-         << ",\"autonomousNextEventDirection\":\"" << state.autonomousStatus.nextEventDirection << "\""
-         << ",\"autonomousNextEventProximity\":" << state.autonomousStatus.nextEventProximity
-         << ",\"autonomousNextEventConfidence\":" << state.autonomousStatus.nextEventConfidence
-         << ",\"autonomousGreenAction\":\"" << state.autonomousStatus.greenAction << "\""
-         << ",\"autonomousGreenProximity\":" << state.autonomousStatus.greenProximity
-         << ",\"autonomousGreenConfidence\":" << state.autonomousStatus.greenConfidence
          << ",\"driveDistanceTargetCm\":" << state.driveDistanceTargetCm
          << ",\"autonomousTargetDistanceCm\":" << state.autonomousStatus.targetDistanceCm
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
@@ -616,11 +601,8 @@ std::string DashboardServer::dashboardHtml()
     .meta-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: #09141b; color: var(--muted); font-size: .7rem; }
     .meta-chip strong { color: var(--text); font-variant-numeric: tabular-nums; }
     .camera-frame { position: relative; aspect-ratio: 16 / 9; border: 1px solid #263d49; border-radius: 11px; overflow: hidden; background: linear-gradient(135deg, #081218, #0b1c25); }
-    .camera-frame::after { content: ""; pointer-events: none; position: absolute; inset: 0; background: linear-gradient(90deg, transparent 49.8%, #22d3ee42 50%, transparent 50.2%); }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
-    .camera-navigation-overlay { position: absolute; right: 10px; bottom: 10px; z-index: 2; padding: 6px 9px; border: 1px solid #22d3ee88; border-radius: 7px; background: #061117dc; color: var(--cyan); font-size: .68rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
-    .camera-frame.offline .camera-navigation-overlay { display: none; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
     .camera-frame:not(.offline) .camera-message { display: none; }
     .mission-state-card { --state-color: var(--cyan); background: radial-gradient(circle at 100% 0, #22d3ee14, transparent 38%), linear-gradient(145deg, #10202a, #0b171f); }
@@ -824,25 +806,24 @@ std::string DashboardServer::dashboardHtml()
             <div class="metric-track"><div id="temperatureFill" class="metric-fill"></div></div>
           </div>
         </div>
-        <p class="raspberry-role">Controle, visão e estratégia principal</p>
+        <p class="raspberry-role">Controle, câmera e estratégia principal</p>
       </article>
     </section>
 
     <section class="main-grid">
       <section class="card section-card">
         <div class="section-header">
-          <h2 class="section-title">Visão frontal</h2>
+          <h2 class="section-title">Câmera frontal</h2>
           <div class="camera-meta">
             <span class="meta-chip">FPS <strong id="cameraFps">--</strong></span>
-            <span class="meta-chip">Linha <strong id="cameraLineError">--</strong></span>
+            <span class="meta-chip">Stream <strong>DIRETO</strong></span>
             <span class="meta-chip">Resolução <strong id="cameraResolution">--</strong></span>
             <span class="meta-chip">Formato <strong id="cameraFormat">--</strong></span>
           </div>
         </div>
         <div id="cameraFrame" class="camera-frame offline">
-          <img id="cameraImage" alt="Imagem processada da câmera frontal">
-          <div id="cameraNavigationState" class="camera-navigation-overlay">NAV · --</div>
-          <div class="camera-message">Aguardando o stream processado da câmera</div>
+          <img id="cameraImage" alt="Imagem direta da câmera frontal">
+          <div class="camera-message">Aguardando o stream da câmera</div>
         </div>
       </section>
 
@@ -868,7 +849,7 @@ std::string DashboardServer::dashboardHtml()
         </div>
         <div class="machine-metrics">
           <div class="machine-metric"><span>Missão</span><strong id="machineMission">Principal</strong></div>
-          <div class="machine-metric"><span>Linha</span><strong id="machineLine">--</strong></div>
+          <div class="machine-metric"><span>Comportamento</span><strong id="machineBehavior">NENHUM</strong></div>
           <div class="machine-metric"><span>Comando E / D</span><strong id="machineRequestedSpeed" class="accent">0.00 / 0.00</strong></div>
           <div class="machine-metric"><span>Potência real E / D</span><strong id="machineAppliedSpeed">-- / --</strong></div>
           <div class="machine-metric"><span>Encoder E / D</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
@@ -876,12 +857,6 @@ std::string DashboardServer::dashboardHtml()
           <div class="machine-metric"><span>Distância E / D</span><strong id="machineDistanceSides">-- / -- cm</strong></div>
           <div class="machine-metric"><span>Média percorrida</span><strong id="machineDistanceAverage">-- cm</strong></div>
           <div class="machine-metric"><span>Calibração do encoder</span><strong id="machineEncoderCalibration">-- cont/cm</strong></div>
-          <div class="machine-metric"><span>Erro bruto / filtrado</span><strong id="machineLineError">0.0 / 0.0 px</strong></div>
-          <div class="machine-metric"><span>Heading bruto / filtrado</span><strong id="machineHeadingError">0.0 / 0.0 °</strong></div>
-          <div class="machine-metric"><span>Confiança do caminho</span><strong id="machinePathConfidence">--</strong></div>
-          <div class="machine-metric"><span>Estado de navegação</span><strong id="machineNavigationState">--</strong></div>
-          <div class="machine-metric"><span>Próximo evento</span><strong id="machineNextEvent">NENHUM</strong></div>
-          <div class="machine-metric"><span>Correção de giro</span><strong id="machineCorrection">0.000</strong></div>
           <div class="machine-metric"><span>Modo</span><strong id="machineMode">PARADO</strong></div>
         </div>
       </aside>
@@ -895,7 +870,7 @@ std::string DashboardServer::dashboardHtml()
             <option value="turn_right_90">GIRO 90° À DIREITA</option>
             <option value="drive_distance">PERCORRER DISTÂNCIA</option>
           </select>
-          <span id="missionHint" class="mission-hint">Seguidor de linha e decisões da prova.</span>
+          <span id="missionHint" class="mission-hint">Orquestrador da prova; comportamentos ainda não instalados.</span>
           <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
             <span class="distance-input-label">Distância alvo</span>
             <div class="distance-input">
@@ -1078,7 +1053,6 @@ std::string DashboardServer::dashboardHtml()
     const cameraFrame = element("cameraFrame");
     const cameraImage = element("cameraImage");
     const cameraFps = element("cameraFps");
-    const cameraLineError = element("cameraLineError");
     const cameraResolution = element("cameraResolution");
     const cameraFormat = element("cameraFormat");
     const autonomousMission = element("autonomousMission");
@@ -1154,7 +1128,7 @@ std::string DashboardServer::dashboardHtml()
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
-          : "Robô de Resgate.";
+          : "Orquestrador da prova; comportamentos ainda não instalados.";
     }
 
     function updateStateMachine(data) {
@@ -1166,43 +1140,8 @@ std::string DashboardServer::dashboardHtml()
         emergency: ["EMERGÊNCIA", "danger", "machineStepFeedback"],
         calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
-        waiting_camera: ["AGUARDANDO CÂMERA", "warn", "machineStepPerception"],
-        waiting_line: ["AGUARDANDO LINHA", "warn", "machineStepPerception"],
-        acquiring_initial_line: ["VALIDANDO LINHA INICIAL", "warn", "machineStepPerception"],
+        main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
-        invalid_vision: ["VISÃO INVÁLIDA", "danger", "machineStepPerception"],
-        approaching_event: ["APROXIMANDO EVENTO", "warn", "machineStepDecision"],
-        corner_advance: ["AVANÇANDO AO CORNER", "active", "machineStepMotion"],
-        corner_advance_settling: ["PREPARANDO GIRO", "warn", "machineStepFeedback"],
-        corner_advance_timeout: ["AVANÇO EXPIRADO", "danger", "machineStepFeedback"],
-        corner_advance_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
-        corner_advance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
-        executing_corner_left: ["CORNER · ESQUERDA", "active", "machineStepMotion"],
-        executing_corner_right: ["CORNER · DIREITA", "active", "machineStepMotion"],
-        corner_reverse_preparing: ["PREPARANDO RÉ", "warn", "machineStepFeedback"],
-        corner_reverse: ["RECUANDO DO CORNER", "active", "machineStepMotion"],
-        corner_reverse_settling: ["RECALCULANDO LINHA", "warn", "machineStepPerception"],
-        corner_reverse_timeout: ["RÉ EXPIRADA", "danger", "machineStepFeedback"],
-        corner_reverse_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
-        corner_reverse_encoder_stall: ["SEM AVANÇO EM RÉ", "danger", "machineStepFeedback"],
-        waiting_line_after_corner: ["AGUARDANDO LINHA", "warn", "machineStepPerception"],
-        reacquiring_stationary: ["CALCULANDO TRAJETÓRIA", "warn", "machineStepPerception"],
-        reacquiring: ["READQUIRINDO LINHA", "warn", "machineStepPerception"],
-        line_lost_grace: ["LINHA PERDIDA", "warn", "machineStepPerception"],
-        line_search_timeout: ["BUSCA ENCERRADA", "danger", "machineStepFeedback"],
-        corner_turn_timeout: ["GIRO EXPIRADO", "danger", "machineStepFeedback"],
-        reacquire_timeout: ["READQUISIÇÃO EXPIRADA", "danger", "machineStepFeedback"],
-        following_straight: ["SEGUINDO RETA", "active", "machineStepMotion"],
-        correcting_left: ["CORRIGINDO ESQUERDA", "active", "machineStepMotion"],
-        correcting_right: ["CORRIGINDO DIREITA", "active", "machineStepMotion"],
-        searching_left: ["BUSCANDO À ESQUERDA", "warn", "machineStepDecision"],
-        searching_right: ["BUSCANDO À DIREITA", "warn", "machineStepDecision"],
-        searching_forward: ["BUSCANDO EM FRENTE", "warn", "machineStepDecision"],
-        approaching_green: ["MARCA VERDE", "warn", "machineStepMotion"],
-        green_turn_left: ["VERDE · ESQUERDA", "active", "machineStepMotion"],
-        green_turn_right: ["VERDE · DIREITA", "active", "machineStepMotion"],
-        green_u_turn: ["VERDE · MEIA-VOLTA", "active", "machineStepMotion"],
-        green_completed: ["VERDE CONCLUÍDO", "active", "machineStepFeedback"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
         turn_correction: ["CORRIGINDO GIRO", "active", "machineStepMotion"],
@@ -1242,23 +1181,17 @@ std::string DashboardServer::dashboardHtml()
       ["machineStepPerception", "machineStepDecision", "machineStepMotion", "machineStepFeedback"]
         .forEach(id => element(id).classList.toggle("active", id === phaseInfo[2]));
 
-      const continuousPhases = ["following_straight", "correcting_left", "correcting_right", "searching_left", "searching_right", "searching_forward"];
-      const continuous = continuousPhases.includes(phase);
       const progress = Math.max(0, Math.min(100, Number(data.autonomousProgressPercent) || 0));
-      element("machineProgressValue").textContent = continuous ? "CONTÍNUO" : `${formatNumber(progress, 0)}%`;
-      element("machineProgressFill").style.width = `${continuous ? 100 : progress}%`;
+      element("machineProgressValue").textContent = `${formatNumber(progress, 0)}%`;
+      element("machineProgressFill").style.width = `${progress}%`;
 
       const mission = String(data.autonomousMission || "main_mission");
       element("machineMission").textContent = mission === "turn_right_90"
         ? "Giro 90° à direita"
         : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
-      const lineUsed = mission === "main_mission";
-      element("machineLine").textContent = lineUsed
-        ? (data.autonomousLineDetected === true ? "DETECTADA" : "NÃO DETECTADA")
-        : "NÃO USADA";
-      element("machineLine").className = lineUsed
-        ? (data.autonomousLineDetected === true ? "state-good" : "state-warn")
-        : "";
+      element("machineBehavior").textContent = mission === "turn_right_90"
+        ? "TESTE DE GIRO"
+        : mission === "drive_distance" ? "TESTE DE DISTÂNCIA" : "NENHUM";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;
       element("machineAppliedSpeed").textContent = fresh
@@ -1268,43 +1201,12 @@ std::string DashboardServer::dashboardHtml()
         ? `${formatNumber(data.leftEncoderRate, 0)} / ${formatNumber(data.rightEncoderRate, 0)} cont/s`
         : "-- / -- cont/s";
       const distanceMission = mission === "drive_distance";
-      const cornerTranslation = phase.startsWith("corner_advance") || phase.startsWith("corner_reverse");
-      const distanceTelemetryVisible = distanceMission || cornerTranslation;
-      const activeDistanceTargetCm = distanceMission
-        ? data.driveDistanceTargetCm
-        : data.autonomousTargetDistanceCm;
-      element("machineDistanceTarget").textContent = distanceTelemetryVisible ? `${formatNumber(activeDistanceTargetCm, 1)} cm` : "-- cm";
-      element("machineDistanceSides").textContent = distanceTelemetryVisible
+      element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
+      element("machineDistanceSides").textContent = distanceMission
         ? `${formatNumber(data.autonomousLeftDistanceCm, 1)} / ${formatNumber(data.autonomousRightDistanceCm, 1)} cm`
         : "-- / -- cm";
-      element("machineDistanceAverage").textContent = distanceTelemetryVisible ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
-      element("machineEncoderCalibration").textContent = distanceTelemetryVisible ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
-      element("machineLineError").textContent = lineUsed ? `${formatNumber(data.autonomousRawLineError, 1)} / ${formatNumber(data.autonomousFilteredLineError, 1)} px` : "--";
-      element("machineHeadingError").textContent = lineUsed ? `${formatNumber(data.autonomousRawHeadingError, 1)} / ${formatNumber(data.autonomousFilteredHeadingError, 1)} °` : "--";
-      element("machinePathConfidence").textContent = lineUsed ? formatNumber(data.autonomousPathConfidence, 2) : "--";
-      const navigationLabels = {
-        following: "SEGUINDO",
-        approaching_event: "APROXIMANDO EVENTO",
-        advancing_to_corner: "AVANÇANDO AO CORNER",
-        executing_turn: "EXECUTANDO CURVA",
-        reversing_after_corner: "RECUANDO APÓS CURVA",
-        reacquiring: "READQUIRINDO LINHA",
-        line_lost: "LINHA PERDIDA"
-      };
-      const navigationStateLabel = lineUsed
-        ? (navigationLabels[data.autonomousNavigationState] || "--")
-        : "--";
-      element("machineNavigationState").textContent = navigationStateLabel;
-      element("cameraNavigationState").textContent = `NAV · ${navigationStateLabel}`;
-      const eventType = String(data.autonomousNextEventType || "NONE");
-      const eventDirection = String(data.autonomousNextEventDirection || "NONE");
-      const eventTypeLabel = eventType === "CORNER" ? "CURVA FECHADA" : eventType === "GREEN" ? "VERDE" : eventType;
-      const eventDirectionLabels = { LEFT: "ESQUERDA", RIGHT: "DIREITA", ESQUERDA: "ESQUERDA", DIREITA: "DIREITA", "MEIA VOLTA": "MEIA-VOLTA" };
-      element("machineNextEvent").textContent = lineUsed && eventType !== "NONE"
-        ? `${eventTypeLabel} · ${eventDirectionLabels[eventDirection] || eventDirection} · ${formatNumber(Number(data.autonomousNextEventProximity) * 100, 0)}% · C${formatNumber(data.autonomousNextEventConfidence, 2)}`
-        : "NENHUM";
-      const correction = Number(data.autonomousSteeringCorrection);
-      element("machineCorrection").textContent = lineUsed && Number.isFinite(correction) ? `${correction >= 0 ? "+" : ""}${correction.toFixed(3)}` : "--";
+      element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
+      element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
       const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
@@ -1761,18 +1663,13 @@ std::string DashboardServer::dashboardHtml()
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
         if (data.active !== true || Number(data.fps) <= 0) {
-          cameraFps.textContent = "aguardando"; cameraLineError.textContent = "--"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; return;
+          cameraFps.textContent = "aguardando"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; return;
         }
         cameraFps.textContent = Number(data.fps).toFixed(1);
-        cameraLineError.textContent = data.currentPathValid === false
-          ? "raiz inválida"
-          : data.lineDetected === true
-            ? `P ${Number(data.positionErrorPixels ?? data.lineError).toFixed(0)} px · H ${Number(data.headingErrorDegrees || 0).toFixed(1)}°`
-            : "perdida";
         cameraResolution.textContent = Number(data.width) > 0 && Number(data.height) > 0 ? `${Number(data.width).toFixed(0)}×${Number(data.height).toFixed(0)}` : "--";
         cameraFormat.textContent = data.cameraFormat || "--";
       } catch {
-        cameraFps.textContent = "erro"; cameraLineError.textContent = "--"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--";
+        cameraFps.textContent = "erro"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--";
       }
     }
 

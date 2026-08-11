@@ -208,15 +208,7 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_lost" ||
                                        status.phase == "distance_encoder_stall" ||
                                        status.phase == "distance_correction_failed" ||
-                                       status.phase == "distance_invalid_target" ||
-                                       status.phase == "corner_advance_timeout" ||
-                                       status.phase == "corner_advance_encoder_lost" ||
-                                       status.phase == "corner_advance_encoder_stall" ||
-                                       status.phase == "corner_reverse_timeout" ||
-                                       status.phase == "corner_reverse_encoder_lost" ||
-                                       status.phase == "corner_reverse_encoder_stall" ||
-                                       status.phase == "corner_turn_timeout" ||
-                                       status.phase == "reacquire_timeout";
+                                       status.phase == "distance_invalid_target";
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;
@@ -224,63 +216,12 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     state_.autonomousStatus = status;
 
     // Evita que valores inválidos prejudiquem o JSON enviado continuamente ao dashboard.
-    if (!std::isfinite(state_.autonomousStatus.rawLineError))
-    {
-        state_.autonomousStatus.rawLineError = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.filteredLineError))
-    {
-        state_.autonomousStatus.filteredLineError = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.rawHeadingError))
-    {
-        state_.autonomousStatus.rawHeadingError = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.filteredHeadingError))
-    {
-        state_.autonomousStatus.filteredHeadingError = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.pathConfidence))
-    {
-        state_.autonomousStatus.pathConfidence = 0.0;
-    }
-    state_.autonomousStatus.pathConfidence = std::clamp(
-        state_.autonomousStatus.pathConfidence, 0.0, 1.0);
-    if (!std::isfinite(state_.autonomousStatus.steeringCorrection))
-    {
-        state_.autonomousStatus.steeringCorrection = 0.0;
-    }
     if (!std::isfinite(state_.autonomousStatus.progressPercent))
     {
         state_.autonomousStatus.progressPercent = 0.0;
     }
     state_.autonomousStatus.progressPercent = std::clamp(
         state_.autonomousStatus.progressPercent, 0.0, 100.0);
-
-    if (!std::isfinite(state_.autonomousStatus.nextEventProximity))
-    {
-        state_.autonomousStatus.nextEventProximity = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.nextEventConfidence))
-    {
-        state_.autonomousStatus.nextEventConfidence = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.greenProximity))
-    {
-        state_.autonomousStatus.greenProximity = 0.0;
-    }
-    if (!std::isfinite(state_.autonomousStatus.greenConfidence))
-    {
-        state_.autonomousStatus.greenConfidence = 0.0;
-    }
-    state_.autonomousStatus.nextEventProximity = std::clamp(
-        state_.autonomousStatus.nextEventProximity, 0.0, 1.0);
-    state_.autonomousStatus.nextEventConfidence = std::clamp(
-        state_.autonomousStatus.nextEventConfidence, 0.0, 1.0);
-    state_.autonomousStatus.greenProximity = std::clamp(
-        state_.autonomousStatus.greenProximity, 0.0, 1.0);
-    state_.autonomousStatus.greenConfidence = std::clamp(
-        state_.autonomousStatus.greenConfidence, 0.0, 1.0);
 
     if (!std::isfinite(state_.autonomousStatus.targetDistanceCm))
     {

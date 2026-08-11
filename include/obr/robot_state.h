@@ -22,22 +22,7 @@ struct AutonomousStatus
 {
     std::string phase = "stopped";
     std::string action = "Missão parada";
-    bool lineDetected = false;
-    double rawLineError = 0.0;
-    double filteredLineError = 0.0;
-    double rawHeadingError = 0.0;
-    double filteredHeadingError = 0.0;
-    double pathConfidence = 0.0;
-    double steeringCorrection = 0.0;
     double progressPercent = 0.0;
-    std::string navigationState = "stopped";
-    std::string nextEventType = "NONE";
-    std::string nextEventDirection = "NONE";
-    double nextEventProximity = 0.0;
-    double nextEventConfidence = 0.0;
-    std::string greenAction = "NENHUM";
-    double greenProximity = 0.0;
-    double greenConfidence = 0.0;
     double targetDistanceCm = 0.0;
     double leftDistanceCm = 0.0;
     double rightDistanceCm = 0.0;

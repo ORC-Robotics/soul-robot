@@ -1,7 +1,8 @@
 #include "obr/config.h"
+#include "obr/camera_monitor.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
-#include "obr/line_follower.h"
+#include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
 #include "obr/status_led.h"
@@ -68,7 +69,8 @@ int main()
     RobotState robotState;
     Telemetry telemetry;
     Esp32Bridge esp32;
-    LineFollower lineFollower;
+    CameraMonitor cameraMonitor;
+    MissionController missionController;
     MotorController motors(esp32);
     StatusLed readyLed(config::kRaspberryReadyLedPin);
     DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
@@ -103,7 +105,7 @@ int main()
             consumeNextStartButtonShortPress = false;
         }
 
-        const bool cameraReady = lineFollower.cameraReady();
+        const bool cameraReady = cameraMonitor.ready();
         const bool startButtonPressedEdge =
             esp32Telemetry.startButtonPressed && !previousStartButtonPressed;
         const bool startButtonReleasedEdge =
@@ -185,7 +187,7 @@ int main()
             std::cout << "Physical Start release produced no short event to consume\n";
         }
 
-        lineFollower.update(robotState, esp32Telemetry);
+        missionController.update(robotState, esp32Telemetry);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.

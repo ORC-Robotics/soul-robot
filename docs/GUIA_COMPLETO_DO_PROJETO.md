@@ -28,7 +28,7 @@ necessidade.
 - [Motores e segurança](#10-controle-dos-motores)
 - [Sensores e OLED](#12-sensores-e-periféricos-da-esp32)
 - [Protocolo UART](#14-protocolo-uart-raspberry--esp32)
-- [Autônomo e visão](#16-visão-computacional)
+- [Câmera e estrutura autônoma](#16-câmera-ao-vivo)
 - [Dashboard e LED de pronto](#18-dashboard-da-raspberry)
 - [Build, deploy e serviço](#20-dependências-e-build)
 - [Operação e testes](#22-procedimento-recomendado-de-operação)
@@ -43,7 +43,7 @@ necessidade.
 | --- | --- |
 | Nome do projeto | OBR2026K |
 | Competição | Olimpíada Brasileira de Robótica — temporada 2026 |
-| Objetivo geral | Robô móvel com quatro motores, visão computacional, sensores e controle autônomo/teleoperado |
+| Objetivo geral | Robô móvel com quatro motores, câmera, sensores e controle autônomo/teleoperado |
 | Equipe | **PREENCHER: nome oficial da equipe** |
 | Escola/instituição | **PREENCHER** |
 | Cidade/estado | **PREENCHER** |
@@ -85,8 +85,8 @@ diferente do firmware usado no robô completo.
 ```mermaid
 flowchart LR
     Browser[Dashboard no navegador] <-->|HTTP + WebSocket| Pi[Raspberry Pi]
-    Camera[Pi Camera V2] --> Vision[Visão em Python/OpenCV]
-    Vision -->|JSON em /tmp + MJPEG| Pi
+    Camera[Pi Camera V2] --> Capture[Captura e stream MJPEG]
+    Capture -->|Status básico + vídeo| Pi
     Pi --> State[RobotState]
     State --> MotorController[MotorController]
     MotorController -->|UART 115200| ESP[ESP32]
@@ -112,12 +112,14 @@ flowchart LR
 
 ### Fluxo autônomo principal
 
-1. A câmera captura e corrige a rotação da imagem.
-2. O script Python detecta linha preta e marcações verdes.
-3. O resultado é publicado em `/tmp/obr_camera_status.json`.
-4. `LineFollower` verifica se os dados estão recentes.
-5. A estratégia gera potência esquerda/direita dentro do modo autônomo.
-6. O restante do caminho até os motores é igual ao controle manual.
+1. `MissionController` identifica a missão autônoma selecionada.
+2. `MainMission` coordena os comportamentos que forem adicionados futuramente.
+3. Cada comportamento deverá atualizar `RobotState`, sem acessar GPIO ou dashboard.
+4. `MotorController` aplicará os limites antes de enviar comandos à ESP32.
+5. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
+
+No estado atual, a Missão Principal não possui comportamentos instalados e
+mantém os dois motores zerados. A câmera publica apenas a imagem ao vivo.
 
 ## 4. Hardware conhecido
 
@@ -249,10 +251,7 @@ esp32/obr_esp32_bridge/
   Núcleo compartilhado e firmware de bancada com dashboard local.
 
 scripts/camera_line_frame.py
-  Captura, preprocessing, debug, status JSON e stream MJPEG.
-
-scripts/vision_path.py e scripts/test_vision_path.py
-  Geometria testável de CurrentPath/Preview e máscaras sintéticas offline.
+  Captura direta, status básico e stream MJPEG, sem interpretação visual.
 
 scripts/deploy.ps1 e scripts/deploy.sh
   Deploy atômico para a Raspberry.
@@ -273,7 +272,9 @@ scripts/obr-robot.service
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
 | `MotorController` | Aplica perfil operacional, sincroniza os lados pelos encoders e envia comandos seguros para a ESP32 |
-| `LineFollower` | Controle posição+heading, eventos visuais, verdes e missões isoladas |
+| `MissionController` | Seleciona a missão e reinicia o estado interno a cada nova execução |
+| `MainMission` | Ponto de composição dos futuros comportamentos; atualmente mantém os motores parados |
+| `CameraMonitor` | Verifica somente se a captura e o stream estão ativos |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
 | `StatusLed` | LED de sistema pronto |
@@ -595,7 +596,12 @@ mudam o modo por conta própria.
 
 #### `main_mission` — padrão
 
-Executa seguidor de linha e interpretação de marcações verdes.
+É o encapsulamento da estratégia completa da prova. Futuros comportamentos devem
+ser chamados explicitamente por este módulo conforme cada situação exigir.
+
+Neste momento nenhum comportamento está instalado. Iniciar a Missão Principal
+é seguro: o estado muda para autônomo, mas `MainMission` mantém os dois comandos
+de motor em zero e informa `main_waiting_behaviors` no dashboard.
 
 #### `turn_right_90`
 
@@ -635,7 +641,7 @@ Executa seguidor de linha e interpretação de marcações verdes.
 > bateria. Ajuste `kEncoderCalibrationCounts`, `kEncoderCalibrationDistanceCm` e
 > a previsão de frenagem em `include/obr/config.h` com novas medições.
 
-## 16. Visão computacional
+## 16. Câmera ao vivo
 
 Arquivo: `scripts/camera_line_frame.py`.
 
@@ -644,151 +650,49 @@ Arquivo: `scripts/camera_line_frame.py`.
 | Parâmetro | Valor atual |
 | --- | --- |
 | Resolução do dashboard | 960×540 |
-| Resolução de processamento | 320×180 |
 | FPS alvo da câmera | 30 |
 | Stream MJPEG | Porta local 8090, `/stream.mjpg` |
 | Qualidade JPEG | 82 |
 | Snapshot compatível | 2 FPS em `/tmp/obr_camera_frame.jpg` |
-| Status JSON | 20 FPS em `/tmp/obr_camera_status.json` |
+| Status JSON | Saúde da captura em `/tmp/obr_camera_status.json` |
 | Rotação | 180°, feita no pipeline com HFlip + VFlip |
 | Iluminação | BOARD 40 / BCM21 ativa enquanto o script roda |
 
 O dashboard principal faz proxy do MJPEG pela porta 8080, evitando que o usuário
-precise acessar diretamente a porta 8090.
+precise acessar diretamente a porta 8090. O vídeo é exibido sem máscaras,
+marcações ou decisões de navegação.
 
-### Detecção da linha preta
+`CameraMonitor` valida somente a saúde da captura por meio dos campos `active`,
+`fps` e `timestamp`. A câmera não interpreta pixels e não participa de comandos
+de movimento. Uma futura implementação de visão deve ser adicionada como módulo
+independente e integrada explicitamente à missão que precisar dela.
 
-- Ignora os 20% superiores da imagem.
-- Usa canal V do HSV, blur Gaussiano e Otsu invertido limitado entre 70 e 155.
-  O stream mostra o threshold efetivo, cobertura da máscara e número de blobs.
-- Aplica fechamento morfológico.
-- Ignora contornos menores que 80 pixels na imagem reduzida.
-- Mantém todos os contornos com área útil e extrai regiões pretas por bandas
-  horizontais. A raiz próxima decide qual geometria realmente chega ao robô;
-  o centro da bounding box de uma curva não escolhe mais o contorno inteiro.
-- A primeira região precisa passar pelos gates de centro esperado, previsão do
-  quadro anterior e largura plausível. Sem raiz próxima, `currentPathValid=false`.
-- Uma faixa central clara pode substituir uma previsão lateral antiga. Depois de
-  dois quadros inválidos, X e largura previstos são zerados e a recuperação passa
-  a procurar um pouco mais à frente, ainda limitada à região central.
-- Na imagem de processamento de 320 px, a largura absoluta da raiz aceita até
-  112 px. Esse limite acomoda a faixa próxima observada na câmera real; centro,
-  continuidade vertical e histórico ainda rejeitam blobs laterais.
-- As quatro primeiras bandas estabilizam a largura da raiz. Uma ponta estreita
-  cortada pela borda inferior pode crescer para a largura real sem ser separada
-  imediatamente como Preview; expansões posteriores ainda exigem predominância
-  lateral antes de representar corner.
-- Expansões abruptas de largura e saltos laterais são marcados como rejeitados,
-  terminam o `CurrentPath` e permanecem apenas como evidência de Preview.
-- `scripts/vision_path.py` devolve `PathSamples`, `CurrentPath`, `Preview`,
-  posição, heading, confiança e um possível corner.
-- O erro de posição usa regressão local na zona próxima e mantém a convenção
-  positivo = direita, negativo = esquerda.
-- O heading usa a inclinação da regressão `x=f(y)` somente na zona de controle.
+## 17. Estrutura autônoma atual
 
-`CurrentPath` termina no lookahead normal ou antes de uma mudança angular
-concentrada. A parte restante fica no `Preview`; portanto, o trecho horizontal
-de um corner distante não participa do cálculo de steering.
+`MissionController` possui uma responsabilidade simples: selecionar a missão e
+reiniciar seu estado quando uma nova execução começar. Ele preserva duas missões
+isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
+prova para `MainMission`.
 
-Corner é candidato apenas quando múltiplos sinais concordam: mudança local de
-heading, extensão lateral, descontinuidade do centro e aumento de largura. A
-extensão também precisa predominar claramente para esquerda ou direita; expansão
-simétrica causada por perspectiva, sombra ou proximidade não vira corner. O
-`Corner Anchor` usa o X projetado do último trecho estável e o centro robusto das
-bandas consecutivas onde a expansão começa. Sua proximidade deriva desse Y e
-continua normalizada em `[0,1]`, não em milímetros.
+`MainMission` é o ponto de composição dos futuros comportamentos da prova.
+Atualmente ela não executa nenhum comportamento e mantém os dois comandos de
+motor em zero. Isso deixa uma base segura e explícita para receber novos módulos
+de pista, obstáculo, rampa ou resgate quando suas regras forem definidas.
 
-O stream de debug usa azul para `CurrentPath`, amarelo para `Preview`, ciano para
-os samples e ponto de controle, magenta/vermelho para rejeições, vermelho para o
-Corner Anchor/zona de ação e verde para a marca validada. Ele também informa a
-validade da raiz, quantidade de samples de controle, motivo das rejeições, Y da
-âncora e proximidade. O dashboard mostra o `NavigationState` real sobre o vídeo.
+Cada comportamento novo deve ser integrado de forma deliberada pelo
+`MainMission`, com critérios claros de entrada, término e falha. A câmera bruta
+pode continuar sendo usada no dashboard durante o desenvolvimento sem influenciar
+o movimento do robô.
 
-### Detecção de verde
+Regras para os próximos comportamentos:
 
-- Faixa HSV atual: `[35, 50, 40]` até `[90, 255, 255]`.
-- Área mínima: 50 pixels na imagem reduzida.
-- O verde só é validado se houver preto imediatamente antes dele.
-- O lado é comparado com o X local do `CurrentPath` na altura da marca.
-- Verde à esquerda gera `ESQUERDA`.
-- Verde à direita gera `DIREITA`.
-- Verde nos dois lados gera `MEIA VOLTA`.
-- O status publica confiança e proximidade; o C++ exige três observações e só
-  inicia a regra quando a marca alcança a zona de ação.
-
-> **PREENCHER:** condições de iluminação usadas na calibração, amostras das cores
-> da pista, câmera/óptica exata e conjunto de imagens de teste versionado.
-
-## 17. Estratégia autônoma atual
-
-### Seguidor de linha
-
-- Referência base: `0.65 / 0.65`; o sincronismo reduz o lado mais rápido usando
-  a eficiência observada nos encoders.
-- Ganho de posição: 0,0008 por pixel.
-- Ganho secundário de heading: 0,0002 por grau.
-- Quando posição e heading discordam, o heading cancela no máximo 50% da
-  correção lateral; ele não pode inverter o sentido que recentraliza o robô.
-- Correção limitada inicialmente a `0.01` para calibrar a visão em baixa velocidade.
-- Filtros separados: posição com peso 0,20 e heading com peso 0,25 por status novo.
-- Na partida, exige cinco status consecutivos com `CurrentPath` válido e mantém
-  PWM zero durante essa confirmação. Eventos visuais também ficam bloqueados.
-- Zona morta central suave: 6 pixels; somente o excesso entra no controle.
-- Variação máxima da correção: `0.002` por ciclo de 20 ms.
-- Em curvas suaves, o lado interno permanece na base e somente o lado externo
-  recebe até `+0.01`. Aumentar esse limite fortalece e acelera a correção.
-- Preview confirmado pode preparar velocidade, mas nunca entra diretamente no steering.
-- Corner e verde só acumulam confirmação quando o `CurrentPath` do mesmo status
-  está válido; ruído distante durante perda de linha não pode criar um evento.
-- Corner exige três status, usa latch e só executa a partir de proximidade 0,72.
-- Se a raiz reta desaparecer durante a transição de um corner confirmado e já
-  próximo, o corner latched inicia um avanço reto de 15 cm em vez de cair na busca
-  genérica de linha. A distância usa o menor deslocamento dos dois encoders e
-  termina com 200 ms de PWM zero antes do giro. Eventos não confirmados continuam
-  usando a parada e busca limitada.
-- Para calibrar a zona de ação, primeiro confirme no stream que a raiz azul e o
-  Corner Anchor vermelho estão corretos. Depois ajuste `kEventActionProximity`
-  em `include/obr/config.h` e mantenha `EVENT_ACTION_PROXIMITY` do debug Python
-  com o mesmo valor. Aumentar aproxima o gatilho da base da ROI; diminuir antecipa.
-- Durante o corner, gira até encontrar o novo segmento visual e então exige três
-  status válidos em `Reacquiring` antes de voltar a `Following`. Ao encontrar o
-  novo segmento, estabiliza a rotação, registra uma nova origem dos encoders,
-  recua 15 cm e estabiliza novamente. Só depois recalcula a trajetória e entra
-  em `Reacquiring`. Os motores permanecem zerados até três status coerentes
-  confirmarem o novo `CurrentPath`; se a linha não estiver válida, o timeout
-  encerra a missão em vez de iniciar outra busca cega.
-- Corners, decisões por verde e readquisição acionam os dois lados no mínimo
-  operacional e em sentidos opostos. A busca genérica de uma linha perdida é
-  diferente: mantém os dois lados para frente e conserva o último diferencial
-  de velocidade, portanto continua no ângulo observado sem virar no próprio eixo.
-  Os tempos iniciais do verde são 350 ms para curva e 650 ms para meia-volta e
-  ainda precisam ser calibrados no piso.
-- Giro visual possui timeout de 1800 ms; readquisição também possui 1800 ms.
-- Nos dois primeiros status sem linha, repete exatamente o último arco comandado.
-  Se continuar sem linha, reforça o mesmo sentido até o diferencial de `0.01`.
-- Se o último arco era central, continua procurando para frente em `0.65 / 0.65`
-  lógico, com a sincronização automática aplicada pelo `MotorController`.
-- A busca permanece ativa por no máximo 3000 ms. Depois disso, zera os motores
-  para não manter movimento indefinido sem referência visual.
-- Se o JSON da câmera passar de 400 ms, para.
-
-Estados explícitos: `Following`, `ApproachingEvent`, `AdvancingToCorner`,
-`ExecutingTurn`, `ReversingAfterCorner`, `Reacquiring` e `LineLost`. Não existe
-modo especial para zig-zag; somente o
-próximo evento confirmado é acompanhado.
-
-### Marcações verdes
-
-1. Confirma a marca em três status e espera proximidade 0,72.
-2. Avança por 170 ms para aproximar o centro da interseção.
-3. Gira com potência lógica mínima de `0.65`.
-4. Curva simples parte de 350 ms.
-5. Meia-volta parte de 650 ms.
-6. Entra em `Reacquiring` e só libera `Following` após confirmar a nova linha.
-7. Ignora novo verde por 900 ms após a manobra.
-
-Os tempos foram reduzidos proporcionalmente ao aumento de potência, mas são apenas
-um ponto inicial. As manobras verdes continuam sem fechamento por encoder ou IMU.
+- cada módulo deve ter uma única responsabilidade;
+- decisões de missão pertencem a `MainMission`;
+- resultados de sensores entram por estruturas de dados, sem acesso ao dashboard;
+- comandos de movimento passam por `RobotState` e `MotorController`;
+- cada comportamento deve definir como entra, como termina e como para os motores;
+- perda de sensor, E-Stop ou timeout deve resultar no estado mais seguro;
+- um novo comportamento visual deve ser isolado e testado antes da integração.
 
 ### Recursos ainda não usados pela missão principal
 
@@ -850,7 +754,7 @@ ativos.
 - bateria e ADC;
 - link, uptime e idade da ESP32;
 - CPU, RAM e temperatura da Raspberry;
-- câmera, FPS, linha, resolução e formato;
+- câmera, FPS, resolução e formato;
 - potências solicitadas e aplicadas;
 - contagens e taxas dos encoders;
 - ultrassônico;
@@ -1066,21 +970,14 @@ de iniciar câmera ou programa principal.
 | Ambos os lados giram em W/S | **PREENCHER** | |
 | A/D gira com os dois lados em sentidos opostos | **PREENCHER** | Rodas suspensas |
 | Giro de 90° para no alvo | **PREENCHER** | |
-| Máscaras sintéticas da geometria visual | Confirmado | `python3 scripts/test_vision_path.py` |
-| Corner distante não altera steering atual | Confirmado sinteticamente | CurrentPath reto; evento no Preview |
-| Linha preta em diferentes luzes | **PREENCHER** | |
-| Verde esquerda/direita/meia-volta | **PREENCHER** | |
+| Stream da câmera não possui sobreposições | **PREENCHER** | Conferir imagem direta no dashboard |
+| Missão Principal mantém os motores zerados | **PREENCHER** | Testar com as rodas suspensas |
 | Rampa indica sinal correto | **PREENCHER** | |
 | Bateria confere com multímetro | **PREENCHER** | |
 | Autonomia completa de prova | **PREENCHER** | |
 
-Não existem testes automatizados no CMake atualmente. `ctest` não encontra
-casos cadastrados. A geometria Python possui testes offline independentes de
-câmera, GPIO e motores:
-
-```sh
-python3 scripts/test_vision_path.py
-```
+Não existem testes automatizados no CMake atualmente. `ctest` não encontra casos
+cadastrados.
 
 ## 24. Diagnóstico rápido
 
@@ -1163,12 +1060,12 @@ Confirme:
 
 ## 25. Limitações e dívidas técnicas conhecidas
 
-- Não há testes automatizados de C++; a geometria visual possui testes sintéticos offline.
+- Não há testes automatizados de C++.
 - Dashboard não possui autenticação ou HTTPS.
 - Credencial do Wi-Fi de bancada está no firmware.
 - `robot_test` é um nome provisório para o binário principal.
 - Parser JSON do C++ é manual e simples, sem biblioteca dedicada.
-- Manobras verdes são temporizadas.
+- A Missão Principal ainda não possui comportamentos autônomos instalados.
 - Ultrassônico ainda não influencia a estratégia.
 - Bateria baixa não gera parada automática.
 - Não há detecção explícita de travamento simultâneo dos dois lados.
@@ -1177,7 +1074,7 @@ Confirme:
   2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
 - PCA9685 ainda não controla mecanismos.
-- Parâmetros de visão ainda precisam de imagens reais versionadas e calibração no piso.
+- Obstáculos, rampas, verdes, resgate e outras situações ainda não são classificados.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
   em kernels Linux recentes; funciona na configuração atual, mas deve ser
@@ -1192,8 +1089,7 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Registrar modelo e CPR dos encoders.
 - [ ] Calibrar bateria contra multímetro.
 - [ ] Criar testes automatizados para `RobotState`, protocolo e missões.
-- [ ] Complementar as máscaras sintéticas com reprodução de imagens reais gravadas.
-- [ ] Fechar giro verde usando IMU/encoder, não somente tempo.
+- [ ] Especificar e testar cada novo comportamento antes de integrá-lo à Missão Principal.
 - [ ] Implementar detecção de travamento dos dois lados.
 - [ ] Definir limite de bateria baixa e política segura.
 - [ ] Integrar ultrassônico à estratégia quando a regra exigir.
@@ -1283,9 +1179,10 @@ curl http://127.0.0.1:8080/camera-status.json
 | Segurança e sensores ESP32 | `esp32/obr_esp32_bridge/obr_esp32_bridge.ino` |
 | Protocolo UART na Raspberry | `src/hal/esp32_bridge.cpp` |
 | Estados e modos | `src/robot/robot_state.cpp` |
-| Estratégias autônomas | `src/robot/line_follower.cpp` |
+| Seleção de missões | `src/robot/mission_controller.cpp` |
+| Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
-| Visão | `scripts/camera_line_frame.py` |
+| Captura da câmera | `scripts/camera_line_frame.py` |
 | Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh` |
 | Startup | `scripts/run_robot.sh` / `scripts/obr-robot.service` |
 
