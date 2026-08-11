@@ -47,7 +47,8 @@ bool driveDistanceEncodersReady(const Esp32TelemetrySnapshot& telemetry)
 bool selectedMissionReady(
     AutonomousMission mission,
     const Esp32TelemetrySnapshot& telemetry,
-    bool cameraReady)
+    bool cameraReady,
+    const CameraLineSnapshot& cameraLineSnapshot)
 {
     if (mission == AutonomousMission::TurnRight90)
     {
@@ -57,7 +58,8 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
-    return cameraReady;
+    return cameraReady && cameraLineSnapshot.sourceFresh &&
+           cameraLineSnapshot.nearValid;
 }
 }
 
@@ -94,6 +96,8 @@ int main()
     bool systemDisplayStatusSent = false;
     bool lastSystemDisplayReady = false;
     auto lastSystemDisplayStatusTime = std::chrono::steady_clock::now();
+    auto lastCameraLineDiagnosticTime =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
     while (running)
     {
         const Esp32TelemetrySnapshot esp32Telemetry = esp32.telemetrySnapshot();
@@ -106,6 +110,30 @@ int main()
         }
 
         const bool cameraReady = cameraMonitor.ready();
+        const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
+        const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
+        if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
+            std::chrono::seconds(1))
+        {
+            // A prévia da visão é somente diagnóstica e nunca altera o estado do robô.
+            std::cout << std::boolalpha
+                      << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
+                      << " nearValid=" << cameraLineSnapshot.nearValid
+                      << " lineSequence=" << cameraLineSnapshot.lineSequence
+                      << " ageMs=" << cameraLineSnapshot.ageMs
+                      << " nearError=" << cameraLineSnapshot.nearError
+                      << " correction=" << cameraLineSnapshot.correction
+                      << " leftPreview=" << cameraLineSnapshot.leftPreview
+                      << " rightPreview=" << cameraLineSnapshot.rightPreview
+                      << " farValid=" << cameraLineSnapshot.farValid
+                      << " farError=" << cameraLineSnapshot.farError
+                      << " farArea=" << cameraLineSnapshot.farArea
+                      << " centerDeltaValid="
+                      << cameraLineSnapshot.centerDeltaValid
+                      << " centerDeltaPx=" << cameraLineSnapshot.centerDeltaPx
+                      << std::noboolalpha << std::endl;
+            lastCameraLineDiagnosticTime = cameraLineDiagnosticTime;
+        }
         const bool startButtonPressedEdge =
             esp32Telemetry.startButtonPressed && !previousStartButtonPressed;
         const bool startButtonReleasedEdge =
@@ -150,7 +178,10 @@ int main()
                 else
                 {
                     const bool missionReady = selectedMissionReady(
-                        stateBeforeStart.autonomousMission, esp32Telemetry, cameraReady);
+                        stateBeforeStart.autonomousMission,
+                        esp32Telemetry,
+                        cameraReady,
+                        cameraLineSnapshot);
                     const bool startAllowed = stateBeforeStart.mode == "stopped" &&
                                               !stateBeforeStart.emergencyStop &&
                                               esp32Telemetry.readyForOperation() && missionReady;
@@ -187,7 +218,11 @@ int main()
             std::cout << "Physical Start release produced no short event to consume\n";
         }
 
-        missionController.update(robotState, esp32Telemetry);
+        missionController.update(
+            robotState,
+            esp32Telemetry,
+            cameraReady,
+            cameraLineSnapshot);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.

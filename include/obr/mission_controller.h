@@ -14,7 +14,9 @@ class MissionController
 public:
     void update(
         RobotState& robotState,
-        const Esp32TelemetrySnapshot& esp32Telemetry);
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        bool cameraReady,
+        const CameraLineSnapshot& cameraLineSnapshot);
 
 private:
     enum class Turn90Phase

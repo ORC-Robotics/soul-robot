@@ -5,6 +5,7 @@ Ela não calcula comandos nem interfere no controle do robô.
 """
 
 import json
+import math
 import os
 import signal
 import threading
@@ -30,6 +31,8 @@ FRAME_PATH = "/tmp/obr_camera_frame.jpg"
 TEMP_FRAME_PATH = "/tmp/obr_camera_frame.tmp.jpg"
 STATUS_PATH = "/tmp/obr_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_camera_status.tmp.json"
+LINE_STATUS_PATH = "/dev/shm/obr_line_status.json"
+TEMP_LINE_STATUS_PATH = "/dev/shm/obr_line_status.tmp.json"
 
 LIGHT_PIN_BOARD = 40
 FRAME_WIDTH = 960
@@ -54,9 +57,9 @@ CAMERA_CONTRAST = 1.05
 CAMERA_SATURATION = 1.0
 CAMERA_EXPOSURE_VALUE = 0.4
 
-# A segmentação experimental usa somente os 25% inferiores do frame.
+# A segmentação experimental usa somente os 32,5% inferiores do frame.
 # Alterar este valor muda apenas a região destacada no vídeo de debug.
-LINE_ROI_START_RATIO = 0.75
+LINE_ROI_START_RATIO = 0
 # Pixels abaixo deste valor são considerados parte da linha preta.
 # Este threshold é fixo e não altera a exposição configurada da câmera.
 LINE_THRESHOLD = 100
@@ -64,24 +67,39 @@ LINE_THRESHOLD = 100
 OPEN_KERNEL_SIZE = 3
 # O fechamento 5x5 preenche pequenos buracos dentro da faixa preta.
 CLOSE_KERNEL_SIZE = 5
-# A near_band ocupa os 30% inferiores da ROI já segmentada.
-NEAR_BAND_HEIGHT_RATIO = 0.30
+# Espessura mínima medida no contorno completo, antes dos recortes das bandas.
+FULL_LINE_MIN_SHORT_SIDE_PX = 50.0
+# A far_band diagnóstica vai de 67,5% até 82,5% da altura total do frame.
+FAR_BAND_START_RATIO = 0.1
+FAR_BAND_END_RATIO = 0.825
+# A near_band preserva exatamente os 7,5% inferiores do frame.
+NEAR_BAND_START_RATIO = 0.925
 # A prévia usa a mesma escala normalizada de potência dos motores.
-# Com correção máxima, os lados ficam entre o piso operacional de 0,65 e 0,95.
-BASE_SPEED_PREVIEW = 0.80
+# A base coincide com o piso operacional necessário para iniciar o movimento.
+BASE_SPEED_PREVIEW = 0.65
 KP_PREVIEW = 0.30
 MAX_CORRECTION_PREVIEW = 0.15
+# Limite superior da prévia na escala normalizada do protocolo de motores.
+MAX_OPERATIONAL_PREVIEW = 1.00
 # A zona morta usa o erro normalizado, não a correção de potência.
 NEAR_DEADZONE = 0.10
 # A conversão aproximada considera a fita física de 2 cm apenas para debug.
 REFERENCE_LINE_WIDTH_CM = 2.0
 # Espaçamento, em pixels, entre as marcas pequenas da régua da near_band.
 PIXEL_RULER_STEP = 20
+# Habilita ou desabilita somente os textos de diagnóstico desenhados no frame.
+DEBUG_TEXT_OVERLAY = False
 
 running = True
 latest_jpeg = None
 latest_jpeg_sequence = 0
 frame_condition = threading.Condition()
+
+
+def put_debug_text(*args, **kwargs):
+    """Desenha textos de diagnóstico somente quando o overlay está habilitado."""
+    if DEBUG_TEXT_OVERLAY:
+        cv2.putText(*args, **kwargs)
 
 
 def handle_signal(signum, frame):
@@ -216,7 +234,7 @@ def create_filtered_line_mask(frame):
     """Segmenta a linha preta na parte inferior sem gerar decisões de controle."""
 
     frame_height = frame.shape[0]
-    roi_start_y = int(frame_height * LINE_ROI_START_RATIO)
+    roi_start_y = int(round(frame_height * LINE_ROI_START_RATIO))
     line_roi = frame[roi_start_y:frame_height, :]
     gray_roi = cv2.cvtColor(line_roi, cv2.COLOR_BGR2GRAY)
 
@@ -238,6 +256,61 @@ def create_filtered_line_mask(frame):
     filtered_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, open_kernel)
     filtered_mask = cv2.morphologyEx(filtered_mask, cv2.MORPH_CLOSE, close_kernel)
     return filtered_mask, roi_start_y
+
+
+def create_line_candidate_mask(filtered_mask):
+    """Mantém somente contornos completos com espessura compatível com a fita."""
+
+    full_contours, _ = cv2.findContours(
+        filtered_mask.copy(),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    accepted_contours = []
+    for contour in full_contours:
+        rect = cv2.minAreaRect(contour)
+        width, height = rect[1]
+        if (
+            not math.isfinite(width)
+            or not math.isfinite(height)
+            or width <= 0.0
+            or height <= 0.0
+        ):
+            continue
+
+        short_side_px = min(width, height)
+        if short_side_px >= FULL_LINE_MIN_SHORT_SIDE_PX:
+            accepted_contours.append(contour)
+
+    line_candidate_mask = filtered_mask.copy()
+    line_candidate_mask.fill(0)
+    if accepted_contours:
+        cv2.drawContours(
+            line_candidate_mask,
+            accepted_contours,
+            -1,
+            255,
+            cv2.FILLED,
+        )
+    return line_candidate_mask
+
+
+def select_largest_line_contour(contours):
+    """Seleciona o maior contorno da banda com momento válido."""
+
+    selected_contour = None
+    selected_area = 0.0
+    selected_moments = None
+
+    for contour in contours:
+        contour_area = cv2.contourArea(contour)
+        contour_moments = cv2.moments(contour)
+        if contour_area > selected_area and contour_moments["m00"] > 0.0:
+            selected_contour = contour
+            selected_area = contour_area
+            selected_moments = contour_moments
+
+    return selected_contour, selected_area, selected_moments
 
 
 def encode_frame(frame):
@@ -262,13 +335,259 @@ def save_frame(jpeg):
     os.replace(TEMP_FRAME_PATH, FRAME_PATH)
 
 
+def save_line_status(
+    near_valid,
+    near_error,
+    control_error,
+    correction,
+    left_preview,
+    right_preview,
+    far_valid,
+    far_error,
+    far_area,
+    center_delta_valid,
+    center_delta_px,
+    line_timestamp,
+    line_sequence,
+):
+    """Publica em memória compartilhada o resultado visual já calculado."""
+
+    requested_near_valid = bool(near_valid)
+    line_values_finite = False
+    if requested_near_valid:
+        try:
+            near_error = float(near_error)
+            control_error = float(control_error)
+            correction = float(correction)
+            left_preview = float(left_preview)
+            right_preview = float(right_preview)
+            line_values_finite = all(
+                math.isfinite(value)
+                for value in (
+                    near_error,
+                    control_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                )
+            )
+        except (TypeError, ValueError):
+            line_values_finite = False
+
+    near_valid = requested_near_valid and line_values_finite
+    if not near_valid:
+        near_error = 0.0
+        control_error = 0.0
+        correction = 0.0
+        left_preview = 0.0
+        right_preview = 0.0
+
+    requested_far_valid = bool(far_valid)
+    far_values_valid = False
+    if requested_far_valid:
+        try:
+            far_error = float(far_error)
+            far_area = float(far_area)
+            far_values_valid = (
+                math.isfinite(far_error)
+                and -1.0 <= far_error <= 1.0
+                and math.isfinite(far_area)
+                and far_area >= 0.0
+            )
+        except (TypeError, ValueError):
+            far_values_valid = False
+
+    far_valid = requested_far_valid and far_values_valid
+    if not far_valid:
+        far_error = 0.0
+        far_area = 0.0
+
+    requested_center_delta_valid = bool(center_delta_valid)
+    center_delta_finite = False
+    if requested_center_delta_valid:
+        try:
+            center_delta_px = float(center_delta_px)
+            center_delta_finite = math.isfinite(center_delta_px)
+        except (TypeError, ValueError):
+            center_delta_finite = False
+
+    center_delta_valid = (
+        requested_center_delta_valid
+        and near_valid
+        and far_valid
+        and center_delta_finite
+    )
+    if not center_delta_valid:
+        center_delta_px = 0.0
+
+    try:
+        line_timestamp = float(line_timestamp)
+        if not math.isfinite(line_timestamp):
+            raise ValueError("lineTimestamp inválido")
+        if (
+            not isinstance(line_sequence, int)
+            or isinstance(line_sequence, bool)
+            or line_sequence < 0
+        ):
+            raise ValueError("lineSequence inválido")
+
+        line_status = {
+            "nearValid": near_valid,
+            "nearError": near_error,
+            "controlError": control_error,
+            "correction": correction,
+            "leftPreview": left_preview,
+            "rightPreview": right_preview,
+            "farValid": far_valid,
+            "farError": far_error,
+            "farArea": far_area,
+            "centerDeltaValid": center_delta_valid,
+            "centerDeltaPx": center_delta_px,
+            "lineTimestamp": line_timestamp,
+            "lineSequence": line_sequence,
+        }
+        with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
+            json.dump(line_status, status_file, allow_nan=False)
+        os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
+    except (OSError, TypeError, ValueError) as error:
+        print(f"Falha ao publicar telemetria rápida da linha: {error}", flush=True)
+
+
 def save_status(
     fps,
     camera_format="",
     active=True,
     error_message="",
+    near_valid=False,
+    near_error=0.0,
+    near_area=0.0,
+    near_height_px=0,
+    control_error=0.0,
+    correction=0.0,
+    left_preview=0.0,
+    right_preview=0.0,
+    far_valid=False,
+    far_error=0.0,
+    far_area=0.0,
+    far_height_px=0,
+    center_delta_valid=False,
+    center_delta_px=0.0,
+    line_timestamp=0.0,
+    line_sequence=0,
 ):
-    """Publica somente saúde e características do stream da câmera."""
+    """Publica saúde da câmera e a telemetria visual já calculada."""
+
+    requested_near_valid = bool(near_valid)
+    line_values_finite = not requested_near_valid
+    if requested_near_valid:
+        try:
+            near_error = float(near_error)
+            near_area = float(near_area)
+            control_error = float(control_error)
+            correction = float(correction)
+            left_preview = float(left_preview)
+            right_preview = float(right_preview)
+            line_values_finite = all(
+                math.isfinite(value)
+                for value in (
+                    near_error,
+                    near_area,
+                    control_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                )
+            ) and near_area >= 0.0
+        except (TypeError, ValueError):
+            line_values_finite = False
+
+    near_height_valid = (
+        isinstance(near_height_px, int)
+        and not isinstance(near_height_px, bool)
+        and near_height_px >= 0
+    )
+    if not near_height_valid:
+        near_height_px = 0
+
+    requested_far_valid = bool(far_valid)
+    far_values_valid = not requested_far_valid
+    if requested_far_valid:
+        try:
+            far_error = float(far_error)
+            far_area = float(far_area)
+            far_values_valid = (
+                math.isfinite(far_error)
+                and -1.0 <= far_error <= 1.0
+                and math.isfinite(far_area)
+                and far_area >= 0.0
+            )
+        except (TypeError, ValueError):
+            far_values_valid = False
+
+    far_height_valid = (
+        isinstance(far_height_px, int)
+        and not isinstance(far_height_px, bool)
+        and far_height_px >= 0
+    )
+    if not far_height_valid:
+        far_height_px = 0
+
+    requested_center_delta_valid = bool(center_delta_valid)
+    center_delta_finite = False
+    if requested_center_delta_valid:
+        try:
+            center_delta_px = float(center_delta_px)
+            center_delta_finite = math.isfinite(center_delta_px)
+        except (TypeError, ValueError):
+            center_delta_finite = False
+
+    try:
+        line_timestamp = float(line_timestamp)
+        line_timestamp_valid = (
+            math.isfinite(line_timestamp) and line_timestamp >= 0.0
+        )
+    except (TypeError, ValueError):
+        line_timestamp_valid = False
+
+    line_sequence_valid = (
+        isinstance(line_sequence, int)
+        and not isinstance(line_sequence, bool)
+        and line_sequence >= 0
+    )
+    near_valid = (
+        requested_near_valid
+        and line_values_finite
+        and line_timestamp_valid
+        and line_sequence_valid
+    )
+    far_valid = (
+        requested_far_valid
+        and far_values_valid
+        and line_timestamp_valid
+        and line_sequence_valid
+    )
+    center_delta_valid = (
+        requested_center_delta_valid
+        and near_valid
+        and far_valid
+        and center_delta_finite
+    )
+    if not near_valid:
+        near_error = 0.0
+        near_area = 0.0
+        control_error = 0.0
+        correction = 0.0
+        left_preview = 0.0
+        right_preview = 0.0
+    if not far_valid:
+        far_error = 0.0
+        far_area = 0.0
+    if not center_delta_valid:
+        center_delta_px = 0.0
+    if not line_timestamp_valid:
+        line_timestamp = 0.0
+    if not line_sequence_valid:
+        line_sequence = 0
 
     status = {
         "fps": round(fps, 2),
@@ -284,9 +603,25 @@ def save_status(
         "streamFps": MJPEG_STREAM_FPS,
         "error": error_message,
         "timestamp": time.time(),
+        "nearValid": near_valid,
+        "nearError": near_error,
+        "nearArea": near_area,
+        "nearHeightPx": near_height_px,
+        "controlError": control_error,
+        "correction": correction,
+        "leftPreview": left_preview,
+        "rightPreview": right_preview,
+        "farValid": far_valid,
+        "farError": far_error,
+        "farArea": far_area,
+        "farHeightPx": far_height_px,
+        "centerDeltaValid": center_delta_valid,
+        "centerDeltaPx": center_delta_px,
+        "lineTimestamp": line_timestamp,
+        "lineSequence": line_sequence,
     }
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
-        json.dump(status, status_file)
+        json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
 
 
@@ -323,32 +658,70 @@ def main():
         last_snapshot_time = 0.0
         last_status_time = 0.0
         smoothed_fps = 0.0
+        line_sequence = 0
 
         while running:
             frame = picam2.capture_array()
             filtered_mask, roi_start_y = create_filtered_line_mask(frame)
+            line_candidate_mask = create_line_candidate_mask(filtered_mask)
 
-            near_band_start_in_roi = int(
-                filtered_mask.shape[0] * (1.0 - NEAR_BAND_HEIGHT_RATIO)
+            frame_height = frame.shape[0]
+            far_band_start_y = int(round(
+                frame_height * FAR_BAND_START_RATIO
+            ))
+            far_band_end_y = int(round(
+                frame_height * FAR_BAND_END_RATIO
+            ))
+            far_band_start_in_roi = far_band_start_y - roi_start_y
+            far_band_end_in_roi = far_band_end_y - roi_start_y
+            far_band = line_candidate_mask[
+                far_band_start_in_roi:far_band_end_in_roi,
+                :,
+            ]
+            far_band_height_px = far_band.shape[0]
+            far_contours, _ = cv2.findContours(
+                far_band.copy(),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
             )
-            near_band_start_y = roi_start_y + near_band_start_in_roi
-            near_band = filtered_mask[near_band_start_in_roi:, :]
+
+            selected_far_contour, far_area, far_moments = (
+                select_largest_line_contour(far_contours)
+            )
+
+            far_valid = selected_far_contour is not None and far_moments is not None
+            far_center_x = 0.0
+            far_error = 0.0
+            far_center = None
+            if far_valid:
+                far_center_x = far_moments["m10"] / far_moments["m00"]
+                far_center_y = far_moments["m01"] / far_moments["m00"]
+                frame_half_width = frame.shape[1] / 2.0
+                far_error = (
+                    far_center_x - frame_half_width
+                ) / frame_half_width
+                far_center = (
+                    int(round(far_center_x)),
+                    far_band_start_y + int(round(far_center_y)),
+                )
+            else:
+                far_area = 0.0
+
+            near_band_start_y = int(round(
+                frame_height * NEAR_BAND_START_RATIO
+            ))
+            near_band_start_in_roi = near_band_start_y - roi_start_y
+            near_band = line_candidate_mask[near_band_start_in_roi:, :]
+            near_band_height_px = near_band.shape[0]
             near_contours, _ = cv2.findContours(
                 near_band.copy(),
                 cv2.RETR_EXTERNAL,
                 cv2.CHAIN_APPROX_SIMPLE,
             )
 
-            selected_near_contour = None
-            near_contour_area = 0.0
-            near_moments = None
-            for near_contour in near_contours:
-                contour_area = cv2.contourArea(near_contour)
-                contour_moments = cv2.moments(near_contour)
-                if contour_area > near_contour_area and contour_moments["m00"] > 0.0:
-                    selected_near_contour = near_contour
-                    near_contour_area = contour_area
-                    near_moments = contour_moments
+            selected_near_contour, near_contour_area, near_moments = (
+                select_largest_line_contour(near_contours)
+            )
 
             near_error = None
             near_center = None
@@ -365,6 +738,11 @@ def main():
                 )
 
             near_valid = near_error is not None
+            center_delta_valid = near_valid and far_valid
+            center_delta_px = 0.0
+            if center_delta_valid:
+                center_delta_px = line_center_x - far_center_x
+
             frame_width = frame.shape[1]
             frame_center_x = frame_width / 2.0
             safe_half_width_px = round(
@@ -399,15 +777,44 @@ def main():
                     -MAX_CORRECTION_PREVIEW,
                     min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
                 )
-                left_preview = BASE_SPEED_PREVIEW + correction
-                right_preview = BASE_SPEED_PREVIEW - correction
                 offset_px = near_error * (frame_width / 2.0)
                 if correction > 0.0:
+                    left_preview = BASE_SPEED_PREVIEW + correction
+                    right_preview = BASE_SPEED_PREVIEW
                     preview_state = "CORRIGINDO DIREITA"
                     preview_direction = "DIREITA"
-                else:
+                elif correction < 0.0:
+                    left_preview = BASE_SPEED_PREVIEW
+                    right_preview = BASE_SPEED_PREVIEW + abs(correction)
                     preview_state = "CORRIGINDO ESQUERDA"
                     preview_direction = "ESQUERDA"
+                else:
+                    left_preview = BASE_SPEED_PREVIEW
+                    right_preview = BASE_SPEED_PREVIEW
+                    preview_state = "RETO"
+                    preview_direction = "RETO"
+
+            if near_valid:
+                left_preview = min(left_preview, MAX_OPERATIONAL_PREVIEW)
+                right_preview = min(right_preview, MAX_OPERATIONAL_PREVIEW)
+
+            line_timestamp = time.time()
+            line_sequence += 1
+            save_line_status(
+                near_valid,
+                near_error,
+                control_error,
+                correction,
+                left_preview,
+                right_preview,
+                far_valid,
+                far_error,
+                far_area,
+                center_delta_valid,
+                center_delta_px,
+                line_timestamp,
+                line_sequence,
+            )
 
             # A largura é medida em uma única altura fixa da near_band.
             # A estimativa em centímetros só é útil com a fita aproximadamente
@@ -453,10 +860,10 @@ def main():
                     offset_cm_approx = offset_px / px_per_cm_approx
 
             # O fundo preto elimina da visualização tudo que não pertence à linha.
-            # A máscara permanece inalterada e seus pixels ativos aparecem em branco.
+            # Somente os candidatos globais aprovados aparecem em branco.
             frame[:] = (0, 0, 0)
             line_roi_debug = frame[roi_start_y:frame.shape[0], :]
-            line_roi_debug[filtered_mask > 0] = (255, 255, 255)
+            line_roi_debug[line_candidate_mask > 0] = (255, 255, 255)
 
             # O preenchimento usa somente o recorte estreito da zona segura
             # para reduzir cópias de imagem e preservar o FPS do stream.
@@ -475,12 +882,20 @@ def main():
                 safe_zone_debug,
             )
 
-            # A linha amarela marca onde começam os 25% processados da imagem.
+            # A linha amarela marca onde começam os 32,5% processados da imagem.
             cv2.line(
                 frame,
                 (0, roi_start_y),
                 (frame.shape[1] - 1, roi_start_y),
                 (0, 255, 255),
+                2,
+            )
+            # A far_band e seu centro são referências diagnósticas em laranja.
+            cv2.rectangle(
+                frame,
+                (0, far_band_start_y),
+                (frame.shape[1] - 1, far_band_end_y - 1),
+                (0, 165, 255),
                 2,
             )
             # A near_band e seu centro são apenas referências visuais em azul.
@@ -569,7 +984,7 @@ def main():
                     ruler_label = (
                         f"+{ruler_offset}" if ruler_offset > 0 else str(ruler_offset)
                     )
-                    cv2.putText(
+                    put_debug_text(
                         frame,
                         ruler_label,
                         (max(0, ruler_x - 11), ruler_bottom_y - 14),
@@ -582,6 +997,8 @@ def main():
 
             if near_center is not None:
                 cv2.circle(frame, near_center, 6, (255, 0, 0), -1)
+            if far_center is not None:
+                cv2.circle(frame, far_center, 6, (0, 165, 255), -1)
 
             active_pixel_count = cv2.countNonZero(filtered_mask)
             debug_lines = (
@@ -590,7 +1007,7 @@ def main():
                 f"PIXELS ATIVOS: {active_pixel_count}",
             )
             for index, debug_text in enumerate(debug_lines):
-                cv2.putText(
+                put_debug_text(
                     frame,
                     debug_text,
                     (12, roi_start_y + 28 + index * 28),
@@ -617,7 +1034,7 @@ def main():
             )
             control_debug_x = max(12, int(frame_width * 0.36))
             for index, debug_text in enumerate(control_debug_lines):
-                cv2.putText(
+                put_debug_text(
                     frame,
                     debug_text,
                     (control_debug_x, 30 + index * 28),
@@ -649,7 +1066,7 @@ def main():
                 "FITA APROX. LONGITUDINAL",
             )
             for index, debug_text in enumerate(measurement_debug_lines):
-                cv2.putText(
+                put_debug_text(
                     frame,
                     debug_text,
                     (12, 30 + index * 25),
@@ -668,16 +1085,41 @@ def main():
                 ),
                 f"NEAR VALID: {'SIM' if near_error is not None else 'NAO'}",
                 f"NEAR AREA: {near_contour_area:.1f}",
+                f"NEAR HEIGHT PX: {near_band_height_px}",
             )
             near_debug_x = max(12, frame.shape[1] - 330)
             for index, debug_text in enumerate(near_debug_lines):
-                cv2.putText(
+                put_debug_text(
                     frame,
                     debug_text,
-                    (near_debug_x, 30 + index * 28),
+                    (near_debug_x, 30 + index * 26),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
                     (255, 0, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+            center_delta_text = (
+                f"{center_delta_px:+.1f}"
+                if center_delta_valid
+                else "INVALIDO"
+            )
+            far_debug_lines = (
+                f"FAR VALID: {'SIM' if far_valid else 'NAO'}",
+                f"FAR ERROR: {far_error:+.3f}",
+                f"FAR AREA: {far_area:.1f}",
+                f"CENTER DELTA PX: {center_delta_text}",
+                f"FAR HEIGHT PX: {far_band_height_px}",
+            )
+            for index, debug_text in enumerate(far_debug_lines):
+                put_debug_text(
+                    frame,
+                    debug_text,
+                    (near_debug_x, 270 + index * 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.60,
+                    (0, 165, 255),
                     2,
                     cv2.LINE_AA,
                 )
@@ -688,10 +1130,10 @@ def main():
                 f"RIGHT PREVIEW: {right_preview:.3f}",
             )
             for index, debug_text in enumerate(preview_debug_lines):
-                cv2.putText(
+                put_debug_text(
                     frame,
                     debug_text,
-                    (near_debug_x, 120 + index * 28),
+                    (near_debug_x, 136 + index * 28),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.65,
                     (0, 255, 255),
@@ -699,10 +1141,10 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            cv2.putText(
+            put_debug_text(
                 frame,
                 preview_direction,
-                (near_debug_x, 215),
+                (near_debug_x, 225),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.75,
                 (0, 255, 255),
@@ -751,7 +1193,26 @@ def main():
                         last_snapshot_time = now
 
             if now - last_status_time >= 1.0 / STATUS_FPS:
-                save_status(smoothed_fps, camera_format)
+                save_status(
+                    smoothed_fps,
+                    camera_format,
+                    near_valid=near_valid,
+                    near_error=near_error,
+                    near_area=near_contour_area,
+                    near_height_px=near_band_height_px,
+                    control_error=control_error,
+                    correction=correction,
+                    left_preview=left_preview,
+                    right_preview=right_preview,
+                    far_valid=far_valid,
+                    far_error=far_error,
+                    far_area=far_area,
+                    far_height_px=far_band_height_px,
+                    center_delta_valid=center_delta_valid,
+                    center_delta_px=center_delta_px,
+                    line_timestamp=line_timestamp,
+                    line_sequence=line_sequence,
+                )
                 last_status_time = now
     except Exception as error:
         error_message = f"Camera script failed: {error}"

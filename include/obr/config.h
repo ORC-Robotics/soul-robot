@@ -17,6 +17,14 @@ constexpr const char* kCameraFramePath = "/tmp/obr_camera_frame.jpg";
 // O FPS mostrado no dashboard vem deste arquivo para não misturar câmera com telemetria do robô.
 constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 
+// Arquivo JSON rápido com a última medição visual calculada pelo processo Python.
+// Esta fonte é usada somente para diagnóstico e não envia comandos aos motores.
+constexpr const char* kCameraLineStatusPath = "/dev/shm/obr_line_status.json";
+
+// Idade máxima, em milissegundos, aceita para uma medição visual rápida.
+// Amostras mais antigas são marcadas como indisponíveis e têm seus valores zerados.
+constexpr int kCameraLineStatusTimeoutMs = 125;
+
 // Porta local do stream MJPEG gerado pelo script Python da câmera.
 // O dashboard acessa esse vídeo pelo proxy /camera-stream.mjpg na porta principal.
 constexpr int kCameraStreamPort = 8090;

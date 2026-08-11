@@ -605,6 +605,16 @@ std::string DashboardServer::dashboardHtml()
     .camera-frame.offline img { opacity: 0; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
     .camera-frame:not(.offline) .camera-message { display: none; }
+    .camera-diagnostics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
+    .camera-diagnostic-group { --diagnostic-color: var(--cyan); min-width: 0; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--diagnostic-color) 35%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--diagnostic-color) 7%, #09151d); }
+    .camera-diagnostic-group.near { --diagnostic-color: #60a5fa; }
+    .camera-diagnostic-group.far { --diagnostic-color: #fb923c; }
+    .camera-diagnostic-group.control { --diagnostic-color: var(--yellow); }
+    .camera-diagnostic-group h3 { margin: 0 0 7px; color: var(--diagnostic-color); font-size: .65rem; letter-spacing: .12em; text-transform: uppercase; }
+    .camera-diagnostic-list { display: grid; gap: 4px; margin: 0; }
+    .camera-diagnostic-item { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+    .camera-diagnostic-item dt { color: var(--muted); font-size: .62rem; }
+    .camera-diagnostic-item dd { margin: 0; color: var(--text); font-size: .69rem; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .mission-state-card { --state-color: var(--cyan); background: radial-gradient(circle at 100% 0, #22d3ee14, transparent 38%), linear-gradient(145deg, #10202a, #0b171f); }
     .mission-state-card[data-tone="active"] { --state-color: var(--green); }
     .mission-state-card[data-tone="warn"] { --state-color: var(--yellow); }
@@ -824,6 +834,37 @@ std::string DashboardServer::dashboardHtml()
         <div id="cameraFrame" class="camera-frame offline">
           <img id="cameraImage" alt="Imagem direta da câmera frontal">
           <div class="camera-message">Aguardando o stream da câmera</div>
+        </div>
+        <div class="camera-diagnostics" aria-label="Diagnóstico visual da linha">
+          <section class="camera-diagnostic-group near">
+            <h3>Near</h3>
+            <dl class="camera-diagnostic-list">
+              <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraNearValid">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraNearError">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraNearArea">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraNearHeight">—</dd></div>
+            </dl>
+          </section>
+          <section class="camera-diagnostic-group far">
+            <h3>Far</h3>
+            <dl class="camera-diagnostic-list">
+              <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraFarValid">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraFarError">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraFarArea">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraFarHeight">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Delta de centro</dt><dd id="cameraCenterDelta">—</dd></div>
+            </dl>
+          </section>
+          <section class="camera-diagnostic-group control">
+            <h3>Controle</h3>
+            <dl class="camera-diagnostic-list">
+              <div class="camera-diagnostic-item"><dt>Control error</dt><dd id="cameraControlError">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Correction</dt><dd id="cameraCorrection">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
+              <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
+            </dl>
+          </section>
         </div>
       </section>
 
@@ -1055,6 +1096,15 @@ std::string DashboardServer::dashboardHtml()
     const cameraFps = element("cameraFps");
     const cameraResolution = element("cameraResolution");
     const cameraFormat = element("cameraFormat");
+    const cameraDiagnosticFields = {
+      nearValid: element("cameraNearValid"), nearError: element("cameraNearError"),
+      nearArea: element("cameraNearArea"), nearHeight: element("cameraNearHeight"),
+      farValid: element("cameraFarValid"), farError: element("cameraFarError"),
+      farArea: element("cameraFarArea"), farHeight: element("cameraFarHeight"),
+      centerDelta: element("cameraCenterDelta"), controlError: element("cameraControlError"),
+      correction: element("cameraCorrection"), leftPreview: element("cameraLeftPreview"),
+      rightPreview: element("cameraRightPreview"), lineSequence: element("cameraLineSequence")
+    };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
     const oledTitle = element("oledTitle");
@@ -1068,6 +1118,8 @@ std::string DashboardServer::dashboardHtml()
     let filteredRightEncoderRate = null;
     let manualMinimumPower = 0.65;
     let manualMaximumPower = 0.97;
+    let lastCameraStatusTimestamp = null;
+    let lastCameraStatusChangeAtMs = 0;
 
     function setPill(target, text, state) {
       target.textContent = text;
@@ -1657,19 +1709,73 @@ std::string DashboardServer::dashboardHtml()
     function cameraStreamUrl() { return `/camera-stream.mjpg?ts=${Date.now()}`; }
     function startCameraStream() { window.clearTimeout(cameraReconnectTimer); cameraImage.src = cameraStreamUrl(); }
 
+    function clearCameraDiagnostics() {
+      Object.values(cameraDiagnosticFields).forEach(field => { field.textContent = "—"; });
+    }
+
+    function formatCameraDiagnostic(value, decimals) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number.toFixed(decimals) : "—";
+    }
+
+    function updateCameraDiagnostics(data) {
+      const numericFields = [
+        data.nearError, data.nearArea, data.nearHeightPx,
+        data.controlError, data.correction, data.leftPreview, data.rightPreview,
+        data.farError, data.farArea, data.farHeightPx, data.centerDeltaPx,
+        data.lineTimestamp, data.lineSequence, data.timestamp
+      ];
+      const fieldsPresent = typeof data.nearValid === "boolean" &&
+        typeof data.farValid === "boolean" &&
+        typeof data.centerDeltaValid === "boolean" &&
+        numericFields.every(value => Number.isFinite(Number(value)));
+      const statusTimestamp = Number(data.timestamp);
+      const lineTimestamp = Number(data.lineTimestamp);
+      const nowMs = performance.now();
+      if (statusTimestamp !== lastCameraStatusTimestamp) {
+        lastCameraStatusTimestamp = statusTimestamp;
+        lastCameraStatusChangeAtMs = nowMs;
+      }
+      const lineAgeAtStatusMs = (statusTimestamp - lineTimestamp) * 1000;
+      const statusFresh = fieldsPresent && nowMs - lastCameraStatusChangeAtMs <= 1000 &&
+        lineAgeAtStatusMs >= 0 && lineAgeAtStatusMs <= 1000;
+      if (!statusFresh) {
+        clearCameraDiagnostics();
+        return;
+      }
+
+      cameraDiagnosticFields.nearValid.textContent = data.nearValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.nearError.textContent = formatCameraDiagnostic(data.nearError, 3);
+      cameraDiagnosticFields.nearArea.textContent = formatCameraDiagnostic(data.nearArea, 1);
+      cameraDiagnosticFields.nearHeight.textContent = `${Math.round(Number(data.nearHeightPx))} px`;
+      cameraDiagnosticFields.farValid.textContent = data.farValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.farError.textContent = formatCameraDiagnostic(data.farError, 3);
+      cameraDiagnosticFields.farArea.textContent = formatCameraDiagnostic(data.farArea, 1);
+      cameraDiagnosticFields.farHeight.textContent = `${Math.round(Number(data.farHeightPx))} px`;
+      cameraDiagnosticFields.centerDelta.textContent = data.centerDeltaValid
+        ? `${formatCameraDiagnostic(data.centerDeltaPx, 1)} px`
+        : "INVÁLIDO";
+      cameraDiagnosticFields.controlError.textContent = formatCameraDiagnostic(data.controlError, 3);
+      cameraDiagnosticFields.correction.textContent = formatCameraDiagnostic(data.correction, 3);
+      cameraDiagnosticFields.leftPreview.textContent = formatCameraDiagnostic(data.leftPreview, 3);
+      cameraDiagnosticFields.rightPreview.textContent = formatCameraDiagnostic(data.rightPreview, 3);
+      cameraDiagnosticFields.lineSequence.textContent = String(Math.trunc(Number(data.lineSequence)));
+    }
+
     async function refreshCameraStatus() {
       try {
         const response = await fetch(`/camera-status.json?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
         if (data.active !== true || Number(data.fps) <= 0) {
-          cameraFps.textContent = "aguardando"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; return;
+          cameraFps.textContent = "aguardando"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics(); return;
         }
         cameraFps.textContent = Number(data.fps).toFixed(1);
         cameraResolution.textContent = Number(data.width) > 0 && Number(data.height) > 0 ? `${Number(data.width).toFixed(0)}×${Number(data.height).toFixed(0)}` : "--";
         cameraFormat.textContent = data.cameraFormat || "--";
+        updateCameraDiagnostics(data);
       } catch {
-        cameraFps.textContent = "erro"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--";
+        cameraFps.textContent = "erro"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics();
       }
     }
 

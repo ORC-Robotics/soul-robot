@@ -42,7 +42,9 @@ AutonomousStatus makeDistanceStatus(
 
 void MissionController::update(
     RobotState& robotState,
-    const Esp32TelemetrySnapshot& esp32Telemetry)
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    bool cameraReady,
+    const CameraLineSnapshot& cameraLineSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -75,7 +77,11 @@ void MissionController::update(
     default:
         turn90Phase_ = Turn90Phase::Idle;
         distancePhase_ = DistancePhase::Idle;
-        mainMission_.update(robotState, esp32Telemetry);
+        mainMission_.update(
+            robotState,
+            esp32Telemetry,
+            cameraReady,
+            cameraLineSnapshot);
         return;
     }
 }
