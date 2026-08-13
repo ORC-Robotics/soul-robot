@@ -452,17 +452,40 @@ cd /home/obr/OBR2026K
 python3 scripts/camera_line_frame.py
 ```
 
+O papel da câmera conectada pode ser escolhido por argumento:
+
+```sh
+python3 scripts/camera_line_frame.py --camera-role forward
+python3 scripts/camera_line_frame.py --camera-role down
+```
+
+Ou pela variável de ambiente usada pelo serviço:
+
+```sh
+OBR_CAMERA_ROLE=down python3 scripts/camera_line_frame.py
+```
+
+O perfil `forward` preserva a saída `960x540` e seleciona explicitamente o modo
+físico `1920x1080`. O perfil `down` usa saída `640x480` e seleciona
+explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver como
+full-FOV. Sem argumento nem variável de ambiente, o perfil `forward` continua
+sendo usado por compatibilidade.
+
+Para selecionar um papel de forma persistente no serviço, crie um override do
+systemd com `Environment=OBR_CAMERA_ROLE=down` ou
+`Environment=OBR_CAMERA_ROLE=forward` e reinicie `obr-robot`.
+
 Se estiver em outra pasta, use o caminho completo:
 
 ```sh
 python3 /home/obr/OBR2026K/scripts/camera_line_frame.py
 ```
 
-O script não cria máscara, não detecta faixas ou marcações, não calcula trajetória
-e não envia decisões de movimento. A configuração padrão usa `960x540`, JPEG
-`82` e stream alvo de `30 FPS`. Como a câmera está montada de cabeça para baixo,
-o Picamera2 aplica rotação de 180°. Se o script não estiver rodando ou a câmera
-falhar, o painel continua disponível e mostra a câmera como indisponível.
+O script publica a máscara e os diagnósticos da linha usados pelo restante do
+projeto. A configuração padrão `forward` usa `960x540`, JPEG `82` e stream alvo
+de `30 FPS`. Como a câmera está montada de cabeça para baixo, o Picamera2 aplica
+rotação de 180°. Se o script não estiver rodando ou a câmera falhar, o painel
+continua disponível e mostra a câmera como indisponível.
 
 Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
 ele inicia esse script automaticamente junto com o robô. Depois de atualizar o
