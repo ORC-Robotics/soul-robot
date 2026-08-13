@@ -373,7 +373,7 @@ No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
 ré; `A/D` giram os dois lados em sentidos opostos e têm prioridade sobre `W/S`.
 Assim, uma combinação como `W+A` executa o giro completo, sem zerar um lado.
 Os limites separados de reta e
-curva começam em `0.65`, podem ser ajustados até `0.97` e ficam salvos no navegador. Soltar a tecla, trocar
+curva começam em `0.65`, podem ser ajustados até `1.0` e ficam salvos no navegador. Soltar a tecla, trocar
 de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
 nos modos Parado, Autônomo ou E-Stop.
 

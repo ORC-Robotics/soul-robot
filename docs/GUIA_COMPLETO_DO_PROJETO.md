@@ -729,7 +729,7 @@ Regras para os próximos comportamentos:
 - WASD: W/S para frente/ré; A/D gira os dois lados em sentidos opostos e tem
   prioridade sobre W/S, impedindo que combinações de teclas zerem um lado.
 - Sliders: frente/ré e giro.
-- Limites manuais separados: reta e curva, de `0.65` a `0.97`, persistidos no navegador.
+- Limites manuais separados: reta e curva, de `0.65` a `1.0`, persistidos no navegador.
 - Sliders e WASD: perfil operacional com mínimo `0.65` e sincronismo automático
   quando os lados se movem juntos no mesmo sentido.
 - Giro autônomo de 90°: comando `0.01` elevado pelo perfil operacional.
