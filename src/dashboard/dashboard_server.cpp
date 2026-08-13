@@ -823,16 +823,19 @@ std::string DashboardServer::dashboardHtml()
     <section class="main-grid">
       <section class="card section-card">
         <div class="section-header">
-          <h2 class="section-title">Câmera frontal</h2>
+          <h2 id="cameraTitle" class="section-title">Câmera</h2>
           <div class="camera-meta">
             <span class="meta-chip">FPS <strong id="cameraFps">--</strong></span>
+            <span class="meta-chip">Papel <strong id="cameraRole">--</strong></span>
             <span class="meta-chip">Stream <strong>DIRETO</strong></span>
             <span class="meta-chip">Resolução <strong id="cameraResolution">--</strong></span>
+            <span class="meta-chip">Sensor <strong id="cameraSensorMode">--</strong></span>
+            <span class="meta-chip">Crop <strong id="cameraScalerCrop">--</strong></span>
             <span class="meta-chip">Formato <strong id="cameraFormat">--</strong></span>
           </div>
         </div>
         <div id="cameraFrame" class="camera-frame offline">
-          <img id="cameraImage" alt="Imagem direta da câmera frontal">
+          <img id="cameraImage" alt="Imagem direta da câmera selecionada">
           <div class="camera-message">Aguardando o stream da câmera</div>
         </div>
         <div class="camera-diagnostics" aria-label="Diagnóstico visual da linha">
@@ -1093,8 +1096,12 @@ std::string DashboardServer::dashboardHtml()
     const rightValue = element("rightValue");
     const cameraFrame = element("cameraFrame");
     const cameraImage = element("cameraImage");
+    const cameraTitle = element("cameraTitle");
     const cameraFps = element("cameraFps");
+    const cameraRole = element("cameraRole");
     const cameraResolution = element("cameraResolution");
+    const cameraSensorMode = element("cameraSensorMode");
+    const cameraScalerCrop = element("cameraScalerCrop");
     const cameraFormat = element("cameraFormat");
     const cameraDiagnosticFields = {
       nearValid: element("cameraNearValid"), nearError: element("cameraNearError"),
@@ -1768,14 +1775,25 @@ std::string DashboardServer::dashboardHtml()
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
         if (data.active !== true || Number(data.fps) <= 0) {
-          cameraFps.textContent = "aguardando"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics(); return;
+          cameraFps.textContent = "aguardando"; cameraRole.textContent = "--"; cameraResolution.textContent = "--"; cameraSensorMode.textContent = "--"; cameraScalerCrop.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics(); return;
         }
+        const roleLabel = data.cameraRole === "down" ? "inferior" : data.cameraRole === "forward" ? "frontal" : "--";
+        const width = Number(data.width);
+        const height = Number(data.height);
+        const sensorMode = data.sensorMode || {};
+        const scalerCrop = data.scalerCrop || {};
+        cameraTitle.textContent = roleLabel === "--" ? "Câmera" : `Câmera ${roleLabel}`;
+        cameraImage.alt = roleLabel === "--" ? "Imagem direta da câmera selecionada" : `Imagem direta da câmera ${roleLabel}`;
         cameraFps.textContent = Number(data.fps).toFixed(1);
-        cameraResolution.textContent = Number(data.width) > 0 && Number(data.height) > 0 ? `${Number(data.width).toFixed(0)}×${Number(data.height).toFixed(0)}` : "--";
+        cameraRole.textContent = roleLabel;
+        cameraResolution.textContent = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "--";
+        cameraSensorMode.textContent = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
+        cameraScalerCrop.textContent = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
+        if (width > 0 && height > 0) cameraFrame.style.aspectRatio = `${width} / ${height}`;
         cameraFormat.textContent = data.cameraFormat || "--";
         updateCameraDiagnostics(data);
       } catch {
-        cameraFps.textContent = "erro"; cameraResolution.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics();
+        cameraFps.textContent = "erro"; cameraRole.textContent = "--"; cameraResolution.textContent = "--"; cameraSensorMode.textContent = "--"; cameraScalerCrop.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics();
       }
     }
 
