@@ -1,0 +1,2 @@
+[Service]
+Environment="OBR_CAMERA_ROLE=down"
