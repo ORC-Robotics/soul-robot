@@ -119,6 +119,7 @@ CAMERA_PROFILES = {
                 "far_band_y": (80, 180),
                 "near_band_y": (210, 270),
             },
+            "ahead_heading_gain": 0.90,
             "near_deadzone_ratio": 0.10,
             "pixel_ruler_step_ratio": 16.0 / 640.0,
             "overlay_line_thickness": 2,
@@ -144,6 +145,76 @@ def put_debug_text(enabled, *args, **kwargs):
     """Desenha textos de diagnóstico somente quando o overlay está habilitado."""
     if enabled:
         cv2.putText(*args, **kwargs)
+
+
+def calculate_control_preview(
+    vision_profile,
+    near_valid,
+    near_error,
+    far_valid,
+    far_error,
+):
+    """Calcula a prévia de controle sem substituir os erros das duas bandas."""
+
+    if not near_valid:
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+
+    guidance_error = near_error
+    ahead_heading_gain = vision_profile.get("ahead_heading_gain")
+    if far_valid and ahead_heading_gain is not None:
+        heading_error = far_error - near_error
+        guidance_error += ahead_heading_gain * heading_error
+        guidance_error = max(-1.0, min(guidance_error, 1.0))
+
+    deadzone_ratio = vision_profile["near_deadzone_ratio"]
+    if abs(guidance_error) <= deadzone_ratio:
+        control_error = 0.0
+        correction = 0.0
+        left_preview = BASE_SPEED_PREVIEW
+        right_preview = BASE_SPEED_PREVIEW
+    else:
+        error_sign = 1.0 if guidance_error > 0.0 else -1.0
+        control_error = error_sign * (
+            (abs(guidance_error) - deadzone_ratio)
+            / (1.0 - deadzone_ratio)
+        )
+        correction = max(
+            -MAX_CORRECTION_PREVIEW,
+            min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
+        )
+        if correction > 0.0:
+            left_preview = BASE_SPEED_PREVIEW + correction
+            right_preview = BASE_SPEED_PREVIEW
+        elif correction < 0.0:
+            left_preview = BASE_SPEED_PREVIEW
+            right_preview = BASE_SPEED_PREVIEW + abs(correction)
+        else:
+            left_preview = BASE_SPEED_PREVIEW
+            right_preview = BASE_SPEED_PREVIEW
+
+    left_preview = min(left_preview, MAX_OPERATIONAL_PREVIEW)
+    right_preview = min(right_preview, MAX_OPERATIONAL_PREVIEW)
+    return (
+        guidance_error,
+        control_error,
+        correction,
+        left_preview,
+        right_preview,
+    )
+
+
+def resolve_horizontal_deadzone(frame_width, vision_profile):
+    """Converte a zona morta normalizada nos mesmos limites usados no vídeo."""
+
+    frame_center_x = frame_width / 2.0
+    half_width_px = round(
+        vision_profile["near_deadzone_ratio"] * frame_width / 2.0
+    )
+    return (
+        half_width_px,
+        int(round(frame_center_x - half_width_px)),
+        int(round(frame_center_x + half_width_px)),
+    )
 
 
 def parse_camera_profile(arguments=None):
@@ -1009,58 +1080,48 @@ def main():
 
             frame_width = frame.shape[1]
             frame_center_x = frame_width / 2.0
-            safe_half_width_px = round(
-                vision_profile["near_deadzone_ratio"] * frame_width / 2.0
+            (
+                safe_half_width_px,
+                safe_left_x,
+                safe_right_x,
+            ) = resolve_horizontal_deadzone(
+                frame_width,
+                vision_profile,
             )
-            safe_left_x = int(round(frame_center_x - safe_half_width_px))
-            safe_right_x = int(round(frame_center_x + safe_half_width_px))
+
+            (
+                _guidance_error,
+                control_error,
+                correction,
+                left_preview,
+                right_preview,
+            ) = calculate_control_preview(
+                vision_profile,
+                near_valid,
+                near_error,
+                far_valid,
+                far_error,
+            )
 
             if not near_valid:
-                control_error = 0.0
-                correction = 0.0
-                left_preview = 0.0
-                right_preview = 0.0
                 offset_px = None
                 preview_state = "LINHA INVALIDA"
                 preview_direction = "SEM COMANDO"
-            elif abs(near_error) <= vision_profile["near_deadzone_ratio"]:
-                control_error = 0.0
-                correction = 0.0
-                left_preview = BASE_SPEED_PREVIEW
-                right_preview = BASE_SPEED_PREVIEW
+            elif control_error == 0.0:
                 offset_px = near_error * (frame_width / 2.0)
                 preview_state = "RETO SEGURO"
                 preview_direction = "RETO"
             else:
-                error_sign = 1.0 if near_error > 0.0 else -1.0
-                control_error = error_sign * (
-                    (abs(near_error) - vision_profile["near_deadzone_ratio"])
-                    / (1.0 - vision_profile["near_deadzone_ratio"])
-                )
-                correction = max(
-                    -MAX_CORRECTION_PREVIEW,
-                    min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
-                )
                 offset_px = near_error * (frame_width / 2.0)
                 if correction > 0.0:
-                    left_preview = BASE_SPEED_PREVIEW + correction
-                    right_preview = BASE_SPEED_PREVIEW
                     preview_state = "CORRIGINDO DIREITA"
                     preview_direction = "DIREITA"
                 elif correction < 0.0:
-                    left_preview = BASE_SPEED_PREVIEW
-                    right_preview = BASE_SPEED_PREVIEW + abs(correction)
                     preview_state = "CORRIGINDO ESQUERDA"
                     preview_direction = "ESQUERDA"
                 else:
-                    left_preview = BASE_SPEED_PREVIEW
-                    right_preview = BASE_SPEED_PREVIEW
                     preview_state = "RETO"
                     preview_direction = "RETO"
-
-            if near_valid:
-                left_preview = min(left_preview, MAX_OPERATIONAL_PREVIEW)
-                right_preview = min(right_preview, MAX_OPERATIONAL_PREVIEW)
 
             line_timestamp = time.time()
             line_sequence += 1

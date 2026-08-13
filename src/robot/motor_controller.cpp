@@ -6,6 +6,13 @@
 #include <cmath>
 #include <iostream>
 
+namespace
+{
+// Tolera apenas a diferença numérica residual de um comando realmente reto.
+// Diferenças maiores representam direção intencional e não recebem sincronismo.
+constexpr double kStraightCommandTolerance = 0.001;
+}
+
 MotorController::MotorController(Esp32Bridge& esp32)
     : esp32_(esp32)
 {
@@ -61,16 +68,18 @@ void MotorController::apply(const RobotSnapshot& state)
     leftPower = operationalMotorPower(leftPower);
     rightPower = operationalMotorPower(rightPower);
 
-    const bool sameForwardDirection = leftPower > 0.0 && rightPower > 0.0;
-    const bool sameReverseDirection = leftPower < 0.0 && rightPower < 0.0;
-    if (sameForwardDirection || sameReverseDirection)
+    const bool straightForwardCommand =
+        leftPower > 0.0 && rightPower > 0.0 &&
+        std::abs(leftPower - rightPower) <= kStraightCommandTolerance;
+    if (straightForwardCommand)
     {
         applyEncoderSynchronization(
             leftPower, rightPower, esp32_.telemetrySnapshot());
     }
     else
     {
-        // Giros no próprio eixo, lados isolados e zero passam sem correção.
+        // Comandos diferenciais, ré, giros, lados isolados e zero preservam
+        // a diferença intencional depois do piso operacional.
         suspendEncoderSynchronization(leftPower, rightPower);
     }
 

@@ -23,6 +23,7 @@ private:
     enum class LineFollowState
     {
         TrackingNear,
+        TurningAhead,
         ReacquiringNear,
         RecoveringFar,
         SearchingLeft,
@@ -43,6 +44,13 @@ private:
     std::uint64_t lastProcessedLineSequence_ = 0;
     bool hasProcessedLineSequence_ = false;
     int consecutiveNearValidSamples_ = 0;
+    bool aheadStrongTurnActive_ = false;
+    LineDirection aheadStrongTurnDirection_ = LineDirection::Unknown;
+    int aheadStrongTurnEnterSamples_ = 0;
+    int aheadStrongTurnExitSamples_ = 0;
+    std::uint64_t aheadStrongTurnLastLineSequence_ = 0;
+    bool aheadStrongTurnHasLineSequence_ = false;
+    double aheadStrongTurnLastHeadingError_ = 0.0;
     bool nearRecoveryActive_ = false;
     bool totalLossActive_ = false;
     std::chrono::steady_clock::time_point nearLostAt_{};
