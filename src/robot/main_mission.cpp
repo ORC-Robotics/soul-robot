@@ -27,6 +27,9 @@ constexpr double kStrongSteeringExitError = 0.12;
 constexpr double kStrongSteeringDirectionMinimum = 0.05;
 constexpr int kAheadStrongTurnEnterSamples = 2;
 constexpr int kAheadStrongTurnExitSamples = 3;
+// Potência exclusiva da contrarrotação antecipada. As recuperações
+// permanecem limitadas pela base de 0,65 definida acima.
+constexpr double kAheadStrongTurnPower = 0.65;
 
 // Os limites impedem que o robô procure indefinidamente por uma linha perdida.
 constexpr auto kNearRecoveryTimeout = std::chrono::milliseconds(3000);
@@ -56,11 +59,28 @@ MotorCommand calculateOneWheelPivotCommand(double error)
                : MotorCommand{kFarBaseSpeed, 0.0};
 }
 
-MotorCommand calculateCounterRotationCommand(bool turnLeft)
+MotorCommand calculateCounterRotationCommand(bool turnLeft, double power)
 {
     return turnLeft
-               ? MotorCommand{-kFarBaseSpeed, kFarBaseSpeed}
-               : MotorCommand{kFarBaseSpeed, -kFarBaseSpeed};
+               ? MotorCommand{-power, power}
+               : MotorCommand{power, -power};
+}
+
+MotorCommand calculateNearReacquisitionCommand(double correction)
+{
+    // A reaquisição preserva a base validada de 0,65 mesmo quando o perfil
+    // inferior publica uma prévia mais rápida para o tracking normal.
+    const double safeCorrection = std::clamp(
+        correction, -kFarMaximumCorrection, kFarMaximumCorrection);
+    if (safeCorrection > 0.0)
+    {
+        return {kFarBaseSpeed + safeCorrection, kFarBaseSpeed};
+    }
+    if (safeCorrection < 0.0)
+    {
+        return {kFarBaseSpeed, kFarBaseSpeed + std::abs(safeCorrection)};
+    }
+    return {kFarBaseSpeed, kFarBaseSpeed};
 }
 
 MotorCommand calculateFarRecoveryCommand(double farError)
@@ -194,7 +214,8 @@ void MainMission::update(
     {
         const MotorCommand command =
             calculateCounterRotationCommand(
-                aheadStrongTurnDirection_ == LineDirection::Left);
+                aheadStrongTurnDirection_ == LineDirection::Left,
+                kAheadStrongTurnPower);
         logAheadStrongTurnEvent(
             "exited", exitReason, headingError, command);
         aheadStrongTurnActive_ = false;
@@ -251,7 +272,8 @@ void MainMission::update(
             {
                 const MotorCommand command =
                     calculateCounterRotationCommand(
-                        aheadStrongTurnDirection_ == LineDirection::Left);
+                        aheadStrongTurnDirection_ == LineDirection::Left,
+                        kAheadStrongTurnPower);
                 transitionTo(LineFollowState::TurningAhead);
                 robotState.driveAutonomous(command.left, command.right);
                 robotState.updateAutonomousStatus(makeLineStatus(
@@ -298,7 +320,8 @@ void MainMission::update(
                 aheadStrongTurnExitSamples_ = 0;
                 const MotorCommand command =
                     calculateCounterRotationCommand(
-                        aheadStrongTurnDirection_ == LineDirection::Left);
+                        aheadStrongTurnDirection_ == LineDirection::Left,
+                        kAheadStrongTurnPower);
                 logAheadStrongTurnEvent(
                     "entered", "none", headingError, command);
 
@@ -373,9 +396,9 @@ void MainMission::update(
             ++consecutiveNearValidSamples_;
         }
 
-        robotState.driveAutonomous(
-            cameraLineSnapshot.leftPreview,
-            cameraLineSnapshot.rightPreview);
+        const MotorCommand command =
+            calculateNearReacquisitionCommand(cameraLineSnapshot.correction);
+        robotState.driveAutonomous(command.left, command.right);
         robotState.updateAutonomousStatus(makeLineStatus(
             "reacquiring_near",
             "Readquirindo NEAR " +
@@ -448,7 +471,8 @@ void MainMission::update(
     if (direction == LineDirection::Right)
     {
         transitionTo(LineFollowState::SearchingRight);
-        const MotorCommand command = calculateCounterRotationCommand(false);
+        const MotorCommand command =
+            calculateCounterRotationCommand(false, kFarBaseSpeed);
         robotState.driveAutonomous(command.left, command.right);
         robotState.updateAutonomousStatus(makeLineStatus(
             "searching_right", "Procurando linha à direita"));
@@ -456,7 +480,8 @@ void MainMission::update(
     }
 
     transitionTo(LineFollowState::SearchingLeft);
-    const MotorCommand command = calculateCounterRotationCommand(true);
+    const MotorCommand command =
+        calculateCounterRotationCommand(true, kFarBaseSpeed);
     robotState.driveAutonomous(command.left, command.right);
     robotState.updateAutonomousStatus(makeLineStatus(
         "searching_left", "Procurando linha à esquerda"));

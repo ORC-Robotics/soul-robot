@@ -121,6 +121,9 @@ CAMERA_PROFILES = {
             },
             "ahead_heading_gain": 0.90,
             "near_deadzone_ratio": 0.10,
+            "base_speed_preview": 0.70,
+            "balanced_differential_mixing": True,
+            "minimum_tracking_power": 0.65,
             "pixel_ruler_step_ratio": 16.0 / 640.0,
             "overlay_line_thickness": 2,
             "overlay_thin_line_thickness": 1,
@@ -167,11 +170,14 @@ def calculate_control_preview(
         guidance_error = max(-1.0, min(guidance_error, 1.0))
 
     deadzone_ratio = vision_profile["near_deadzone_ratio"]
+    base_speed_preview = vision_profile.get(
+        "base_speed_preview", BASE_SPEED_PREVIEW
+    )
     if abs(guidance_error) <= deadzone_ratio:
         control_error = 0.0
         correction = 0.0
-        left_preview = BASE_SPEED_PREVIEW
-        right_preview = BASE_SPEED_PREVIEW
+        left_preview = base_speed_preview
+        right_preview = base_speed_preview
     else:
         error_sign = 1.0 if guidance_error > 0.0 else -1.0
         control_error = error_sign * (
@@ -182,15 +188,27 @@ def calculate_control_preview(
             -MAX_CORRECTION_PREVIEW,
             min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
         )
-        if correction > 0.0:
-            left_preview = BASE_SPEED_PREVIEW + correction
-            right_preview = BASE_SPEED_PREVIEW
+        if vision_profile.get("balanced_differential_mixing", False):
+            minimum_tracking_power = vision_profile["minimum_tracking_power"]
+            maximum_balanced_delta = (
+                base_speed_preview - minimum_tracking_power
+            )
+            requested_delta = correction / 2.0
+            balanced_delta = max(
+                -maximum_balanced_delta,
+                min(requested_delta, maximum_balanced_delta),
+            )
+            left_preview = base_speed_preview + balanced_delta
+            right_preview = base_speed_preview - balanced_delta
+        elif correction > 0.0:
+            left_preview = base_speed_preview + correction
+            right_preview = base_speed_preview
         elif correction < 0.0:
-            left_preview = BASE_SPEED_PREVIEW
-            right_preview = BASE_SPEED_PREVIEW + abs(correction)
+            left_preview = base_speed_preview
+            right_preview = base_speed_preview + abs(correction)
         else:
-            left_preview = BASE_SPEED_PREVIEW
-            right_preview = BASE_SPEED_PREVIEW
+            left_preview = base_speed_preview
+            right_preview = base_speed_preview
 
     left_preview = min(left_preview, MAX_OPERATIONAL_PREVIEW)
     right_preview = min(right_preview, MAX_OPERATIONAL_PREVIEW)

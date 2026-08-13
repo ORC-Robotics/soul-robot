@@ -75,31 +75,31 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_guidance_on_centered_straight_line(self):
         self.assert_control_preview(
             "down", True, 0.0, True, 0.0,
-            (0.0, 0.0, 0.0, 0.65, 0.65),
+            (0.0, 0.0, 0.0, 0.70, 0.70),
         )
 
     def test_down_guidance_on_parallel_offset_straight_line(self):
         self.assert_control_preview(
             "down", True, 0.30, True, 0.30,
-            (0.30, 2.0 / 9.0, 1.0 / 15.0, 43.0 / 60.0, 0.65),
+            (0.30, 2.0 / 9.0, 1.0 / 15.0, 11.0 / 15.0, 2.0 / 3.0),
         )
 
     def test_down_guidance_anticipates_left_curve(self):
         self.assert_control_preview(
             "down", True, 0.036, True, -0.356,
-            (-0.3168, -0.2408888889, -0.0722666667, 0.65, 0.7222666667),
+            (-0.3168, -0.2408888889, -0.0722666667, 0.6638666667, 0.7361333333),
         )
 
     def test_down_guidance_anticipates_right_curve(self):
         self.assert_control_preview(
             "down", True, -0.036, True, 0.356,
-            (0.3168, 0.2408888889, 0.0722666667, 0.7222666667, 0.65),
+            (0.3168, 0.2408888889, 0.0722666667, 0.7361333333, 0.6638666667),
         )
 
     def test_down_guidance_preserves_near_when_far_is_invalid(self):
         self.assert_control_preview(
             "down", True, -0.30, False, 0.0,
-            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 0.65, 43.0 / 60.0),
+            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 2.0 / 3.0, 11.0 / 15.0),
         )
 
     def test_down_guidance_stays_zero_when_near_is_invalid(self):
@@ -125,6 +125,32 @@ class CameraProfilesTest(unittest.TestCase):
                 self.assertGreaterEqual(result[1], -1.0)
                 self.assertLessEqual(result[1], 1.0)
 
+    def test_down_balanced_differential_mixer(self):
+        vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        cases = (
+            (0.0, 0.0, 0.700, 0.700),
+            (0.28, 0.06, 0.730, 0.670),
+            (-0.28, -0.06, 0.670, 0.730),
+            (0.55, 0.15, 0.750, 0.650),
+            (-0.55, -0.15, 0.650, 0.750),
+        )
+
+        self.assertTrue(vision_profile["balanced_differential_mixing"])
+        self.assertEqual(vision_profile["minimum_tracking_power"], 0.65)
+        for guidance_error, correction, left, right in cases:
+            with self.subTest(guidance_error=guidance_error):
+                result = camera_line_frame.calculate_control_preview(
+                    vision_profile, True, guidance_error, False, 0.0
+                )
+                self.assertAlmostEqual(result[2], correction, places=6)
+                self.assertAlmostEqual(result[3], left, places=6)
+                self.assertAlmostEqual(result[4], right, places=6)
+                self.assertAlmostEqual((result[3] + result[4]) / 2.0, 0.70)
+                self.assertGreaterEqual(result[3], 0.65)
+                self.assertGreaterEqual(result[4], 0.65)
+                self.assertLessEqual(result[3], 1.0)
+                self.assertLessEqual(result[4], 1.0)
+
     def test_forward_profile_ignores_far_for_control(self):
         vision_profile = camera_line_frame.CAMERA_PROFILES["forward"]["vision"]
         with_far = camera_line_frame.calculate_control_preview(
@@ -137,6 +163,12 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(with_far, without_far)
         self.assertEqual(with_far, (0.036, 0.0, 0.0, 0.65, 0.65))
 
+    def test_forward_profile_preserves_one_sided_mixer(self):
+        self.assert_control_preview(
+            "forward", True, 0.28, False, 0.0,
+            (0.28, 0.20, 0.06, 0.71, 0.65),
+        )
+
     def test_down_deadzone_uses_ten_percent(self):
         vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
 
@@ -147,6 +179,7 @@ class CameraProfilesTest(unittest.TestCase):
                     vision_profile, True, error, False, 0.0
                 )
                 self.assertEqual(result[1], 0.0)
+                self.assertEqual(result[3:], (0.70, 0.70))
         for error in (0.11, -0.11):
             with self.subTest(error=error):
                 result = camera_line_frame.calculate_control_preview(
