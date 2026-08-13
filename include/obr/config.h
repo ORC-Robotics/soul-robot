@@ -57,8 +57,8 @@ constexpr double kMaxMotorOutput = 1.0;
 constexpr double kOperationalMinimumMotorPower = 0.65;
 
 // Maior referência operacional aceita antes da correção pelos encoders.
-// A margem até 1,0 evita trabalhar continuamente no limite absoluto do PWM.
-constexpr double kOperationalMaximumReferencePower = 0.97;
+// O valor coincide com o limite absoluto do protocolo para liberar todo o PWM.
+constexpr double kOperationalMaximumReferencePower = 1.0;
 
 static_assert(kOperationalMinimumMotorPower > 0.0 &&
                   kOperationalMinimumMotorPower < kOperationalMaximumReferencePower,

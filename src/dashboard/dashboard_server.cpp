@@ -956,11 +956,11 @@ std::string DashboardServer::dashboardHtml()
         <div class="manual-speed-grid">
           <div class="drive-control">
             <label for="manualDrivePower"><span>Velocidade reta</span><output id="manualDrivePowerValue">0.65</output></label>
-            <input id="manualDrivePower" type="range" min="0.65" max="0.97" step="0.01" value="0.65">
+            <input id="manualDrivePower" type="range" min="0.65" max="1.00" step="0.01" value="0.65">
           </div>
           <div class="drive-control">
             <label for="manualTurnPower"><span>Velocidade em curva</span><output id="manualTurnPowerValue">0.65</output></label>
-            <input id="manualTurnPower" type="range" min="0.65" max="0.97" step="0.01" value="0.65">
+            <input id="manualTurnPower" type="range" min="0.65" max="1.00" step="0.01" value="0.65">
           </div>
           <div class="manual-speed-help">Os dois limites começam no menor comando operacional real. A/D gira os dois lados em sentidos opostos e tem prioridade sobre W/S.</div>
         </div>
@@ -1124,7 +1124,7 @@ std::string DashboardServer::dashboardHtml()
     let filteredLeftEncoderRate = null;
     let filteredRightEncoderRate = null;
     let manualMinimumPower = 0.65;
-    let manualMaximumPower = 0.97;
+    let manualMaximumPower = 1.0;
     let lastCameraStatusTimestamp = null;
     let lastCameraStatusChangeAtMs = 0;
 
