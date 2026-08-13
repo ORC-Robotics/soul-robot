@@ -110,9 +110,15 @@ CAMERA_PROFILES = {
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
-            "far_band_start_ratio": 0.1,
-            "far_band_end_ratio": 0.825,
-            "near_band_start_ratio": 0.925,
+            # As coordenadas usam o frame de referência 640x480 validado na Pi 4.
+            # A conversão centralizada mantém a mesma geometria proporcional se
+            # a altura real do frame for diferente durante um diagnóstico.
+            "geometry_reference": {
+                "frame_height": 480,
+                "structural_end_y": 425,
+                "far_band_y": (80, 180),
+                "near_band_y": (210, 270),
+            },
             "near_deadzone_ratio": 0.10,
             "pixel_ruler_step_ratio": 16.0 / 640.0,
             "overlay_line_thickness": 2,
@@ -388,17 +394,94 @@ def create_filtered_line_mask(frame, vision_profile):
     return filtered_mask, roi_start_y
 
 
-def create_line_candidate_mask(filtered_mask, vision_profile):
+def scale_reference_y(reference_y, reference_height, frame_height):
+    """Converte uma coordenada vertical de referência para a altura real."""
+
+    return int(round(frame_height * reference_y / reference_height))
+
+
+def resolve_vision_geometry(frame_height, vision_profile):
+    """Calcula os limites estruturais e das bandas para o frame atual."""
+
+    geometry_reference = vision_profile.get("geometry_reference")
+    if geometry_reference is None:
+        return {
+            "structural_end_y": frame_height,
+            "ignored_start_y": None,
+            "far_band_start_y": int(round(
+                frame_height * vision_profile["far_band_start_ratio"]
+            )),
+            "far_band_end_y": int(round(
+                frame_height * vision_profile["far_band_end_ratio"]
+            )),
+            "near_band_start_y": int(round(
+                frame_height * vision_profile["near_band_start_ratio"]
+            )),
+            "near_band_end_y": frame_height,
+        }
+
+    reference_height = geometry_reference["frame_height"]
+    structural_end_y = scale_reference_y(
+        geometry_reference["structural_end_y"],
+        reference_height,
+        frame_height,
+    )
+    far_band_start_y, far_band_end_y = (
+        scale_reference_y(reference_y, reference_height, frame_height)
+        for reference_y in geometry_reference["far_band_y"]
+    )
+    near_band_start_y, near_band_end_y = (
+        scale_reference_y(reference_y, reference_height, frame_height)
+        for reference_y in geometry_reference["near_band_y"]
+    )
+
+    if not (
+        0 <= far_band_start_y < far_band_end_y <= structural_end_y
+        and 0 <= near_band_start_y < near_band_end_y <= structural_end_y
+        and structural_end_y <= frame_height
+    ):
+        raise ValueError("A geometria vertical da câmera está fora do frame.")
+
+    return {
+        "structural_end_y": structural_end_y,
+        "ignored_start_y": structural_end_y,
+        "far_band_start_y": far_band_start_y,
+        "far_band_end_y": far_band_end_y,
+        "near_band_start_y": near_band_start_y,
+        "near_band_end_y": near_band_end_y,
+    }
+
+
+def create_structural_line_mask(
+    filtered_mask,
+    roi_start_y,
+    structural_end_y,
+):
+    """Remove da máscara a área física que não pode gerar candidatos."""
+
+    structural_end_in_roi = max(
+        0,
+        min(filtered_mask.shape[0], structural_end_y - roi_start_y),
+    )
+    if structural_end_in_roi >= filtered_mask.shape[0]:
+        return filtered_mask
+
+    structural_mask = filtered_mask.copy()
+    structural_mask[structural_end_in_roi:, :] = 0
+    return structural_mask
+
+
+def create_line_candidate_mask(structural_mask, vision_profile):
     """Mantém somente contornos completos com espessura compatível com a fita."""
 
     full_contours, _ = cv2.findContours(
-        filtered_mask.copy(),
+        structural_mask.copy(),
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
     accepted_contours = []
     minimum_short_side_px = (
-        min(filtered_mask.shape[:2])
+        min(structural_mask.shape[:2])
         * vision_profile["full_line_min_short_side_ratio"]
     )
     for contour in full_contours:
@@ -416,7 +499,7 @@ def create_line_candidate_mask(filtered_mask, vision_profile):
         if short_side_px >= minimum_short_side_px:
             accepted_contours.append(contour)
 
-    line_candidate_mask = filtered_mask.copy()
+    line_candidate_mask = structural_mask.copy()
     line_candidate_mask.fill(0)
     if accepted_contours:
         cv2.drawContours(
@@ -829,22 +912,27 @@ def main():
 
         while running:
             frame = picam2.capture_array()
+            frame_height = frame.shape[0]
+            vision_geometry = resolve_vision_geometry(
+                frame_height,
+                vision_profile,
+            )
             filtered_mask, roi_start_y = create_filtered_line_mask(
                 frame,
                 vision_profile,
             )
-            line_candidate_mask = create_line_candidate_mask(
+            structural_mask = create_structural_line_mask(
                 filtered_mask,
+                roi_start_y,
+                vision_geometry["structural_end_y"],
+            )
+            line_candidate_mask = create_line_candidate_mask(
+                structural_mask,
                 vision_profile,
             )
 
-            frame_height = frame.shape[0]
-            far_band_start_y = int(round(
-                frame_height * vision_profile["far_band_start_ratio"]
-            ))
-            far_band_end_y = int(round(
-                frame_height * vision_profile["far_band_end_ratio"]
-            ))
+            far_band_start_y = vision_geometry["far_band_start_y"]
+            far_band_end_y = vision_geometry["far_band_end_y"]
             far_band_start_in_roi = far_band_start_y - roi_start_y
             far_band_end_in_roi = far_band_end_y - roi_start_y
             far_band = line_candidate_mask[
@@ -880,11 +968,14 @@ def main():
             else:
                 far_area = 0.0
 
-            near_band_start_y = int(round(
-                frame_height * vision_profile["near_band_start_ratio"]
-            ))
+            near_band_start_y = vision_geometry["near_band_start_y"]
+            near_band_end_y = vision_geometry["near_band_end_y"]
             near_band_start_in_roi = near_band_start_y - roi_start_y
-            near_band = line_candidate_mask[near_band_start_in_roi:, :]
+            near_band_end_in_roi = near_band_end_y - roi_start_y
+            near_band = line_candidate_mask[
+                near_band_start_in_roi:near_band_end_in_roi,
+                :,
+            ]
             near_band_height_px = near_band.shape[0]
             near_contours, _ = cv2.findContours(
                 near_band.copy(),
@@ -1041,7 +1132,7 @@ def main():
             # O preenchimento usa somente o recorte estreito da zona segura
             # para reduzir cópias de imagem e preservar o FPS do stream.
             safe_zone_debug = frame[
-                near_band_start_y:frame.shape[0],
+                near_band_start_y:near_band_end_y,
                 safe_left_x:safe_right_x,
             ]
             safe_zone_green = safe_zone_debug.copy()
@@ -1063,7 +1154,7 @@ def main():
                 (0, 255, 255),
                 vision_profile["overlay_line_thickness"],
             )
-            # A far_band e seu centro são referências diagnósticas em laranja.
+            # A banda AHEAD/FAR e seu centro são referências em laranja.
             cv2.rectangle(
                 frame,
                 (0, far_band_start_y),
@@ -1071,14 +1162,24 @@ def main():
                 (0, 165, 255),
                 vision_profile["overlay_line_thickness"],
             )
-            # A near_band e seu centro são apenas referências visuais em azul.
+            # A banda PIVOT/NEAR e seu centro são referências em azul.
             cv2.rectangle(
                 frame,
                 (0, near_band_start_y),
-                (frame.shape[1] - 1, frame.shape[0] - 1),
+                (frame.shape[1] - 1, near_band_end_y - 1),
                 (255, 0, 0),
                 vision_profile["overlay_line_thickness"],
             )
+
+            ignored_start_y = vision_geometry["ignored_start_y"]
+            if ignored_start_y is not None:
+                cv2.line(
+                    frame,
+                    (0, ignored_start_y),
+                    (frame.shape[1] - 1, ignored_start_y),
+                    (0, 0, 255),
+                    vision_profile["overlay_thin_line_thickness"],
+                )
 
             if not near_valid:
                 safe_limit_color = (0, 0, 255)
@@ -1089,7 +1190,7 @@ def main():
             cv2.line(
                 frame,
                 (int(round(frame_center_x)), near_band_start_y),
-                (int(round(frame_center_x)), frame.shape[0] - 1),
+                (int(round(frame_center_x)), near_band_end_y - 1),
                 (255, 255, 0),
                 vision_profile["overlay_line_thickness"],
             )
@@ -1097,7 +1198,7 @@ def main():
                 cv2.line(
                     frame,
                     (safe_limit_x, near_band_start_y),
-                    (safe_limit_x, frame.shape[0] - 1),
+                    (safe_limit_x, near_band_end_y - 1),
                     safe_limit_color,
                     vision_profile["overlay_line_thickness"],
                 )
@@ -1136,7 +1237,7 @@ def main():
                 1,
                 int(round(frame_width * vision_profile["pixel_ruler_step_ratio"])),
             )
-            ruler_bottom_y = frame.shape[0] - 3
+            ruler_bottom_y = near_band_end_y - 3
             first_ruler_offset = -(
                 int(frame_center_x) // ruler_step_px
             ) * ruler_step_px
