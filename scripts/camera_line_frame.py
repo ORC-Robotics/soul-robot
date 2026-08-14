@@ -14,6 +14,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cv2
+import numpy as np
 
 try:
     import RPi.GPIO as GPIO
@@ -43,6 +44,56 @@ SNAPSHOT_FRAME_FPS = 2
 STATUS_FPS = 5
 JPEG_QUALITY = 82
 CAMERA_PIXEL_FORMATS = ("RGB888",)
+
+# O nome RGB888 segue a convenção do libcamera. No array retornado pelo
+# Picamera2, cada pixel fica em ordem B, G, R, que é a ordem nativa do OpenCV.
+CAMERA_ARRAY_COLOR_ORDER = "BGR"
+
+# Limites iniciais deliberadamente amplos para o verde. Estes valores ainda
+# precisam de calibração física sob a iluminação da pista da competição.
+GREEN_HUE_MIN = 35
+GREEN_HUE_MAX = 90
+GREEN_SATURATION_MIN = 70
+GREEN_VALUE_MIN = 50
+GREEN_OPEN_KERNEL_SIZE = 3
+GREEN_CLOSE_KERNEL_SIZE = 5
+GREEN_MIN_AREA_PX = 80.0
+GREEN_MIN_DIMENSION_PX = 6.0
+GREEN_ASPECT_RATIO_MIN = 0.35
+GREEN_ASPECT_RATIO_MAX = 1.0
+GREEN_MIN_EXTENT = 0.35
+GREEN_PARTIAL_BORDER_TOLERANCE_PX = 4
+GREEN_PARTIAL_AREA_FACTOR = 0.40
+GREEN_PARTIAL_DIMENSION_FACTOR = 0.50
+GREEN_PARTIAL_ASPECT_RATIO_MIN = 0.20
+GREEN_PARTIAL_EXTENT_MIN = 0.20
+GREEN_FRAGMENT_MERGE_GAP_PX = 12
+GREEN_LINE_AXIS_MIN_LENGTH_PX = 20.0
+GREEN_SIDE_MIN_DISTANCE_PX = 5.0
+GREEN_LINE_DISTANCE_MAX_RATIO = 4.0
+GREEN_MARKER_TO_LINE_MIN_RATIO = 0.40
+GREEN_MARKER_TO_LINE_MAX_RATIO = 3.0
+GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS = 2.5
+GREEN_ENCOUNTER_DISTANCE_LINE_WIDTHS = 8.0
+GREEN_CONFIRMATION_FRAMES = 3
+GREEN_SINGLE_OBSERVATION_FRAMES = 3
+GREEN_CLEAR_HYSTERESIS_FRAMES = 2
+GREEN_TOPOLOGY_SAMPLE_STEP = 2
+
+GREEN_OBSERVATION_STATES = {
+    "SEM_VERDE",
+    "UM_CANDIDATO",
+    "DOIS_CANDIDATOS",
+    "MULTIPLOS_AMBIGUOS",
+}
+GREEN_INTERPRETATIONS = {
+    "SEM_DECISAO",
+    "ESQUERDA",
+    "DIREITA",
+    "RETORNO_180",
+    "VERDE_FALSO_NO_SENTIDO_ATUAL",
+    "AMBIGUO",
+}
 
 # As duas posições previstas usam a câmera montada de cabeça para baixo.
 # Manter a transformação no Picamera2 evita rotacionar cada frame no OpenCV.
@@ -124,6 +175,7 @@ CAMERA_PROFILES = {
             "base_speed_preview": 0.70,
             "balanced_differential_mixing": True,
             "minimum_tracking_power": 0.65,
+            "green_detection_enabled": True,
             "pixel_ruler_step_ratio": 16.0 / 640.0,
             "overlay_line_thickness": 2,
             "overlay_thin_line_thickness": 1,
@@ -619,6 +671,770 @@ def select_largest_line_contour(contours):
     return selected_contour, selected_area, selected_moments
 
 
+def frame_to_hsv(frame, camera_format="RGB888"):
+    """Converte o array da câmera para HSV respeitando a ordem real dos canais."""
+
+    if camera_format != "RGB888" or CAMERA_ARRAY_COLOR_ORDER != "BGR":
+        raise ValueError("Formato ou ordem de canais não suportados para HSV.")
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+
+def rgb_pixel_to_camera_array(red, green, blue):
+    """Representa uma cor RGB na ordem BGR entregue por capture_array."""
+
+    if CAMERA_ARRAY_COLOR_ORDER != "BGR":
+        raise ValueError("Ordem de canais inesperada.")
+    return int(blue), int(green), int(red)
+
+
+def is_hsv_green(hue, saturation, value):
+    """Aplica aos pixels sintéticos os mesmos limites usados por cv2.inRange."""
+
+    return (
+        GREEN_HUE_MIN <= int(hue) <= GREEN_HUE_MAX
+        and int(saturation) >= GREEN_SATURATION_MIN
+        and int(value) >= GREEN_VALUE_MIN
+    )
+
+
+def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
+    """Segmenta verde somente na área útil, sem tocar na máscara da linha."""
+
+    useful_end_y = max(0, min(frame.shape[0], int(structural_end_y)))
+    useful_frame = frame[:useful_end_y, :]
+    hsv_frame = frame_to_hsv(useful_frame, camera_format)
+    green_mask = cv2.inRange(
+        hsv_frame,
+        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
+        (GREEN_HUE_MAX, 255, 255),
+    )
+    if cv2.countNonZero(green_mask) == 0:
+        return green_mask
+    open_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE),
+    )
+    close_kernel = cv2.getStructuringElement(
+        cv2.MORPH_RECT,
+        (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
+    )
+    green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, open_kernel)
+    return cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, close_kernel)
+
+
+def expanded_boxes_overlap(first_box, second_box, gap_px):
+    """Indica se dois fragmentos podem pertencer à mesma marcação verde."""
+
+    first_x, first_y, first_width, first_height = first_box
+    second_x, second_y, second_width, second_height = second_box
+    return not (
+        first_x + first_width + gap_px < second_x
+        or second_x + second_width + gap_px < first_x
+        or first_y + first_height + gap_px < second_y
+        or second_y + second_height + gap_px < first_y
+    )
+
+
+def group_fragment_boxes(boxes, gap_px=GREEN_FRAGMENT_MERGE_GAP_PX):
+    """Agrupa caixas próximas de forma transitiva antes de unir os contornos."""
+
+    groups = []
+    for box_index, box in enumerate(boxes):
+        matching_groups = []
+        for group_index, group in enumerate(groups):
+            if any(
+                expanded_boxes_overlap(box, boxes[index], gap_px)
+                for index in group
+            ):
+                matching_groups.append(group_index)
+        merged_group = [box_index]
+        for group_index in reversed(matching_groups):
+            merged_group.extend(groups.pop(group_index))
+        groups.append(merged_group)
+    return groups
+
+
+def merge_green_fragments(contours):
+    """Une fragmentos próximos para que um quadrado não seja contado duas vezes."""
+
+    valid_contours = [
+        contour
+        for contour in contours
+        if contour is not None and len(contour) >= 3
+    ]
+    boxes = [cv2.boundingRect(contour) for contour in valid_contours]
+    groups = group_fragment_boxes(boxes)
+    return [
+        cv2.convexHull(np.concatenate(
+            [valid_contours[index] for index in group], axis=0
+        ))
+        for group in groups
+    ]
+
+
+def green_geometry_is_valid(
+    area,
+    short_side,
+    aspect_ratio,
+    extent,
+    partial,
+):
+    """Aplica filtros amplos de tamanho e formato ao marcador oficial."""
+
+    minimum_area = GREEN_MIN_AREA_PX
+    minimum_dimension = GREEN_MIN_DIMENSION_PX
+    minimum_aspect = GREEN_ASPECT_RATIO_MIN
+    minimum_extent = GREEN_MIN_EXTENT
+    if partial:
+        minimum_area *= GREEN_PARTIAL_AREA_FACTOR
+        minimum_dimension *= GREEN_PARTIAL_DIMENSION_FACTOR
+        minimum_aspect = GREEN_PARTIAL_ASPECT_RATIO_MIN
+        minimum_extent = GREEN_PARTIAL_EXTENT_MIN
+    return (
+        math.isfinite(float(area))
+        and float(area) >= minimum_area
+        and float(short_side) >= minimum_dimension
+        and minimum_aspect <= float(aspect_ratio) <= GREEN_ASPECT_RATIO_MAX
+        and float(extent) >= minimum_extent
+    )
+
+
+def estimate_local_line_width(line_mask, point):
+    """Estima a largura da faixa no segmento horizontal mais próximo do ponto."""
+
+    if line_mask is None or line_mask.size == 0:
+        return 0.0
+    point_x = int(round(point[0]))
+    point_y = int(round(point[1]))
+    point_y = max(0, min(line_mask.shape[0] - 1, point_y))
+    active_x = np.flatnonzero(line_mask[point_y] > 0)
+    if active_x.size == 0:
+        return 0.0
+
+    runs = []
+    run_start = int(active_x[0])
+    previous_x = run_start
+    for active_pixel_x in active_x[1:]:
+        active_pixel_x = int(active_pixel_x)
+        if active_pixel_x != previous_x + 1:
+            runs.append((run_start, previous_x))
+            run_start = active_pixel_x
+        previous_x = active_pixel_x
+    runs.append((run_start, previous_x))
+
+    selected_run = min(
+        runs,
+        key=lambda run: 0.0
+        if run[0] <= point_x <= run[1]
+        else min(abs(point_x - run[0]), abs(point_x - run[1])),
+    )
+    return float(selected_run[1] - selected_run[0] + 1)
+
+
+def build_line_axis(near_center, far_center):
+    """Cria o eixo local da linha no sentido físico de avanço após o hvflip."""
+
+    if near_center is None or far_center is None:
+        return {"valid": False}
+    origin_x = float(near_center[0])
+    origin_y = float(near_center[1])
+    forward_x = float(far_center[0]) - origin_x
+    forward_y = float(far_center[1]) - origin_y
+    length = math.hypot(forward_x, forward_y)
+    if not math.isfinite(length) or length < GREEN_LINE_AXIS_MIN_LENGTH_PX:
+        return {"valid": False}
+
+    forward_x /= length
+    forward_y /= length
+    # Com o topo da imagem apontando para a frente, este vetor normal positivo
+    # aponta para a direita física do robô na imagem já transformada por hvflip.
+    right_x = -forward_y
+    right_y = forward_x
+    return {
+        "valid": True,
+        "origin": (origin_x, origin_y),
+        "forward": (forward_x, forward_y),
+        "right": (right_x, right_y),
+        "length": length,
+    }
+
+
+def project_point_on_line_axis(point, line_axis):
+    """Retorna as coordenadas longitudinal e lateral no referencial da linha."""
+
+    if not line_axis.get("valid", False):
+        return 0.0, 0.0
+    delta_x = float(point[0]) - line_axis["origin"][0]
+    delta_y = float(point[1]) - line_axis["origin"][1]
+    longitudinal = (
+        delta_x * line_axis["forward"][0]
+        + delta_y * line_axis["forward"][1]
+    )
+    lateral = (
+        delta_x * line_axis["right"][0]
+        + delta_y * line_axis["right"][1]
+    )
+    return longitudinal, lateral
+
+
+def point_from_line_axis(line_axis, longitudinal, lateral=0.0):
+    """Converte uma posição local da linha novamente para coordenadas da imagem."""
+
+    return (
+        line_axis["origin"][0]
+        + longitudinal * line_axis["forward"][0]
+        + lateral * line_axis["right"][0],
+        line_axis["origin"][1]
+        + longitudinal * line_axis["forward"][1]
+        + lateral * line_axis["right"][1],
+    )
+
+
+def contour_touches_useful_border(box, frame_width, useful_height):
+    """Marca candidatos parciais próximos de qualquer limite da área útil."""
+
+    x, y, width, height = box
+    tolerance = GREEN_PARTIAL_BORDER_TOLERANCE_PX
+    return (
+        x <= tolerance
+        or y <= tolerance
+        or x + width >= frame_width - tolerance
+        or y + height >= useful_height - tolerance
+    )
+
+
+def describe_green_contour(
+    contour,
+    frame_width,
+    useful_height,
+    line_mask,
+    line_axis,
+    sampled_line_points=None,
+):
+    """Calcula geometria, relação com a faixa e posição local do candidato."""
+
+    area = float(cv2.contourArea(contour))
+    box = cv2.boundingRect(contour)
+    rotated_rect = cv2.minAreaRect(contour)
+    rect_width, rect_height = rotated_rect[1]
+    short_side = min(float(rect_width), float(rect_height))
+    long_side = max(float(rect_width), float(rect_height))
+    aspect_ratio = short_side / long_side if long_side > 0.0 else 0.0
+    box_area = float(box[2] * box[3])
+    extent = area / box_area if box_area > 0.0 else 0.0
+    moments = cv2.moments(contour)
+    if moments["m00"] > 0.0:
+        center_x = float(moments["m10"] / moments["m00"])
+        center_y = float(moments["m01"] / moments["m00"])
+    else:
+        center_x = float(box[0] + box[2] / 2.0)
+        center_y = float(box[1] + box[3] / 2.0)
+    centroid = (center_x, center_y)
+    partial = contour_touches_useful_border(
+        box, frame_width, useful_height
+    )
+
+    geometry_valid = green_geometry_is_valid(
+        area,
+        short_side,
+        aspect_ratio,
+        extent,
+        partial,
+    )
+
+    line_distance_px = 0.0
+    if sampled_line_points is not None and sampled_line_points.size > 0:
+        delta = sampled_line_points - np.array(
+            (center_x, center_y), dtype=np.float32
+        )
+        squared_distance = np.sum(delta * delta, axis=1)
+        line_distance_px = float(math.sqrt(float(np.min(squared_distance))))
+
+    longitudinal, lateral = project_point_on_line_axis(centroid, line_axis)
+    projected_point = (
+        point_from_line_axis(line_axis, longitudinal)
+        if line_axis.get("valid", False)
+        else centroid
+    )
+    local_line_width_px = (
+        estimate_local_line_width(line_mask, projected_point)
+        if line_axis.get("valid", False)
+        else 0.0
+    )
+    marker_to_line_ratio = (
+        long_side / local_line_width_px if local_line_width_px > 0.0 else 0.0
+    )
+    scale_compatible = (
+        local_line_width_px <= 0.0
+        or GREEN_MARKER_TO_LINE_MIN_RATIO
+        <= marker_to_line_ratio
+        <= GREEN_MARKER_TO_LINE_MAX_RATIO
+    )
+    associated_with_line = (
+        line_axis.get("valid", False)
+        and local_line_width_px > 0.0
+        and abs(lateral) >= GREEN_SIDE_MIN_DISTANCE_PX
+        and line_distance_px
+        <= GREEN_LINE_DISTANCE_MAX_RATIO * local_line_width_px
+        and scale_compatible
+    )
+
+    return {
+        "contour": contour,
+        "area": area,
+        "centroid": centroid,
+        "bounding_box": box,
+        "rotated_rect": rotated_rect,
+        "short_side": short_side,
+        "long_side": long_side,
+        "aspect_ratio": aspect_ratio,
+        "extent": extent,
+        "partial": partial,
+        "geometry_valid": geometry_valid,
+        "line_distance_px": line_distance_px,
+        "local_line_width_px": local_line_width_px,
+        "marker_to_line_ratio": marker_to_line_ratio,
+        "scale_compatible": scale_compatible,
+        "associated_with_line": associated_with_line,
+        "longitudinal": longitudinal,
+        "lateral": lateral,
+        "side": "DIREITA" if lateral > 0.0 else "ESQUERDA",
+    }
+
+
+def find_green_candidates(
+    frame,
+    structural_end_y,
+    line_mask,
+    line_axis,
+    camera_format="RGB888",
+):
+    """Segmenta e separa candidatos geométricos de ruídos verdes rejeitados."""
+
+    green_mask = create_green_mask(frame, structural_end_y, camera_format)
+    contours, _ = cv2.findContours(
+        green_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    merged_contours = merge_green_fragments(contours)
+    sampled_line_points = np.empty((0, 2), dtype=np.float32)
+    if merged_contours:
+        sampled_y, sampled_x = np.nonzero(
+            line_mask[
+                ::GREEN_TOPOLOGY_SAMPLE_STEP,
+                ::GREEN_TOPOLOGY_SAMPLE_STEP,
+            ]
+        )
+        sampled_line_points = np.column_stack((
+            sampled_x * GREEN_TOPOLOGY_SAMPLE_STEP,
+            sampled_y * GREEN_TOPOLOGY_SAMPLE_STEP,
+        )).astype(np.float32)
+
+    candidates = []
+    rejected = []
+    for contour in merged_contours:
+        description = describe_green_contour(
+            contour,
+            frame.shape[1],
+            green_mask.shape[0],
+            line_mask,
+            line_axis,
+            sampled_line_points,
+        )
+        if description["geometry_valid"]:
+            candidates.append(description)
+        else:
+            rejected.append(description)
+    candidates.sort(key=lambda candidate: candidate["area"], reverse=True)
+    return green_mask, candidates, rejected
+
+
+def analyze_line_topology(line_mask, line_axis, reference_line_width_px):
+    """Observa encontro, continuação e ramificações com evidências graduais."""
+
+    empty_result = {
+        "entry_valid": False,
+        "junction_valid": False,
+        "junction": (0.0, 0.0),
+        "junction_longitudinal": 0.0,
+        "forward_branch": False,
+        "left_branch": False,
+        "right_branch": False,
+        "line_termination": False,
+        "confidence": 0.0,
+        "left_evidence": 0.0,
+        "right_evidence": 0.0,
+        "forward_evidence": 0.0,
+    }
+    if (
+        line_mask is None
+        or line_mask.size == 0
+        or not line_axis.get("valid", False)
+    ):
+        return empty_result
+
+    topology_mask = line_mask[
+        ::GREEN_TOPOLOGY_SAMPLE_STEP,
+        ::GREEN_TOPOLOGY_SAMPLE_STEP,
+    ]
+    active_y, active_x = np.nonzero(topology_mask)
+    active_y *= GREEN_TOPOLOGY_SAMPLE_STEP
+    active_x *= GREEN_TOPOLOGY_SAMPLE_STEP
+    if active_x.size < 20:
+        return empty_result
+    delta_x = active_x.astype(np.float32) - line_axis["origin"][0]
+    delta_y = active_y.astype(np.float32) - line_axis["origin"][1]
+    longitudinal = (
+        delta_x * line_axis["forward"][0]
+        + delta_y * line_axis["forward"][1]
+    )
+    lateral = (
+        delta_x * line_axis["right"][0]
+        + delta_y * line_axis["right"][1]
+    )
+
+    line_width = max(8.0, float(reference_line_width_px))
+    center_limit = line_width * 0.75
+    branch_limit = line_width * 1.35
+    sample_area_factor = GREEN_TOPOLOGY_SAMPLE_STEP ** 2
+    branch_min_pixels = max(
+        5,
+        int(line_width * line_width * 0.35 / sample_area_factor),
+    )
+    center_pixels = np.abs(lateral) <= center_limit
+    entry_pixels = center_pixels & (
+        (longitudinal >= -line_width * 2.0)
+        & (longitudinal <= line_width * 1.5)
+    )
+    entry_count = int(np.count_nonzero(entry_pixels))
+    entry_valid = entry_count >= branch_min_pixels
+
+    # Uma ramificação deve se afastar lateralmente em uma faixa longitudinal
+    # concentrada. Isso evita confundir uma curva longa com uma interseção.
+    left_pixels = (lateral <= -branch_limit) & (longitudinal >= line_width)
+    right_pixels = (lateral >= branch_limit) & (longitudinal >= line_width)
+    left_count = int(np.count_nonzero(left_pixels))
+    right_count = int(np.count_nonzero(right_pixels))
+    left_evidence = min(1.0, left_count / max(1.0, branch_min_pixels * 2.0))
+    right_evidence = min(1.0, right_count / max(1.0, branch_min_pixels * 2.0))
+    def concentrated_branch(side_pixels):
+        if int(np.count_nonzero(side_pixels)) < branch_min_pixels:
+            return False
+        branch_longitudinal = longitudinal[side_pixels]
+        branch_lateral = np.abs(lateral[side_pixels])
+        longitudinal_spread = float(
+            np.percentile(branch_longitudinal, 90)
+            - np.percentile(branch_longitudinal, 10)
+        )
+        lateral_reach = float(np.max(branch_lateral) - branch_limit)
+        return (
+            longitudinal_spread <= line_width * 3.0
+            and lateral_reach >= line_width * 1.5
+        )
+
+    left_branch = concentrated_branch(left_pixels)
+    right_branch = concentrated_branch(right_pixels)
+    side_structure_ambiguous = (
+        (left_count >= branch_min_pixels and not left_branch)
+        or (right_count >= branch_min_pixels and not right_branch)
+    )
+
+    junction_longitudinal = 0.0
+    line_termination = False
+    junction_valid = False
+    if left_branch or right_branch:
+        side_longitudinal = longitudinal[left_pixels | right_pixels]
+        junction_longitudinal = float(np.median(side_longitudinal))
+        junction_valid = entry_valid
+    elif np.any(center_pixels) and not side_structure_ambiguous:
+        junction_longitudinal = float(np.max(longitudinal[center_pixels]))
+        junction_point = point_from_line_axis(line_axis, junction_longitudinal)
+        border_margin = line_width + GREEN_PARTIAL_BORDER_TOLERANCE_PX
+        line_termination = (
+            border_margin < junction_point[0] < line_mask.shape[1] - border_margin
+            and border_margin
+            < junction_point[1]
+            < line_mask.shape[0] - border_margin
+        )
+        junction_valid = entry_valid and line_termination
+
+    forward_count = 0
+    if junction_valid:
+        forward_pixels = center_pixels & (
+            longitudinal >= junction_longitudinal + line_width * 1.5
+        )
+        forward_count = int(np.count_nonzero(forward_pixels))
+    forward_evidence = min(
+        1.0, forward_count / max(1.0, branch_min_pixels * 2.0)
+    )
+    forward_branch = forward_count >= branch_min_pixels
+    junction = (
+        point_from_line_axis(line_axis, junction_longitudinal)
+        if junction_valid
+        else (0.0, 0.0)
+    )
+    confidence = 0.0
+    if junction_valid:
+        strongest_branch = max(left_evidence, right_evidence, forward_evidence)
+        confidence = min(1.0, 0.60 + strongest_branch * 0.40)
+
+    return {
+        "entry_valid": entry_valid,
+        "junction_valid": junction_valid,
+        "junction": junction,
+        "junction_longitudinal": junction_longitudinal,
+        "forward_branch": forward_branch,
+        "left_branch": left_branch,
+        "right_branch": right_branch,
+        "line_termination": line_termination,
+        "confidence": confidence,
+        "left_evidence": left_evidence,
+        "right_evidence": right_evidence,
+        "forward_evidence": forward_evidence,
+    }
+
+
+def green_observation_state(candidate_count):
+    """Converte a quantidade de marcações geométricas no estado de observação."""
+
+    if candidate_count <= 0:
+        return "SEM_VERDE"
+    if candidate_count == 1:
+        return "UM_CANDIDATO"
+    if candidate_count == 2:
+        return "DOIS_CANDIDATOS"
+    return "MULTIPLOS_AMBIGUOS"
+
+
+def interpret_green_candidates(candidates, line_axis, topology):
+    """Interpreta candidatos priorizando retorno, direção, falso e ambiguidade."""
+
+    candidate_count = len(candidates)
+    observation_state = green_observation_state(candidate_count)
+    result = {
+        "observation_state": observation_state,
+        "interpretation": "SEM_DECISAO",
+        "left_seen": False,
+        "right_seen": False,
+        "pair_compatible": False,
+    }
+    if candidate_count == 0:
+        return result
+    if candidate_count > 2 or not line_axis.get("valid", False):
+        result["interpretation"] = "AMBIGUO"
+        return result
+
+    for candidate in candidates:
+        if candidate["side"] == "ESQUERDA":
+            result["left_seen"] = True
+        else:
+            result["right_seen"] = True
+
+    line_widths = [
+        candidate["local_line_width_px"]
+        for candidate in candidates
+        if candidate["local_line_width_px"] > 0.0
+    ]
+    reference_line_width = max(8.0, sum(line_widths) / len(line_widths)) \
+        if line_widths else 8.0
+
+    # O retorno de 180° tem prioridade e não depende da existência de saídas.
+    if candidate_count == 2:
+        first, second = candidates
+        opposite_sides = first["side"] != second["side"]
+        longitudinal_compatible = (
+            abs(first["longitudinal"] - second["longitudinal"])
+            <= GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS
+            * reference_line_width
+        )
+        before_same_encounter = False
+        if topology.get("junction_valid", False):
+            junction_longitudinal = topology["junction_longitudinal"]
+            before_same_encounter = all(
+                candidate["longitudinal"] < junction_longitudinal
+                and junction_longitudinal - candidate["longitudinal"]
+                <= GREEN_ENCOUNTER_DISTANCE_LINE_WIDTHS * reference_line_width
+                for candidate in candidates
+            )
+        pair_compatible = (
+            opposite_sides
+            and longitudinal_compatible
+            and before_same_encounter
+            and all(
+                candidate["associated_with_line"] and not candidate["partial"]
+                for candidate in candidates
+            )
+        )
+        result["pair_compatible"] = pair_compatible
+        result["interpretation"] = (
+            "RETORNO_180" if pair_compatible else "AMBIGUO"
+        )
+        return result
+
+    candidate = candidates[0]
+    if candidate["partial"] or not candidate["associated_with_line"]:
+        result["interpretation"] = "AMBIGUO"
+        return result
+    if (
+        not topology.get("junction_valid", False)
+        or topology.get("confidence", 0.0) < 0.50
+    ):
+        result["interpretation"] = "AMBIGUO"
+        return result
+
+    before_junction = (
+        candidate["longitudinal"] < topology["junction_longitudinal"]
+    )
+    if not before_junction:
+        result["interpretation"] = "VERDE_FALSO_NO_SENTIDO_ATUAL"
+        return result
+
+    matching_branch = (
+        topology["left_branch"]
+        if candidate["side"] == "ESQUERDA"
+        else topology["right_branch"]
+    )
+    result["interpretation"] = (
+        candidate["side"]
+        if matching_branch
+        else "VERDE_FALSO_NO_SENTIDO_ATUAL"
+    )
+    return result
+
+
+def empty_green_status():
+    """Cria um estado verde finito e seguro para publicação diagnóstica."""
+
+    return {
+        "greenObservationState": "SEM_VERDE",
+        "greenInterpretation": "SEM_DECISAO",
+        "greenConfirmed": False,
+        "greenCandidateCount": 0,
+        "greenRejectedCount": 0,
+        "greenLeftSeen": False,
+        "greenRightSeen": False,
+        "greenPairCompatible": False,
+        "greenJunctionValid": False,
+        "greenJunctionX": 0.0,
+        "greenJunctionY": 0.0,
+        "greenForwardBranch": False,
+        "greenLeftBranch": False,
+        "greenRightBranch": False,
+        "greenPrimaryX": 0.0,
+        "greenPrimaryY": 0.0,
+        "greenPrimaryArea": 0.0,
+        "greenSecondaryX": 0.0,
+        "greenSecondaryY": 0.0,
+        "greenSecondaryArea": 0.0,
+        "greenConsecutiveSamples": 0,
+        "greenProcessingMs": 0.0,
+    }
+
+
+class GreenObservationTracker:
+    """Confirma observações novas e remove decisões após curta histerese."""
+
+    def __init__(self):
+        self.last_sequence = None
+        self.pending_interpretation = "SEM_DECISAO"
+        self.consecutive_samples = 0
+        self.missing_samples = 0
+        self.confirmed_interpretation = "SEM_DECISAO"
+
+    def update(self, line_sequence, interpretation):
+        if line_sequence == self.last_sequence:
+            return (
+                self.confirmed_interpretation,
+                self.confirmed_interpretation != "SEM_DECISAO",
+                self.consecutive_samples,
+            )
+        self.last_sequence = line_sequence
+
+        if interpretation == "SEM_DECISAO":
+            self.missing_samples += 1
+            if self.missing_samples >= GREEN_CLEAR_HYSTERESIS_FRAMES:
+                self.pending_interpretation = "SEM_DECISAO"
+                self.confirmed_interpretation = "SEM_DECISAO"
+                self.consecutive_samples = 0
+            return (
+                self.confirmed_interpretation,
+                self.confirmed_interpretation != "SEM_DECISAO",
+                self.consecutive_samples,
+            )
+
+        self.missing_samples = 0
+        if interpretation != self.pending_interpretation:
+            self.pending_interpretation = interpretation
+            self.consecutive_samples = 1
+            self.confirmed_interpretation = "SEM_DECISAO"
+        else:
+            self.consecutive_samples += 1
+
+        required_samples = GREEN_CONFIRMATION_FRAMES
+        if interpretation in ("ESQUERDA", "DIREITA"):
+            required_samples = max(
+                required_samples, GREEN_SINGLE_OBSERVATION_FRAMES
+            )
+        confirmable = interpretation not in ("AMBIGUO", "SEM_DECISAO")
+        if confirmable and self.consecutive_samples >= required_samples:
+            self.confirmed_interpretation = interpretation
+
+        published_interpretation = self.confirmed_interpretation
+        if interpretation == "AMBIGUO":
+            published_interpretation = "AMBIGUO"
+        return (
+            published_interpretation,
+            self.confirmed_interpretation != "SEM_DECISAO",
+            self.consecutive_samples,
+        )
+
+
+def build_green_status(
+    candidates,
+    rejected_count,
+    interpretation_result,
+    topology,
+    tracker_result,
+    processing_ms,
+):
+    """Monta os campos diagnósticos sem permitir NaN no JSON rápido."""
+
+    status = empty_green_status()
+    published_interpretation, confirmed, consecutive_samples = tracker_result
+    status.update({
+        "greenObservationState": interpretation_result["observation_state"],
+        "greenInterpretation": published_interpretation,
+        "greenConfirmed": confirmed,
+        "greenCandidateCount": len(candidates),
+        "greenRejectedCount": int(rejected_count),
+        "greenLeftSeen": interpretation_result["left_seen"],
+        "greenRightSeen": interpretation_result["right_seen"],
+        "greenPairCompatible": interpretation_result["pair_compatible"],
+        "greenJunctionValid": bool(topology.get("junction_valid", False)),
+        "greenForwardBranch": bool(topology.get("forward_branch", False)),
+        "greenLeftBranch": bool(topology.get("left_branch", False)),
+        "greenRightBranch": bool(topology.get("right_branch", False)),
+        "greenConsecutiveSamples": int(consecutive_samples),
+        "greenProcessingMs": float(processing_ms),
+    })
+    if status["greenJunctionValid"]:
+        status["greenJunctionX"] = float(topology["junction"][0])
+        status["greenJunctionY"] = float(topology["junction"][1])
+    for prefix, candidate in zip(("greenPrimary", "greenSecondary"), candidates):
+        status[f"{prefix}X"] = float(candidate["centroid"][0])
+        status[f"{prefix}Y"] = float(candidate["centroid"][1])
+        status[f"{prefix}Area"] = float(candidate["area"])
+
+    for key, value in tuple(status.items()):
+        if isinstance(value, float) and not math.isfinite(value):
+            status[key] = 0.0
+    if status["greenObservationState"] not in GREEN_OBSERVATION_STATES:
+        status["greenObservationState"] = "SEM_VERDE"
+    if status["greenInterpretation"] not in GREEN_INTERPRETATIONS:
+        status["greenInterpretation"] = "SEM_DECISAO"
+        status["greenConfirmed"] = False
+    return status
+
+
 def encode_frame(frame):
     """Converte para JPEG o frame com a visualização experimental."""
 
@@ -655,6 +1471,7 @@ def save_line_status(
     center_delta_px,
     line_timestamp,
     line_sequence,
+    green_status=None,
 ):
     """Publica em memória compartilhada o resultado visual já calculado."""
 
@@ -752,6 +1569,7 @@ def save_line_status(
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
         }
+        line_status.update(green_status or empty_green_status())
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
         os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
@@ -998,6 +1816,7 @@ def main():
         last_status_time = 0.0
         smoothed_fps = 0.0
         line_sequence = 0
+        green_tracker = GreenObservationTracker()
 
         while running:
             frame = picam2.capture_array()
@@ -1096,6 +1915,50 @@ def main():
             if center_delta_valid:
                 center_delta_px = line_center_x - far_center_x
 
+            line_axis = build_line_axis(near_center, far_center)
+            green_candidates = []
+            green_rejected = []
+            green_topology = analyze_line_topology(None, line_axis, 0.0)
+            green_interpretation = interpret_green_candidates(
+                green_candidates,
+                line_axis,
+                green_topology,
+            )
+            green_processing_started = time.perf_counter()
+            if vision_profile.get("green_detection_enabled", False):
+                _, green_candidates, green_rejected = find_green_candidates(
+                    frame,
+                    vision_geometry["structural_end_y"],
+                    line_candidate_mask,
+                    line_axis,
+                    camera_format,
+                )
+                # A topologia é a parte mais cara e só roda quando a cor e a
+                # geometria já produziram pelo menos um candidato plausível.
+                if green_candidates:
+                    reference_center = near_center or far_center
+                    reference_line_width_px = (
+                        estimate_local_line_width(
+                            line_candidate_mask,
+                            reference_center,
+                        )
+                        if reference_center is not None
+                        else 0.0
+                    )
+                    green_topology = analyze_line_topology(
+                        line_candidate_mask,
+                        line_axis,
+                        reference_line_width_px,
+                    )
+                green_interpretation = interpret_green_candidates(
+                    green_candidates,
+                    line_axis,
+                    green_topology,
+                )
+            green_processing_ms = (
+                time.perf_counter() - green_processing_started
+            ) * 1000.0
+
             frame_width = frame.shape[1]
             frame_center_x = frame_width / 2.0
             (
@@ -1143,6 +2006,18 @@ def main():
 
             line_timestamp = time.time()
             line_sequence += 1
+            green_tracker_result = green_tracker.update(
+                line_sequence,
+                green_interpretation["interpretation"],
+            )
+            green_status = build_green_status(
+                green_candidates,
+                len(green_rejected),
+                green_interpretation,
+                green_topology,
+                green_tracker_result,
+                green_processing_ms,
+            )
             save_line_status(
                 near_valid,
                 near_error,
@@ -1157,6 +2032,7 @@ def main():
                 center_delta_px,
                 line_timestamp,
                 line_sequence,
+                green_status,
             )
 
             # A largura é medida em uma única altura fixa da near_band.
@@ -1368,6 +2244,116 @@ def main():
                     vision_profile["overlay_center_radius"],
                     (0, 165, 255),
                     -1,
+                )
+
+            if vision_profile.get("green_detection_enabled", False):
+                for rejected_candidate in green_rejected:
+                    cv2.drawContours(
+                        frame,
+                        [rejected_candidate["contour"]],
+                        -1,
+                        (180, 80, 180),
+                        1,
+                    )
+
+                interpretation = green_status["greenInterpretation"]
+                for candidate in green_candidates:
+                    cv2.drawContours(
+                        frame,
+                        [candidate["contour"]],
+                        -1,
+                        (0, 255, 0),
+                        2,
+                    )
+                    center = (
+                        int(round(candidate["centroid"][0])),
+                        int(round(candidate["centroid"][1])),
+                    )
+                    cv2.circle(frame, center, 3, (0, 255, 0), -1)
+                    if interpretation == "RETORNO_180":
+                        candidate_letter = "R"
+                    elif interpretation == "VERDE_FALSO_NO_SENTIDO_ATUAL":
+                        candidate_letter = "F"
+                    elif interpretation == "AMBIGUO":
+                        candidate_letter = "?"
+                    else:
+                        candidate_letter = (
+                            "E" if candidate["side"] == "ESQUERDA" else "D"
+                        )
+                    cv2.putText(
+                        frame,
+                        candidate_letter,
+                        (center[0] + 5, max(12, center[1] - 5)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.45,
+                        (0, 255, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                if line_axis.get("valid", False):
+                    axis_start = point_from_line_axis(line_axis, -30.0)
+                    axis_end = point_from_line_axis(
+                        line_axis,
+                        float(vision_geometry["structural_end_y"]),
+                    )
+                    cv2.line(
+                        frame,
+                        tuple(int(round(value)) for value in axis_start),
+                        tuple(int(round(value)) for value in axis_end),
+                        (255, 255, 0),
+                        1,
+                        cv2.LINE_AA,
+                    )
+
+                if green_topology.get("junction_valid", False):
+                    junction = tuple(
+                        int(round(value))
+                        for value in green_topology["junction"]
+                    )
+                    cv2.circle(frame, junction, 4, (0, 255, 255), -1)
+                    branch_length = 28.0
+                    branch_directions = []
+                    if green_topology["forward_branch"]:
+                        branch_directions.append(line_axis["forward"])
+                    if green_topology["left_branch"]:
+                        branch_directions.append((
+                            -line_axis["right"][0],
+                            -line_axis["right"][1],
+                        ))
+                    if green_topology["right_branch"]:
+                        branch_directions.append(line_axis["right"])
+                    for direction_x, direction_y in branch_directions:
+                        branch_end = (
+                            int(round(junction[0] + direction_x * branch_length)),
+                            int(round(junction[1] + direction_y * branch_length)),
+                        )
+                        cv2.line(
+                            frame,
+                            junction,
+                            branch_end,
+                            (0, 255, 255),
+                            2,
+                            cv2.LINE_AA,
+                        )
+
+                green_text = {
+                    "SEM_DECISAO": "SEM DECISAO",
+                    "ESQUERDA": "ESQUERDA",
+                    "DIREITA": "DIREITA",
+                    "RETORNO_180": "RETORNO 180 GRAUS",
+                    "VERDE_FALSO_NO_SENTIDO_ATUAL": "FALSO NO SENTIDO ATUAL",
+                    "AMBIGUO": "AMBIGUO",
+                }[interpretation]
+                cv2.putText(
+                    frame,
+                    f"VERDE: {green_text}",
+                    (8, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (0, 255, 0),
+                    1,
+                    cv2.LINE_AA,
                 )
 
             active_pixel_count = cv2.countNonZero(filtered_mask)
