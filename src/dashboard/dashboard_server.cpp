@@ -235,7 +235,7 @@ void DashboardServer::handleClient(SocketHandle client)
 
     if (request.find("GET /camera-stream.mjpg") == 0)
     {
-        if (!proxyCameraStream(client))
+        if (!proxyCameraStream(client, request))
         {
             sendHttpNotFound(client);
         }
@@ -597,14 +597,48 @@ std::string DashboardServer::dashboardHtml()
     .section-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 13px; }
     .section-title { display: flex; align-items: center; gap: 9px; margin: 0; font-size: .86rem; letter-spacing: .1em; text-transform: uppercase; }
     .section-title::before { content: ""; width: 3px; height: 16px; border-radius: 4px; background: var(--cyan); box-shadow: 0 0 12px #22d3ee88; }
+    .camera-workspace-header { align-items: flex-start; }
+    .camera-heading { min-width: 150px; }
+    .camera-heading p { margin: 6px 0 0 12px; color: var(--muted); font-size: .68rem; line-height: 1.35; }
     .camera-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
     .meta-chip { padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: #09141b; color: var(--muted); font-size: .7rem; }
     .meta-chip strong { color: var(--text); font-variant-numeric: tabular-nums; }
-    .camera-frame { position: relative; aspect-ratio: 16 / 9; border: 1px solid #263d49; border-radius: 11px; overflow: hidden; background: linear-gradient(135deg, #081218, #0b1c25); }
+    .camera-view-selector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; margin-bottom: 12px; padding: 4px; border: 1px solid var(--line); border-radius: 11px; background: #08141b; }
+    .camera-view-button { min-height: 38px; padding: 6px 10px; border-color: transparent; border-radius: 8px; background: transparent; color: var(--muted); font-size: .68rem; letter-spacing: .09em; text-transform: uppercase; }
+    .camera-view-button:hover { background: #102530; }
+    .camera-view-button.active { color: #061217; border-color: var(--cyan); background: var(--cyan); box-shadow: 0 0 15px #22d3ee35; }
+    .camera-view-button:focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+    .camera-feed-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .camera-feed-grid[data-view="dual"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .camera-feed-card { min-width: 0; padding: 9px; border: 1px solid var(--line-soft); border-radius: 13px; background: #09151d; }
+    .camera-feed-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 31px; padding: 0 2px 8px; }
+    .camera-feed-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+    .camera-feed-header strong { font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; }
+    .camera-mode-selector { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: #061118; }
+    .camera-mode-button { min-height: 24px; padding: 3px 7px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: .56rem; font-weight: 850; letter-spacing: .06em; }
+    .camera-mode-button:hover { color: var(--text); background: #14303c; }
+    .camera-mode-button.active { color: #061217; background: var(--cyan); box-shadow: 0 0 9px #22d3ee35; }
+    .camera-mode-button:focus-visible { outline: 2px solid var(--yellow); outline-offset: 1px; }
+    .camera-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: .59rem; font-weight: 900; letter-spacing: .07em; text-transform: uppercase; }
+    .camera-status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #647985; box-shadow: 0 0 8px #64798566; }
+    .camera-status.online { color: #6ee7b7; }
+    .camera-status.online::before { background: var(--green); box-shadow: 0 0 10px #34d39999; }
+    .camera-status.loading { color: #fde68a; }
+    .camera-status.loading::before { background: var(--yellow); box-shadow: 0 0 10px #fbbf2488; }
+    .camera-status.offline { color: #fda4af; }
+    .camera-status.offline::before { background: var(--danger); box-shadow: 0 0 10px #fb718599; }
+    .camera-status.unconfigured { color: #a8bcc6; }
+    .camera-frame { position: relative; aspect-ratio: 4 / 3; border: 1px solid #263d49; border-radius: 11px; overflow: hidden; background: linear-gradient(135deg, #081218, #0b1c25); }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
-    .camera-frame:not(.offline) .camera-message { display: none; }
+    .camera-frame.online .camera-message { display: none; }
+    .camera-placeholder { display: grid; align-content: center; justify-items: center; gap: 6px; width: 100%; height: 100%; padding: 24px; text-align: center; }
+    .camera-placeholder strong { color: var(--text); font-size: .86rem; letter-spacing: .11em; }
+    .camera-placeholder p { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+    .camera-placeholder .planned-use { margin-top: 8px; color: #9be8f3; font-size: .62rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
+    .camera-telemetry-label { margin: 12px 2px -2px; color: #8be6f2; font-size: .61rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
+    .camera-telemetry-note { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: 9px; color: var(--muted); background: #09151d; font-size: .68rem; text-align: center; }
     .camera-diagnostics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; margin-top: 10px; }
     .camera-diagnostic-group { --diagnostic-color: var(--cyan); min-width: 0; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--diagnostic-color) 35%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--diagnostic-color) 7%, #09151d); }
     .camera-diagnostic-group.near { --diagnostic-color: #60a5fa; }
@@ -755,6 +789,8 @@ std::string DashboardServer::dashboardHtml()
       .hero-card { min-height: 124px; }
       .section-header, .telemetry-heading { align-items: flex-start; flex-direction: column; }
       .camera-meta { justify-content: flex-start; }
+      .camera-feed-grid[data-view="dual"] { grid-template-columns: 1fr; }
+      .camera-view-button { min-width: 0; padding-inline: 5px; }
       .camera-message, .safety-note { overflow-wrap: anywhere; }
       .keyboard-copy span { max-width: none; }
       .manual-speed-grid { grid-template-columns: 1fr; }
@@ -822,53 +858,54 @@ std::string DashboardServer::dashboardHtml()
 
     <section class="main-grid">
       <section class="card section-card">
-        <div class="section-header">
-          <h2 id="cameraTitle" class="section-title">Câmera</h2>
-          <div class="camera-meta">
-            <span class="meta-chip">FPS <strong id="cameraFps">--</strong></span>
-            <span class="meta-chip">Papel <strong id="cameraRole">--</strong></span>
-            <span class="meta-chip">Stream <strong>DIRETO</strong></span>
-            <span class="meta-chip">Resolução <strong id="cameraResolution">--</strong></span>
-            <span class="meta-chip">Sensor <strong id="cameraSensorMode">--</strong></span>
-            <span class="meta-chip">Crop <strong id="cameraScalerCrop">--</strong></span>
-            <span class="meta-chip">Formato <strong id="cameraFormat">--</strong></span>
+        <div class="section-header camera-workspace-header">
+          <div class="camera-heading">
+            <h2 class="section-title">Câmeras</h2>
+            <p>Workspace de percepção do robô</p>
+          </div>
+          <div id="cameraMetadata" class="camera-meta" aria-live="polite"></div>
+        </div>
+        <div class="camera-view-selector" role="group" aria-label="Visualização das câmeras">
+          <button type="button" class="camera-view-button active" data-camera-view="downward" aria-pressed="true">Inferior</button>
+          <button type="button" class="camera-view-button" data-camera-view="forward" aria-pressed="false">Frontal</button>
+          <button type="button" class="camera-view-button" data-camera-view="dual" aria-pressed="false">Dupla</button>
+        </div>
+        <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
+        <div id="downwardCameraTelemetry">
+          <p id="downwardTelemetryLabel" class="camera-telemetry-label" hidden>Telemetria da câmera inferior</p>
+          <div class="camera-diagnostics" aria-label="Diagnóstico visual da câmera inferior">
+            <section class="camera-diagnostic-group near">
+              <h3>Near</h3>
+              <dl class="camera-diagnostic-list">
+                <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraNearValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraNearError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraNearArea">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraNearHeight">—</dd></div>
+              </dl>
+            </section>
+            <section class="camera-diagnostic-group far">
+              <h3>Far</h3>
+              <dl class="camera-diagnostic-list">
+                <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraFarValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraFarError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraFarArea">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraFarHeight">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Delta de centro</dt><dd id="cameraCenterDelta">—</dd></div>
+              </dl>
+            </section>
+            <section class="camera-diagnostic-group control">
+              <h3>Controle</h3>
+              <dl class="camera-diagnostic-list">
+                <div class="camera-diagnostic-item"><dt>Control error</dt><dd id="cameraControlError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Correction</dt><dd id="cameraCorrection">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
+              </dl>
+            </section>
           </div>
         </div>
-        <div id="cameraFrame" class="camera-frame offline">
-          <img id="cameraImage" alt="Imagem direta da câmera selecionada">
-          <div class="camera-message">Aguardando o stream da câmera</div>
-        </div>
-        <div class="camera-diagnostics" aria-label="Diagnóstico visual da linha">
-          <section class="camera-diagnostic-group near">
-            <h3>Near</h3>
-            <dl class="camera-diagnostic-list">
-              <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraNearValid">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraNearError">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraNearArea">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraNearHeight">—</dd></div>
-            </dl>
-          </section>
-          <section class="camera-diagnostic-group far">
-            <h3>Far</h3>
-            <dl class="camera-diagnostic-list">
-              <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraFarValid">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraFarError">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraFarArea">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraFarHeight">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Delta de centro</dt><dd id="cameraCenterDelta">—</dd></div>
-            </dl>
-          </section>
-          <section class="camera-diagnostic-group control">
-            <h3>Controle</h3>
-            <dl class="camera-diagnostic-list">
-              <div class="camera-diagnostic-item"><dt>Control error</dt><dd id="cameraControlError">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Correction</dt><dd id="cameraCorrection">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
-              <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
-            </dl>
-          </section>
-        </div>
+        <p id="forwardCameraTelemetry" class="camera-telemetry-note" hidden>Telemetria frontal ainda não disponível</p>
       </section>
 
       <div class="side-stack">
@@ -1083,10 +1120,30 @@ std::string DashboardServer::dashboardHtml()
   <script>
     let ws;
     let manualEnabled = false;
-    let cameraReconnectTimer;
     const driveKeyCodes = ["KeyW", "KeyA", "KeyS", "KeyD"];
     const pressedDriveKeys = new Set();
     const element = id => document.getElementById(id);
+    const cameras = {
+      downward: {
+        id: "downward",
+        name: "Câmera inferior",
+        role: "Segue-faixa e detecção de verde",
+        streamUrl: "/camera-stream.mjpg",
+        statusUrl: "/camera-status.json",
+        displayMode: "real",
+        status: "CARREGANDO",
+        metadata: { fps: "--", resolution: "--", sensor: "--", crop: "--", format: "--" }
+      },
+      forward: {
+        id: "forward",
+        name: "Câmera frontal",
+        role: "Resgate e percepção frontal",
+        streamUrl: null,
+        statusUrl: null,
+        status: "NÃO CONFIGURADA",
+        metadata: { fps: "--", resolution: "--", sensor: "--", crop: "--", format: "--" }
+      }
+    };
     const connection = element("connection");
     const throttle = element("throttle");
     const turn = element("turn");
@@ -1094,15 +1151,12 @@ std::string DashboardServer::dashboardHtml()
     const manualTurnPower = element("manualTurnPower");
     const leftValue = element("leftValue");
     const rightValue = element("rightValue");
-    const cameraFrame = element("cameraFrame");
-    const cameraImage = element("cameraImage");
-    const cameraTitle = element("cameraTitle");
-    const cameraFps = element("cameraFps");
-    const cameraRole = element("cameraRole");
-    const cameraResolution = element("cameraResolution");
-    const cameraSensorMode = element("cameraSensorMode");
-    const cameraScalerCrop = element("cameraScalerCrop");
-    const cameraFormat = element("cameraFormat");
+    const cameraFeeds = element("cameraFeeds");
+    const cameraMetadata = element("cameraMetadata");
+    const downwardCameraTelemetry = element("downwardCameraTelemetry");
+    const downwardTelemetryLabel = element("downwardTelemetryLabel");
+    const forwardCameraTelemetry = element("forwardCameraTelemetry");
+    const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const cameraDiagnosticFields = {
       nearValid: element("cameraNearValid"), nearError: element("cameraNearError"),
       nearArea: element("cameraNearArea"), nearHeight: element("cameraNearHeight"),
@@ -1125,6 +1179,12 @@ std::string DashboardServer::dashboardHtml()
     let filteredRightEncoderRate = null;
     let manualMinimumPower = 0.65;
     let manualMaximumPower = 1.0;
+    let activeCameraView = "downward";
+    let cameraRenderGeneration = 0;
+    const mountedCameraImages = new Map();
+    const mountedCameraStatuses = new Map();
+    const mountedCameraModeButtons = [];
+    const cameraReconnectTimers = new Map();
     let lastCameraStatusTimestamp = null;
     let lastCameraStatusChangeAtMs = 0;
 
@@ -1713,8 +1773,230 @@ std::string DashboardServer::dashboardHtml()
       if (manualEnabled) resetDrive();
     }
 
-    function cameraStreamUrl() { return `/camera-stream.mjpg?ts=${Date.now()}`; }
-    function startCameraStream() { window.clearTimeout(cameraReconnectTimer); cameraImage.src = cameraStreamUrl(); }
+    function visibleCameraIds(view = activeCameraView) {
+      if (view === "dual") return ["downward", "forward"];
+      return [view];
+    }
+
+    function cameraIsVisible(cameraId) {
+      return visibleCameraIds().includes(cameraId);
+    }
+
+    function cameraStatusClass(status) {
+      if (status === "ONLINE") return "online";
+      if (status === "OFFLINE") return "offline";
+      if (status === "CARREGANDO") return "loading";
+      return "unconfigured";
+    }
+
+    function setCameraStatus(cameraId, status) {
+      const camera = cameras[cameraId];
+      camera.status = status;
+      const statusElement = mountedCameraStatuses.get(cameraId);
+      if (statusElement) {
+        statusElement.textContent = status;
+        statusElement.className = `camera-status ${cameraStatusClass(status)}`;
+      }
+      renderCameraMetadata();
+    }
+
+    function addCameraMetadata(label, value) {
+      const chip = document.createElement("span");
+      chip.className = "meta-chip";
+      chip.append(`${label} `);
+      const content = document.createElement("strong");
+      content.textContent = value;
+      chip.appendChild(content);
+      cameraMetadata.appendChild(chip);
+    }
+
+    function renderCameraMetadata() {
+      cameraMetadata.replaceChildren();
+      if (activeCameraView === "dual") return;
+      const camera = cameras[activeCameraView];
+      addCameraMetadata("Status", camera.status);
+      addCameraMetadata("Papel", camera.role);
+      addCameraMetadata("Stream", camera.streamUrl || "NÃO CONFIGURADO");
+      if (!camera.streamUrl) return;
+      addCameraMetadata("FPS", camera.metadata.fps);
+      addCameraMetadata("Resolução", camera.metadata.resolution);
+      addCameraMetadata("Sensor", camera.metadata.sensor);
+      addCameraMetadata("Crop", camera.metadata.crop);
+      addCameraMetadata("Formato", camera.metadata.format);
+    }
+
+    function clearCameraReconnect(cameraId) {
+      window.clearTimeout(cameraReconnectTimers.get(cameraId));
+      cameraReconnectTimers.delete(cameraId);
+    }
+
+    function cameraStreamUrl(camera) {
+      if (!camera.streamUrl) return null;
+      const separator = camera.streamUrl.includes("?") ? "&" : "?";
+      const mode = camera.displayMode || "real";
+      return `${camera.streamUrl}${separator}mode=${encodeURIComponent(mode)}&ts=${Date.now()}`;
+    }
+
+    function connectCameraImage(camera, image, frame, generation) {
+      if (generation !== cameraRenderGeneration || !cameraIsVisible(camera.id)) return;
+      clearCameraReconnect(camera.id);
+      frame.className = "camera-frame loading";
+      setCameraStatus(camera.id, "CARREGANDO");
+      // O mesmo elemento é reutilizado; remover o src encerra a conexão MJPEG
+      // anterior antes que o modo escolhido abra uma nova conexão única.
+      image.removeAttribute("src");
+      window.requestAnimationFrame(() => {
+        if (generation !== cameraRenderGeneration || !cameraIsVisible(camera.id)) return;
+        image.src = cameraStreamUrl(camera);
+      });
+    }
+
+    function selectDownwardCameraMode(mode) {
+      if (!["real", "line", "green"].includes(mode)) return;
+      const camera = cameras.downward;
+      camera.displayMode = mode;
+      mountedCameraModeButtons.forEach(button => {
+        const selected = button.dataset.cameraMode === mode;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      const image = mountedCameraImages.get("downward");
+      const frame = image?.closest(".camera-frame");
+      if (image && frame) connectCameraImage(camera, image, frame, cameraRenderGeneration);
+    }
+
+    function buildCameraModeSelector(camera) {
+      const selector = document.createElement("div");
+      selector.className = "camera-mode-selector";
+      selector.setAttribute("role", "group");
+      selector.setAttribute("aria-label", "Modo visual da câmera inferior");
+      const modes = [
+        ["real", "REAL"],
+        ["line", "LINHA"],
+        ["green", "VERDE"]
+      ];
+      modes.forEach(([mode, label]) => {
+        const button = document.createElement("button");
+        const selected = camera.displayMode === mode;
+        button.type = "button";
+        button.className = `camera-mode-button${selected ? " active" : ""}`;
+        button.dataset.cameraMode = mode;
+        button.textContent = label;
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+        button.addEventListener("click", () => selectDownwardCameraMode(mode));
+        mountedCameraModeButtons.push(button);
+        selector.appendChild(button);
+      });
+      return selector;
+    }
+
+    function mountCameraStream(camera, frame, generation) {
+      const image = document.createElement("img");
+      image.alt = `Imagem direta da ${camera.name.toLowerCase()}`;
+      image.onload = () => {
+        if (generation !== cameraRenderGeneration) return;
+        frame.className = "camera-frame online";
+        setCameraStatus(camera.id, "ONLINE");
+      };
+      image.onerror = () => {
+        if (generation !== cameraRenderGeneration || !cameraIsVisible(camera.id)) return;
+        frame.className = "camera-frame offline";
+        setCameraStatus(camera.id, "OFFLINE");
+        clearCameraReconnect(camera.id);
+        cameraReconnectTimers.set(camera.id, window.setTimeout(
+          () => connectCameraImage(camera, image, frame, generation),
+          1000
+        ));
+      };
+      mountedCameraImages.set(camera.id, image);
+      frame.appendChild(image);
+      const message = document.createElement("div");
+      message.className = "camera-message";
+      message.textContent = "Aguardando o stream da câmera";
+      frame.appendChild(message);
+      connectCameraImage(camera, image, frame, generation);
+    }
+
+    function buildCameraPlaceholder(camera, frame) {
+      const placeholder = document.createElement("div");
+      placeholder.className = "camera-placeholder";
+      const title = document.createElement("strong");
+      title.textContent = "CÂMERA FRONTAL";
+      const message = document.createElement("p");
+      message.textContent = "Aguardando configuração do stream";
+      const plannedLabel = document.createElement("span");
+      plannedLabel.className = "planned-use";
+      plannedLabel.textContent = "Uso planejado:";
+      const plannedUse = document.createElement("p");
+      plannedUse.textContent = camera.role;
+      placeholder.append(title, message, plannedLabel, plannedUse);
+      frame.appendChild(placeholder);
+    }
+
+    function buildCameraFeed(cameraId, generation) {
+      const camera = cameras[cameraId];
+      const feed = document.createElement("article");
+      feed.className = "camera-feed-card";
+      feed.dataset.cameraId = camera.id;
+
+      const header = document.createElement("header");
+      header.className = "camera-feed-header";
+      const identity = document.createElement("div");
+      identity.className = "camera-feed-identity";
+      const name = document.createElement("strong");
+      name.textContent = camera.name;
+      identity.appendChild(name);
+      if (camera.id === "downward") identity.appendChild(buildCameraModeSelector(camera));
+      const status = document.createElement("span");
+      status.className = `camera-status ${cameraStatusClass(camera.status)}`;
+      status.textContent = camera.status;
+      mountedCameraStatuses.set(camera.id, status);
+      header.append(identity, status);
+
+      const frame = document.createElement("div");
+      frame.className = camera.streamUrl ? "camera-frame loading" : "camera-frame unconfigured";
+      if (camera.streamUrl) mountCameraStream(camera, frame, generation);
+      else buildCameraPlaceholder(camera, frame);
+      feed.append(header, frame);
+      return feed;
+    }
+
+    function unmountCameraStreams() {
+      // Remover o src encerra conexões MJPEG que não pertencem à visualização atual.
+      cameraReconnectTimers.forEach(timer => window.clearTimeout(timer));
+      cameraReconnectTimers.clear();
+      mountedCameraImages.forEach(image => {
+        image.onload = null;
+        image.onerror = null;
+        image.removeAttribute("src");
+      });
+      mountedCameraImages.clear();
+      mountedCameraStatuses.clear();
+      mountedCameraModeButtons.length = 0;
+      cameraFeeds.replaceChildren();
+    }
+
+    function renderCameraView(view) {
+      if (!["downward", "forward", "dual"].includes(view)) return;
+      cameraRenderGeneration += 1;
+      unmountCameraStreams();
+      activeCameraView = view;
+      cameraFeeds.dataset.view = view;
+      cameraViewButtons.forEach(button => {
+        const selected = button.dataset.cameraView === view;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      const generation = cameraRenderGeneration;
+      visibleCameraIds(view).forEach(cameraId => {
+        cameraFeeds.appendChild(buildCameraFeed(cameraId, generation));
+      });
+      downwardCameraTelemetry.hidden = view === "forward";
+      downwardTelemetryLabel.hidden = view !== "dual";
+      forwardCameraTelemetry.hidden = view === "downward";
+      renderCameraMetadata();
+      if (cameraIsVisible("downward")) refreshCameraStatus();
+    }
 
     function clearCameraDiagnostics() {
       Object.values(cameraDiagnosticFields).forEach(field => { field.textContent = "—"; });
@@ -1770,35 +2052,39 @@ std::string DashboardServer::dashboardHtml()
     }
 
     async function refreshCameraStatus() {
+      if (!cameraIsVisible("downward")) return;
+      const camera = cameras.downward;
       try {
-        const response = await fetch(`/camera-status.json?ts=${Date.now()}`, { cache: "no-store" });
+        const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
         if (data.active !== true || Number(data.fps) <= 0) {
-          cameraFps.textContent = "aguardando"; cameraRole.textContent = "--"; cameraResolution.textContent = "--"; cameraSensorMode.textContent = "--"; cameraScalerCrop.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics(); return;
+          setCameraStatus("downward", "OFFLINE");
+          clearCameraDiagnostics();
+          return;
         }
-        const roleLabel = data.cameraRole === "down" ? "inferior" : data.cameraRole === "forward" ? "frontal" : "--";
         const width = Number(data.width);
         const height = Number(data.height);
         const sensorMode = data.sensorMode || {};
         const scalerCrop = data.scalerCrop || {};
-        cameraTitle.textContent = roleLabel === "--" ? "Câmera" : `Câmera ${roleLabel}`;
-        cameraImage.alt = roleLabel === "--" ? "Imagem direta da câmera selecionada" : `Imagem direta da câmera ${roleLabel}`;
-        cameraFps.textContent = Number(data.fps).toFixed(1);
-        cameraRole.textContent = roleLabel;
-        cameraResolution.textContent = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "--";
-        cameraSensorMode.textContent = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
-        cameraScalerCrop.textContent = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
-        if (width > 0 && height > 0) cameraFrame.style.aspectRatio = `${width} / ${height}`;
-        cameraFormat.textContent = data.cameraFormat || "--";
+        camera.metadata.fps = Number(data.fps).toFixed(1);
+        camera.metadata.resolution = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "--";
+        camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
+        camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
+        camera.metadata.format = data.cameraFormat || "--";
+        const mountedImage = mountedCameraImages.get("downward");
+        if (mountedImage && mountedImage.naturalWidth > 0) setCameraStatus("downward", "ONLINE");
+        else renderCameraMetadata();
         updateCameraDiagnostics(data);
       } catch {
-        cameraFps.textContent = "erro"; cameraRole.textContent = "--"; cameraResolution.textContent = "--"; cameraSensorMode.textContent = "--"; cameraScalerCrop.textContent = "--"; cameraFormat.textContent = "--"; clearCameraDiagnostics();
+        setCameraStatus("downward", "OFFLINE");
+        clearCameraDiagnostics();
       }
     }
 
-    cameraImage.addEventListener("load", () => cameraFrame.classList.remove("offline"));
-    cameraImage.addEventListener("error", () => { cameraFrame.classList.add("offline"); cameraReconnectTimer = window.setTimeout(startCameraStream, 1000); });
+    cameraViewButtons.forEach(button => {
+      button.addEventListener("click", () => renderCameraView(button.dataset.cameraView));
+    });
     throttle.addEventListener("input", updateDriveFromMixer);
     turn.addEventListener("input", updateDriveFromMixer);
     manualDrivePower.addEventListener("input", updateManualPowerSettings);
@@ -1832,8 +2118,7 @@ std::string DashboardServer::dashboardHtml()
     document.addEventListener("visibilitychange", () => { if (document.hidden) stopDriveOnFocusLoss(); });
     window.setInterval(sendCurrentDrive, 100);
     window.setInterval(refreshCameraStatus, 500);
-    startCameraStream();
-    refreshCameraStatus();
+    renderCameraView("downward");
     restoreManualPowerSettings();
     updateKeyboardIndicators();
     connect();
@@ -1942,7 +2227,7 @@ bool DashboardServer::sendCameraStreamHead(SocketHandle client)
     return sendAll(client, response.c_str(), response.size());
 }
 
-bool DashboardServer::proxyCameraStream(SocketHandle client)
+bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& request)
 {
     // O vídeo em alta taxa vem do servidor MJPEG do script Python.
     // O proxy mantém o navegador usando a mesma porta do dashboard.
@@ -1971,12 +2256,43 @@ bool DashboardServer::proxyCameraStream(SocketHandle client)
         return false;
     }
 
-    std::ostringstream request;
-    request << "GET " << config::kCameraStreamPath << " HTTP/1.1\r\n"
-            << "Host: 127.0.0.1:" << config::kCameraStreamPort << "\r\n"
-            << "Connection: close\r\n\r\n";
+    // Somente o modo visual é encaminhado ao processo da câmera. O parâmetro
+    // não entra no IPC de visão e não pode alterar decisões do robô.
+    std::string displayMode = "real";
+    const std::size_t methodEnd = request.find(' ');
+    if (methodEnd != std::string::npos)
+    {
+        const std::size_t targetStart = methodEnd + 1;
+        const std::size_t targetEnd = request.find(' ', targetStart);
+        if (targetEnd != std::string::npos)
+        {
+            const std::string target = request.substr(targetStart, targetEnd - targetStart);
+            std::size_t modeStart = target.find("?mode=");
+            if (modeStart == std::string::npos)
+            {
+                modeStart = target.find("&mode=");
+            }
+            if (modeStart != std::string::npos)
+            {
+                const std::size_t valueStart = modeStart + 6;
+                const std::size_t valueEnd = target.find('&', valueStart);
+                const std::string requestedMode = target.substr(valueStart, valueEnd - valueStart);
+                if (requestedMode == "real" || requestedMode == "line" ||
+                    requestedMode == "green")
+                {
+                    displayMode = requestedMode;
+                }
+            }
+        }
+    }
 
-    const std::string requestText = request.str();
+    std::ostringstream cameraRequest;
+    cameraRequest << "GET " << config::kCameraStreamPath << "?mode=" << displayMode
+                  << " HTTP/1.1\r\n"
+                  << "Host: 127.0.0.1:" << config::kCameraStreamPort << "\r\n"
+                  << "Connection: close\r\n\r\n";
+
+    const std::string requestText = cameraRequest.str();
     if (!sendAll(cameraSocket, requestText.c_str(), requestText.size()))
     {
 #ifdef _WIN32

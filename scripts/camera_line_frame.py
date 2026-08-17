@@ -5,6 +5,7 @@ Ela não calcula comandos nem interfere no controle do robô.
 """
 
 import argparse
+import csv
 import json
 import math
 import os
@@ -12,6 +13,7 @@ import signal
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import cv2
 import numpy as np
@@ -35,6 +37,15 @@ STATUS_PATH = "/tmp/obr_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_camera_status.tmp.json"
 LINE_STATUS_PATH = "/dev/shm/obr_line_status.json"
 TEMP_LINE_STATUS_PATH = "/dev/shm/obr_line_status.tmp.json"
+GREEN_CAPTURE_REQUEST_PATH = "/dev/shm/obr_green_capture_request"
+GREEN_CAPTURE_RAW_PATH = "/dev/shm/obr_green_raw.png"
+GREEN_CAPTURE_HSV_MASK_PATH = "/dev/shm/obr_green_hsv_mask.png"
+GREEN_CAPTURE_FINAL_MASK_PATH = "/dev/shm/obr_green_final_mask.png"
+GREEN_CAPTURE_CANDIDATES_PATH = "/dev/shm/obr_green_candidates.png"
+GREEN_CAPTURE_STATS_PATH = "/dev/shm/obr_green_stats.json"
+LINE_TRACE_REQUEST_PATH = "/dev/shm/obr_line_trace_request"
+VISION_TRACE_SAMPLE_PATH = "/dev/shm/obr_line_trace_vision_sample.csv"
+TEMP_VISION_TRACE_SAMPLE_PATH = "/dev/shm/obr_line_trace_vision_sample.tmp.csv"
 
 LIGHT_PIN_BOARD = 40
 MJPEG_STREAM_PORT = 8090
@@ -48,6 +59,158 @@ CAMERA_PIXEL_FORMATS = ("RGB888",)
 # O nome RGB888 segue a convenção do libcamera. No array retornado pelo
 # Picamera2, cada pixel fica em ordem B, G, R, que é a ordem nativa do OpenCV.
 CAMERA_ARRAY_COLOR_ORDER = "BGR"
+DEFAULT_CAMERA_INDICES = {
+    "down": 0,
+    "forward": 1,
+}
+CAMERA_INDEX_ENVIRONMENT = {
+    "down": "OBR_DOWNWARD_CAMERA_INDEX",
+    "forward": "OBR_FORWARD_CAMERA_INDEX",
+}
+DISPLAY_MODE_REAL = "real"
+DISPLAY_MODE_LINE = "line"
+DISPLAY_MODE_GREEN = "green"
+DISPLAY_MODES = (
+    DISPLAY_MODE_REAL,
+    DISPLAY_MODE_LINE,
+    DISPLAY_MODE_GREEN,
+)
+
+
+def environment_flag(name, default):
+    """Lê uma flag booleana de ambiente sem aceitar valores ambíguos."""
+
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    normalized = value.strip().lower()
+    if normalized in ("1", "true", "yes", "on"):
+        return True
+    if normalized in ("0", "false", "no", "off"):
+        return False
+    raise ValueError(f"{name} deve ser 0/1, true/false, yes/no ou on/off.")
+
+
+def configured_camera_indices(environment=None):
+    """Lê os dois índices físicos sem permitir fallback ou papéis duplicados."""
+
+    environment = os.environ if environment is None else environment
+    indices = {}
+    for role, variable_name in CAMERA_INDEX_ENVIRONMENT.items():
+        raw_value = environment.get(
+            variable_name,
+            str(DEFAULT_CAMERA_INDICES[role]),
+        )
+        try:
+            camera_index = int(raw_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"{variable_name} deve ser um índice inteiro não negativo."
+            ) from error
+        if camera_index < 0:
+            raise ValueError(
+                f"{variable_name} deve ser um índice inteiro não negativo."
+            )
+        indices[role] = camera_index
+
+    if indices["down"] == indices["forward"]:
+        raise ValueError(
+            "As câmeras inferior e frontal não podem usar o mesmo índice."
+        )
+    return indices
+
+
+def camera_number(camera_info, fallback_index):
+    """Obtém o número enumerado sem deduzir o papel pelo modelo do sensor."""
+
+    value = camera_info.get("Num", fallback_index)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback_index)
+
+
+def resolve_camera_assignments(camera_infos, camera_indices):
+    """Associa índices configurados aos papéis sem trocar câmeras ausentes."""
+
+    enumerated = {
+        camera_number(camera_info, fallback_index): camera_info
+        for fallback_index, camera_info in enumerate(camera_infos)
+    }
+    return {
+        role: {
+            "role": role,
+            "index": camera_index,
+            "available": camera_index in enumerated,
+            "info": enumerated.get(camera_index),
+        }
+        for role, camera_index in camera_indices.items()
+    }
+
+
+def require_camera_assignment(assignments, role):
+    """Falha claramente se a câmera exigida para o papel não foi enumerada."""
+
+    assignment = assignments[role]
+    if not assignment["available"]:
+        raise RuntimeError(
+            f"Câmera {role} configurada no índice {assignment['index']} "
+            "não foi encontrada; não haverá troca automática de papel."
+        )
+    return assignment
+
+
+def camera_role_publishes_line_status(role):
+    """Restringe o IPC do segue-faixa ao papel físico da câmera inferior."""
+
+    return role == "down"
+
+
+def log_camera_inventory(camera_infos, assignments):
+    """Registra inventário, identificador e papel configurado de cada câmera."""
+
+    if not camera_infos:
+        print("Nenhuma câmera foi enumerada pelo Picamera2.", flush=True)
+    for fallback_index, camera_info in enumerate(camera_infos):
+        camera_index = camera_number(camera_info, fallback_index)
+        print(
+            "Câmera enumerada: "
+            f"índice={camera_index}, modelo={camera_info.get('Model', '')}, "
+            f"identificador={camera_info.get('Id', '')}, "
+            f"localização={camera_info.get('Location', '')}, "
+            f"rotação={camera_info.get('Rotation', '')}.",
+            flush=True,
+        )
+    for role in ("down", "forward"):
+        assignment = assignments[role]
+        availability = "disponível" if assignment["available"] else "indisponível"
+        print(
+            f"Papel configurado: {role}=índice {assignment['index']} "
+            f"({availability}).",
+            flush=True,
+        )
+
+
+# Os dois modos permanecem ligados por padrão para preservar o comportamento
+# atual. Definir uma flag como 0 serve exclusivamente aos ensaios A/B/C.
+GREEN_PROCESSING_ENABLED = environment_flag("GREEN_PROCESSING_ENABLED", True)
+GREEN_DECISIONS_ENABLED = environment_flag("GREEN_DECISIONS_ENABLED", True)
+
+
+def resolve_green_experiment_mode(
+    profile_enabled,
+    processing_enabled,
+    decisions_enabled,
+):
+    """Resolve os modos A/B/C sem permitir decisão quando não há processamento."""
+
+    effective_processing = bool(profile_enabled and processing_enabled)
+    effective_decisions = bool(effective_processing and decisions_enabled)
+    if not effective_processing:
+        return "C", False, False
+    if not effective_decisions:
+        return "B", True, False
+    return "A", True, True
 
 # Limites iniciais deliberadamente amplos para o verde. Estes valores ainda
 # precisam de calibração física sob a iluminação da pista da competição.
@@ -194,6 +357,195 @@ running = True
 latest_jpeg = None
 latest_jpeg_sequence = 0
 frame_condition = threading.Condition()
+selected_display_mode = DISPLAY_MODE_REAL
+display_mode_lock = threading.Lock()
+
+
+def normalize_display_mode(value):
+    """Mantém o modo visual dentro das três opções aceitas pelo dashboard."""
+
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in DISPLAY_MODES else DISPLAY_MODE_REAL
+
+
+def set_display_mode(value):
+    """Seleciona apenas a imagem codificada, sem alterar o processamento visual."""
+
+    global selected_display_mode
+    normalized = normalize_display_mode(value)
+    with display_mode_lock:
+        selected_display_mode = normalized
+    return normalized
+
+
+def get_display_mode():
+    """Lê o modo visual solicitado pela conexão MJPEG ativa."""
+
+    with display_mode_lock:
+        return selected_display_mode
+
+
+def create_display_frame(
+    raw_frame,
+    line_candidate_mask,
+    green_mask,
+    roi_start_y,
+    display_mode,
+):
+    """Cria a base exibida sem modificar o frame ou as máscaras da visão."""
+
+    normalized_mode = normalize_display_mode(display_mode)
+    if normalized_mode == DISPLAY_MODE_REAL:
+        return raw_frame.copy()
+
+    display_frame = np.zeros_like(raw_frame)
+    if normalized_mode == DISPLAY_MODE_LINE:
+        line_roi = display_frame[roi_start_y:raw_frame.shape[0], :]
+        line_roi[line_candidate_mask > 0] = (255, 255, 255)
+    else:
+        useful_green_region = display_frame[:green_mask.shape[0], :]
+        useful_green_region[green_mask > 0] = (0, 255, 0)
+    return display_frame
+
+
+def green_candidate_direction(candidate, interpretation):
+    """Resume a direção do candidato usando somente resultados já calculados."""
+
+    if interpretation == "RETORNO_180":
+        return "R"
+    if interpretation in ("AMBIGUO", "VERDE_FALSO_NO_SENTIDO_ATUAL"):
+        return "?"
+    return "E" if candidate.get("side") == "ESQUERDA" else "D"
+
+
+def draw_green_candidate_overlays(
+    display_frame,
+    candidates,
+    rejected_candidates,
+    line_axis,
+    interpretation,
+):
+    """Identifica candidatos aceitos e rejeitados sem preencher a imagem real."""
+
+    accepted_color = (64, 255, 96)
+    rejected_color = (255, 0, 255)
+    for candidate_id, candidate in enumerate(candidates, start=1):
+        vote_state, _reason = classify_green_candidate_vote(candidate, line_axis)
+        state_text = "ACEITO" if vote_state == "VALIDO" else "IRRESOLUVEL"
+        direction = green_candidate_direction(candidate, interpretation)
+        center = tuple(int(round(value)) for value in candidate["centroid"])
+        cv2.drawContours(
+            display_frame,
+            [candidate["contour"]],
+            -1,
+            accepted_color,
+            1,
+        )
+        cv2.circle(display_frame, center, 3, accepted_color, -1)
+        cv2.putText(
+            display_frame,
+            f"C{candidate_id} {state_text} {direction}",
+            (center[0] + 5, max(12, center[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            accepted_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    rejected_id_start = len(candidates) + 1
+    for offset, candidate in enumerate(rejected_candidates):
+        candidate_id = rejected_id_start + offset
+        center = tuple(int(round(value)) for value in candidate["centroid"])
+        cv2.drawContours(
+            display_frame,
+            [candidate["contour"]],
+            -1,
+            rejected_color,
+            1,
+        )
+        cv2.putText(
+            display_frame,
+            f"C{candidate_id} REJEITADO ?",
+            (center[0] + 5, max(12, center[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            rejected_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def draw_line_mode_green_overlays(
+    display_frame,
+    candidates,
+    rejected_candidates,
+    interpretation,
+):
+    """Preserva os contornos verdes da visualização binária anterior."""
+
+    for candidate in rejected_candidates:
+        cv2.drawContours(
+            display_frame,
+            [candidate["contour"]],
+            -1,
+            (180, 80, 180),
+            1,
+        )
+    for candidate in candidates:
+        cv2.drawContours(
+            display_frame,
+            [candidate["contour"]],
+            -1,
+            (0, 255, 0),
+            2,
+        )
+        center = tuple(int(round(value)) for value in candidate["centroid"])
+        cv2.circle(display_frame, center, 3, (0, 255, 0), -1)
+        if interpretation == "RETORNO_180":
+            candidate_letter = "R"
+        elif interpretation == "VERDE_FALSO_NO_SENTIDO_ATUAL":
+            candidate_letter = "F"
+        elif interpretation == "AMBIGUO":
+            candidate_letter = "?"
+        else:
+            candidate_letter = "E" if candidate["side"] == "ESQUERDA" else "D"
+        cv2.putText(
+            display_frame,
+            candidate_letter,
+            (center[0] + 5, max(12, center[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def green_status_overlay(green_processing_enabled, green_status):
+    """Define texto e cor sem reinterpretar ou substituir a decisão publicada."""
+
+    if not green_processing_enabled:
+        return "FALHA DE PROCESSAMENTO", (0, 0, 255)
+
+    interpretation = green_status["greenInterpretation"]
+    text = {
+        "SEM_DECISAO": "SEM DECISAO",
+        "ESQUERDA": "ESQUERDA",
+        "DIREITA": "DIREITA",
+        "RETORNO_180": "RETORNO 180 GRAUS",
+        "VERDE_FALSO_NO_SENTIDO_ATUAL": "FALSO NO SENTIDO ATUAL",
+        "AMBIGUO": "AMBIGUO",
+    }[interpretation]
+    if interpretation == "AMBIGUO":
+        return text, (0, 255, 255)
+    if green_status["greenConfirmed"] and interpretation in (
+        "ESQUERDA",
+        "DIREITA",
+        "RETORNO_180",
+    ):
+        return text, (64, 255, 96)
+    return text, (220, 220, 220)
 
 
 def put_debug_text(enabled, *args, **kwargs):
@@ -326,13 +678,17 @@ class CameraStreamHandler(BaseHTTPRequestHandler):
         del format_text, args
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        request_url = urlsplit(self.path)
+        path = request_url.path
         if path != MJPEG_STREAM_PATH:
             self.send_response(404)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"Not found")
             return
+
+        query = parse_qs(request_url.query)
+        set_display_mode(query.get("mode", [DISPLAY_MODE_REAL])[0])
 
         self.send_response(200)
         self.send_header("Age", "0")
@@ -402,7 +758,7 @@ def rectangle_values(rectangle):
     }
 
 
-def camera_runtime_details(picam2, camera_profile, camera_config):
+def camera_runtime_details(picam2, camera_profile, camera_config, camera_index):
     """Registra a câmera e o modo físico realmente aceitos pelo Picamera2."""
 
     sensor_config = camera_config["sensor"]
@@ -421,6 +777,7 @@ def camera_runtime_details(picam2, camera_profile, camera_config):
     camera_id = str(getattr(camera, "id", ""))
     properties = getattr(picam2, "camera_properties", {})
     return {
+        "cameraIndex": int(camera_index),
         "cameraId": camera_id,
         "cameraModel": str(properties.get("Model", "")),
         "sensorMode": {
@@ -434,10 +791,10 @@ def camera_runtime_details(picam2, camera_profile, camera_config):
     }
 
 
-def create_camera(camera_profile):
+def create_camera(camera_profile, camera_index):
     """Configura a Camera V2 e exige o modo físico definido para seu papel."""
 
-    picam2 = Picamera2()
+    picam2 = Picamera2(camera_index)
     frame_width, frame_height = camera_profile["main_size"]
     target_fps = camera_profile["target_fps"]
     frame_duration_us = int(1_000_000 / target_fps)
@@ -462,6 +819,7 @@ def create_camera(camera_profile):
                 picam2,
                 camera_profile,
                 applied_config,
+                camera_index,
             )
             print(
                 f"Câmera {camera_profile['role']} configurada em {pixel_format}, "
@@ -481,7 +839,12 @@ def create_camera(camera_profile):
     )
     picam2.configure(camera_config)
     applied_config = picam2.camera_configuration()
-    runtime_details = camera_runtime_details(picam2, camera_profile, applied_config)
+    runtime_details = camera_runtime_details(
+        picam2,
+        camera_profile,
+        applied_config,
+        camera_index,
+    )
     print(
         f"Câmera {camera_profile['role']} configurada em modo still como fallback.",
         flush=True,
@@ -720,6 +1083,46 @@ def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
     )
     green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, open_kernel)
     return cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, close_kernel)
+
+
+def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
+    """Expõe as etapas da segmentação somente para a captura one-shot."""
+
+    useful_end_y = max(0, min(frame.shape[0], int(structural_end_y)))
+    useful_frame = frame[:useful_end_y, :]
+    hsv_frame = frame_to_hsv(useful_frame, camera_format)
+    hue_mask = cv2.inRange(
+        hsv_frame,
+        (GREEN_HUE_MIN, 0, 0),
+        (GREEN_HUE_MAX, 255, 255),
+    )
+    hue_saturation_mask = cv2.inRange(
+        hsv_frame,
+        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, 0),
+        (GREEN_HUE_MAX, 255, 255),
+    )
+    hsv_mask = cv2.inRange(
+        hsv_frame,
+        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
+        (GREEN_HUE_MAX, 255, 255),
+    )
+    final_mask = hsv_mask.copy()
+    if cv2.countNonZero(hsv_mask) > 0:
+        open_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE),
+        )
+        close_kernel = cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
+        )
+        final_mask = cv2.morphologyEx(
+            final_mask, cv2.MORPH_OPEN, open_kernel
+        )
+        final_mask = cv2.morphologyEx(
+            final_mask, cv2.MORPH_CLOSE, close_kernel
+        )
+    return hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask
 
 
 def expanded_boxes_overlap(first_box, second_box, gap_px):
@@ -1008,10 +1411,17 @@ def find_green_candidates(
     line_mask,
     line_axis,
     camera_format="RGB888",
+    timings=None,
 ):
     """Segmenta e separa candidatos geométricos de ruídos verdes rejeitados."""
 
+    mask_started = time.perf_counter() if timings is not None else 0.0
     green_mask = create_green_mask(frame, structural_end_y, camera_format)
+    if timings is not None:
+        timings["green_mask_ms"] = (
+            time.perf_counter() - mask_started
+        ) * 1000.0
+    contours_started = time.perf_counter() if timings is not None else 0.0
     contours, _ = cv2.findContours(
         green_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
@@ -1040,12 +1450,402 @@ def find_green_candidates(
             line_axis,
             sampled_line_points,
         )
-        if description["geometry_valid"]:
-            candidates.append(description)
-        else:
+        if not description["geometry_valid"]:
             rejected.append(description)
+            continue
+        vote_state, _reason = classify_green_candidate_vote(
+            description, line_axis
+        )
+        if vote_state == "REJEITADO":
+            rejected.append(description)
+        else:
+            candidates.append(description)
     candidates.sort(key=lambda candidate: candidate["area"], reverse=True)
+    if timings is not None:
+        timings["green_contours_ms"] = (
+            time.perf_counter() - contours_started
+        ) * 1000.0
     return green_mask, candidates, rejected
+
+
+def camera_array_rgb_channels(frame):
+    """Nomeia os canais segundo a ordem que o detector realmente interpreta."""
+
+    if CAMERA_ARRAY_COLOR_ORDER != "BGR":
+        raise ValueError("Ordem de canais inesperada para o diagnóstico verde.")
+    blue = frame[:, :, 0]
+    green = frame[:, :, 1]
+    red = frame[:, :, 2]
+    return red, green, blue
+
+
+def channel_percentiles(channel):
+    """Resume um canal da região útil com percentis comparáveis entre ensaios."""
+
+    values = np.percentile(channel, (1, 5, 50, 95, 99))
+    return {
+        "p01": float(values[0]),
+        "p05": float(values[1]),
+        "p50": float(values[2]),
+        "p95": float(values[3]),
+        "p99": float(values[4]),
+    }
+
+
+def mask_active_percent(mask):
+    """Calcula a fração ativa da máscara em porcentagem da região útil."""
+
+    return (
+        100.0 * float(cv2.countNonZero(mask)) / float(mask.size)
+        if mask.size > 0
+        else 0.0
+    )
+
+
+def green_geometry_rejection_reasons(candidate):
+    """Detalha quais filtros geométricos vigentes rejeitaram um componente."""
+
+    partial = bool(candidate["partial"])
+    minimum_area = GREEN_MIN_AREA_PX
+    minimum_dimension = GREEN_MIN_DIMENSION_PX
+    minimum_aspect = GREEN_ASPECT_RATIO_MIN
+    minimum_extent = GREEN_MIN_EXTENT
+    if partial:
+        minimum_area *= GREEN_PARTIAL_AREA_FACTOR
+        minimum_dimension *= GREEN_PARTIAL_DIMENSION_FACTOR
+        minimum_aspect = GREEN_PARTIAL_ASPECT_RATIO_MIN
+        minimum_extent = GREEN_PARTIAL_EXTENT_MIN
+
+    reasons = []
+    if not math.isfinite(candidate["area"]) or candidate["area"] < minimum_area:
+        reasons.append("area_below_minimum")
+    if candidate["short_side"] < minimum_dimension:
+        reasons.append("dimension_below_minimum")
+    if not minimum_aspect <= candidate["aspect_ratio"] <= GREEN_ASPECT_RATIO_MAX:
+        reasons.append("aspect_ratio_outside_range")
+    if candidate["extent"] < minimum_extent:
+        reasons.append("extent_below_minimum")
+    return reasons
+
+
+def green_ambiguity_reasons(candidates, line_axis, topology, interpretation):
+    """Explica a ambiguidade atual sem modificar a classificação publicada."""
+
+    if interpretation.get("interpretation") != "AMBIGUO":
+        return []
+    votes = [
+        classify_green_candidate_vote(candidate, line_axis)
+        for candidate in candidates
+    ]
+    unresolved_reasons = sorted({
+        reason for state, reason in votes if state == "IRRESOLUVEL"
+    })
+    if unresolved_reasons:
+        return unresolved_reasons
+    if (
+        interpretation.get("left_seen", False)
+        and interpretation.get("right_seen", False)
+        and not interpretation.get("pair_compatible", False)
+    ):
+        return ["candidatos opostos sem par compatível para retorno"]
+    if not topology.get("junction_valid", False):
+        return ["topologia do encontro inválida"]
+    if topology.get("confidence", 0.0) < 0.50:
+        return ["confiança da topologia abaixo de 0,50"]
+    return ["candidatos válidos sem decisão direcional única"]
+
+
+def json_safe_camera_metadata(metadata):
+    """Seleciona apenas metadados necessários e converte valores para JSON."""
+
+    def safe_value(value):
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, (tuple, list)):
+            return [safe_value(item) for item in value]
+        try:
+            converted = float(value)
+            return converted if math.isfinite(converted) else None
+        except (TypeError, ValueError):
+            return str(value)
+
+    names = (
+        "ExposureTime",
+        "AnalogueGain",
+        "ColourGains",
+        "ColourTemperature",
+        "AwbEnable",
+        "AeEnable",
+    )
+    return {name: safe_value(metadata.get(name)) for name in names}
+
+
+def component_pixel_statistics(candidate, useful_frame, hsv_frame, final_mask):
+    """Mede cor somente nos pixels finais pertencentes ao componente."""
+
+    component_mask = np.zeros(final_mask.shape, dtype=np.uint8)
+    cv2.drawContours(component_mask, [candidate["contour"]], -1, 255, -1)
+    active_pixels = (component_mask > 0) & (final_mask > 0)
+    red, green, blue = camera_array_rgb_channels(useful_frame)
+    hue = hsv_frame[:, :, 0][active_pixels]
+    saturation = hsv_frame[:, :, 1][active_pixels]
+    value = hsv_frame[:, :, 2][active_pixels]
+    red_values = red[active_pixels]
+    green_values = green[active_pixels]
+    blue_values = blue[active_pixels]
+    dominance = green_values.astype(np.int16) - np.maximum(
+        red_values, blue_values
+    ).astype(np.int16)
+
+    def median(values):
+        return float(np.median(values)) if values.size else 0.0
+
+    def range_summary(values):
+        if not values.size:
+            return {"min": 0.0, "median": 0.0, "max": 0.0}
+        return {
+            "min": float(np.min(values)),
+            "median": median(values),
+            "max": float(np.max(values)),
+        }
+
+    return {
+        "sampled_pixel_count": int(np.count_nonzero(active_pixels)),
+        "hue_median": median(hue),
+        "saturation": range_summary(saturation),
+        "value": range_summary(value),
+        "rgb_medians": {
+            "red": median(red_values),
+            "green": median(green_values),
+            "blue": median(blue_values),
+        },
+        "green_dominance_median": median(dominance),
+    }
+
+
+def build_green_capture_stats(
+    frame,
+    camera_format,
+    mask_stages,
+    candidates,
+    rejected,
+    line_axis,
+    topology,
+    interpretation,
+    camera_metadata,
+):
+    """Monta a evidência one-shot do pipeline antes de desenhar o overlay."""
+
+    hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask = mask_stages
+    useful_frame = frame[:hsv_frame.shape[0], :]
+    red, green, blue = camera_array_rgb_channels(useful_frame)
+    dominance = green.astype(np.int16) - np.maximum(red, blue).astype(np.int16)
+    hsv_contours, _ = cv2.findContours(
+        hsv_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    final_contours, _ = cv2.findContours(
+        final_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    all_components = [
+        (candidate, True) for candidate in candidates
+    ] + [
+        (candidate, False) for candidate in rejected
+    ]
+    component_stats = []
+    for component_id, (candidate, accepted) in enumerate(all_components, start=1):
+        vote_state, vote_reason = classify_green_candidate_vote(
+            candidate, line_axis
+        )
+        geometry_reasons = green_geometry_rejection_reasons(candidate)
+        reason = vote_reason if candidate["geometry_valid"] else ", ".join(
+            geometry_reasons
+        )
+        hull_area = float(cv2.contourArea(cv2.convexHull(candidate["contour"])))
+        component_stats.append({
+            "id": component_id,
+            "area": float(candidate["area"]),
+            "bbox": [int(value) for value in candidate["bounding_box"]],
+            "centroid": [float(value) for value in candidate["centroid"]],
+            "partial": bool(candidate["partial"]),
+            "aspect_ratio": float(candidate["aspect_ratio"]),
+            "extent": float(candidate["extent"]),
+            "solidity": (
+                float(candidate["area"] / hull_area) if hull_area > 0.0 else 0.0
+            ),
+            "geometry_valid": bool(candidate["geometry_valid"]),
+            "associated_with_line": bool(candidate["associated_with_line"]),
+            "accepted": accepted,
+            "rejected": not accepted,
+            "vote_state": vote_state,
+            "reason": reason,
+            **component_pixel_statistics(
+                candidate, useful_frame, hsv_frame, final_mask
+            ),
+        })
+
+    return {
+        "captured_at_unix_seconds": time.time(),
+        "detector_region": {
+            "x": 0,
+            "y": 0,
+            "width": int(useful_frame.shape[1]),
+            "height": int(useful_frame.shape[0]),
+        },
+        "camera": {
+            "requested_format": camera_format,
+            "detector_array_order": CAMERA_ARRAY_COLOR_ORDER,
+            "requested_controls": {
+                "AwbEnable": True,
+                "AeEnable": True,
+                "ExposureValue": CAMERA_EXPOSURE_VALUE,
+            },
+            "metadata": json_safe_camera_metadata(camera_metadata),
+        },
+        "thresholds": {
+            "hue": [GREEN_HUE_MIN, GREEN_HUE_MAX],
+            "saturation_min": GREEN_SATURATION_MIN,
+            "value_min": GREEN_VALUE_MIN,
+            "open_kernel": [GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE],
+            "close_kernel": [GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE],
+            "minimum_area_px": GREEN_MIN_AREA_PX,
+            "minimum_dimension_px": GREEN_MIN_DIMENSION_PX,
+            "aspect_ratio": [GREEN_ASPECT_RATIO_MIN, GREEN_ASPECT_RATIO_MAX],
+            "minimum_extent": GREEN_MIN_EXTENT,
+            "solidity_filter_enabled": False,
+            "fragment_merge_gap_px": GREEN_FRAGMENT_MERGE_GAP_PX,
+        },
+        "frame_percentiles": {
+            "array_channels": {
+                "channel_0": channel_percentiles(useful_frame[:, :, 0]),
+                "channel_1": channel_percentiles(useful_frame[:, :, 1]),
+                "channel_2": channel_percentiles(useful_frame[:, :, 2]),
+            },
+            "rgb": {
+                "red": channel_percentiles(red),
+                "green": channel_percentiles(green),
+                "blue": channel_percentiles(blue),
+            },
+            "hsv": {
+                "hue": channel_percentiles(hsv_frame[:, :, 0]),
+                "saturation": channel_percentiles(hsv_frame[:, :, 1]),
+                "value": channel_percentiles(hsv_frame[:, :, 2]),
+            },
+        },
+        "mean_green_dominance": float(np.mean(dominance)),
+        "mask_active_percent": {
+            "hue_only": mask_active_percent(hue_mask),
+            "hue_and_saturation": mask_active_percent(hue_saturation_mask),
+            "full_hsv": mask_active_percent(hsv_mask),
+            "after_morphology": mask_active_percent(final_mask),
+        },
+        "mask_active_pixels": {
+            "hue_only": int(cv2.countNonZero(hue_mask)),
+            "hue_and_saturation": int(cv2.countNonZero(hue_saturation_mask)),
+            "full_hsv": int(cv2.countNonZero(hsv_mask)),
+            "after_morphology": int(cv2.countNonZero(final_mask)),
+        },
+        "pipeline_counts": {
+            "hsv_mask_external_contours": len(hsv_contours),
+            "final_mask_external_contours": len(final_contours),
+            "accepted_candidates": len(candidates),
+            "rejected_candidates": len(rejected),
+            "detector_components_after_merge": len(all_components),
+        },
+        "line_axis_valid": bool(line_axis.get("valid", False)),
+        "interpretation": interpretation.get("interpretation", "SEM_DECISAO"),
+        "ambiguity_reasons": green_ambiguity_reasons(
+            candidates, line_axis, topology, interpretation
+        ),
+        "components": component_stats,
+    }
+
+
+def save_green_capture(
+    frame,
+    camera_format,
+    mask_stages,
+    candidates,
+    rejected,
+    line_axis,
+    topology,
+    interpretation,
+    camera_metadata,
+):
+    """Grava uma captura diagnóstica completa por substituições atômicas."""
+
+    _hsv_frame, _hue_mask, _hue_saturation_mask, hsv_mask, final_mask = (
+        mask_stages
+    )
+    candidates_image = frame.copy()
+    for component_id, candidate in enumerate(candidates, start=1):
+        cv2.drawContours(
+            candidates_image, [candidate["contour"]], -1, (0, 255, 0), 2
+        )
+        center = tuple(int(round(value)) for value in candidate["centroid"])
+        cv2.putText(
+            candidates_image, str(component_id), center,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA,
+        )
+    rejected_id_start = len(candidates) + 1
+    for offset, candidate in enumerate(rejected):
+        component_id = rejected_id_start + offset
+        cv2.drawContours(
+            candidates_image, [candidate["contour"]], -1, (180, 80, 180), 1
+        )
+        center = tuple(int(round(value)) for value in candidate["centroid"])
+        cv2.putText(
+            candidates_image, str(component_id), center,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 80, 180), 1, cv2.LINE_AA,
+        )
+
+    stats = build_green_capture_stats(
+        frame,
+        camera_format,
+        mask_stages,
+        candidates,
+        rejected,
+        line_axis,
+        topology,
+        interpretation,
+        camera_metadata,
+    )
+    image_outputs = (
+        (GREEN_CAPTURE_RAW_PATH, "/dev/shm/.obr_green_raw.tmp.png", frame),
+        (
+            GREEN_CAPTURE_HSV_MASK_PATH,
+            "/dev/shm/.obr_green_hsv_mask.tmp.png",
+            hsv_mask,
+        ),
+        (
+            GREEN_CAPTURE_FINAL_MASK_PATH,
+            "/dev/shm/.obr_green_final_mask.tmp.png",
+            final_mask,
+        ),
+        (
+            GREEN_CAPTURE_CANDIDATES_PATH,
+            "/dev/shm/.obr_green_candidates.tmp.png",
+            candidates_image,
+        ),
+    )
+    temporary_paths = [temporary for _target, temporary, _image in image_outputs]
+    temporary_paths.append("/dev/shm/.obr_green_stats.tmp.json")
+    try:
+        for _target, temporary, image in image_outputs:
+            if not cv2.imwrite(temporary, image):
+                raise OSError(f"Não foi possível gravar {temporary}.")
+        with open(temporary_paths[-1], "w", encoding="utf-8") as stats_file:
+            json.dump(stats, stats_file, indent=2, allow_nan=False)
+        for target, temporary, _image in image_outputs:
+            os.replace(temporary, target)
+        os.replace(temporary_paths[-1], GREEN_CAPTURE_STATS_PATH)
+    finally:
+        for temporary in temporary_paths:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def analyze_line_topology(line_mask, line_axis, reference_line_width_px):
@@ -1205,11 +2005,68 @@ def green_observation_state(candidate_count):
     return "MULTIPLOS_AMBIGUOS"
 
 
+def classify_green_candidate_vote(candidate, line_axis):
+    """Define se o candidato pode votar em um lado e explica a decisão."""
+
+    if not line_axis.get("valid", False):
+        return "IRRESOLUVEL", "eixo local da linha inválido"
+    if candidate.get("partial", False):
+        return "IRRESOLUVEL", "marcador parcial sem posição confiável"
+
+    lateral = float(candidate.get("lateral", float("nan")))
+    side = candidate.get("side", "UNKNOWN")
+    if not math.isfinite(lateral) or abs(lateral) < GREEN_SIDE_MIN_DISTANCE_PX:
+        return "IRRESOLUVEL", "distância lateral insuficiente para definir o lado"
+    expected_side = "DIREITA" if lateral > 0.0 else "ESQUERDA"
+    if side not in ("ESQUERDA", "DIREITA") or side != expected_side:
+        return "IRRESOLUVEL", "lado incompatível com a geometria local da linha"
+    if not candidate.get("associated_with_line", False):
+        return "REJEITADO", "sem associação espacial válida com a linha"
+    return "VALIDO", "evidência espacial válida"
+
+
+def green_pair_is_compatible(first, second, topology, reference_line_width):
+    """Aplica ao par esquerda/direita os critérios existentes do retorno de 180°."""
+
+    if first["side"] == second["side"]:
+        return False
+    longitudinal_compatible = (
+        abs(first["longitudinal"] - second["longitudinal"])
+        <= GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS
+        * reference_line_width
+    )
+    if not topology.get("junction_valid", False):
+        return False
+    junction_longitudinal = topology["junction_longitudinal"]
+    before_same_encounter = all(
+        candidate["longitudinal"] < junction_longitudinal
+        and junction_longitudinal - candidate["longitudinal"]
+        <= GREEN_ENCOUNTER_DISTANCE_LINE_WIDTHS * reference_line_width
+        for candidate in (first, second)
+    )
+    return longitudinal_compatible and before_same_encounter
+
+
 def interpret_green_candidates(candidates, line_axis, topology):
     """Interpreta candidatos priorizando retorno, direção, falso e ambiguidade."""
 
-    candidate_count = len(candidates)
-    observation_state = green_observation_state(candidate_count)
+    candidate_votes = [
+        (candidate, *classify_green_candidate_vote(candidate, line_axis))
+        for candidate in candidates
+    ]
+    valid_candidates = [
+        candidate
+        for candidate, vote_state, _reason in candidate_votes
+        if vote_state == "VALIDO"
+    ]
+    unresolved_candidates = [
+        candidate
+        for candidate, vote_state, _reason in candidate_votes
+        if vote_state == "IRRESOLUVEL"
+    ]
+    observation_state = green_observation_state(
+        len(valid_candidates) + len(unresolved_candidates)
+    )
     result = {
         "observation_state": observation_state,
         "interpretation": "SEM_DECISAO",
@@ -1217,52 +2074,49 @@ def interpret_green_candidates(candidates, line_axis, topology):
         "right_seen": False,
         "pair_compatible": False,
     }
-    if candidate_count == 0:
-        return result
-    if candidate_count > 2 or not line_axis.get("valid", False):
-        result["interpretation"] = "AMBIGUO"
-        return result
-
-    for candidate in candidates:
+    for candidate in valid_candidates:
         if candidate["side"] == "ESQUERDA":
             result["left_seen"] = True
         else:
             result["right_seen"] = True
 
+    # Um candidato significativo sem lado confiável impede uma decisão segura.
+    # Componentes apenas rejeitados espacialmente não participam da decisão.
+    if unresolved_candidates:
+        result["interpretation"] = "AMBIGUO"
+        return result
+    if not valid_candidates:
+        return result
+
     line_widths = [
         candidate["local_line_width_px"]
-        for candidate in candidates
+        for candidate in valid_candidates
         if candidate["local_line_width_px"] > 0.0
     ]
     reference_line_width = max(8.0, sum(line_widths) / len(line_widths)) \
         if line_widths else 8.0
 
-    # O retorno de 180° tem prioridade e não depende da existência de saídas.
-    if candidate_count == 2:
-        first, second = candidates
-        opposite_sides = first["side"] != second["side"]
-        longitudinal_compatible = (
-            abs(first["longitudinal"] - second["longitudinal"])
-            <= GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS
-            * reference_line_width
-        )
-        before_same_encounter = False
-        if topology.get("junction_valid", False):
-            junction_longitudinal = topology["junction_longitudinal"]
-            before_same_encounter = all(
-                candidate["longitudinal"] < junction_longitudinal
-                and junction_longitudinal - candidate["longitudinal"]
-                <= GREEN_ENCOUNTER_DISTANCE_LINE_WIDTHS * reference_line_width
-                for candidate in candidates
+    left_candidates = [
+        candidate for candidate in valid_candidates
+        if candidate["side"] == "ESQUERDA"
+    ]
+    right_candidates = [
+        candidate for candidate in valid_candidates
+        if candidate["side"] == "DIREITA"
+    ]
+
+    # O retorno de 180° continua tendo prioridade quando há evidência válida
+    # nos dois lados. Fragmentos extras não eliminam um par compatível.
+    if left_candidates and right_candidates:
+        pair_compatible = any(
+            green_pair_is_compatible(
+                left_candidate,
+                right_candidate,
+                topology,
+                reference_line_width,
             )
-        pair_compatible = (
-            opposite_sides
-            and longitudinal_compatible
-            and before_same_encounter
-            and all(
-                candidate["associated_with_line"] and not candidate["partial"]
-                for candidate in candidates
-            )
+            for left_candidate in left_candidates
+            for right_candidate in right_candidates
         )
         result["pair_compatible"] = pair_compatible
         result["interpretation"] = (
@@ -1270,10 +2124,6 @@ def interpret_green_candidates(candidates, line_axis, topology):
         )
         return result
 
-    candidate = candidates[0]
-    if candidate["partial"] or not candidate["associated_with_line"]:
-        result["interpretation"] = "AMBIGUO"
-        return result
     if (
         not topology.get("junction_valid", False)
         or topology.get("confidence", 0.0) < 0.50
@@ -1281,20 +2131,22 @@ def interpret_green_candidates(candidates, line_axis, topology):
         result["interpretation"] = "AMBIGUO"
         return result
 
-    before_junction = (
-        candidate["longitudinal"] < topology["junction_longitudinal"]
-    )
-    if not before_junction:
+    candidates_before_junction = [
+        candidate for candidate in valid_candidates
+        if candidate["longitudinal"] < topology["junction_longitudinal"]
+    ]
+    if not candidates_before_junction:
         result["interpretation"] = "VERDE_FALSO_NO_SENTIDO_ATUAL"
         return result
 
+    resolved_side = valid_candidates[0]["side"]
     matching_branch = (
         topology["left_branch"]
-        if candidate["side"] == "ESQUERDA"
+        if resolved_side == "ESQUERDA"
         else topology["right_branch"]
     )
     result["interpretation"] = (
-        candidate["side"]
+        resolved_side
         if matching_branch
         else "VERDE_FALSO_NO_SENTIDO_ATUAL"
     )
@@ -1730,6 +2582,7 @@ def save_status(
         "targetCameraFps": camera_profile["target_fps"],
         "cameraFormat": camera_format,
         "rotationDegrees": CAMERA_ROTATION_DEGREES,
+        "cameraIndex": camera_details.get("cameraIndex"),
         "cameraId": camera_details.get("cameraId", ""),
         "cameraModel": camera_details.get("cameraModel", ""),
         "sensorMode": camera_details.get("sensorMode"),
@@ -1762,6 +2615,123 @@ def save_status(
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
 
 
+class VisionRegressionProfiler:
+    """Publica uma amostra temporária somente durante o trace solicitado."""
+
+    # O limite de segurança permite coletar 300 quadros mesmo perto de 10 Hz.
+    # Fora do gatilho diagnóstico, este tempo não afeta o loop da câmera.
+    MAX_DURATION_SECONDS = 60.0
+    MAX_LINE_SEQUENCES = 300
+
+    def __init__(self):
+        self.active = False
+        self.started_at = 0.0
+        self.sample_count = 0
+        self.last_capture_time = None
+        self.last_processing_time = None
+        self.last_ipc_time = None
+        self.last_mjpeg_time = None
+        self.capture_hz = 0.0
+        self.processing_hz = 0.0
+        self.ipc_hz = 0.0
+        self.mjpeg_hz = 0.0
+
+    @staticmethod
+    def rate(previous_time, current_time):
+        """Calcula uma frequência instantânea somente entre eventos novos."""
+
+        if previous_time is None or current_time <= previous_time:
+            return 0.0
+        return 1.0 / (current_time - previous_time)
+
+    def begin_frame(self, current_time):
+        """Ativa o perfil somente enquanto o trigger existir."""
+
+        if not os.path.isfile(LINE_TRACE_REQUEST_PATH):
+            self.active = False
+            return False
+        if not self.active:
+            self.active = True
+            self.started_at = current_time
+            self.sample_count = 0
+            self.last_capture_time = None
+            self.last_processing_time = None
+            self.last_ipc_time = None
+            self.last_mjpeg_time = None
+            self.capture_hz = 0.0
+            self.processing_hz = 0.0
+            self.ipc_hz = 0.0
+            self.mjpeg_hz = 0.0
+        return True
+
+    def note_capture(self, current_time):
+        self.capture_hz = self.rate(self.last_capture_time, current_time)
+        self.last_capture_time = current_time
+
+    def note_ipc(self, current_time):
+        self.ipc_hz = self.rate(self.last_ipc_time, current_time)
+        self.last_ipc_time = current_time
+
+    def note_mjpeg(self, current_time):
+        self.mjpeg_hz = self.rate(self.last_mjpeg_time, current_time)
+        self.last_mjpeg_time = current_time
+
+    def publish_sample(
+        self,
+        line_sequence,
+        frame_timestamp,
+        timings,
+        green_raw,
+        green_confirmed,
+        completed_at,
+    ):
+        """Entrega ao processo C++ uma linha temporária do mesmo frame."""
+
+        self.processing_hz = self.rate(
+            self.last_processing_time, completed_at
+        )
+        self.last_processing_time = completed_at
+        row = (
+            int(line_sequence),
+            float(frame_timestamp),
+            self.capture_hz,
+            self.processing_hz,
+            self.ipc_hz,
+            self.mjpeg_hz,
+            timings.get("capture_ms", 0.0),
+            timings.get("line_detection_ms", 0.0),
+            timings.get("green_mask_ms", 0.0),
+            timings.get("green_contours_ms", 0.0),
+            timings.get("topology_ms", 0.0),
+            timings.get("green_processing_ms", 0.0),
+            timings.get("overlay_ms", 0.0),
+            timings.get("mjpeg_ms", 0.0),
+            timings.get("ipc_ms", 0.0),
+            timings.get("total_vision_ms", 0.0),
+            str(green_raw),
+            bool(green_confirmed),
+        )
+        with open(
+            TEMP_VISION_TRACE_SAMPLE_PATH,
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as sample_file:
+            csv.writer(sample_file).writerow(row)
+        os.replace(TEMP_VISION_TRACE_SAMPLE_PATH, VISION_TRACE_SAMPLE_PATH)
+
+        self.sample_count += 1
+        duration = completed_at - self.started_at
+        if (
+            self.sample_count >= self.MAX_LINE_SEQUENCES
+            or duration >= self.MAX_DURATION_SECONDS
+        ):
+            try:
+                os.unlink(LINE_TRACE_REQUEST_PATH)
+            except FileNotFoundError:
+                pass
+
+
 def main():
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -1788,13 +2758,32 @@ def main():
     light_ready = False
 
     try:
+        camera_indices = configured_camera_indices()
+        camera_infos = Picamera2.global_camera_info()
+        camera_assignments = resolve_camera_assignments(
+            camera_infos,
+            camera_indices,
+        )
+        log_camera_inventory(camera_infos, camera_assignments)
+        selected_camera = require_camera_assignment(
+            camera_assignments,
+            camera_profile["role"],
+        )
+        camera_details["cameraIndex"] = selected_camera["index"]
+        line_ipc_enabled = camera_role_publishes_line_status(
+            camera_profile["role"]
+        )
+
         GPIO.setmode(GPIO.BOARD)
         GPIO.setup(LIGHT_PIN_BOARD, GPIO.OUT)
         GPIO.output(LIGHT_PIN_BOARD, GPIO.HIGH)
         light_ready = True
 
         stream_server = start_stream_server()
-        picam2, camera_format, camera_details = create_camera(camera_profile)
+        picam2, camera_format, camera_details = create_camera(
+            camera_profile,
+            selected_camera["index"],
+        )
         picam2.start()
         tune_camera_image(picam2)
         capture_metadata = picam2.capture_metadata()
@@ -1817,16 +2806,57 @@ def main():
         smoothed_fps = 0.0
         line_sequence = 0
         green_tracker = GreenObservationTracker()
+        vision_profiler = VisionRegressionProfiler()
+        (
+            green_experiment_mode,
+            green_processing_enabled,
+            green_decisions_enabled,
+        ) = resolve_green_experiment_mode(
+            vision_profile.get("green_detection_enabled", False),
+            GREEN_PROCESSING_ENABLED,
+            GREEN_DECISIONS_ENABLED,
+        )
+        print(
+            f"Modo {green_experiment_mode} do verde: "
+            f"processamento={'ligado' if green_processing_enabled else 'desligado'}, "
+            f"decisões={'ligadas' if green_decisions_enabled else 'ignoradas'}.",
+            flush=True,
+        )
 
         while running:
-            frame = picam2.capture_array()
-            frame_height = frame.shape[0]
+            loop_started = time.perf_counter()
+            trace_active = vision_profiler.begin_frame(loop_started)
+            timings = {} if trace_active else None
+            capture_started = time.perf_counter() if trace_active else 0.0
+            green_capture_requested = os.path.isfile(GREEN_CAPTURE_REQUEST_PATH)
+            green_capture_metadata = {}
+            if green_capture_requested:
+                # A requisição preserva os metadados do mesmo frame usado no
+                # diagnóstico. Fora do gatilho, o caminho normal não muda.
+                camera_request = picam2.capture_request()
+                try:
+                    raw_frame = camera_request.make_array("main")
+                    green_capture_metadata = camera_request.get_metadata()
+                finally:
+                    camera_request.release()
+            else:
+                raw_frame = picam2.capture_array()
+            capture_completed = time.perf_counter()
+            if trace_active:
+                timings["capture_ms"] = (
+                    capture_completed - capture_started
+                ) * 1000.0
+                vision_profiler.note_capture(capture_completed)
+                line_detection_started = capture_completed
+            # O frame capturado permanece intacto. Máscaras e decisões são
+            # calculadas antes de criar a cópia exclusiva do dashboard.
+            frame_height = raw_frame.shape[0]
             vision_geometry = resolve_vision_geometry(
                 frame_height,
                 vision_profile,
             )
             filtered_mask, roi_start_y = create_filtered_line_mask(
-                frame,
+                raw_frame,
                 vision_profile,
             )
             structural_mask = create_structural_line_mask(
@@ -1865,7 +2895,7 @@ def main():
             if far_valid:
                 far_center_x = far_moments["m10"] / far_moments["m00"]
                 far_center_y = far_moments["m01"] / far_moments["m00"]
-                frame_half_width = frame.shape[1] / 2.0
+                frame_half_width = raw_frame.shape[1] / 2.0
                 far_error = (
                     far_center_x - frame_half_width
                 ) / frame_half_width
@@ -1901,7 +2931,7 @@ def main():
             if selected_near_contour is not None and near_moments is not None:
                 center_x = near_moments["m10"] / near_moments["m00"]
                 center_y = near_moments["m01"] / near_moments["m00"]
-                frame_half_width = frame.shape[1] / 2.0
+                frame_half_width = raw_frame.shape[1] / 2.0
                 near_error = (center_x - frame_half_width) / frame_half_width
                 line_center_x = center_x
                 near_center = (
@@ -1916,8 +2946,19 @@ def main():
                 center_delta_px = line_center_x - far_center_x
 
             line_axis = build_line_axis(near_center, far_center)
+            if trace_active:
+                timings["line_detection_ms"] = (
+                    time.perf_counter() - line_detection_started
+                ) * 1000.0
+                timings["green_mask_ms"] = 0.0
+                timings["green_contours_ms"] = 0.0
+                timings["topology_ms"] = 0.0
             green_candidates = []
             green_rejected = []
+            green_mask = np.zeros(
+                (vision_geometry["structural_end_y"], raw_frame.shape[1]),
+                dtype=np.uint8,
+            )
             green_topology = analyze_line_topology(None, line_axis, 0.0)
             green_interpretation = interpret_green_candidates(
                 green_candidates,
@@ -1925,13 +2966,14 @@ def main():
                 green_topology,
             )
             green_processing_started = time.perf_counter()
-            if vision_profile.get("green_detection_enabled", False):
-                _, green_candidates, green_rejected = find_green_candidates(
-                    frame,
+            if green_processing_enabled:
+                green_mask, green_candidates, green_rejected = find_green_candidates(
+                    raw_frame,
                     vision_geometry["structural_end_y"],
                     line_candidate_mask,
                     line_axis,
                     camera_format,
+                    timings,
                 )
                 # A topologia é a parte mais cara e só roda quando a cor e a
                 # geometria já produziram pelo menos um candidato plausível.
@@ -1945,11 +2987,18 @@ def main():
                         if reference_center is not None
                         else 0.0
                     )
+                    topology_started = (
+                        time.perf_counter() if trace_active else 0.0
+                    )
                     green_topology = analyze_line_topology(
                         line_candidate_mask,
                         line_axis,
                         reference_line_width_px,
                     )
+                    if trace_active:
+                        timings["topology_ms"] = (
+                            time.perf_counter() - topology_started
+                        ) * 1000.0
                 green_interpretation = interpret_green_candidates(
                     green_candidates,
                     line_axis,
@@ -1958,8 +3007,10 @@ def main():
             green_processing_ms = (
                 time.perf_counter() - green_processing_started
             ) * 1000.0
+            if trace_active:
+                timings["green_processing_ms"] = green_processing_ms
 
-            frame_width = frame.shape[1]
+            frame_width = raw_frame.shape[1]
             frame_center_x = frame_width / 2.0
             (
                 safe_half_width_px,
@@ -2006,9 +3057,15 @@ def main():
 
             line_timestamp = time.time()
             line_sequence += 1
+            green_raw_interpretation = green_interpretation["interpretation"]
+            tracker_interpretation = (
+                green_raw_interpretation
+                if green_decisions_enabled
+                else "SEM_DECISAO"
+            )
             green_tracker_result = green_tracker.update(
                 line_sequence,
-                green_interpretation["interpretation"],
+                tracker_interpretation,
             )
             green_status = build_green_status(
                 green_candidates,
@@ -2018,22 +3075,68 @@ def main():
                 green_tracker_result,
                 green_processing_ms,
             )
-            save_line_status(
-                near_valid,
-                near_error,
-                control_error,
-                correction,
-                left_preview,
-                right_preview,
-                far_valid,
-                far_error,
-                far_area,
-                center_delta_valid,
-                center_delta_px,
-                line_timestamp,
-                line_sequence,
-                green_status,
-            )
+            ipc_started = time.perf_counter() if trace_active else 0.0
+            if line_ipc_enabled:
+                # Somente a CAM0/downward publica dados usados pelo segue-faixa.
+                # A câmera frontal nunca pode substituir silenciosamente essa fonte.
+                save_line_status(
+                    near_valid,
+                    near_error,
+                    control_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                    far_valid,
+                    far_error,
+                    far_area,
+                    center_delta_valid,
+                    center_delta_px,
+                    line_timestamp,
+                    line_sequence,
+                    green_status,
+                )
+            if trace_active:
+                ipc_completed = time.perf_counter()
+                timings["ipc_ms"] = (ipc_completed - ipc_started) * 1000.0
+                if line_ipc_enabled:
+                    vision_profiler.note_ipc(ipc_completed)
+
+            if green_capture_requested:
+                # A captura ocorre antes de qualquer desenho no frame e é
+                # removida do fluxo após uma única tentativa, mesmo se falhar.
+                try:
+                    green_mask_stages = create_green_mask_stages(
+                        raw_frame,
+                        vision_geometry["structural_end_y"],
+                        camera_format,
+                    )
+                    save_green_capture(
+                        raw_frame,
+                        camera_format,
+                        green_mask_stages,
+                        green_candidates,
+                        green_rejected,
+                        line_axis,
+                        green_topology,
+                        green_interpretation,
+                        green_capture_metadata,
+                    )
+                    print(
+                        "Captura diagnóstica verde gravada em /dev/shm.",
+                        flush=True,
+                    )
+                except Exception as error:
+                    print(
+                        f"Falha na captura diagnóstica verde: {error}",
+                        flush=True,
+                    )
+                finally:
+                    try:
+                        os.unlink(GREEN_CAPTURE_REQUEST_PATH)
+                    except FileNotFoundError:
+                        pass
+
+            overlay_started = time.perf_counter() if trace_active else 0.0
 
             # A largura é medida em uma única altura fixa da near_band.
             # A estimativa em centímetros só é útil com a fita aproximadamente
@@ -2078,11 +3181,26 @@ def main():
                 if offset_px is not None and px_per_cm_approx > 0.0:
                     offset_cm_approx = offset_px / px_per_cm_approx
 
-            # O fundo preto elimina da visualização tudo que não pertence à linha.
-            # Somente os candidatos globais aprovados aparecem em branco.
-            frame[:] = (0, 0, 0)
-            line_roi_debug = frame[roi_start_y:frame.shape[0], :]
-            line_roi_debug[line_candidate_mask > 0] = (255, 255, 255)
+            display_mode = get_display_mode()
+            display_frame = create_display_frame(
+                raw_frame,
+                line_candidate_mask,
+                green_mask,
+                roi_start_y,
+                display_mode,
+            )
+            # No modo VERDE, os desenhos de linha abaixo ficam em uma imagem
+            # descartável. Assim, a saída final contém apenas a máscara verde,
+            # seus candidatos e o estado semântico solicitado.
+            frame = (
+                np.zeros_like(display_frame)
+                if display_mode == DISPLAY_MODE_GREEN
+                else display_frame
+            )
+            debug_text_overlay_enabled = (
+                vision_profile["debug_text_overlay"]
+                and display_mode != DISPLAY_MODE_GREEN
+            )
 
             # O preenchimento usa somente o recorte estreito da zona segura
             # para reduzir cópias de imagem e preservar o FPS do stream.
@@ -2218,7 +3336,7 @@ def main():
                         f"+{ruler_offset}" if ruler_offset > 0 else str(ruler_offset)
                     )
                     put_debug_text(
-                        vision_profile["debug_text_overlay"],
+                        debug_text_overlay_enabled,
                         frame,
                         ruler_label,
                         (max(0, ruler_x - 11), ruler_bottom_y - 14),
@@ -2246,52 +3364,31 @@ def main():
                     -1,
                 )
 
-            if vision_profile.get("green_detection_enabled", False):
-                for rejected_candidate in green_rejected:
-                    cv2.drawContours(
+            if display_mode == DISPLAY_MODE_GREEN:
+                frame = display_frame
+
+            interpretation = green_status["greenInterpretation"]
+            if green_processing_enabled:
+                if display_mode == DISPLAY_MODE_LINE:
+                    draw_line_mode_green_overlays(
                         frame,
-                        [rejected_candidate["contour"]],
-                        -1,
-                        (180, 80, 180),
-                        1,
+                        green_candidates,
+                        green_rejected,
+                        interpretation,
+                    )
+                else:
+                    draw_green_candidate_overlays(
+                        frame,
+                        green_candidates,
+                        green_rejected,
+                        line_axis,
+                        green_raw_interpretation,
                     )
 
-                interpretation = green_status["greenInterpretation"]
-                for candidate in green_candidates:
-                    cv2.drawContours(
-                        frame,
-                        [candidate["contour"]],
-                        -1,
-                        (0, 255, 0),
-                        2,
-                    )
-                    center = (
-                        int(round(candidate["centroid"][0])),
-                        int(round(candidate["centroid"][1])),
-                    )
-                    cv2.circle(frame, center, 3, (0, 255, 0), -1)
-                    if interpretation == "RETORNO_180":
-                        candidate_letter = "R"
-                    elif interpretation == "VERDE_FALSO_NO_SENTIDO_ATUAL":
-                        candidate_letter = "F"
-                    elif interpretation == "AMBIGUO":
-                        candidate_letter = "?"
-                    else:
-                        candidate_letter = (
-                            "E" if candidate["side"] == "ESQUERDA" else "D"
-                        )
-                    cv2.putText(
-                        frame,
-                        candidate_letter,
-                        (center[0] + 5, max(12, center[1] - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.45,
-                        (0, 255, 0),
-                        1,
-                        cv2.LINE_AA,
-                    )
-
-                if line_axis.get("valid", False):
+                if (
+                    display_mode != DISPLAY_MODE_GREEN
+                    and line_axis.get("valid", False)
+                ):
                     axis_start = point_from_line_axis(line_axis, -30.0)
                     axis_end = point_from_line_axis(
                         line_axis,
@@ -2306,7 +3403,10 @@ def main():
                         cv2.LINE_AA,
                     )
 
-                if green_topology.get("junction_valid", False):
+                if (
+                    display_mode != DISPLAY_MODE_GREEN
+                    and green_topology.get("junction_valid", False)
+                ):
                     junction = tuple(
                         int(round(value))
                         for value in green_topology["junction"]
@@ -2337,21 +3437,34 @@ def main():
                             cv2.LINE_AA,
                         )
 
-                green_text = {
-                    "SEM_DECISAO": "SEM DECISAO",
-                    "ESQUERDA": "ESQUERDA",
-                    "DIREITA": "DIREITA",
-                    "RETORNO_180": "RETORNO 180 GRAUS",
-                    "VERDE_FALSO_NO_SENTIDO_ATUAL": "FALSO NO SENTIDO ATUAL",
-                    "AMBIGUO": "AMBIGUO",
-                }[interpretation]
+            green_text, green_text_color = green_status_overlay(
+                green_processing_enabled,
+                green_status,
+            )
+            cv2.putText(
+                frame,
+                f"VERDE: {green_text}",
+                (8, 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.48,
+                green_text_color,
+                1,
+                cv2.LINE_AA,
+            )
+            ambiguity_reasons = green_ambiguity_reasons(
+                green_candidates,
+                line_axis,
+                green_topology,
+                green_interpretation,
+            )
+            if ambiguity_reasons:
                 cv2.putText(
                     frame,
-                    f"VERDE: {green_text}",
-                    (8, 20),
+                    f"MOTIVO: {ambiguity_reasons[0]}",
+                    (8, 38),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.48,
-                    (0, 255, 0),
+                    0.34,
+                    green_text_color,
                     1,
                     cv2.LINE_AA,
                 )
@@ -2364,7 +3477,7 @@ def main():
             )
             for index, debug_text in enumerate(debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (12, roi_start_y + 28 + index * 28),
@@ -2392,7 +3505,7 @@ def main():
             control_debug_x = max(12, int(frame_width * 0.36))
             for index, debug_text in enumerate(control_debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (control_debug_x, 30 + index * 28),
@@ -2425,7 +3538,7 @@ def main():
             )
             for index, debug_text in enumerate(measurement_debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (12, 30 + index * 25),
@@ -2449,7 +3562,7 @@ def main():
             near_debug_x = max(12, frame.shape[1] - 330)
             for index, debug_text in enumerate(near_debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (near_debug_x, 30 + index * 26),
@@ -2474,7 +3587,7 @@ def main():
             )
             for index, debug_text in enumerate(far_debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (near_debug_x, 270 + index * 25),
@@ -2492,7 +3605,7 @@ def main():
             )
             for index, debug_text in enumerate(preview_debug_lines):
                 put_debug_text(
-                    vision_profile["debug_text_overlay"],
+                    debug_text_overlay_enabled,
                     frame,
                     debug_text,
                     (near_debug_x, 136 + index * 28),
@@ -2504,7 +3617,7 @@ def main():
                 )
 
             put_debug_text(
-                vision_profile["debug_text_overlay"],
+                debug_text_overlay_enabled,
                 frame,
                 preview_direction,
                 (near_debug_x, 225),
@@ -2514,7 +3627,7 @@ def main():
                 2,
                 cv2.LINE_AA,
             )
-            if near_valid:
+            if display_mode != DISPLAY_MODE_GREEN and near_valid:
                 arrow_start = (
                     int(round(
                         frame_width
@@ -2556,6 +3669,12 @@ def main():
                     tipLength=0.30,
                 )
 
+            overlay_completed = time.perf_counter()
+            if trace_active:
+                timings["overlay_ms"] = (
+                    overlay_completed - overlay_started
+                ) * 1000.0
+
             now = time.monotonic()
             elapsed = now - previous_time
             previous_time = now
@@ -2569,15 +3688,22 @@ def main():
 
             stream_due = now - last_stream_time >= 1.0 / MJPEG_STREAM_FPS
             snapshot_due = now - last_snapshot_time >= 1.0 / SNAPSHOT_FRAME_FPS
+            mjpeg_started = time.perf_counter() if trace_active else 0.0
             if stream_due or snapshot_due:
                 jpeg = encode_frame(frame)
                 if jpeg is not None:
                     if stream_due:
                         publish_stream_frame(jpeg)
                         last_stream_time = now
+                        if trace_active:
+                            vision_profiler.note_mjpeg(time.perf_counter())
                     if snapshot_due:
                         save_frame(jpeg)
                         last_snapshot_time = now
+            if trace_active:
+                timings["mjpeg_ms"] = (
+                    time.perf_counter() - mjpeg_started
+                ) * 1000.0
 
             if now - last_status_time >= 1.0 / STATUS_FPS:
                 save_status(
@@ -2603,6 +3729,25 @@ def main():
                     line_sequence=line_sequence,
                 )
                 last_status_time = now
+            if trace_active:
+                profiling_completed = time.perf_counter()
+                timings["total_vision_ms"] = (
+                    profiling_completed - loop_started
+                ) * 1000.0
+                try:
+                    vision_profiler.publish_sample(
+                        line_sequence,
+                        line_timestamp,
+                        timings,
+                        green_raw_interpretation,
+                        green_tracker_result[1],
+                        profiling_completed,
+                    )
+                except (OSError, TypeError, ValueError) as error:
+                    print(
+                        f"Falha ao publicar amostra do trace visual: {error}",
+                        flush=True,
+                    )
     except Exception as error:
         error_message = f"Camera script failed: {error}"
         print(error_message, flush=True)

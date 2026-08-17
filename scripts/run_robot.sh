@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/home/obr/OBR2026K"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="${OBR_APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ROBOT_BIN="$APP_DIR/build/robot_test"
 CAMERA_SCRIPT="$APP_DIR/scripts/camera_line_frame.py"
 CAMERA_PATTERN="$APP_DIR/scripts/[c]amera_line_frame.py"
+PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 CAMERA_PID=""
 ROBOT_PID=""
+
+if [[ ! -x "$PYTHON_BIN" ]]; then
+  # O ambiente virtual é preferido, mas uma instalação sem venv pode usar o
+  # Python do sistema quando todas as dependências já estiverem disponíveis.
+  PYTHON_BIN="$(command -v python3)"
+fi
 
 stop_camera() {
   if [[ -n "$CAMERA_PID" ]] && kill -0 "$CAMERA_PID" >/dev/null 2>&1; then
@@ -52,7 +60,7 @@ if [[ -f "$CAMERA_SCRIPT" ]]; then
   pkill -f "$CAMERA_PATTERN" >/dev/null 2>&1 || true
 
   # A câmera é uma ajuda para o dashboard, mas não deve impedir o robô de iniciar.
-  python3 -u "$CAMERA_SCRIPT" &
+  OBR_CAMERA_ROLE="${OBR_CAMERA_ROLE:-down}" "$PYTHON_BIN" -u "$CAMERA_SCRIPT" &
   CAMERA_PID="$!"
 else
   echo "Camera script not found: $CAMERA_SCRIPT"

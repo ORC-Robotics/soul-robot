@@ -2,6 +2,7 @@
 #include "obr/camera_monitor.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
+#include "obr/line_regression_trace.h"
 #include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
@@ -74,6 +75,7 @@ int main()
     CameraMonitor cameraMonitor;
     MissionController missionController;
     MotorController motors(esp32);
+    LineRegressionTrace lineRegressionTrace;
     StatusLed readyLed(config::kRaspberryReadyLedPin);
     DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
 
@@ -254,6 +256,10 @@ int main()
             }
         }
         motors.apply(robotSnapshot);
+        lineRegressionTrace.update(
+            cameraLineSnapshot,
+            robotSnapshot,
+            motors.synchronizationSnapshot());
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kMainLoopPeriodMs));
     }
 

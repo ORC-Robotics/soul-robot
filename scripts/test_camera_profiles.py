@@ -52,24 +52,275 @@ def synthetic_candidate(
     line_axis=None,
     partial=False,
     associated=True,
+    area=625.0,
+    side=None,
 ):
     line_axis = line_axis or synthetic_line_axis()
     longitudinal, lateral = camera_line_frame.project_point_on_line_axis(
         centroid, line_axis
     )
     return {
-        "area": 625.0,
+        "area": float(area),
         "centroid": tuple(float(value) for value in centroid),
         "partial": partial,
         "associated_with_line": associated,
         "local_line_width_px": 21.0,
         "longitudinal": longitudinal,
         "lateral": lateral,
-        "side": "DIREITA" if lateral > 0.0 else "ESQUERDA",
+        "side": side or ("DIREITA" if lateral > 0.0 else "ESQUERDA"),
     }
 
 
 class CameraProfilesTest(unittest.TestCase):
+    def test_dual_camera_assignments_keep_cam0_down_and_cam1_forward(self):
+        camera_infos = [
+            {"Num": 0, "Model": "imx219", "Id": "physical-cam0"},
+            {"Num": 1, "Model": "ov5647", "Id": "physical-cam1"},
+        ]
+        assignments = camera_line_frame.resolve_camera_assignments(
+            camera_infos,
+            {"down": 0, "forward": 1},
+        )
+
+        self.assertEqual(assignments["down"]["index"], 0)
+        self.assertEqual(assignments["down"]["info"]["Id"], "physical-cam0")
+        self.assertEqual(assignments["forward"]["index"], 1)
+        self.assertEqual(assignments["forward"]["info"]["Id"], "physical-cam1")
+
+    def test_only_cam0_keeps_down_available_and_forward_unavailable(self):
+        assignments = camera_line_frame.resolve_camera_assignments(
+            [{"Num": 0, "Model": "imx219"}],
+            {"down": 0, "forward": 1},
+        )
+
+        self.assertTrue(assignments["down"]["available"])
+        self.assertFalse(assignments["forward"]["available"])
+        with self.assertRaisesRegex(RuntimeError, "forward.*índice 1"):
+            camera_line_frame.require_camera_assignment(assignments, "forward")
+
+    def test_missing_cam0_fails_line_camera_without_role_swap(self):
+        assignments = camera_line_frame.resolve_camera_assignments(
+            [{"Num": 1, "Model": "ov5647"}],
+            {"down": 0, "forward": 1},
+        )
+
+        self.assertFalse(assignments["down"]["available"])
+        self.assertTrue(assignments["forward"]["available"])
+        with self.assertRaisesRegex(RuntimeError, "down.*índice 0"):
+            camera_line_frame.require_camera_assignment(assignments, "down")
+
+    def test_camera_index_out_of_range_fails_clearly(self):
+        assignments = camera_line_frame.resolve_camera_assignments(
+            [{"Num": 0}, {"Num": 1}],
+            {"down": 4, "forward": 1},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "down.*índice 4"):
+            camera_line_frame.require_camera_assignment(assignments, "down")
+
+    def test_camera_models_never_change_configured_roles(self):
+        assignments = camera_line_frame.resolve_camera_assignments(
+            [
+                {"Num": 0, "Model": "ov5647"},
+                {"Num": 1, "Model": "imx219"},
+            ],
+            {"down": 0, "forward": 1},
+        )
+
+        self.assertEqual(assignments["down"]["info"]["Model"], "ov5647")
+        self.assertEqual(assignments["forward"]["info"]["Model"], "imx219")
+
+    def test_only_downward_role_can_publish_line_status(self):
+        self.assertTrue(camera_line_frame.camera_role_publishes_line_status("down"))
+        self.assertFalse(
+            camera_line_frame.camera_role_publishes_line_status("forward")
+        )
+
+    def test_camera_index_environment_rejects_duplicate_roles(self):
+        with self.assertRaisesRegex(ValueError, "mesmo índice"):
+            camera_line_frame.configured_camera_indices({
+                "OBR_DOWNWARD_CAMERA_INDEX": "0",
+                "OBR_FORWARD_CAMERA_INDEX": "0",
+            })
+
+    def test_display_modes_preserve_raw_frame_and_vision_masks(self):
+        raw_frame = np.array(
+            [
+                [[10, 20, 30], [40, 50, 60]],
+                [[70, 80, 90], [100, 110, 120]],
+                [[130, 140, 150], [160, 170, 180]],
+                [[190, 200, 210], [220, 230, 240]],
+            ],
+            dtype=np.uint8,
+        )
+        line_mask = np.array([[0, 255], [255, 0]], dtype=np.uint8)
+        green_mask = np.array(
+            [[0, 255], [255, 0], [0, 0]],
+            dtype=np.uint8,
+        )
+        raw_before = raw_frame.copy()
+        line_before = line_mask.copy()
+        green_before = green_mask.copy()
+
+        real = camera_line_frame.create_display_frame(
+            raw_frame, line_mask, green_mask, 2, "real"
+        )
+        line = camera_line_frame.create_display_frame(
+            raw_frame, line_mask, green_mask, 2, "line"
+        )
+        green = camera_line_frame.create_display_frame(
+            raw_frame, line_mask, green_mask, 2, "green"
+        )
+
+        np.testing.assert_array_equal(real, raw_before)
+        self.assertFalse(np.shares_memory(real, raw_frame))
+        np.testing.assert_array_equal(
+            line,
+            np.array(
+                [
+                    [[0, 0, 0], [0, 0, 0]],
+                    [[0, 0, 0], [0, 0, 0]],
+                    [[0, 0, 0], [255, 255, 255]],
+                    [[255, 255, 255], [0, 0, 0]],
+                ],
+                dtype=np.uint8,
+            ),
+        )
+        np.testing.assert_array_equal(
+            green,
+            np.array(
+                [
+                    [[0, 0, 0], [0, 255, 0]],
+                    [[0, 255, 0], [0, 0, 0]],
+                    [[0, 0, 0], [0, 0, 0]],
+                    [[0, 0, 0], [0, 0, 0]],
+                ],
+                dtype=np.uint8,
+            ),
+        )
+        np.testing.assert_array_equal(raw_frame, raw_before)
+        np.testing.assert_array_equal(line_mask, line_before)
+        np.testing.assert_array_equal(green_mask, green_before)
+
+    def test_display_mode_normalization_defaults_to_real(self):
+        self.assertEqual(camera_line_frame.normalize_display_mode("REAL"), "real")
+        self.assertEqual(camera_line_frame.normalize_display_mode("line"), "line")
+        self.assertEqual(camera_line_frame.normalize_display_mode("green"), "green")
+        self.assertEqual(camera_line_frame.normalize_display_mode("invalid"), "real")
+
+    def test_green_status_overlay_uses_semantic_colors(self):
+        status = camera_line_frame.empty_green_status()
+        self.assertEqual(
+            camera_line_frame.green_status_overlay(False, status),
+            ("FALHA DE PROCESSAMENTO", (0, 0, 255)),
+        )
+        status["greenInterpretation"] = "AMBIGUO"
+        self.assertEqual(
+            camera_line_frame.green_status_overlay(True, status)[1],
+            (0, 255, 255),
+        )
+        status["greenInterpretation"] = "DIREITA"
+        status["greenConfirmed"] = True
+        self.assertEqual(
+            camera_line_frame.green_status_overlay(True, status)[1],
+            (64, 255, 96),
+        )
+
+    def resolve_green_case(self, name, candidates, topology):
+        """Executa e mostra o diagnóstico determinístico do resolvedor verde."""
+
+        line_axis = synthetic_line_axis()
+        result = camera_line_frame.interpret_green_candidates(
+            candidates, line_axis, topology
+        )
+        tracker = camera_line_frame.GreenObservationTracker()
+        tracker_result = None
+        for sequence in (1, 2, 3):
+            tracker_result = tracker.update(sequence, result["interpretation"])
+        status = camera_line_frame.build_green_status(
+            candidates,
+            0,
+            result,
+            topology,
+            tracker_result,
+            0.0,
+        )
+
+        valid_candidates = []
+        print(f"\nCASO VERDE: {name}")
+        for candidate_id, candidate in enumerate(candidates, start=1):
+            vote_state, reason = camera_line_frame.classify_green_candidate_vote(
+                candidate, line_axis
+            )
+            line_reference = camera_line_frame.point_from_line_axis(
+                line_axis, candidate["longitudinal"]
+            )
+            if vote_state == "VALIDO":
+                valid_candidates.append(candidate)
+            print(
+                f"id={candidate_id} area={candidate['area']:.1f} "
+                f"centroide={candidate['centroid']} "
+                f"referência_local_linha={line_reference} "
+                f"distância_lateral_assinada={candidate['lateral']:.1f} "
+                f"lado={candidate['side']} estado={vote_state} motivo={reason}"
+            )
+
+        left_candidates = [
+            candidate for candidate in valid_candidates
+            if candidate["side"] == "ESQUERDA"
+        ]
+        right_candidates = [
+            candidate for candidate in valid_candidates
+            if candidate["side"] == "DIREITA"
+        ]
+        print(
+            f"quantidade LEFT={len(left_candidates)} "
+            f"quantidade RIGHT={len(right_candidates)} "
+            f"área total LEFT={sum(c['area'] for c in left_candidates):.1f} "
+            f"área total RIGHT={sum(c['area'] for c in right_candidates):.1f} "
+            f"decisão bruta={result['interpretation']} "
+            f"decisão confirmada={tracker_result[0]} "
+            f"confirmado={tracker_result[1]}"
+        )
+        return result, tracker_result, status
+
+    def test_experimental_green_flags_accept_only_explicit_boolean_values(self):
+        with mock.patch.dict(os.environ, {"TEST_GREEN_FLAG": "0"}):
+            self.assertFalse(camera_line_frame.environment_flag(
+                "TEST_GREEN_FLAG", True
+            ))
+        with mock.patch.dict(os.environ, {"TEST_GREEN_FLAG": "on"}):
+            self.assertTrue(camera_line_frame.environment_flag(
+                "TEST_GREEN_FLAG", False
+            ))
+        with mock.patch.dict(os.environ, {"TEST_GREEN_FLAG": "maybe"}):
+            with self.assertRaises(ValueError):
+                camera_line_frame.environment_flag("TEST_GREEN_FLAG", True)
+
+    def test_regression_profiler_rate_uses_new_monotonic_events(self):
+        self.assertEqual(
+            camera_line_frame.VisionRegressionProfiler.rate(None, 10.0),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            camera_line_frame.VisionRegressionProfiler.rate(10.0, 10.04),
+            25.0,
+        )
+
+    def test_green_experimental_modes_preserve_a_and_isolate_b_and_c(self):
+        self.assertEqual(
+            camera_line_frame.resolve_green_experiment_mode(True, True, True),
+            ("A", True, True),
+        )
+        self.assertEqual(
+            camera_line_frame.resolve_green_experiment_mode(True, True, False),
+            ("B", True, False),
+        )
+        self.assertEqual(
+            camera_line_frame.resolve_green_experiment_mode(True, False, True),
+            ("C", False, False),
+        )
+
     def assert_control_preview(
         self,
         profile_role,
@@ -301,6 +552,66 @@ class CameraProfilesTest(unittest.TestCase):
             with self.subTest(color=name):
                 self.assertFalse(camera_line_frame.is_hsv_green(*hsv))
 
+    def test_green_capture_names_bgr_array_channels_as_rgb(self):
+        frame = np.array([[[10, 80, 200], [30, 90, 210]]], dtype=np.uint8)
+
+        red, green, blue = camera_line_frame.camera_array_rgb_channels(frame)
+
+        self.assertEqual(red.tolist(), [[200, 210]])
+        self.assertEqual(green.tolist(), [[80, 90]])
+        self.assertEqual(blue.tolist(), [[10, 30]])
+        dominance = green.astype(np.int16) - np.maximum(red, blue).astype(np.int16)
+        self.assertEqual(dominance.tolist(), [[-120, -120]])
+
+    def test_green_capture_lists_geometry_rejection_reasons(self):
+        candidate = {
+            "partial": False,
+            "area": 20.0,
+            "short_side": 3.0,
+            "aspect_ratio": 0.10,
+            "extent": 0.20,
+        }
+
+        reasons = camera_line_frame.green_geometry_rejection_reasons(candidate)
+
+        self.assertEqual(reasons, [
+            "area_below_minimum",
+            "dimension_below_minimum",
+            "aspect_ratio_outside_range",
+            "extent_below_minimum",
+        ])
+
+    def test_green_capture_explains_no_line_ambiguity(self):
+        candidate = synthetic_candidate((270, 200))
+        invalid_axis = camera_line_frame.build_line_axis(None, None)
+        topology = {"junction_valid": False, "confidence": 0.0}
+        interpretation = camera_line_frame.interpret_green_candidates(
+            [candidate], invalid_axis, topology
+        )
+
+        reasons = camera_line_frame.green_ambiguity_reasons(
+            [candidate], invalid_axis, topology, interpretation
+        )
+
+        self.assertEqual(interpretation["interpretation"], "AMBIGUO")
+        self.assertEqual(reasons, ["eixo local da linha inválido"])
+
+    def test_green_capture_metadata_keeps_requested_keys_and_finite_values(self):
+        metadata = camera_line_frame.json_safe_camera_metadata({
+            "ExposureTime": 12000,
+            "AnalogueGain": 1.5,
+            "ColourGains": (1.2, 1.4),
+            "ColourTemperature": float("nan"),
+            "AwbEnable": True,
+            "AeEnable": False,
+        })
+
+        self.assertEqual(metadata["ExposureTime"], 12000)
+        self.assertEqual(metadata["ColourGains"], [1.2, 1.4])
+        self.assertIsNone(metadata["ColourTemperature"])
+        self.assertTrue(metadata["AwbEnable"])
+        self.assertFalse(metadata["AeEnable"])
+
     def test_green_small_spot_is_rejected_as_noise(self):
         self.assertFalse(camera_line_frame.green_geometry_is_valid(
             area=12.0,
@@ -330,6 +641,42 @@ class CameraProfilesTest(unittest.TestCase):
             )
             self.assertEqual(len(candidates), 1)
             self.assertEqual(len(rejected), 0)
+
+    def test_green_pipeline_does_not_modify_frame_or_line_mask(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        frame = np.full((480, 640, 3), 255, dtype=np.uint8)
+        frame[190:216, 260:286] = (0, 255, 0)
+        line_mask = synthetic_line_mask(left_branch=True)
+        original_frame = frame.copy()
+        original_line_mask = line_mask.copy()
+
+        camera_line_frame.find_green_candidates(
+            frame,
+            425,
+            line_mask,
+            synthetic_line_axis(),
+        )
+
+        self.assertTrue(np.array_equal(frame, original_frame))
+        self.assertTrue(np.array_equal(line_mask, original_line_mask))
+
+    def test_green_spatially_rejected_component_leaves_candidate_list(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        frame = np.full((480, 640, 3), 255, dtype=np.uint8)
+        frame[190:216, 100:126] = (0, 255, 0)
+        line_mask = synthetic_line_mask(right_branch=True)
+
+        _, candidates, rejected = camera_line_frame.find_green_candidates(
+            frame,
+            425,
+            line_mask,
+            synthetic_line_axis(),
+        )
+
+        self.assertEqual(len(candidates), 0)
+        self.assertEqual(len(rejected), 1)
 
     def test_green_partial_square_stays_candidate_without_confirmation(self):
         self.assertTrue(camera_line_frame.green_geometry_is_valid(
@@ -458,6 +805,106 @@ class CameraProfilesTest(unittest.TestCase):
         )
         self.assertEqual(len(candidates), 1)
         self.assertNotEqual(result["interpretation"], "RETORNO_180")
+
+    def test_green_directional_resolution_cases(self):
+        right_topology = synthetic_topology(right_branch=True)
+        left_topology = synthetic_topology(left_branch=True)
+        cases = (
+            (
+                "1 - principal e fragmento à direita",
+                [
+                    synthetic_candidate((370, 200), area=20000),
+                    synthetic_candidate((380, 202), area=2000),
+                ],
+                right_topology,
+                "DIREITA",
+            ),
+            (
+                "2 - marcador fragmentado três vezes à direita",
+                [
+                    synthetic_candidate((365, 198), area=7000),
+                    synthetic_candidate((375, 200), area=6000),
+                    synthetic_candidate((385, 202), area=5000),
+                ],
+                right_topology,
+                "DIREITA",
+            ),
+            (
+                "3 - dois fragmentos à esquerda",
+                [
+                    synthetic_candidate((270, 200), area=10000),
+                    synthetic_candidate((260, 202), area=2000),
+                ],
+                left_topology,
+                "ESQUERDA",
+            ),
+            (
+                "4 - verde duplo",
+                [
+                    synthetic_candidate((270, 200), area=2000),
+                    synthetic_candidate((370, 202), area=20000),
+                ],
+                synthetic_topology(),
+                "RETORNO_180",
+            ),
+            (
+                "5 - direita válida e ruído espacial rejeitado",
+                [
+                    synthetic_candidate((370, 200), area=20000),
+                    synthetic_candidate((220, 200), associated=False, area=2000),
+                ],
+                right_topology,
+                "DIREITA",
+            ),
+            (
+                "6 - somente ruído espacial rejeitado",
+                [synthetic_candidate((220, 200), associated=False, area=2000)],
+                right_topology,
+                "SEM_DECISAO",
+            ),
+            (
+                "7 - candidato realmente irresolúvel",
+                [synthetic_candidate((320, 200), area=20000, side="UNKNOWN")],
+                right_topology,
+                "AMBIGUO",
+            ),
+            (
+                "8 - fragmentos à direita em quadros consecutivos",
+                [
+                    synthetic_candidate((370, 200), area=20000),
+                    synthetic_candidate((380, 202), area=2000),
+                ],
+                right_topology,
+                "DIREITA",
+            ),
+        )
+
+        for name, candidates, topology, expected in cases:
+            with self.subTest(name=name):
+                result, tracker_result, status = self.resolve_green_case(
+                    name, candidates, topology
+                )
+                self.assertEqual(result["interpretation"], expected)
+                self.assertEqual(tracker_result[0], expected)
+                self.assertEqual(status["greenInterpretation"], expected)
+                if expected in ("ESQUERDA", "DIREITA", "RETORNO_180"):
+                    self.assertTrue(tracker_result[1])
+                else:
+                    self.assertFalse(tracker_result[1])
+                if expected == "SEM_DECISAO":
+                    self.assertEqual(result["observation_state"], "SEM_VERDE")
+
+        fragmented_return = camera_line_frame.interpret_green_candidates(
+            [
+                synthetic_candidate((270, 200), area=2000),
+                synthetic_candidate((370, 200), area=10000),
+                synthetic_candidate((380, 202), area=2000),
+            ],
+            synthetic_line_axis(),
+            synthetic_topology(),
+        )
+        self.assertEqual(fragmented_return["interpretation"], "RETORNO_180")
+        self.assertTrue(fragmented_return["pair_compatible"])
 
     def test_green_intersection_without_marker_has_no_decision(self):
         result = camera_line_frame.interpret_green_candidates(

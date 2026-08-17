@@ -21,6 +21,15 @@ constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 // Esta fonte é usada somente para diagnóstico e não envia comandos aos motores.
 constexpr const char* kCameraLineStatusPath = "/dev/shm/obr_line_status.json";
 
+// O trigger habilita até 300 quadros ou 60 segundos da auditoria de regressão.
+// Estes arquivos são diagnósticos e não substituem o IPC normal da visão.
+constexpr const char* kLineRegressionTraceRequestPath =
+    "/dev/shm/obr_line_trace_request";
+constexpr const char* kLineRegressionVisionSamplePath =
+    "/dev/shm/obr_line_trace_vision_sample.csv";
+constexpr const char* kLineRegressionTracePath =
+    "/dev/shm/obr_line_regression_trace.csv";
+
 // Idade máxima, em milissegundos, aceita para uma medição visual rápida.
 // Amostras mais antigas são marcadas como indisponíveis e têm seus valores zerados.
 constexpr int kCameraLineStatusTimeoutMs = 125;

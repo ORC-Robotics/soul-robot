@@ -147,7 +147,7 @@ private:
     static void sendHttpNotFound(SocketHandle client);
     static bool sendCameraFrame(SocketHandle client);
     static bool sendCameraStreamHead(SocketHandle client);
-    static bool proxyCameraStream(SocketHandle client);
+    static bool proxyCameraStream(SocketHandle client, const std::string& request);
     static bool sendCameraStatus(SocketHandle client);
     static bool sendAll(SocketHandle client, const char* data, size_t size);
     static std::string getHeaderValue(const std::string& request, const std::string& header);

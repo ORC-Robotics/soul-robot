@@ -1,2 +1,4 @@
 [Service]
 Environment="OBR_CAMERA_ROLE=down"
+Environment="OBR_DOWNWARD_CAMERA_INDEX=0"
+Environment="OBR_FORWARD_CAMERA_INDEX=1"
