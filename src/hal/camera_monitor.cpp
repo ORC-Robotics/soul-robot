@@ -219,6 +219,11 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.farArea = 0.0;
     snapshot.centerDeltaValid = false;
     snapshot.centerDeltaPx = 0.0;
+    snapshot.gapCandidate = false;
+    snapshot.gapAlignmentValid = false;
+    snapshot.gapAlignmentError = 0.0;
+    snapshot.gapReturnValid = false;
+    snapshot.gapReturnError = 0.0;
     if (hasCachedSnapshot)
     {
         snapshot.ageMs =
@@ -287,6 +292,15 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json, "centerDeltaValid", candidate.centerDeltaValid) ||
             !tryGetJsonNumber(
                 json, "centerDeltaPx", candidate.centerDeltaPx) ||
+            !tryGetJsonBool(json, "gapCandidate", candidate.gapCandidate) ||
+            !tryGetJsonBool(
+                json, "gapAlignmentValid", candidate.gapAlignmentValid) ||
+            !tryGetJsonNumber(
+                json, "gapAlignmentError", candidate.gapAlignmentError) ||
+            !tryGetJsonBool(
+                json, "gapReturnValid", candidate.gapReturnValid) ||
+            !tryGetJsonNumber(
+                json, "gapReturnError", candidate.gapReturnError) ||
             !tryGetJsonNumber(json, "lineTimestamp", candidate.lineTimestamp) ||
             !tryGetJsonUnsignedInteger(
                 json, "lineSequence", candidate.lineSequence))
@@ -306,6 +320,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             std::isfinite(candidate.centerDeltaPx) &&
             (!candidate.centerDeltaValid ||
              (candidate.nearValid && candidate.farValid)) &&
+            isNormalizedValue(candidate.gapAlignmentError) &&
+            isNormalizedValue(candidate.gapReturnError) &&
+            (!candidate.gapCandidate || candidate.nearValid) &&
+            (!candidate.gapAlignmentValid || candidate.gapCandidate) &&
+            (!candidate.gapReturnValid || candidate.gapCandidate) &&
             std::isfinite(candidate.lineTimestamp);
         if (!valuesValid)
         {
@@ -329,6 +348,21 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         if (!candidate.centerDeltaValid)
         {
             candidate.centerDeltaPx = 0.0;
+        }
+        if (!candidate.gapCandidate)
+        {
+            candidate.gapAlignmentValid = false;
+            candidate.gapAlignmentError = 0.0;
+            candidate.gapReturnValid = false;
+            candidate.gapReturnError = 0.0;
+        }
+        if (!candidate.gapAlignmentValid)
+        {
+            candidate.gapAlignmentError = 0.0;
+        }
+        if (!candidate.gapReturnValid)
+        {
+            candidate.gapReturnError = 0.0;
         }
 
         if (!hasCachedLineSnapshot_ ||
@@ -357,6 +391,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.farArea = 0.0;
             snapshot.centerDeltaValid = false;
             snapshot.centerDeltaPx = 0.0;
+            snapshot.gapCandidate = false;
+            snapshot.gapAlignmentValid = false;
+            snapshot.gapAlignmentError = 0.0;
+            snapshot.gapReturnValid = false;
+            snapshot.gapReturnError = 0.0;
         }
         return snapshot;
     }

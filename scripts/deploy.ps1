@@ -71,7 +71,10 @@ Invoke-Checked scp @(
     "$workspace/scripts",
     "${remote}:$RemoteDir/"
 )
-$atomicBuildCommand = "cd '$RemoteDir' && cmake -S . -B '$remoteStagingBuild' && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
+
+# O deploy copia apenas os arquivos necessários para executar o robô. Os testes
+# continuam ativos no build local, mas não podem exigir a pasta tests na Raspberry.
+$atomicBuildCommand = "cd '$RemoteDir' && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$remoteStagingBuild' -DBUILD_TESTING=OFF && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
 Invoke-Checked ssh @($sshArgs + @($remote, $atomicBuildCommand))
 
 Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"

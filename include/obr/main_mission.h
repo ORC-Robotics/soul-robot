@@ -24,6 +24,9 @@ private:
     {
         TrackingNear,
         TurningAhead,
+        AligningForGap,
+        CrossingGap,
+        WaitingAfterGap,
         ReacquiringNear,
         RecoveringFar,
         SearchingLeft,
@@ -55,8 +58,20 @@ private:
     bool totalLossActive_ = false;
     std::chrono::steady_clock::time_point nearLostAt_{};
     std::chrono::steady_clock::time_point totalLossStartedAt_{};
+    int consecutiveGapCandidateSamples_ = 0;
+    int consecutiveGapAlignedSamples_ = 0;
+    int consecutiveGapNearReturnSamples_ = 0;
+    int consecutiveGapFarReturnSamples_ = 0;
+    bool gapNearLossObserved_ = false;
+    bool gapReturnRecoveryActive_ = false;
+    long long gapStartLeftCount_ = 0;
+    long long gapStartRightCount_ = 0;
+    double gapLastProgressCounts_ = 0.0;
+    std::chrono::steady_clock::time_point gapStartedAt_{};
+    std::chrono::steady_clock::time_point gapLastProgressAt_{};
 
     void transitionTo(LineFollowState nextState);
+    void resetGapTracking();
     void updateDirectionMemory(double error);
     LineDirection chooseSearchDirection();
     static const char* stateName(LineFollowState state);

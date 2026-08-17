@@ -209,11 +209,50 @@ constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
 // Tempo máximo da missão. Evita movimento indefinido se um encoder falhar.
 constexpr int kDriveDistanceTimeoutMs = 60000;
 
+// Distância máxima, em centímetros, permitida durante a travessia de um gap.
+// O controle usa a roda que mais avançou para nenhuma lateral ultrapassar 100 mm.
+constexpr double kGapMaximumDistanceCm = 10.0;
+
+// Quantidade de frames novos exigida para confirmar o gap, o alinhamento e o
+// reencontro da fita. A confirmação evita agir sobre um único frame com ruído.
+constexpr int kGapConfirmationSamples = 3;
+
+// Maior erro normalizado aceito antes de atravessar. O valor considera tanto
+// a posição lateral quanto a diferença de direção entre as faixas NEAR e FAR.
+constexpr double kGapAlignmentTolerance = 0.10;
+
+// Comando lógico de avanço reto durante o gap. O perfil operacional transforma
+// este valor no piso de 0,65 e mantém o sincronismo dos dois lados por encoder.
+constexpr double kGapDriveCommandPower = 0.01;
+
+// Idade máxima, em milissegundos, da telemetria usada para limitar a travessia.
+// Dados mais antigos não podem autorizar movimento sem referência visual.
+constexpr int kGapEncoderFreshnessMs = 300;
+
+// Horizonte usado para cortar o PWM antes dos 100 mm e compensar a inércia.
+constexpr double kGapBrakePredictionSeconds = 0.14;
+
+// Avanço mínimo dos dois lados que renova a proteção contra travamento.
+// Se uma roda não avançar, o robô para em vez de descrever um arco no gap.
+constexpr double kGapMinimumProgressCounts = 10.0;
+constexpr int kGapStallTimeoutMs = 1500;
+
+// Tempo absoluto máximo da travessia. Ele limita o movimento mesmo se uma
+// leitura defeituosa dos encoders aparentar progresso contínuo insuficiente.
+constexpr int kGapTraversalTimeoutMs = 3000;
+
 static_assert(kEncoderCountsPerCentimeter > 0.0,
               "A calibração do encoder deve produzir contagens por centímetro positivas.");
 static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
                   kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
               "A faixa da missão de distância deve ser válida.");
+static_assert(kGapMaximumDistanceCm > 0.0 &&
+                  kGapConfirmationSamples > 0 &&
+                  kGapAlignmentTolerance > 0.0 &&
+                  kGapAlignmentTolerance <= 1.0 &&
+                  kGapDriveCommandPower > 0.0 &&
+                  kGapDriveCommandPower <= kMaxMotorOutput,
+              "Os limites da travessia de gap devem permanecer seguros.");
 
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.

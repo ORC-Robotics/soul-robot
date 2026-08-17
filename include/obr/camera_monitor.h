@@ -18,6 +18,13 @@ struct CameraLineSnapshot
     double farArea = 0.0;
     bool centerDeltaValid = false;
     double centerDeltaPx = 0.0;
+    // A visão confirma a extremidade e calcula o alinhamento usando somente o
+    // componente de fita conectado à NEAR. Uma continuação deve ser desconectada.
+    bool gapCandidate = false;
+    bool gapAlignmentValid = false;
+    double gapAlignmentError = 0.0;
+    bool gapReturnValid = false;
+    double gapReturnError = 0.0;
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;
     double ageMs = 0.0;

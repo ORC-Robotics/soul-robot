@@ -1,5 +1,7 @@
 #include "obr/main_mission.h"
 
+#include "obr/config.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -49,6 +51,27 @@ AutonomousStatus makeLineStatus(
     AutonomousStatus status;
     status.phase = phase;
     status.action = action;
+    return status;
+}
+
+AutonomousStatus makeGapStatus(
+    const std::string& phase,
+    const std::string& action,
+    double leftDistanceCm,
+    double rightDistanceCm)
+{
+    AutonomousStatus status;
+    status.phase = phase;
+    status.action = action;
+    status.targetDistanceCm = config::kGapMaximumDistanceCm;
+    status.leftDistanceCm = leftDistanceCm;
+    status.rightDistanceCm = rightDistanceCm;
+    status.averageDistanceCm = (leftDistanceCm + rightDistanceCm) / 2.0;
+    status.progressPercent = std::clamp(
+        std::max(leftDistanceCm, rightDistanceCm) /
+            config::kGapMaximumDistanceCm * 100.0,
+        0.0,
+        100.0);
     return status;
 }
 
@@ -132,6 +155,7 @@ void MainMission::reset()
     totalLossActive_ = false;
     nearLostAt_ = {};
     totalLossStartedAt_ = {};
+    resetGapTracking();
 }
 
 void MainMission::update(
@@ -171,6 +195,394 @@ void MainMission::update(
         else if (cameraLineSnapshot.farValid)
         {
             updateDirectionMemory(cameraLineSnapshot.farError);
+        }
+    }
+
+    const bool gapStateActive =
+        state_ == LineFollowState::AligningForGap ||
+        state_ == LineFollowState::CrossingGap ||
+        state_ == LineFollowState::WaitingAfterGap;
+    if (!gapStateActive && state_ == LineFollowState::TrackingNear &&
+        newLineSample)
+    {
+        if (cameraLineSnapshot.gapCandidate &&
+            cameraLineSnapshot.gapAlignmentValid)
+        {
+            ++consecutiveGapCandidateSamples_;
+        }
+        else
+        {
+            consecutiveGapCandidateSamples_ = 0;
+        }
+    }
+
+    if (!gapStateActive && state_ == LineFollowState::TrackingNear &&
+        consecutiveGapCandidateSamples_ >= config::kGapConfirmationSamples)
+    {
+        // O alinhamento do gap tem prioridade sobre curvas e recuperações. Ele
+        // só começa enquanto a fita que chega ao robô ainda está visível.
+        aheadStrongTurnActive_ = false;
+        aheadStrongTurnDirection_ = LineDirection::Unknown;
+        aheadStrongTurnEnterSamples_ = 0;
+        aheadStrongTurnExitSamples_ = 0;
+        nearRecoveryActive_ = false;
+        totalLossActive_ = false;
+        consecutiveGapAlignedSamples_ = 0;
+        transitionTo(LineFollowState::AligningForGap);
+    }
+
+    if (state_ == LineFollowState::AligningForGap)
+    {
+        if (!cameraLineSnapshot.gapCandidate ||
+            !cameraLineSnapshot.gapAlignmentValid)
+        {
+            // Sem a geometria atual não existe referência segura para terminar
+            // o alinhamento. A fita normal volta a controlar o robô neste frame.
+            consecutiveGapCandidateSamples_ = 0;
+            consecutiveGapAlignedSamples_ = 0;
+            transitionTo(LineFollowState::TrackingNear);
+        }
+        else
+        {
+            const bool aligned =
+                std::abs(cameraLineSnapshot.gapAlignmentError) <=
+                config::kGapAlignmentTolerance;
+            if (newLineSample)
+            {
+                consecutiveGapAlignedSamples_ = aligned
+                                                    ? consecutiveGapAlignedSamples_ + 1
+                                                    : 0;
+            }
+
+            if (consecutiveGapAlignedSamples_ >=
+                config::kGapConfirmationSamples)
+            {
+                const bool encoderReady =
+                    esp32Telemetry.sensorFresh &&
+                    esp32Telemetry.lastSensorAgeMs >= 0 &&
+                    esp32Telemetry.lastSensorAgeMs <=
+                        config::kGapEncoderFreshnessMs &&
+                    std::isfinite(esp32Telemetry.leftEncoderRate) &&
+                    std::isfinite(esp32Telemetry.rightEncoderRate);
+                if (!encoderReady)
+                {
+                    robotState.stop();
+                    robotState.updateAutonomousStatus(makeGapStatus(
+                        "gap_encoder_lost",
+                        "Gap interrompido: encoders sem dados recentes",
+                        0.0,
+                        0.0));
+                    return;
+                }
+
+                gapStartLeftCount_ = esp32Telemetry.leftEncoderCount;
+                gapStartRightCount_ = esp32Telemetry.rightEncoderCount;
+                gapLastProgressCounts_ = 0.0;
+                gapStartedAt_ = now;
+                gapLastProgressAt_ = now;
+                gapNearLossObserved_ = false;
+                consecutiveGapNearReturnSamples_ = 0;
+                consecutiveGapFarReturnSamples_ = 0;
+                transitionTo(LineFollowState::CrossingGap);
+                robotState.driveAutonomous(
+                    config::kGapDriveCommandPower,
+                    config::kGapDriveCommandPower);
+                robotState.updateAutonomousStatus(makeGapStatus(
+                    "crossing_gap",
+                    "Atravessando gap até 100 mm",
+                    0.0,
+                    0.0));
+                return;
+            }
+
+            if (aligned)
+            {
+                robotState.driveAutonomous(0.0, 0.0);
+                robotState.updateAutonomousStatus(makeLineStatus(
+                    "aligning_for_gap",
+                    "Confirmando alinhamento para o gap"));
+                return;
+            }
+
+            const MotorCommand command = calculateCounterRotationCommand(
+                cameraLineSnapshot.gapAlignmentError < 0.0,
+                kFarBaseSpeed);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "aligning_for_gap",
+                "Alinhando sobre a fita antes do gap"));
+            return;
+        }
+    }
+
+    if (state_ == LineFollowState::CrossingGap)
+    {
+        const bool encoderReady =
+            esp32Telemetry.sensorFresh &&
+            esp32Telemetry.lastSensorAgeMs >= 0 &&
+            esp32Telemetry.lastSensorAgeMs <=
+                config::kGapEncoderFreshnessMs &&
+            std::isfinite(esp32Telemetry.leftEncoderRate) &&
+            std::isfinite(esp32Telemetry.rightEncoderRate);
+        const double leftCounts = std::abs(static_cast<double>(
+            esp32Telemetry.leftEncoderCount - gapStartLeftCount_));
+        const double rightCounts = std::abs(static_cast<double>(
+            esp32Telemetry.rightEncoderCount - gapStartRightCount_));
+        const double leftDistanceCm =
+            leftCounts / config::kEncoderCountsPerCentimeter;
+        const double rightDistanceCm =
+            rightCounts / config::kEncoderCountsPerCentimeter;
+
+        if (!encoderReady)
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeGapStatus(
+                "gap_encoder_lost",
+                "Gap interrompido: encoders sem dados recentes",
+                leftDistanceCm,
+                rightDistanceCm));
+            return;
+        }
+        if (now - gapStartedAt_ >
+            std::chrono::milliseconds(config::kGapTraversalTimeoutMs))
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeGapStatus(
+                "gap_timeout",
+                "Gap interrompido pelo tempo limite",
+                leftDistanceCm,
+                rightDistanceCm));
+            return;
+        }
+
+        const double minimumCounts = std::min(leftCounts, rightCounts);
+        if (minimumCounts >=
+            gapLastProgressCounts_ + config::kGapMinimumProgressCounts)
+        {
+            gapLastProgressCounts_ = minimumCounts;
+            gapLastProgressAt_ = now;
+        }
+        if (now - gapLastProgressAt_ >
+            std::chrono::milliseconds(config::kGapStallTimeoutMs))
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeGapStatus(
+                "gap_encoder_stall",
+                "Gap interrompido: uma roda não avançou",
+                leftDistanceCm,
+                rightDistanceCm));
+            return;
+        }
+
+        if (newLineSample)
+        {
+            if (!cameraLineSnapshot.nearValid)
+            {
+                gapNearLossObserved_ = true;
+            }
+            consecutiveGapNearReturnSamples_ =
+                gapNearLossObserved_ && cameraLineSnapshot.nearValid
+                    ? consecutiveGapNearReturnSamples_ + 1
+                    : 0;
+            consecutiveGapFarReturnSamples_ =
+                cameraLineSnapshot.gapReturnValid ||
+                        (!cameraLineSnapshot.nearValid &&
+                         cameraLineSnapshot.farValid)
+                    ? consecutiveGapFarReturnSamples_ + 1
+                    : 0;
+        }
+
+        if (consecutiveGapNearReturnSamples_ >=
+            config::kGapConfirmationSamples)
+        {
+            resetGapTracking();
+            nearRecoveryActive_ = true;
+            transitionTo(LineFollowState::ReacquiringNear);
+            const MotorCommand command =
+                std::abs(cameraLineSnapshot.nearError) >
+                        kNearReacquireMaxAbsError
+                    ? calculateOneWheelPivotCommand(
+                          cameraLineSnapshot.nearError)
+                    : calculateNearReacquisitionCommand(
+                          cameraLineSnapshot.correction);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "reacquiring_near",
+                "Linha reencontrada após o gap"));
+            return;
+        }
+        if (consecutiveGapFarReturnSamples_ >=
+            config::kGapConfirmationSamples)
+        {
+            if (cameraLineSnapshot.nearValid &&
+                cameraLineSnapshot.gapReturnValid)
+            {
+                const double returnError =
+                    cameraLineSnapshot.gapReturnError;
+                resetGapTracking();
+                gapReturnRecoveryActive_ = true;
+                nearRecoveryActive_ = true;
+                nearLostAt_ = now;
+                transitionTo(LineFollowState::RecoveringFar);
+                const MotorCommand command =
+                    calculateFarRecoveryCommand(returnError);
+                robotState.driveAutonomous(command.left, command.right);
+                robotState.updateAutonomousStatus(makeLineStatus(
+                    "recovering_far",
+                    "Continuação do gap confirmada pela visão"));
+                return;
+            }
+
+            resetGapTracking();
+            nearRecoveryActive_ = true;
+            nearLostAt_ = now;
+            transitionTo(LineFollowState::RecoveringFar);
+            const MotorCommand command =
+                calculateFarRecoveryCommand(cameraLineSnapshot.farError);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "recovering_far",
+                "Linha reencontrada pela FAR após o gap"));
+            return;
+        }
+
+        const double predictionSeconds =
+            config::kGapBrakePredictionSeconds +
+            esp32Telemetry.lastSensorAgeMs / 1000.0;
+        const double projectedLeftCounts =
+            leftCounts +
+            std::abs(esp32Telemetry.leftEncoderRate) * predictionSeconds;
+        const double projectedRightCounts =
+            rightCounts +
+            std::abs(esp32Telemetry.rightEncoderRate) * predictionSeconds;
+        const double targetCounts =
+            config::kGapMaximumDistanceCm *
+            config::kEncoderCountsPerCentimeter;
+        if (std::max(projectedLeftCounts, projectedRightCounts) >= targetCounts)
+        {
+            transitionTo(LineFollowState::WaitingAfterGap);
+            consecutiveGapNearReturnSamples_ = 0;
+            consecutiveGapFarReturnSamples_ = 0;
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeGapStatus(
+                "gap_waiting",
+                "100 mm concluídos: aguardando a linha",
+                leftDistanceCm,
+                rightDistanceCm));
+            return;
+        }
+
+        robotState.driveAutonomous(
+            config::kGapDriveCommandPower,
+            config::kGapDriveCommandPower);
+        robotState.updateAutonomousStatus(makeGapStatus(
+            "crossing_gap",
+            "Atravessando gap até 100 mm",
+            leftDistanceCm,
+            rightDistanceCm));
+        return;
+    }
+
+    if (state_ == LineFollowState::WaitingAfterGap)
+    {
+        robotState.driveAutonomous(0.0, 0.0);
+        if (newLineSample)
+        {
+            consecutiveGapNearReturnSamples_ = cameraLineSnapshot.nearValid
+                                                   ? consecutiveGapNearReturnSamples_ + 1
+                                                   : 0;
+            consecutiveGapFarReturnSamples_ =
+                !cameraLineSnapshot.nearValid && cameraLineSnapshot.farValid
+                    ? consecutiveGapFarReturnSamples_ + 1
+                    : 0;
+        }
+
+        if (consecutiveGapNearReturnSamples_ >=
+            config::kGapConfirmationSamples)
+        {
+            resetGapTracking();
+            nearRecoveryActive_ = true;
+            transitionTo(LineFollowState::ReacquiringNear);
+            const MotorCommand command =
+                std::abs(cameraLineSnapshot.nearError) >
+                        kNearReacquireMaxAbsError
+                    ? calculateOneWheelPivotCommand(
+                          cameraLineSnapshot.nearError)
+                    : calculateNearReacquisitionCommand(
+                          cameraLineSnapshot.correction);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "reacquiring_near",
+                "Linha confirmada após a espera do gap"));
+            return;
+        }
+        if (consecutiveGapFarReturnSamples_ >=
+            config::kGapConfirmationSamples)
+        {
+            resetGapTracking();
+            nearRecoveryActive_ = true;
+            nearLostAt_ = now;
+            transitionTo(LineFollowState::RecoveringFar);
+            const MotorCommand command =
+                calculateFarRecoveryCommand(cameraLineSnapshot.farError);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "recovering_far",
+                "Linha confirmada pela FAR após a espera do gap"));
+            return;
+        }
+
+        const double leftDistanceCm = std::abs(static_cast<double>(
+            esp32Telemetry.leftEncoderCount - gapStartLeftCount_)) /
+            config::kEncoderCountsPerCentimeter;
+        const double rightDistanceCm = std::abs(static_cast<double>(
+            esp32Telemetry.rightEncoderCount - gapStartRightCount_)) /
+            config::kEncoderCountsPerCentimeter;
+        robotState.updateAutonomousStatus(makeGapStatus(
+            "gap_waiting",
+            "Aguardando a linha com motores parados",
+            leftDistanceCm,
+            rightDistanceCm));
+        return;
+    }
+
+    if (gapReturnRecoveryActive_)
+    {
+        if (!cameraLineSnapshot.nearValid)
+        {
+            // A fita antiga saiu da NEAR. A recuperação normal pela FAR pode
+            // assumir o controle sem confundir a origem e a continuação do gap.
+            gapReturnRecoveryActive_ = false;
+        }
+        else if (now - nearLostAt_ >= kNearRecoveryTimeout)
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "gap_return_timeout",
+                "Continuação do gap perdida durante a recuperação"));
+            std::cout << "MainMission stopped: gap return recovery timeout ("
+                      << kNearRecoveryTimeout.count() << " ms)" << std::endl;
+            return;
+        }
+        else if (cameraLineSnapshot.gapReturnValid)
+        {
+            const MotorCommand command = calculateFarRecoveryCommand(
+                cameraLineSnapshot.gapReturnError);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "recovering_far",
+                "Guiando pela continuação desconectada do gap"));
+            return;
+        }
+        else
+        {
+            // Se a continuação sumir antes de a fita antiga sair da NEAR, o
+            // robô aguarda imóvel em vez de voltar a seguir o segmento antigo.
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "recovering_far",
+                "Aguardando novamente a continuação do gap"));
+            return;
         }
     }
 
@@ -504,6 +916,21 @@ void MainMission::transitionTo(LineFollowState nextState)
     std::cout << std::endl;
 }
 
+void MainMission::resetGapTracking()
+{
+    consecutiveGapCandidateSamples_ = 0;
+    consecutiveGapAlignedSamples_ = 0;
+    consecutiveGapNearReturnSamples_ = 0;
+    consecutiveGapFarReturnSamples_ = 0;
+    gapNearLossObserved_ = false;
+    gapReturnRecoveryActive_ = false;
+    gapStartLeftCount_ = 0;
+    gapStartRightCount_ = 0;
+    gapLastProgressCounts_ = 0.0;
+    gapStartedAt_ = {};
+    gapLastProgressAt_ = {};
+}
+
 void MainMission::updateDirectionMemory(double error)
 {
     lastValidError_ = error;
@@ -548,6 +975,12 @@ const char* MainMission::stateName(LineFollowState state)
         return "TrackingNear";
     case LineFollowState::TurningAhead:
         return "TurningAhead";
+    case LineFollowState::AligningForGap:
+        return "AligningForGap";
+    case LineFollowState::CrossingGap:
+        return "CrossingGap";
+    case LineFollowState::WaitingAfterGap:
+        return "WaitingAfterGap";
     case LineFollowState::ReacquiringNear:
         return "ReacquiringNear";
     case LineFollowState::RecoveringFar:

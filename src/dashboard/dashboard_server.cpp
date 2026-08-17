@@ -956,6 +956,16 @@ std::string DashboardServer::dashboardHtml()
                 <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
               </dl>
             </section>
+            <section class="camera-diagnostic-group control">
+              <h3>Gap</h3>
+              <dl class="camera-diagnostic-list">
+                <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraGapCandidate">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Alinhamento válido</dt><dd id="cameraGapAlignmentValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Erro de alinhamento</dt><dd id="cameraGapAlignmentError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Continuação</dt><dd id="cameraGapReturnValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Erro da continuação</dt><dd id="cameraGapReturnError">—</dd></div>
+              </dl>
+            </section>
           </div>
         </div>
         <p id="forwardCameraTelemetry" class="camera-telemetry-note" hidden>CAM1 desligada · 960×540 pelo modo 1920×1080</p>
@@ -1223,7 +1233,12 @@ std::string DashboardServer::dashboardHtml()
       farArea: element("cameraFarArea"), farHeight: element("cameraFarHeight"),
       centerDelta: element("cameraCenterDelta"), controlError: element("cameraControlError"),
       correction: element("cameraCorrection"), leftPreview: element("cameraLeftPreview"),
-      rightPreview: element("cameraRightPreview"), lineSequence: element("cameraLineSequence")
+      rightPreview: element("cameraRightPreview"), lineSequence: element("cameraLineSequence"),
+      gapCandidate: element("cameraGapCandidate"),
+      gapAlignmentValid: element("cameraGapAlignmentValid"),
+      gapAlignmentError: element("cameraGapAlignmentError"),
+      gapReturnValid: element("cameraGapReturnValid"),
+      gapReturnError: element("cameraGapReturnError")
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
@@ -2129,11 +2144,15 @@ std::string DashboardServer::dashboardHtml()
         data.nearError, data.nearArea, data.nearHeightPx,
         data.controlError, data.correction, data.leftPreview, data.rightPreview,
         data.farError, data.farArea, data.farHeightPx, data.centerDeltaPx,
+        data.gapAlignmentError, data.gapReturnError,
         data.lineTimestamp, data.lineSequence, data.timestamp
       ];
       const fieldsPresent = typeof data.nearValid === "boolean" &&
         typeof data.farValid === "boolean" &&
         typeof data.centerDeltaValid === "boolean" &&
+        typeof data.gapCandidate === "boolean" &&
+        typeof data.gapAlignmentValid === "boolean" &&
+        typeof data.gapReturnValid === "boolean" &&
         numericFields.every(value => Number.isFinite(Number(value)));
       const statusTimestamp = Number(data.timestamp);
       const lineTimestamp = Number(data.lineTimestamp);
@@ -2166,6 +2185,15 @@ std::string DashboardServer::dashboardHtml()
       cameraDiagnosticFields.leftPreview.textContent = formatCameraDiagnostic(data.leftPreview, 3);
       cameraDiagnosticFields.rightPreview.textContent = formatCameraDiagnostic(data.rightPreview, 3);
       cameraDiagnosticFields.lineSequence.textContent = String(Math.trunc(Number(data.lineSequence)));
+      cameraDiagnosticFields.gapCandidate.textContent = data.gapCandidate ? "SIM" : "NÃO";
+      cameraDiagnosticFields.gapAlignmentValid.textContent = data.gapAlignmentValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.gapAlignmentError.textContent = data.gapAlignmentValid
+        ? formatCameraDiagnostic(data.gapAlignmentError, 3)
+        : "INVÁLIDO";
+      cameraDiagnosticFields.gapReturnValid.textContent = data.gapReturnValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.gapReturnError.textContent = data.gapReturnValid
+        ? formatCameraDiagnostic(data.gapReturnError, 3)
+        : "INVÁLIDO";
     }
 
     async function refreshCameraStatus() {

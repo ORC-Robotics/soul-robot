@@ -335,6 +335,24 @@ CAMERA_PROFILES = {
             },
             "ahead_heading_gain": 0.90,
             "near_deadzone_ratio": 0.10,
+            "gap_detection_enabled": True,
+            # A extremidade pode aparecer desde a FAR até dentro da NEAR, como
+            # ocorre no enquadramento físico atual. As margens evitam usar as
+            # bordas das duas regiões, onde a classificação fica instável.
+            "gap_endpoint_start_ratio": 0.10,
+            "gap_endpoint_end_ratio": 0.95,
+            # O alinhamento compara o quarto superior e o quarto inferior do
+            # mesmo segmento. Quarenta pixels garantem distância longitudinal
+            # suficiente para estimar a direção sem depender de farValid.
+            "gap_alignment_sample_ratio": 0.25,
+            "gap_min_alignment_span_ratio": 40.0 / 480.0,
+            # Uma expansão lateral grande perto da extremidade normalmente é
+            # um cruzamento ou uma curva, não uma interrupção simples da fita.
+            "gap_max_row_width_ratio": 1.80,
+            # Uma continuação desconectada só pertence ao mesmo caminho quando
+            # permanece próxima da projeção da fita que chega ao robô.
+            "gap_return_corridor_ratio": 0.20,
+            "gap_return_min_separation_px": 5,
             "base_speed_preview": 0.66,
             "balanced_differential_mixing": True,
             "minimum_tracking_power": 0.65,
@@ -1032,6 +1050,193 @@ def select_largest_line_contour(contours):
             selected_moments = contour_moments
 
     return selected_contour, selected_area, selected_moments
+
+
+def empty_gap_observation():
+    """Cria um resultado de gap seguro para frames sem geometria suficiente."""
+
+    return {
+        "candidate": False,
+        "alignment_valid": False,
+        "alignment_error": 0.0,
+        "return_valid": False,
+        "return_error": 0.0,
+        "endpoint": None,
+    }
+
+
+def analyze_gap_geometry(
+    line_candidate_mask,
+    vision_geometry,
+    vision_profile,
+    near_center,
+):
+    """Detecta uma extremidade desconectada da fita que ainda alcança a NEAR."""
+
+    observation = empty_gap_observation()
+    if (
+        not vision_profile.get("gap_detection_enabled", False)
+        or near_center is None
+        or line_candidate_mask.ndim != 2
+    ):
+        return observation
+
+    binary_mask = (line_candidate_mask > 0).astype(np.uint8)
+    component_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        binary_mask,
+        connectivity=8,
+    )
+    if component_count <= 1:
+        return observation
+
+    near_start_y = vision_geometry["near_band_start_y"]
+    near_end_y = vision_geometry["near_band_end_y"]
+    far_start_y = vision_geometry["far_band_start_y"]
+    structural_end_y = vision_geometry["structural_end_y"]
+    frame_width = line_candidate_mask.shape[1]
+
+    # Associa a observação ao componente que realmente cruza a NEAR. Isso
+    # impede que outro objeto preto maior, porém distante, vire o gap principal.
+    primary_label = 0
+    primary_distance = float("inf")
+    for label in range(1, component_count):
+        component_near = labels[near_start_y:near_end_y, :] == label
+        near_y, near_x = np.nonzero(component_near)
+        if near_x.size == 0:
+            continue
+        distance = abs(float(np.mean(near_x)) - float(near_center[0]))
+        if distance < primary_distance:
+            primary_label = label
+            primary_distance = distance
+
+    if primary_label == 0:
+        return observation
+
+    primary_mask = labels == primary_label
+    primary_y, primary_x = np.nonzero(primary_mask)
+    if primary_y.size == 0:
+        return observation
+
+    endpoint_y = int(np.min(primary_y))
+    endpoint_window_height = near_end_y - far_start_y
+    endpoint_start_y = far_start_y + int(round(
+        endpoint_window_height
+        * vision_profile["gap_endpoint_start_ratio"]
+    ))
+    endpoint_end_y = far_start_y + int(round(
+        endpoint_window_height
+        * vision_profile["gap_endpoint_end_ratio"]
+    ))
+    if endpoint_y < endpoint_start_y or endpoint_y > endpoint_end_y:
+        return observation
+
+    visible_bottom_y = min(int(np.max(primary_y)) + 1, structural_end_y)
+    visible_span_px = visible_bottom_y - endpoint_y
+    minimum_alignment_span_px = int(round(
+        line_candidate_mask.shape[0]
+        * vision_profile["gap_min_alignment_span_ratio"]
+    ))
+    if visible_span_px < minimum_alignment_span_px:
+        return observation
+
+    sample_height_px = max(1, int(round(
+        visible_span_px * vision_profile["gap_alignment_sample_ratio"]
+    )))
+    upper_end_y = min(endpoint_y + sample_height_px, visible_bottom_y)
+    lower_start_y = max(endpoint_y, visible_bottom_y - sample_height_px)
+    primary_upper = primary_mask[endpoint_y:upper_end_y, :]
+    primary_lower = primary_mask[lower_start_y:visible_bottom_y, :]
+    upper_y_local, upper_x = np.nonzero(primary_upper)
+    lower_y_local, lower_x = np.nonzero(primary_lower)
+    if upper_x.size == 0 or lower_x.size == 0:
+        return observation
+
+    lower_row_widths = [
+        int(row_x.max() - row_x.min() + 1)
+        for row in primary_lower
+        if (row_x := np.flatnonzero(row)).size > 0
+    ]
+    endpoint_rows = primary_upper
+    endpoint_row_widths = [
+        int(row_x.max() - row_x.min() + 1)
+        for row in endpoint_rows
+        if (row_x := np.flatnonzero(row)).size > 0
+    ]
+    if not lower_row_widths or not endpoint_row_widths:
+        return observation
+
+    reference_width = float(np.median(lower_row_widths))
+    maximum_endpoint_width = float(max(endpoint_row_widths))
+    if maximum_endpoint_width > (
+        reference_width * vision_profile["gap_max_row_width_ratio"]
+    ):
+        return observation
+
+    near_x_center = float(np.mean(lower_x))
+    near_y_center = lower_start_y + float(np.mean(lower_y_local))
+    far_x_center = float(np.mean(upper_x))
+    far_y_center = endpoint_y + float(np.mean(upper_y_local))
+    frame_half_width = frame_width / 2.0
+    near_error = (near_x_center - frame_half_width) / frame_half_width
+    far_error = (far_x_center - frame_half_width) / frame_half_width
+    heading_error = far_error - near_error
+
+    # O sinal vem do maior desvio. Assim, uma compensação acidental entre
+    # posição e ângulo não pode declarar o robô alinhado quando um deles é ruim.
+    dominant_error = (
+        near_error
+        if abs(near_error) >= abs(heading_error)
+        else heading_error
+    )
+    alignment_error = math.copysign(
+        max(abs(near_error), abs(heading_error)),
+        dominant_error,
+    ) if dominant_error != 0.0 else 0.0
+
+    endpoint_x_values = primary_x[primary_y == endpoint_y]
+    endpoint_x = int(round(float(np.mean(endpoint_x_values))))
+    observation.update({
+        "candidate": True,
+        "alignment_valid": True,
+        "alignment_error": max(-1.0, min(alignment_error, 1.0)),
+        "endpoint": (endpoint_x, endpoint_y),
+    })
+
+    if abs(near_y_center - far_y_center) < 1.0:
+        return observation
+
+    corridor_px = frame_width * vision_profile["gap_return_corridor_ratio"]
+    minimum_separation = vision_profile["gap_return_min_separation_px"]
+    best_return = None
+    best_distance = float("inf")
+    for label in range(1, component_count):
+        if label == primary_label:
+            continue
+        component_top = stats[label, cv2.CC_STAT_TOP]
+        component_height = stats[label, cv2.CC_STAT_HEIGHT]
+        component_bottom = component_top + component_height - 1
+        if component_bottom >= endpoint_y - minimum_separation:
+            continue
+
+        return_x = float(centroids[label][0])
+        return_y = float(centroids[label][1])
+        projected_x = near_x_center + (
+            (far_x_center - near_x_center)
+            * (return_y - near_y_center)
+            / (far_y_center - near_y_center)
+        )
+        axis_distance = abs(return_x - projected_x)
+        if axis_distance <= corridor_px and axis_distance < best_distance:
+            best_return = return_x
+            best_distance = axis_distance
+
+    if best_return is not None:
+        observation["return_valid"] = True
+        observation["return_error"] = max(
+            -1.0,
+            min((best_return - frame_half_width) / frame_half_width, 1.0),
+        )
+    return observation
 
 
 def frame_to_hsv(frame, camera_format="RGB888"):
@@ -2321,6 +2526,11 @@ def save_line_status(
     far_area,
     center_delta_valid,
     center_delta_px,
+    gap_candidate,
+    gap_alignment_valid,
+    gap_alignment_error,
+    gap_return_valid,
+    gap_return_error,
     line_timestamp,
     line_sequence,
     green_status=None,
@@ -2395,6 +2605,29 @@ def save_line_status(
     if not center_delta_valid:
         center_delta_px = 0.0
 
+    gap_candidate = bool(gap_candidate and near_valid)
+    try:
+        gap_alignment_error = float(gap_alignment_error)
+        gap_alignment_finite = math.isfinite(gap_alignment_error)
+    except (TypeError, ValueError):
+        gap_alignment_finite = False
+    gap_alignment_valid = bool(
+        gap_candidate and gap_alignment_valid and gap_alignment_finite
+    )
+    if not gap_alignment_valid:
+        gap_alignment_error = 0.0
+
+    try:
+        gap_return_error = float(gap_return_error)
+        gap_return_finite = math.isfinite(gap_return_error)
+    except (TypeError, ValueError):
+        gap_return_finite = False
+    gap_return_valid = bool(
+        gap_candidate and gap_return_valid and gap_return_finite
+    )
+    if not gap_return_valid:
+        gap_return_error = 0.0
+
     try:
         line_timestamp = float(line_timestamp)
         if not math.isfinite(line_timestamp):
@@ -2418,6 +2651,11 @@ def save_line_status(
             "farArea": far_area,
             "centerDeltaValid": center_delta_valid,
             "centerDeltaPx": center_delta_px,
+            "gapCandidate": gap_candidate,
+            "gapAlignmentValid": gap_alignment_valid,
+            "gapAlignmentError": gap_alignment_error,
+            "gapReturnValid": gap_return_valid,
+            "gapReturnError": gap_return_error,
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
         }
@@ -2450,6 +2688,11 @@ def save_status(
     far_height_px=0,
     center_delta_valid=False,
     center_delta_px=0.0,
+    gap_candidate=False,
+    gap_alignment_valid=False,
+    gap_alignment_error=0.0,
+    gap_return_valid=False,
+    gap_return_error=0.0,
     line_timestamp=0.0,
     line_sequence=0,
 ):
@@ -2562,6 +2805,29 @@ def save_status(
         far_area = 0.0
     if not center_delta_valid:
         center_delta_px = 0.0
+
+    gap_candidate = bool(gap_candidate and near_valid)
+    try:
+        gap_alignment_error = float(gap_alignment_error)
+        gap_alignment_finite = math.isfinite(gap_alignment_error)
+    except (TypeError, ValueError):
+        gap_alignment_finite = False
+    gap_alignment_valid = bool(
+        gap_candidate and gap_alignment_valid and gap_alignment_finite
+    )
+    if not gap_alignment_valid:
+        gap_alignment_error = 0.0
+
+    try:
+        gap_return_error = float(gap_return_error)
+        gap_return_finite = math.isfinite(gap_return_error)
+    except (TypeError, ValueError):
+        gap_return_finite = False
+    gap_return_valid = bool(
+        gap_candidate and gap_return_valid and gap_return_finite
+    )
+    if not gap_return_valid:
+        gap_return_error = 0.0
     if not line_timestamp_valid:
         line_timestamp = 0.0
     if not line_sequence_valid:
@@ -2607,6 +2873,11 @@ def save_status(
         "farHeightPx": far_height_px,
         "centerDeltaValid": center_delta_valid,
         "centerDeltaPx": center_delta_px,
+        "gapCandidate": gap_candidate,
+        "gapAlignmentValid": gap_alignment_valid,
+        "gapAlignmentError": gap_alignment_error,
+        "gapReturnValid": gap_return_valid,
+        "gapReturnError": gap_return_error,
         "lineTimestamp": line_timestamp,
         "lineSequence": line_sequence,
     }
@@ -2941,6 +3212,12 @@ def main():
             if center_delta_valid:
                 center_delta_px = line_center_x - far_center_x
 
+            gap_observation = analyze_gap_geometry(
+                line_candidate_mask,
+                vision_geometry,
+                vision_profile,
+                near_center,
+            )
             line_axis = build_line_axis(near_center, far_center)
             if trace_active:
                 timings["line_detection_ms"] = (
@@ -3087,6 +3364,11 @@ def main():
                     far_area,
                     center_delta_valid,
                     center_delta_px,
+                    gap_observation["candidate"],
+                    gap_observation["alignment_valid"],
+                    gap_observation["alignment_error"],
+                    gap_observation["return_valid"],
+                    gap_observation["return_error"],
                     line_timestamp,
                     line_sequence,
                     green_status,
@@ -3197,6 +3479,31 @@ def main():
                 vision_profile["debug_text_overlay"]
                 and display_mode != DISPLAY_MODE_GREEN
             )
+
+            if (
+                display_mode != DISPLAY_MODE_GREEN
+                and gap_observation["candidate"]
+                and gap_observation["endpoint"] is not None
+            ):
+                gap_color = (0, 165, 255)
+                cv2.circle(
+                    frame,
+                    gap_observation["endpoint"],
+                    7,
+                    gap_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
+                    "GAP CANDIDATO",
+                    (12, 300),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    gap_color,
+                    2,
+                    cv2.LINE_AA,
+                )
 
             # O preenchimento usa somente o recorte estreito da zona segura
             # para reduzir cópias de imagem e preservar o FPS do stream.
@@ -3721,6 +4028,11 @@ def main():
                     far_height_px=far_band_height_px,
                     center_delta_valid=center_delta_valid,
                     center_delta_px=center_delta_px,
+                    gap_candidate=gap_observation["candidate"],
+                    gap_alignment_valid=gap_observation["alignment_valid"],
+                    gap_alignment_error=gap_observation["alignment_error"],
+                    gap_return_valid=gap_observation["return_valid"],
+                    gap_return_error=gap_observation["return_error"],
                     line_timestamp=line_timestamp,
                     line_sequence=line_sequence,
                 )

@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 
 project(cpp_robot)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -28,4 +30,17 @@ if(WIN32)
     target_link_libraries(robot_test ws2_32)
 else()
     target_link_libraries(robot_test pthread)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(main_mission_gap_test
+        tests/main_mission_gap_test.cpp
+        src/robot/main_mission.cpp
+        src/robot/robot_state.cpp
+    )
+    target_include_directories(main_mission_gap_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(main_mission_gap_test pthread)
+    endif()
+    add_test(NAME main_mission_gap_test COMMAND main_mission_gap_test)
 endif()

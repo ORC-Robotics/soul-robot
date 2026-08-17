@@ -208,7 +208,11 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_lost" ||
                                        status.phase == "distance_encoder_stall" ||
                                        status.phase == "distance_correction_failed" ||
-                                       status.phase == "distance_invalid_target";
+                                       status.phase == "distance_invalid_target" ||
+                                       status.phase == "gap_encoder_lost" ||
+                                       status.phase == "gap_encoder_stall" ||
+                                       status.phase == "gap_timeout" ||
+                                       status.phase == "gap_return_timeout";
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;

@@ -52,6 +52,77 @@ def synthetic_topology(**branches):
     )
 
 
+def synthetic_gap_mask(
+    left_x=310,
+    right_x=330,
+    endpoint_y=130,
+    continuous=False,
+    branch=False,
+    return_segment=False,
+):
+    """Cria geometrias binárias na mesma escala validada da câmera inferior."""
+
+    mask = np.zeros((480, 640), dtype=np.uint8)
+    start_y = 0 if continuous else endpoint_y
+    mask[start_y:425, left_x:right_x + 1] = 255
+    if branch:
+        mask[endpoint_y:endpoint_y + 21, 180:461] = 255
+    if return_segment:
+        mask[30:80, left_x:right_x + 1] = 255
+    return mask
+
+
+def connected_components_for_gap_test(binary_mask, connectivity=8):
+    """Substitui apenas a rotulagem do OpenCV nos testes sem o pacote instalado."""
+
+    del connectivity
+    active = binary_mask != 0
+    labels = np.zeros(active.shape, dtype=np.int32)
+    components = []
+    next_label = 0
+    height, width = active.shape
+    for start_y, start_x in zip(*np.nonzero(active)):
+        if labels[start_y, start_x] != 0:
+            continue
+        next_label += 1
+        stack = [(int(start_y), int(start_x))]
+        labels[start_y, start_x] = next_label
+        pixels = []
+        while stack:
+            pixel_y, pixel_x = stack.pop()
+            pixels.append((pixel_y, pixel_x))
+            for delta_y in (-1, 0, 1):
+                for delta_x in (-1, 0, 1):
+                    if delta_y == 0 and delta_x == 0:
+                        continue
+                    neighbor_y = pixel_y + delta_y
+                    neighbor_x = pixel_x + delta_x
+                    if (
+                        0 <= neighbor_y < height
+                        and 0 <= neighbor_x < width
+                        and active[neighbor_y, neighbor_x]
+                        and labels[neighbor_y, neighbor_x] == 0
+                    ):
+                        labels[neighbor_y, neighbor_x] = next_label
+                        stack.append((neighbor_y, neighbor_x))
+        components.append(pixels)
+
+    stats = np.zeros((next_label + 1, 5), dtype=np.int32)
+    centroids = np.zeros((next_label + 1, 2), dtype=np.float64)
+    for label, pixels in enumerate(components, start=1):
+        y_values = np.array([pixel[0] for pixel in pixels])
+        x_values = np.array([pixel[1] for pixel in pixels])
+        stats[label] = (
+            int(x_values.min()),
+            int(y_values.min()),
+            int(x_values.max() - x_values.min() + 1),
+            int(y_values.max() - y_values.min() + 1),
+            len(pixels),
+        )
+        centroids[label] = (float(x_values.mean()), float(y_values.mean()))
+    return next_label + 1, labels, stats, centroids
+
+
 def synthetic_candidate(
     centroid,
     line_axis=None,
@@ -77,6 +148,82 @@ def synthetic_candidate(
 
 
 class CameraProfilesTest(unittest.TestCase):
+    def analyze_synthetic_gap(self, mask, near_center=(320, 240)):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        geometry = camera_line_frame.resolve_vision_geometry(480, profile)
+        if CV2_AVAILABLE:
+            return camera_line_frame.analyze_gap_geometry(
+                mask,
+                geometry,
+                profile,
+                near_center,
+            )
+        with (
+            mock.patch.object(
+                camera_line_frame.cv2,
+                "connectedComponentsWithStats",
+                side_effect=connected_components_for_gap_test,
+            ),
+            mock.patch.object(camera_line_frame.cv2, "CC_STAT_TOP", 1),
+            mock.patch.object(camera_line_frame.cv2, "CC_STAT_HEIGHT", 3),
+        ):
+            return camera_line_frame.analyze_gap_geometry(
+                mask,
+                geometry,
+                profile,
+                near_center,
+            )
+
+    def test_gap_detector_accepts_centered_endpoint(self):
+        result = self.analyze_synthetic_gap(synthetic_gap_mask())
+
+        self.assertTrue(result["candidate"])
+        self.assertTrue(result["alignment_valid"])
+        self.assertAlmostEqual(result["alignment_error"], 0.0, places=3)
+        self.assertFalse(result["return_valid"])
+
+    def test_gap_detector_accepts_endpoint_inside_near_when_far_is_empty(self):
+        # Reproduz o enquadramento real: a ponta está em y=225, abaixo do fim
+        # da FAR (y=180), mas o segmento ainda cruza e continua após a NEAR.
+        result = self.analyze_synthetic_gap(
+            synthetic_gap_mask(endpoint_y=225),
+            near_center=(320, 247),
+        )
+
+        self.assertTrue(result["candidate"])
+        self.assertTrue(result["alignment_valid"])
+        self.assertAlmostEqual(result["alignment_error"], 0.0, places=3)
+
+    def test_gap_detector_rejects_continuous_line_curve_and_crossing(self):
+        continuous = synthetic_gap_mask(continuous=True)
+        curve = np.zeros((425, 640), dtype=np.uint8)
+        for y in range(0, 271):
+            center_x = 320 + int(round(40 * (1.0 - y / 270.0)))
+            curve[y, center_x - 10:center_x + 11] = 255
+        crossing = synthetic_gap_mask(branch=True)
+
+        self.assertFalse(self.analyze_synthetic_gap(continuous)["candidate"])
+        self.assertFalse(self.analyze_synthetic_gap(curve)["candidate"])
+        self.assertFalse(self.analyze_synthetic_gap(crossing)["candidate"])
+
+    def test_gap_detector_keeps_alignment_error_and_ignores_noise(self):
+        mask = synthetic_gap_mask(left_x=390, right_x=410)
+        mask[20:23, 40:43] = 255
+        result = self.analyze_synthetic_gap(mask, near_center=(400, 240))
+
+        self.assertTrue(result["candidate"])
+        self.assertGreater(result["alignment_error"], 0.20)
+        self.assertFalse(result["return_valid"])
+
+    def test_gap_detector_finds_disconnected_return_on_projected_axis(self):
+        result = self.analyze_synthetic_gap(
+            synthetic_gap_mask(return_segment=True)
+        )
+
+        self.assertTrue(result["candidate"])
+        self.assertTrue(result["return_valid"])
+        self.assertAlmostEqual(result["return_error"], 0.0, places=3)
+
     def test_dual_camera_assignments_keep_cam0_down_and_cam1_forward(self):
         camera_infos = [
             {"Num": 0, "Model": "imx219", "Id": "physical-cam0"},
