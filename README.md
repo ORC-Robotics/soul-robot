@@ -3,6 +3,9 @@
 > Para conhecer arquitetura, eletrônica, protocolos, operação, segurança,
 > limitações e informações que ainda precisam ser preenchidas pela equipe, leia
 > o [Guia completo do projeto](docs/GUIA_COMPLETO_DO_PROJETO.md).
+>
+> A auditoria das implementações antigas removidas está registrada em
+> [Remoção de código morto e legado](docs/REMOCAO_CODIGO_MORTO.md).
 
 Código do robô OBR 2026. Existem dois firmwares para a ESP32: um modo de bancada
 com Wi-Fi e dashboard local, e o modo principal controlado pela Raspberry Pi via
