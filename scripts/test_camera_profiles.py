@@ -18,6 +18,10 @@ except ImportError:
 SPEC = importlib.util.spec_from_file_location("camera_line_frame", SCRIPT_PATH)
 camera_line_frame = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(camera_line_frame)
+if not CV2_AVAILABLE:
+    # O mock pertence somente a este módulo de teste. Mantê-lo em sys.modules
+    # faria outras suítes acreditarem que o OpenCV está instalado.
+    sys.modules.pop("cv2", None)
 
 
 def synthetic_line_axis(near=(320, 260), far=(320, 160)):
@@ -414,31 +418,31 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_guidance_on_centered_straight_line(self):
         self.assert_control_preview(
             "down", True, 0.0, True, 0.0,
-            (0.0, 0.0, 0.0, 0.70, 0.70),
+            (0.0, 0.0, 0.0, 0.66, 0.66),
         )
 
     def test_down_guidance_on_parallel_offset_straight_line(self):
         self.assert_control_preview(
             "down", True, 0.30, True, 0.30,
-            (0.30, 2.0 / 9.0, 1.0 / 15.0, 11.0 / 15.0, 2.0 / 3.0),
+            (0.30, 2.0 / 9.0, 1.0 / 15.0, 0.67, 0.65),
         )
 
     def test_down_guidance_anticipates_left_curve(self):
         self.assert_control_preview(
             "down", True, 0.036, True, -0.356,
-            (-0.3168, -0.2408888889, -0.0722666667, 0.6638666667, 0.7361333333),
+            (-0.3168, -0.2408888889, -0.0722666667, 0.65, 0.67),
         )
 
     def test_down_guidance_anticipates_right_curve(self):
         self.assert_control_preview(
             "down", True, -0.036, True, 0.356,
-            (0.3168, 0.2408888889, 0.0722666667, 0.7361333333, 0.6638666667),
+            (0.3168, 0.2408888889, 0.0722666667, 0.67, 0.65),
         )
 
     def test_down_guidance_preserves_near_when_far_is_invalid(self):
         self.assert_control_preview(
             "down", True, -0.30, False, 0.0,
-            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 2.0 / 3.0, 11.0 / 15.0),
+            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 0.65, 0.67),
         )
 
     def test_down_guidance_stays_zero_when_near_is_invalid(self):
@@ -467,14 +471,15 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_balanced_differential_mixer(self):
         vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         cases = (
-            (0.0, 0.0, 0.700, 0.700),
-            (0.28, 0.06, 0.730, 0.670),
-            (-0.28, -0.06, 0.670, 0.730),
-            (0.55, 0.15, 0.750, 0.650),
-            (-0.55, -0.15, 0.650, 0.750),
+            (0.0, 0.0, 0.660, 0.660),
+            (0.28, 0.06, 0.670, 0.650),
+            (-0.28, -0.06, 0.650, 0.670),
+            (0.55, 0.15, 0.670, 0.650),
+            (-0.55, -0.15, 0.650, 0.670),
         )
 
         self.assertTrue(vision_profile["balanced_differential_mixing"])
+        self.assertEqual(vision_profile["base_speed_preview"], 0.66)
         self.assertEqual(vision_profile["minimum_tracking_power"], 0.65)
         for guidance_error, correction, left, right in cases:
             with self.subTest(guidance_error=guidance_error):
@@ -484,7 +489,7 @@ class CameraProfilesTest(unittest.TestCase):
                 self.assertAlmostEqual(result[2], correction, places=6)
                 self.assertAlmostEqual(result[3], left, places=6)
                 self.assertAlmostEqual(result[4], right, places=6)
-                self.assertAlmostEqual((result[3] + result[4]) / 2.0, 0.70)
+                self.assertAlmostEqual((result[3] + result[4]) / 2.0, 0.66)
                 self.assertGreaterEqual(result[3], 0.65)
                 self.assertGreaterEqual(result[4], 0.65)
                 self.assertLessEqual(result[3], 1.0)
@@ -518,7 +523,7 @@ class CameraProfilesTest(unittest.TestCase):
                     vision_profile, True, error, False, 0.0
                 )
                 self.assertEqual(result[1], 0.0)
-                self.assertEqual(result[3:], (0.70, 0.70))
+                self.assertEqual(result[3:], (0.66, 0.66))
         for error in (0.11, -0.11):
             with self.subTest(error=error):
                 result = camera_line_frame.calculate_control_preview(
@@ -985,7 +990,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_green_changes_do_not_modify_line_preview_calculation(self):
         self.assert_control_preview(
             "down", True, 0.036, True, -0.356,
-            (-0.3168, -0.2408888889, -0.0722666667, 0.6638666667, 0.7361333333),
+            (-0.3168, -0.2408888889, -0.0722666667, 0.65, 0.67),
         )
         self.assert_control_preview(
             "forward", True, 0.28, False, 0.0,

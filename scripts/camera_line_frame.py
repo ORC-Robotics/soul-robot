@@ -15,11 +15,11 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-import cv2
+import cv2  # type: ignore
 import numpy as np
 
 try:
-    import RPi.GPIO as GPIO
+    import RPi.GPIO as GPIO  # type: ignore
 except ImportError:
     GPIO = None
 
@@ -335,7 +335,7 @@ CAMERA_PROFILES = {
             },
             "ahead_heading_gain": 0.90,
             "near_deadzone_ratio": 0.10,
-            "base_speed_preview": 0.70,
+            "base_speed_preview": 0.66,
             "balanced_differential_mixing": True,
             "minimum_tracking_power": 0.65,
             "green_detection_enabled": True,

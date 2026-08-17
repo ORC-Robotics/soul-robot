@@ -330,7 +330,9 @@ def test_partial_root_at_image_edge_stabilizes_before_width_check():
 
 
 def test_recovery_accepts_centered_line_that_starts_ahead():
-    mask = draw_path([(CENTER_X, 92), (CENTER_X, 0)])
+    # A linha começa fora da busca normal, mas ainda oferece quatro bandas na
+    # zona de controle; aceitar menos amostras deixaria a recuperação insegura.
+    mask = draw_path([(CENTER_X, 102), (CENTER_X, 0)])
     normal = analyze_primary_path(mask)
     recovered = analyze_primary_path(mask, allow_root_recovery=True)
 
