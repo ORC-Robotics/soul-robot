@@ -41,6 +41,20 @@ constexpr int kCameraStreamPort = 8090;
 // Caminho HTTP do stream MJPEG dentro do script Python da câmera.
 constexpr const char* kCameraStreamPath = "/stream.mjpg";
 
+// O processo frontal permanece ocioso nesta porta enquanto a câmera está desligada.
+// Quando ativado, ele transmite 960x540 sem publicar dados do segue-faixa.
+constexpr int kForwardCameraStreamPort = 8091;
+constexpr const char* kForwardCameraStreamPath = "/stream.mjpg";
+
+// O dashboard altera somente este pequeno IPC para solicitar a CAM1.
+// O valor zero fecha a câmera física e reduz o consumo durante a missão principal.
+constexpr const char* kForwardCameraControlPath =
+    "/dev/shm/obr_forward_camera_enabled";
+constexpr const char* kForwardCameraTemporaryControlPath =
+    "/dev/shm/obr_forward_camera_enabled.tmp";
+constexpr const char* kForwardCameraStatusPath =
+    "/tmp/obr_forward_camera_status.json";
+
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
 // Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.
 constexpr int kCameraLightPinBoard = 40;

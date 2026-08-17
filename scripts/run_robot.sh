@@ -6,8 +6,11 @@ APP_DIR="${OBR_APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ROBOT_BIN="$APP_DIR/build/robot_test"
 CAMERA_SCRIPT="$APP_DIR/scripts/camera_line_frame.py"
 CAMERA_PATTERN="$APP_DIR/scripts/[c]amera_line_frame.py"
+FORWARD_CAMERA_SCRIPT="$APP_DIR/scripts/forward_camera_stream.py"
+FORWARD_CAMERA_PATTERN="$APP_DIR/scripts/[f]orward_camera_stream.py"
 PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 CAMERA_PID=""
+FORWARD_CAMERA_PID=""
 ROBOT_PID=""
 
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -24,6 +27,14 @@ stop_camera() {
   fi
 }
 
+stop_forward_camera() {
+  if [[ -n "$FORWARD_CAMERA_PID" ]] && kill -0 "$FORWARD_CAMERA_PID" >/dev/null 2>&1; then
+    # O gerenciador fecha a CAM1 antes de sair para liberar o conector e o ISP.
+    kill "$FORWARD_CAMERA_PID"
+    wait "$FORWARD_CAMERA_PID" >/dev/null 2>&1 || true
+  fi
+}
+
 stop_robot() {
   if [[ -n "$ROBOT_PID" ]] && kill -0 "$ROBOT_PID" >/dev/null 2>&1; then
     # Encerra o processo principal para permitir que ele zere os motores ao sair.
@@ -34,6 +45,7 @@ stop_robot() {
 
 cleanup() {
   stop_robot
+  stop_forward_camera
   stop_camera
 }
 
@@ -64,6 +76,17 @@ if [[ -f "$CAMERA_SCRIPT" ]]; then
   CAMERA_PID="$!"
 else
   echo "Camera script not found: $CAMERA_SCRIPT"
+fi
+
+if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
+  # O processo frontal fica ocioso e não abre a CAM1 até receber uma ativação.
+  # Defina OBR_FORWARD_CAMERA_ENABLED=1 apenas quando o boot já deve iniciar o stream.
+  pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
+  OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-0}" \
+    "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
+  FORWARD_CAMERA_PID="$!"
+else
+  echo "Forward camera script not found: $FORWARD_CAMERA_SCRIPT"
 fi
 
 "$ROBOT_BIN" &

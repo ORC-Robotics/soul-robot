@@ -447,6 +447,31 @@ como snapshot de compatibilidade, lendo `/tmp/obr_camera_frame.jpg`. O FPS, a
 resolução, o formato e a disponibilidade da captura vêm de
 `/camera-status.json`.
 
+A câmera frontal usa a CAM1 e fica fisicamente fechada por padrão. No dashboard,
+abra a visualização `Frontal` ou `Dupla` e use o botão `ATIVAR`. Quando ligada, o
+gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando o
+modo físico `1920x1080` de 10 bits, pela rota:
+
+```txt
+http://raspberrypi.local:8080/forward-camera-stream.mjpg
+```
+
+Ao usar `DESATIVAR`, o Picamera2 é encerrado e a CAM1 é liberada; permanece apenas
+um gerenciador ocioso que observa o pequeno arquivo de controle. A câmera frontal
+não executa segmentação de linha ou verde e não publica no IPC do segue-faixa.
+Assim, ativá-la não muda o controle dos motores nem a interpretação da câmera
+inferior.
+
+O código também pode solicitar que a frontal já seja aberta no início do serviço:
+
+```sh
+OBR_FORWARD_CAMERA_ENABLED=1 bash scripts/run_robot.sh
+```
+
+Sem essa variável, ou com valor `0`, cada início do serviço volta ao estado seguro
+desligado. O dashboard envia o mesmo controle pelo WebSocket com
+`{"command":"set_forward_camera","enabled":true}` ou `false`.
+
 ```sh
 cd /home/obr/OBR2026K
 python3 scripts/camera_line_frame.py
@@ -466,7 +491,8 @@ OBR_CAMERA_ROLE=down python3 scripts/camera_line_frame.py
 ```
 
 O perfil `forward` preserva a saída `960x540` e seleciona explicitamente o modo
-físico `1920x1080`. O perfil `down` usa saída `640x480` e seleciona
+físico `1920x1080`. O gerenciador frontal reutiliza somente essa configuração de
+captura, sem chamar a visão de linha. O perfil `down` usa saída `640x480` e seleciona
 explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver como
 full-FOV. Sem argumento nem variável de ambiente, o perfil `forward` continua
 sendo usado por compatibilidade.

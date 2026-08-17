@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cstdio>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -235,7 +236,8 @@ void DashboardServer::handleClient(SocketHandle client)
 
     if (request.find("GET /camera-stream.mjpg") == 0)
     {
-        if (!proxyCameraStream(client, request))
+        if (!proxyCameraStream(client, request, config::kCameraStreamPort,
+                               config::kCameraStreamPath, true))
         {
             sendHttpNotFound(client);
         }
@@ -245,7 +247,7 @@ void DashboardServer::handleClient(SocketHandle client)
 
     if (request.find("HEAD /camera-stream.mjpg") == 0)
     {
-        if (!sendCameraStreamHead(client))
+        if (!sendCameraStreamHead(client, config::kCameraStreamPort))
         {
             sendHttpNotFound(client);
         }
@@ -255,7 +257,35 @@ void DashboardServer::handleClient(SocketHandle client)
 
     if (request.find("GET /camera-status.json") == 0)
     {
-        sendCameraStatus(client);
+        sendCameraStatus(client, config::kCameraStatusPath);
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("GET /forward-camera-stream.mjpg") == 0)
+    {
+        if (!proxyCameraStream(client, request, config::kForwardCameraStreamPort,
+                               config::kForwardCameraStreamPath, false))
+        {
+            sendHttpNotFound(client);
+        }
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("HEAD /forward-camera-stream.mjpg") == 0)
+    {
+        if (!sendCameraStreamHead(client, config::kForwardCameraStreamPort))
+        {
+            sendHttpNotFound(client);
+        }
+        closeSocket(client);
+        return;
+    }
+
+    if (request.find("GET /forward-camera-status.json") == 0)
+    {
+        sendCameraStatus(client, config::kForwardCameraStatusPath);
         closeSocket(client);
         return;
     }
@@ -413,6 +443,23 @@ void DashboardServer::handleCommand(const std::string& message)
         if (!esp32_.clearOledMessage())
         {
             std::cerr << "OLED clear command was not sent to ESP32\n";
+        }
+    }
+    else if (message.find("\"command\":\"set_forward_camera\"") != std::string::npos)
+    {
+        bool enabled = false;
+        if (!getJsonBool(message, "enabled", enabled))
+        {
+            std::cerr << "Forward camera command ignored: enabled must be boolean\n";
+        }
+        else if (!setForwardCameraEnabled(enabled))
+        {
+            std::cerr << "Forward camera state could not be written\n";
+        }
+        else
+        {
+            std::cout << "Forward camera requested: "
+                      << (enabled ? "enabled" : "disabled") << "\n";
         }
     }
     else if (message.find("\"command\":\"drive_raw\"") != std::string::npos)
@@ -627,8 +674,14 @@ std::string DashboardServer::dashboardHtml()
     .camera-status.loading::before { background: var(--yellow); box-shadow: 0 0 10px #fbbf2488; }
     .camera-status.offline { color: #fda4af; }
     .camera-status.offline::before { background: var(--danger); box-shadow: 0 0 10px #fb718599; }
+    .camera-status.disabled { color: #a8bcc6; }
+    .camera-status.disabled::before { background: #647985; box-shadow: none; }
     .camera-status.unconfigured { color: #a8bcc6; }
+    .camera-feed-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+    .camera-power-button { min-height: 28px; padding: 4px 8px; border-radius: 7px; color: #9be8f3; background: #0c2935; font-size: .57rem; letter-spacing: .07em; }
+    .camera-power-button.active { color: #061217; border-color: var(--green); background: var(--green); }
     .camera-frame { position: relative; aspect-ratio: 4 / 3; border: 1px solid #263d49; border-radius: 11px; overflow: hidden; background: linear-gradient(135deg, #081218, #0b1c25); }
+    .camera-feed-card[data-camera-id="forward"] .camera-frame { aspect-ratio: 16 / 9; }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: 18px; }
@@ -905,7 +958,7 @@ std::string DashboardServer::dashboardHtml()
             </section>
           </div>
         </div>
-        <p id="forwardCameraTelemetry" class="camera-telemetry-note" hidden>Telemetria frontal ainda não disponível</p>
+        <p id="forwardCameraTelemetry" class="camera-telemetry-note" hidden>CAM1 desligada · 960×540 pelo modo 1920×1080</p>
       </section>
 
       <div class="side-stack">
@@ -1138,10 +1191,15 @@ std::string DashboardServer::dashboardHtml()
         id: "forward",
         name: "Câmera frontal",
         role: "Resgate e percepção frontal",
-        streamUrl: null,
-        statusUrl: null,
-        status: "NÃO CONFIGURADA",
-        metadata: { fps: "--", resolution: "--", sensor: "--", crop: "--", format: "--" }
+        streamUrl: "/forward-camera-stream.mjpg",
+        statusUrl: "/forward-camera-status.json",
+        status: "DESLIGADA",
+        enabled: false,
+        active: false,
+        transitioning: false,
+        requestedEnabled: false,
+        error: "",
+        metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" }
       }
     };
     const connection = element("connection");
@@ -1583,7 +1641,9 @@ std::string DashboardServer::dashboardHtml()
     }
 
     function send(payload) {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(JSON.stringify(payload));
+      return true;
     }
 
     function sendCommand(command) {
@@ -1784,8 +1844,9 @@ std::string DashboardServer::dashboardHtml()
 
     function cameraStatusClass(status) {
       if (status === "ONLINE") return "online";
-      if (status === "OFFLINE") return "offline";
-      if (status === "CARREGANDO") return "loading";
+      if (status === "OFFLINE" || status === "ERRO") return "offline";
+      if (status === "CARREGANDO" || status === "INICIANDO" || status === "DESLIGANDO") return "loading";
+      if (status === "DESLIGADA") return "disabled";
       return "unconfigured";
     }
 
@@ -1833,8 +1894,10 @@ std::string DashboardServer::dashboardHtml()
     function cameraStreamUrl(camera) {
       if (!camera.streamUrl) return null;
       const separator = camera.streamUrl.includes("?") ? "&" : "?";
-      const mode = camera.displayMode || "real";
-      return `${camera.streamUrl}${separator}mode=${encodeURIComponent(mode)}&ts=${Date.now()}`;
+      const modeParameter = camera.displayMode
+        ? `mode=${encodeURIComponent(camera.displayMode)}&`
+        : "";
+      return `${camera.streamUrl}${separator}${modeParameter}ts=${Date.now()}`;
     }
 
     function connectCameraImage(camera, image, frame, generation) {
@@ -1921,16 +1984,56 @@ std::string DashboardServer::dashboardHtml()
       const placeholder = document.createElement("div");
       placeholder.className = "camera-placeholder";
       const title = document.createElement("strong");
-      title.textContent = "CÂMERA FRONTAL";
+      title.textContent = camera.status === "ERRO" ? "FALHA NA CÂMERA FRONTAL" : "CÂMERA FRONTAL";
       const message = document.createElement("p");
-      message.textContent = "Aguardando configuração do stream";
+      if (camera.status === "ERRO") message.textContent = camera.error || "Não foi possível abrir a CAM1.";
+      else if (camera.enabled) message.textContent = "Abrindo a CAM1 e preparando o stream…";
+      else message.textContent = "Desligada para economizar processamento.";
       const plannedLabel = document.createElement("span");
       plannedLabel.className = "planned-use";
-      plannedLabel.textContent = "Uso planejado:";
+      plannedLabel.textContent = "Configuração:";
       const plannedUse = document.createElement("p");
-      plannedUse.textContent = camera.role;
+      plannedUse.textContent = "Saída 960×540 · sensor 1920×1080 · 30 FPS";
       placeholder.append(title, message, plannedLabel, plannedUse);
       frame.appendChild(placeholder);
+    }
+
+    function updateForwardCameraButtons() {
+      document.querySelectorAll("[data-forward-camera-toggle]").forEach(button => {
+        const camera = cameras.forward;
+        button.disabled = camera.transitioning;
+        button.classList.toggle("active", camera.enabled);
+        button.setAttribute("aria-pressed", camera.enabled ? "true" : "false");
+        button.textContent = camera.transitioning
+          ? "AGUARDE"
+          : (camera.enabled ? "DESATIVAR" : "ATIVAR");
+      });
+    }
+
+    function toggleForwardCamera() {
+      const camera = cameras.forward;
+      if (camera.transitioning) return;
+      const enabled = !camera.enabled;
+      if (!send({ command: "set_forward_camera", enabled })) {
+        camera.error = "O dashboard está sem conexão com o robô.";
+        setCameraStatus("forward", "ERRO");
+        if (cameraIsVisible("forward")) renderCameraView(activeCameraView);
+        return;
+      }
+      camera.transitioning = true;
+      camera.requestedEnabled = enabled;
+      camera.error = "";
+      setCameraStatus("forward", enabled ? "INICIANDO" : "DESLIGANDO");
+      updateForwardCameraButtons();
+    }
+
+    function buildForwardCameraToggle() {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "camera-power-button";
+      button.dataset.forwardCameraToggle = "";
+      button.addEventListener("click", toggleForwardCamera);
+      return button;
     }
 
     function buildCameraFeed(cameraId, generation) {
@@ -1947,17 +2050,23 @@ std::string DashboardServer::dashboardHtml()
       name.textContent = camera.name;
       identity.appendChild(name);
       if (camera.id === "downward") identity.appendChild(buildCameraModeSelector(camera));
+      const actions = document.createElement("div");
+      actions.className = "camera-feed-actions";
+      if (camera.id === "forward") actions.appendChild(buildForwardCameraToggle());
       const status = document.createElement("span");
       status.className = `camera-status ${cameraStatusClass(camera.status)}`;
       status.textContent = camera.status;
       mountedCameraStatuses.set(camera.id, status);
-      header.append(identity, status);
+      actions.appendChild(status);
+      header.append(identity, actions);
 
       const frame = document.createElement("div");
-      frame.className = camera.streamUrl ? "camera-frame loading" : "camera-frame unconfigured";
-      if (camera.streamUrl) mountCameraStream(camera, frame, generation);
+      const shouldMountStream = camera.id === "downward" || (camera.enabled && camera.active);
+      frame.className = shouldMountStream ? "camera-frame loading" : "camera-frame unconfigured";
+      if (shouldMountStream) mountCameraStream(camera, frame, generation);
       else buildCameraPlaceholder(camera, frame);
       feed.append(header, frame);
+      updateForwardCameraButtons();
       return feed;
     }
 
@@ -1996,6 +2105,7 @@ std::string DashboardServer::dashboardHtml()
       forwardCameraTelemetry.hidden = view === "downward";
       renderCameraMetadata();
       if (cameraIsVisible("downward")) refreshCameraStatus();
+      if (cameraIsVisible("forward")) refreshForwardCameraStatus();
     }
 
     function clearCameraDiagnostics() {
@@ -2082,6 +2192,57 @@ std::string DashboardServer::dashboardHtml()
       }
     }
 
+    async function refreshForwardCameraStatus() {
+      const camera = cameras.forward;
+      const wasStreaming = camera.enabled && camera.active;
+      try {
+        const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error("forward camera status unavailable");
+        const data = await response.json();
+        if (!Number.isFinite(Number(data.timestamp)) ||
+            Math.abs(Date.now() / 1000 - Number(data.timestamp)) > 2) {
+          throw new Error("forward camera status is stale");
+        }
+        camera.enabled = data.enabled === true;
+        camera.active = data.active === true;
+        camera.error = data.error || "";
+        if (camera.transitioning && camera.enabled === camera.requestedEnabled) {
+          camera.transitioning = false;
+        }
+
+        const width = Number(data.width);
+        const height = Number(data.height);
+        const sensorMode = data.sensorMode || {};
+        const scalerCrop = data.scalerCrop || {};
+        camera.metadata.fps = Number(data.fps || 0).toFixed(1);
+        camera.metadata.resolution = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "960×540";
+        camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "1920×1080 10-bit";
+        camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
+        camera.metadata.format = data.cameraFormat || "--";
+
+        let status = "INICIANDO";
+        if (!camera.enabled) status = "DESLIGADA";
+        else if (data.state === "error") status = "ERRO";
+        else if (camera.active && Number(data.fps) > 0) status = "ONLINE";
+        setCameraStatus("forward", status);
+        forwardCameraTelemetry.textContent = camera.enabled
+          ? `CAM1 ativa · ${camera.metadata.resolution} · sensor ${camera.metadata.sensor} · ${camera.metadata.fps} FPS`
+          : "CAM1 desligada · captura e processamento frontal suspensos";
+      } catch {
+        camera.active = false;
+        camera.transitioning = false;
+        camera.error = "O gerenciador da câmera frontal não respondeu.";
+        setCameraStatus("forward", "OFFLINE");
+        forwardCameraTelemetry.textContent = camera.error;
+      }
+
+      updateForwardCameraButtons();
+      const isStreaming = camera.enabled && camera.active;
+      if (cameraIsVisible("forward") && wasStreaming !== isStreaming) {
+        renderCameraView(activeCameraView);
+      }
+    }
+
     cameraViewButtons.forEach(button => {
       button.addEventListener("click", () => renderCameraView(button.dataset.cameraView));
     });
@@ -2118,6 +2279,7 @@ std::string DashboardServer::dashboardHtml()
     document.addEventListener("visibilitychange", () => { if (document.hidden) stopDriveOnFocusLoss(); });
     window.setInterval(sendCurrentDrive, 100);
     window.setInterval(refreshCameraStatus, 500);
+    window.setInterval(refreshForwardCameraStatus, 500);
     renderCameraView("downward");
     restoreManualPowerSettings();
     updateKeyboardIndicators();
@@ -2183,7 +2345,7 @@ bool DashboardServer::sendCameraFrame(SocketHandle client)
     return sendAll(client, header.c_str(), header.size()) && sendAll(client, frame.c_str(), frame.size());
 }
 
-bool DashboardServer::sendCameraStreamHead(SocketHandle client)
+bool DashboardServer::sendCameraStreamHead(SocketHandle client, int streamPort)
 {
     // O HEAD é usado só para diagnóstico rápido com curl.
     // Ele confirma se o processo Python da câmera está aceitando conexões.
@@ -2199,7 +2361,7 @@ bool DashboardServer::sendCameraStreamHead(SocketHandle client)
 
     sockaddr_in address = {};
     address.sin_family = AF_INET;
-    address.sin_port = htons(config::kCameraStreamPort);
+    address.sin_port = htons(streamPort);
     address.sin_addr.s_addr = htonl(0x7f000001u);
 
     if (connect(cameraSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0)
@@ -2227,7 +2389,9 @@ bool DashboardServer::sendCameraStreamHead(SocketHandle client)
     return sendAll(client, response.c_str(), response.size());
 }
 
-bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& request)
+bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& request,
+                                        int streamPort, const char* streamPath,
+                                        bool acceptsDisplayMode)
 {
     // O vídeo em alta taxa vem do servidor MJPEG do script Python.
     // O proxy mantém o navegador usando a mesma porta do dashboard.
@@ -2243,7 +2407,7 @@ bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& 
 
     sockaddr_in address = {};
     address.sin_family = AF_INET;
-    address.sin_port = htons(config::kCameraStreamPort);
+    address.sin_port = htons(streamPort);
     address.sin_addr.s_addr = htonl(0x7f000001u);
 
     if (connect(cameraSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) < 0)
@@ -2259,37 +2423,46 @@ bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& 
     // Somente o modo visual é encaminhado ao processo da câmera. O parâmetro
     // não entra no IPC de visão e não pode alterar decisões do robô.
     std::string displayMode = "real";
-    const std::size_t methodEnd = request.find(' ');
-    if (methodEnd != std::string::npos)
+    if (acceptsDisplayMode)
     {
-        const std::size_t targetStart = methodEnd + 1;
-        const std::size_t targetEnd = request.find(' ', targetStart);
-        if (targetEnd != std::string::npos)
+        const std::size_t methodEnd = request.find(' ');
+        if (methodEnd != std::string::npos)
         {
-            const std::string target = request.substr(targetStart, targetEnd - targetStart);
-            std::size_t modeStart = target.find("?mode=");
-            if (modeStart == std::string::npos)
+            const std::size_t targetStart = methodEnd + 1;
+            const std::size_t targetEnd = request.find(' ', targetStart);
+            if (targetEnd != std::string::npos)
             {
-                modeStart = target.find("&mode=");
-            }
-            if (modeStart != std::string::npos)
-            {
-                const std::size_t valueStart = modeStart + 6;
-                const std::size_t valueEnd = target.find('&', valueStart);
-                const std::string requestedMode = target.substr(valueStart, valueEnd - valueStart);
-                if (requestedMode == "real" || requestedMode == "line" ||
-                    requestedMode == "green")
+                const std::string target = request.substr(
+                    targetStart, targetEnd - targetStart);
+                std::size_t modeStart = target.find("?mode=");
+                if (modeStart == std::string::npos)
                 {
-                    displayMode = requestedMode;
+                    modeStart = target.find("&mode=");
+                }
+                if (modeStart != std::string::npos)
+                {
+                    const std::size_t valueStart = modeStart + 6;
+                    const std::size_t valueEnd = target.find('&', valueStart);
+                    const std::string requestedMode = target.substr(
+                        valueStart, valueEnd - valueStart);
+                    if (requestedMode == "real" || requestedMode == "line" ||
+                        requestedMode == "green")
+                    {
+                        displayMode = requestedMode;
+                    }
                 }
             }
         }
     }
 
     std::ostringstream cameraRequest;
-    cameraRequest << "GET " << config::kCameraStreamPath << "?mode=" << displayMode
-                  << " HTTP/1.1\r\n"
-                  << "Host: 127.0.0.1:" << config::kCameraStreamPort << "\r\n"
+    cameraRequest << "GET " << streamPath;
+    if (acceptsDisplayMode)
+    {
+        cameraRequest << "?mode=" << displayMode;
+    }
+    cameraRequest << " HTTP/1.1\r\n"
+                  << "Host: 127.0.0.1:" << streamPort << "\r\n"
                   << "Connection: close\r\n\r\n";
 
     const std::string requestText = cameraRequest.str();
@@ -2327,11 +2500,11 @@ bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& 
     return true;
 }
 
-bool DashboardServer::sendCameraStatus(SocketHandle client)
+bool DashboardServer::sendCameraStatus(SocketHandle client, const char* statusPath)
 {
     // O status da câmera é gerado pelo script Python em JSON simples.
     // Se ele não existir, a dashboard recebe um estado claro sem afetar o controle do robô.
-    std::ifstream file(config::kCameraStatusPath, std::ios::binary);
+    std::ifstream file(statusPath, std::ios::binary);
     std::string status;
     if (file)
     {
@@ -2354,6 +2527,33 @@ bool DashboardServer::sendCameraStatus(SocketHandle client)
 
     std::string header = response.str();
     return sendAll(client, header.c_str(), header.size()) && sendAll(client, status.c_str(), status.size());
+}
+
+bool DashboardServer::setForwardCameraEnabled(bool enabled)
+{
+    // A troca atômica impede que o processo Python leia um comando incompleto.
+    // Este IPC controla apenas a CAM1 e nunca altera o estado ou os motores.
+    {
+        std::ofstream control(config::kForwardCameraTemporaryControlPath,
+                              std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << (enabled ? "1\n" : "0\n");
+        if (!control)
+        {
+            return false;
+        }
+    }
+
+    if (std::rename(config::kForwardCameraTemporaryControlPath,
+                    config::kForwardCameraControlPath) != 0)
+    {
+        std::remove(config::kForwardCameraTemporaryControlPath);
+        return false;
+    }
+    return true;
 }
 
 bool DashboardServer::sendAll(SocketHandle client, const char* data, size_t size)
@@ -2461,6 +2661,34 @@ bool DashboardServer::readWebSocketFrame(SocketHandle client, std::string& paylo
     }
 
     return true;
+}
+
+bool DashboardServer::getJsonBool(const std::string& json, const std::string& key,
+                                  bool& value)
+{
+    const std::string marker = "\"" + key + "\":";
+    size_t start = json.find(marker);
+    if (start == std::string::npos)
+    {
+        return false;
+    }
+    start += marker.size();
+    while (start < json.size() &&
+           (json[start] == ' ' || json[start] == '\t'))
+    {
+        ++start;
+    }
+    if (json.compare(start, 4, "true") == 0)
+    {
+        value = true;
+        return true;
+    }
+    if (json.compare(start, 5, "false") == 0)
+    {
+        value = false;
+        return true;
+    }
+    return false;
 }
 
 double DashboardServer::getJsonNumber(const std::string& json, const std::string& key, double fallback)
