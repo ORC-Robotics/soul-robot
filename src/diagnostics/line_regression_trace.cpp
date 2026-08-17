@@ -34,12 +34,20 @@ std::vector<std::string> splitCsvLine(const std::string& line)
 
 bool parseBoolean(const std::string& text, bool& value)
 {
-    if (text == "True" || text == "true" || text == "1")
+    std::string normalized = text;
+    while (!normalized.empty() &&
+           (normalized.back() == '\r' || normalized.back() == '\n' ||
+            normalized.back() == ' ' || normalized.back() == '\t'))
+    {
+        normalized.pop_back();
+    }
+
+    if (normalized == "True" || normalized == "true" || normalized == "1")
     {
         value = true;
         return true;
     }
-    if (text == "False" || text == "false" || text == "0")
+    if (normalized == "False" || normalized == "false" || normalized == "0")
     {
         value = false;
         return true;
