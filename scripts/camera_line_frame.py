@@ -2618,10 +2618,9 @@ def save_status(
 class VisionRegressionProfiler:
     """Publica uma amostra temporária somente durante o trace solicitado."""
 
-    # O limite de segurança permite coletar 300 quadros mesmo perto de 10 Hz.
-    # Fora do gatilho diagnóstico, este tempo não afeta o loop da câmera.
+    # O processo C++ remove o gatilho quando grava 300 amostras correlacionadas.
+    # Este tempo é apenas uma proteção caso o consumidor deixe de responder.
     MAX_DURATION_SECONDS = 60.0
-    MAX_LINE_SEQUENCES = 300
 
     def __init__(self):
         self.active = False
@@ -2722,10 +2721,7 @@ class VisionRegressionProfiler:
 
         self.sample_count += 1
         duration = completed_at - self.started_at
-        if (
-            self.sample_count >= self.MAX_LINE_SEQUENCES
-            or duration >= self.MAX_DURATION_SECONDS
-        ):
+        if duration >= self.MAX_DURATION_SECONDS:
             try:
                 os.unlink(LINE_TRACE_REQUEST_PATH)
             except FileNotFoundError:

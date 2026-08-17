@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -306,6 +307,36 @@ class CameraProfilesTest(unittest.TestCase):
             camera_line_frame.VisionRegressionProfiler.rate(10.0, 10.04),
             25.0,
         )
+
+    def test_regression_profiler_leaves_300_sample_completion_to_cpp(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            request_path = os.path.join(temporary_directory, "request")
+            sample_path = os.path.join(temporary_directory, "sample.csv")
+            temporary_sample_path = os.path.join(
+                temporary_directory,
+                "sample.tmp.csv",
+            )
+            open(request_path, "w", encoding="utf-8").close()
+            with mock.patch.object(
+                camera_line_frame,
+                "LINE_TRACE_REQUEST_PATH",
+                request_path,
+            ), mock.patch.object(
+                camera_line_frame,
+                "VISION_TRACE_SAMPLE_PATH",
+                sample_path,
+            ), mock.patch.object(
+                camera_line_frame,
+                "TEMP_VISION_TRACE_SAMPLE_PATH",
+                temporary_sample_path,
+            ):
+                profiler = camera_line_frame.VisionRegressionProfiler()
+                self.assertTrue(profiler.begin_frame(0.0))
+                profiler.sample_count = 299
+                profiler.publish_sample(300, 10.0, {}, "SEM_DECISAO", False, 10.0)
+                self.assertTrue(os.path.isfile(request_path))
+                profiler.publish_sample(301, 61.0, {}, "SEM_DECISAO", False, 61.0)
+                self.assertFalse(os.path.exists(request_path))
 
     def test_green_experimental_modes_preserve_a_and_isolate_b_and_c(self):
         self.assertEqual(
