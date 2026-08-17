@@ -1198,6 +1198,7 @@ std::string DashboardServer::dashboardHtml()
         active: false,
         transitioning: false,
         requestedEnabled: false,
+        transitionDeadlineMs: 0,
         error: "",
         metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" }
       }
@@ -2022,9 +2023,15 @@ std::string DashboardServer::dashboardHtml()
       }
       camera.transitioning = true;
       camera.requestedEnabled = enabled;
+      camera.transitionDeadlineMs = Date.now() + 5000;
+      // A interface abre ou fecha o stream imediatamente. O status da CAM1
+      // continua sendo a confirmação final, mas não bloqueia a resposta ao clique.
+      camera.enabled = enabled;
+      camera.active = enabled;
       camera.error = "";
       setCameraStatus("forward", enabled ? "INICIANDO" : "DESLIGANDO");
       updateForwardCameraButtons();
+      if (cameraIsVisible("forward")) renderCameraView(activeCameraView);
     }
 
     function buildForwardCameraToggle() {
@@ -2202,10 +2209,22 @@ std::string DashboardServer::dashboardHtml()
             Math.abs(Date.now() / 1000 - Number(data.timestamp)) > 2) {
           throw new Error("forward camera status is stale");
         }
-        camera.enabled = data.enabled === true;
-        camera.active = data.active === true;
+        const backendEnabled = data.enabled === true;
+        const backendActive = data.active === true;
+        const backendFailed = data.state === "error";
+        const requestedStateReady = camera.requestedEnabled
+          ? backendEnabled && backendActive
+          : !backendEnabled && !backendActive;
+        const waitForRequestedState = camera.transitioning &&
+          !requestedStateReady && !backendFailed &&
+          Date.now() < camera.transitionDeadlineMs;
+        if (!waitForRequestedState) {
+          camera.enabled = backendEnabled;
+          camera.active = backendActive;
+        }
         camera.error = data.error || "";
-        if (camera.transitioning && camera.enabled === camera.requestedEnabled) {
+        if (camera.transitioning && (requestedStateReady || backendFailed ||
+            Date.now() >= camera.transitionDeadlineMs)) {
           camera.transitioning = false;
         }
 
@@ -2228,11 +2247,17 @@ std::string DashboardServer::dashboardHtml()
           ? `CAM1 ativa · ${camera.metadata.resolution} · sensor ${camera.metadata.sensor} · ${camera.metadata.fps} FPS`
           : "CAM1 desligada · captura e processamento frontal suspensos";
       } catch {
-        camera.active = false;
-        camera.transitioning = false;
-        camera.error = "O gerenciador da câmera frontal não respondeu.";
-        setCameraStatus("forward", "OFFLINE");
-        forwardCameraTelemetry.textContent = camera.error;
+        const keepOptimisticState = camera.transitioning &&
+          Date.now() < camera.transitionDeadlineMs;
+        if (!keepOptimisticState) {
+          camera.active = false;
+          camera.transitioning = false;
+          camera.error = "O gerenciador da câmera frontal não respondeu.";
+          setCameraStatus("forward", "OFFLINE");
+        }
+        forwardCameraTelemetry.textContent = keepOptimisticState
+          ? "Aguardando a confirmação da CAM1…"
+          : camera.error;
       }
 
       updateForwardCameraButtons();
