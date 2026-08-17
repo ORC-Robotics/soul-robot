@@ -2,13 +2,14 @@
 
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
+#include "obr/imu_turn_controller.h"
 #include "obr/robot_state.h"
 
 #include <chrono>
 #include <cstdint>
 
-// Orquestra os comportamentos da prova que formarão a Missão Principal.
-// Nesta etapa, segue a linha pela NEAR e tenta recuperá-la pela FAR ou por busca.
+// Orquestra o segue-faixa, a recuperação, os gaps e as curvas por marcadores
+// verdes da Missão Principal, sempre aplicando as proteções antes dos motores.
 class MainMission
 {
 public:
@@ -23,10 +24,10 @@ private:
     enum class LineFollowState
     {
         TrackingNear,
+        TurningAtGreenMarker,
+        DrivingBeforeGreenTurn,
         TurningAhead,
-        AligningForGap,
         CrossingGap,
-        WaitingAfterGap,
         ReacquiringNear,
         RecoveringFar,
         SearchingLeft,
@@ -41,6 +42,17 @@ private:
     };
 
     LineFollowState state_ = LineFollowState::TrackingNear;
+    ImuTurnController greenTurnController_;
+    bool greenDecisionLatched_ = false;
+    bool greenReadingActive_ = false;
+    int greenReadingSamples_ = 0;
+    double greenTurnTargetDegrees_ = 0.0;
+    ImuTurnDirection greenTurnDirection_ = ImuTurnDirection::Right;
+    long long greenPreTurnStartLeftCount_ = 0;
+    long long greenPreTurnStartRightCount_ = 0;
+    double greenPreTurnLastProgressCounts_ = 0.0;
+    std::chrono::steady_clock::time_point greenPreTurnStartedAt_{};
+    std::chrono::steady_clock::time_point greenPreTurnLastProgressAt_{};
     LineDirection lastSignificantDirection_ = LineDirection::Unknown;
     LineDirection searchDirection_ = LineDirection::Unknown;
     double lastValidError_ = 0.0;
@@ -59,11 +71,11 @@ private:
     std::chrono::steady_clock::time_point nearLostAt_{};
     std::chrono::steady_clock::time_point totalLossStartedAt_{};
     int consecutiveGapCandidateSamples_ = 0;
-    int consecutiveGapAlignedSamples_ = 0;
     int consecutiveGapNearReturnSamples_ = 0;
     int consecutiveGapFarReturnSamples_ = 0;
     bool gapNearLossObserved_ = false;
     bool gapReturnRecoveryActive_ = false;
+    bool gapSearchRecoveryActive_ = false;
     long long gapStartLeftCount_ = 0;
     long long gapStartRightCount_ = 0;
     double gapLastProgressCounts_ = 0.0;
@@ -71,6 +83,14 @@ private:
     std::chrono::steady_clock::time_point gapLastProgressAt_{};
 
     void transitionTo(LineFollowState nextState);
+    bool updateGreenTurn(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const CameraLineSnapshot& cameraLineSnapshot,
+        bool newLineSample);
+    bool updateGreenPreTurnDrive(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetGapTracking();
     void updateDirectionMemory(double error);
     LineDirection chooseSearchDirection();

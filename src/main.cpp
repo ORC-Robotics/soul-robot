@@ -117,7 +117,8 @@ int main()
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))
         {
-            // A prévia da visão é somente diagnóstica e nunca altera o estado do robô.
+            // Este log apenas mostra a medição; as decisões de movimento são
+            // aplicadas separadamente pela Missão Principal.
             std::cout << std::boolalpha
                       << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
                       << " nearValid=" << cameraLineSnapshot.nearValid

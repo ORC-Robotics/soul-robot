@@ -16,6 +16,7 @@ add_executable(robot_test
     src/hal/gpio.cpp
     src/hal/status_led.cpp
     src/robot/motor_controller.cpp
+    src/robot/imu_turn_controller.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
     src/robot/robot_state.cpp
@@ -35,6 +36,7 @@ endif()
 if(BUILD_TESTING)
     add_executable(main_mission_gap_test
         tests/main_mission_gap_test.cpp
+        src/robot/imu_turn_controller.cpp
         src/robot/main_mission.cpp
         src/robot/robot_state.cpp
     )
@@ -43,4 +45,5 @@ if(BUILD_TESTING)
         target_link_libraries(main_mission_gap_test pthread)
     endif()
     add_test(NAME main_mission_gap_test COMMAND main_mission_gap_test)
+
 endif()

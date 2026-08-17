@@ -73,7 +73,6 @@ DISPLAY_MODE_GREEN = "green"
 DISPLAY_MODES = (
     DISPLAY_MODE_REAL,
     DISPLAY_MODE_LINE,
-    DISPLAY_MODE_GREEN,
 )
 
 
@@ -191,8 +190,8 @@ def log_camera_inventory(camera_infos, assignments):
         )
 
 
-# Os dois modos permanecem ligados por padrão para preservar o comportamento
-# atual. Definir uma flag como 0 serve exclusivamente aos ensaios A/B/C.
+# A missão usa os marcadores verdes para decidir curvas e retorno.
+# Estas chaves permanecem separadas para permitir diagnósticos sem movimento.
 GREEN_PROCESSING_ENABLED = environment_flag("GREEN_PROCESSING_ENABLED", True)
 GREEN_DECISIONS_ENABLED = environment_flag("GREEN_DECISIONS_ENABLED", True)
 
@@ -224,6 +223,9 @@ GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
 GREEN_ASPECT_RATIO_MAX = 1.0
+# Distância lateral máxima entre os centros NEAR e FAR para considerar que o
+# preto superior ainda pertence ao mesmo encontro, em pixels da imagem 640x480.
+GREEN_PATH_MAX_CENTER_DELTA_PX = 160.0
 GREEN_MIN_EXTENT = 0.35
 GREEN_PARTIAL_BORDER_TOLERANCE_PX = 4
 GREEN_PARTIAL_AREA_FACTOR = 0.40
@@ -330,8 +332,10 @@ CAMERA_PROFILES = {
             "geometry_reference": {
                 "frame_height": 480,
                 "structural_end_y": 425,
-                "far_band_y": (80, 180),
-                "near_band_y": (210, 270),
+                # As duas bandas foram deslocadas 80 px para cima. Suas
+                # alturas e a distância de 30 px entre elas permanecem iguais.
+                "far_band_y": (0, 100),
+                "near_band_y": (130, 190),
             },
             "ahead_heading_gain": 0.90,
             "near_deadzone_ratio": 0.10,
@@ -2216,7 +2220,17 @@ def classify_green_candidate_vote(candidate, line_axis):
     if not line_axis.get("valid", False):
         return "IRRESOLUVEL", "eixo local da linha inválido"
     if candidate.get("partial", False):
-        return "IRRESOLUVEL", "marcador parcial sem posição confiável"
+        # Um marcador cortado pela borda ainda pode comandar a curva quando a
+        # parte visível satisfaz os limites normais, sem tolerâncias reduzidas.
+        partial_geometry_is_strong = green_geometry_is_valid(
+            candidate.get("area", 0.0),
+            candidate.get("short_side", 0.0),
+            candidate.get("aspect_ratio", 0.0),
+            candidate.get("extent", 0.0),
+            False,
+        )
+        if not partial_geometry_is_strong:
+            return "IRRESOLUVEL", "recorte parcial insuficiente"
 
     lateral = float(candidate.get("lateral", float("nan")))
     side = candidate.get("side", "UNKNOWN")
@@ -2365,6 +2379,9 @@ def empty_green_status():
         "greenObservationState": "SEM_VERDE",
         "greenInterpretation": "SEM_DECISAO",
         "greenConfirmed": False,
+        "greenNearSeen": False,
+        "greenRawInterpretation": "SEM_DECISAO",
+        "greenPathBlackValid": False,
         "greenCandidateCount": 0,
         "greenRejectedCount": 0,
         "greenLeftSeen": False,
@@ -2385,6 +2402,83 @@ def empty_green_status():
         "greenConsecutiveSamples": 0,
         "greenProcessingMs": 0.0,
     }
+
+
+def green_seen_in_vertical_band(
+    candidates,
+    band_start_y,
+    band_end_y,
+    line_axis,
+):
+    """Aceita na banda somente verde completo e associado ao eixo da linha."""
+
+    return any(
+        band_start_y <= float(candidate["centroid"][1]) < band_end_y
+        and classify_green_candidate_vote(candidate, line_axis)[0] == "VALIDO"
+        for candidate in candidates
+    )
+
+
+def actionable_green_candidates(candidates, band_start_y, band_end_y, line_axis):
+    """Seleciona quadrados completos que podem interferir no movimento."""
+
+    return [
+        candidate
+        for candidate in candidates
+        if band_start_y <= float(candidate["centroid"][1]) < band_end_y
+        and classify_green_candidate_vote(candidate, line_axis)[0] == "VALIDO"
+    ]
+
+
+def interpret_actionable_green_candidates(candidates):
+    """Decide a curva usando somente marcadores aceitos dentro da ROI azul."""
+
+    left_candidates = [
+        candidate for candidate in candidates
+        if candidate["side"] == "ESQUERDA"
+    ]
+    right_candidates = [
+        candidate for candidate in candidates
+        if candidate["side"] == "DIREITA"
+    ]
+    result = {
+        "observation_state": green_observation_state(len(candidates)),
+        "interpretation": "SEM_DECISAO",
+        "left_seen": bool(left_candidates),
+        "right_seen": bool(right_candidates),
+        "pair_compatible": False,
+    }
+    if left_candidates and right_candidates:
+        # Um marcador aceito de cada lado representa o retorno de 180 graus.
+        # Candidatos rejeitados ou irresolúveis não chegam a esta função.
+        result["pair_compatible"] = True
+        result["interpretation"] = "RETORNO_180"
+    elif left_candidates:
+        result["interpretation"] = "ESQUERDA"
+    elif right_candidates:
+        result["interpretation"] = "DIREITA"
+    return result
+
+
+def green_path_black_is_valid(
+    near_valid,
+    far_valid,
+    center_delta_valid,
+    center_delta_px,
+    line_axis,
+    interpretation,
+):
+    """Confirma que a faixa preta superior pertence ao mesmo trajeto."""
+
+    return bool(
+        near_valid
+        and far_valid
+        and center_delta_valid
+        and math.isfinite(float(center_delta_px))
+        and abs(float(center_delta_px)) <= GREEN_PATH_MAX_CENTER_DELTA_PX
+        and line_axis.get("valid", False)
+        and interpretation in ("ESQUERDA", "DIREITA", "RETORNO_180")
+    )
 
 
 class GreenObservationTracker:
@@ -3219,6 +3313,14 @@ def main():
                 near_center,
             )
             line_axis = build_line_axis(near_center, far_center)
+            # A parada inicial pelo quadrado não depende de já existir preto
+            # na FAR. A curva continua exigindo o eixo real entre as duas ROIs.
+            green_line_axis = line_axis
+            if not green_line_axis.get("valid", False) and near_center is not None:
+                green_line_axis = build_line_axis(
+                    near_center,
+                    (near_center[0], far_band_start_y + far_band_height_px // 2),
+                )
             if trace_active:
                 timings["line_detection_ms"] = (
                     time.perf_counter() - line_detection_started
@@ -3232,10 +3334,10 @@ def main():
                 (vision_geometry["structural_end_y"], raw_frame.shape[1]),
                 dtype=np.uint8,
             )
-            green_topology = analyze_line_topology(None, line_axis, 0.0)
+            green_topology = analyze_line_topology(None, green_line_axis, 0.0)
             green_interpretation = interpret_green_candidates(
                 green_candidates,
-                line_axis,
+                green_line_axis,
                 green_topology,
             )
             green_processing_started = time.perf_counter()
@@ -3244,7 +3346,7 @@ def main():
                     raw_frame,
                     vision_geometry["structural_end_y"],
                     line_candidate_mask,
-                    line_axis,
+                    green_line_axis,
                     camera_format,
                     timings,
                 )
@@ -3265,17 +3367,21 @@ def main():
                     )
                     green_topology = analyze_line_topology(
                         line_candidate_mask,
-                        line_axis,
+                        green_line_axis,
                         reference_line_width_px,
                     )
                     if trace_active:
                         timings["topology_ms"] = (
                             time.perf_counter() - topology_started
                         ) * 1000.0
-                green_interpretation = interpret_green_candidates(
+                actionable_candidates = actionable_green_candidates(
                     green_candidates,
-                    line_axis,
-                    green_topology,
+                    near_band_start_y,
+                    near_band_end_y,
+                    green_line_axis,
+                )
+                green_interpretation = interpret_actionable_green_candidates(
+                    actionable_candidates,
                 )
             green_processing_ms = (
                 time.perf_counter() - green_processing_started
@@ -3331,9 +3437,17 @@ def main():
             line_timestamp = time.time()
             line_sequence += 1
             green_raw_interpretation = green_interpretation["interpretation"]
+            green_path_valid = green_path_black_is_valid(
+                near_valid,
+                far_valid,
+                center_delta_valid,
+                center_delta_px,
+                green_line_axis,
+                green_raw_interpretation,
+            )
             tracker_interpretation = (
                 green_raw_interpretation
-                if green_decisions_enabled
+                if green_decisions_enabled and green_path_valid
                 else "SEM_DECISAO"
             )
             green_tracker_result = green_tracker.update(
@@ -3348,6 +3462,14 @@ def main():
                 green_tracker_result,
                 green_processing_ms,
             )
+            green_status["greenNearSeen"] = green_seen_in_vertical_band(
+                green_candidates,
+                near_band_start_y,
+                near_band_end_y,
+                green_line_axis,
+            )
+            green_status["greenRawInterpretation"] = green_raw_interpretation
+            green_status["greenPathBlackValid"] = green_path_valid
             ipc_started = time.perf_counter() if trace_active else 0.0
             if line_ipc_enabled:
                 # Somente a CAM0/downward publica dados usados pelo segue-faixa.
@@ -3394,7 +3516,7 @@ def main():
                         green_mask_stages,
                         green_candidates,
                         green_rejected,
-                        line_axis,
+                        green_line_axis,
                         green_topology,
                         green_interpretation,
                         green_capture_metadata,
@@ -3684,7 +3806,7 @@ def main():
                         frame,
                         green_candidates,
                         green_rejected,
-                        line_axis,
+                        green_line_axis,
                         green_raw_interpretation,
                     )
 
@@ -3694,7 +3816,7 @@ def main():
                 ):
                     axis_start = point_from_line_axis(line_axis, -30.0)
                     axis_end = point_from_line_axis(
-                        line_axis,
+                        green_line_axis,
                         float(vision_geometry["structural_end_y"]),
                     )
                     cv2.line(
@@ -3739,38 +3861,6 @@ def main():
                             2,
                             cv2.LINE_AA,
                         )
-
-            green_text, green_text_color = green_status_overlay(
-                green_processing_enabled,
-                green_status,
-            )
-            cv2.putText(
-                frame,
-                f"VERDE: {green_text}",
-                (8, 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
-                green_text_color,
-                1,
-                cv2.LINE_AA,
-            )
-            ambiguity_reasons = green_ambiguity_reasons(
-                green_candidates,
-                line_axis,
-                green_topology,
-                green_interpretation,
-            )
-            if ambiguity_reasons:
-                cv2.putText(
-                    frame,
-                    f"MOTIVO: {ambiguity_reasons[0]}",
-                    (8, 38),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.34,
-                    green_text_color,
-                    1,
-                    cv2.LINE_AA,
-                )
 
             active_pixel_count = cv2.countNonZero(filtered_mask)
             debug_lines = (

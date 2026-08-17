@@ -130,6 +130,9 @@ def synthetic_candidate(
     associated=True,
     area=625.0,
     side=None,
+    aspect_ratio=1.0,
+    short_side=25.0,
+    extent=0.80,
 ):
     line_axis = line_axis or synthetic_line_axis()
     longitudinal, lateral = camera_line_frame.project_point_on_line_axis(
@@ -139,6 +142,9 @@ def synthetic_candidate(
         "area": float(area),
         "centroid": tuple(float(value) for value in centroid),
         "partial": partial,
+        "aspect_ratio": float(aspect_ratio),
+        "short_side": float(short_side),
+        "extent": float(extent),
         "associated_with_line": associated,
         "local_line_width_px": 21.0,
         "longitudinal": longitudinal,
@@ -148,7 +154,7 @@ def synthetic_candidate(
 
 
 class CameraProfilesTest(unittest.TestCase):
-    def analyze_synthetic_gap(self, mask, near_center=(320, 240)):
+    def analyze_synthetic_gap(self, mask, near_center=(320, 160)):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         geometry = camera_line_frame.resolve_vision_geometry(480, profile)
         if CV2_AVAILABLE:
@@ -183,11 +189,11 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertFalse(result["return_valid"])
 
     def test_gap_detector_accepts_endpoint_inside_near_when_far_is_empty(self):
-        # Reproduz o enquadramento real: a ponta está em y=225, abaixo do fim
-        # da FAR (y=180), mas o segmento ainda cruza e continua após a NEAR.
+        # Reproduz o enquadramento deslocado: a ponta está em y=155, abaixo do
+        # fim da FAR (y=100), mas o segmento ainda cruza a NEAR.
         result = self.analyze_synthetic_gap(
-            synthetic_gap_mask(endpoint_y=225),
-            near_center=(320, 247),
+            synthetic_gap_mask(endpoint_y=155),
+            near_center=(320, 165),
         )
 
         self.assertTrue(result["candidate"])
@@ -209,7 +215,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_gap_detector_keeps_alignment_error_and_ignores_noise(self):
         mask = synthetic_gap_mask(left_x=390, right_x=410)
         mask[20:23, 40:43] = 255
-        result = self.analyze_synthetic_gap(mask, near_center=(400, 240))
+        result = self.analyze_synthetic_gap(mask, near_center=(400, 160))
 
         self.assertTrue(result["candidate"])
         self.assertGreater(result["alignment_error"], 0.20)
@@ -320,9 +326,6 @@ class CameraProfilesTest(unittest.TestCase):
         line = camera_line_frame.create_display_frame(
             raw_frame, line_mask, green_mask, 2, "line"
         )
-        green = camera_line_frame.create_display_frame(
-            raw_frame, line_mask, green_mask, 2, "green"
-        )
 
         np.testing.assert_array_equal(real, raw_before)
         self.assertFalse(np.shares_memory(real, raw_frame))
@@ -338,18 +341,6 @@ class CameraProfilesTest(unittest.TestCase):
                 dtype=np.uint8,
             ),
         )
-        np.testing.assert_array_equal(
-            green,
-            np.array(
-                [
-                    [[0, 0, 0], [0, 255, 0]],
-                    [[0, 255, 0], [0, 0, 0]],
-                    [[0, 0, 0], [0, 0, 0]],
-                    [[0, 0, 0], [0, 0, 0]],
-                ],
-                dtype=np.uint8,
-            ),
-        )
         np.testing.assert_array_equal(raw_frame, raw_before)
         np.testing.assert_array_equal(line_mask, line_before)
         np.testing.assert_array_equal(green_mask, green_before)
@@ -357,7 +348,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_display_mode_normalization_defaults_to_real(self):
         self.assertEqual(camera_line_frame.normalize_display_mode("REAL"), "real")
         self.assertEqual(camera_line_frame.normalize_display_mode("line"), "line")
-        self.assertEqual(camera_line_frame.normalize_display_mode("green"), "green")
+        self.assertEqual(camera_line_frame.normalize_display_mode("green"), "real")
         self.assertEqual(camera_line_frame.normalize_display_mode("invalid"), "real")
 
     def test_green_status_overlay_uses_semantic_colors(self):
@@ -539,6 +530,32 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(profile["sensor_size"], (1640, 1232))
         self.assertEqual(profile["sensor_bit_depth"], 10)
         self.assertEqual(profile["target_fps"], 30)
+
+    def test_down_rois_move_to_top_without_changing_dimensions(self):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        geometry = camera_line_frame.resolve_vision_geometry(480, profile)
+
+        self.assertEqual(
+            (
+                geometry["far_band_start_y"],
+                geometry["far_band_end_y"],
+                geometry["near_band_start_y"],
+                geometry["near_band_end_y"],
+            ),
+            (0, 100, 130, 190),
+        )
+        self.assertEqual(
+            geometry["far_band_end_y"] - geometry["far_band_start_y"],
+            100,
+        )
+        self.assertEqual(
+            geometry["near_band_end_y"] - geometry["near_band_start_y"],
+            60,
+        )
+        self.assertEqual(
+            geometry["near_band_start_y"] - geometry["far_band_end_y"],
+            30,
+        )
 
     def test_argument_has_priority_over_environment(self):
         with mock.patch.dict(os.environ, {"OBR_CAMERA_ROLE": "forward"}):
@@ -861,7 +878,7 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(len(candidates), 0)
         self.assertEqual(len(rejected), 1)
 
-    def test_green_partial_square_stays_candidate_without_confirmation(self):
+    def test_green_small_partial_marker_stays_without_confirmation(self):
         self.assertTrue(camera_line_frame.green_geometry_is_valid(
             area=40.0,
             short_side=4.0,
@@ -869,7 +886,13 @@ class CameraProfilesTest(unittest.TestCase):
             extent=0.30,
             partial=True,
         ))
-        candidate = synthetic_candidate((270, 200), partial=True)
+        candidate = synthetic_candidate(
+            (270, 200),
+            partial=True,
+            area=40.0,
+            short_side=4.0,
+            extent=0.30,
+        )
         result = camera_line_frame.interpret_green_candidates(
             [candidate], synthetic_line_axis(), synthetic_topology(left_branch=True)
         )
@@ -905,6 +928,123 @@ class CameraProfilesTest(unittest.TestCase):
         )
         self.assertEqual(result["interpretation"], "DIREITA")
         self.assertTrue(result["right_seen"])
+
+    def test_green_near_band_detects_only_candidates_inside_blue_roi(self):
+        candidates = [
+            synthetic_candidate((270, 209)),
+            synthetic_candidate((370, 230)),
+            synthetic_candidate((320, 270)),
+        ]
+
+        self.assertTrue(camera_line_frame.green_seen_in_vertical_band(
+            candidates, 210, 270, synthetic_line_axis()
+        ))
+        self.assertFalse(camera_line_frame.green_seen_in_vertical_band(
+            [candidates[0], candidates[2]], 210, 270, synthetic_line_axis()
+        ))
+
+    def test_green_near_band_accepts_large_partial_marker(self):
+        candidate = synthetic_candidate((270, 230), partial=True)
+
+        self.assertTrue(camera_line_frame.green_seen_in_vertical_band(
+            [candidate], 210, 270, synthetic_line_axis()
+        ))
+
+    def test_green_near_band_rejects_unassociated_candidate(self):
+        candidate = synthetic_candidate((370, 230), associated=False)
+
+        self.assertFalse(camera_line_frame.green_seen_in_vertical_band(
+            [candidate], 210, 270, synthetic_line_axis()
+        ))
+
+    def test_green_near_band_accepts_rectangle(self):
+        candidate = synthetic_candidate((270, 230))
+        candidate["aspect_ratio"] = 0.55
+
+        self.assertTrue(camera_line_frame.green_seen_in_vertical_band(
+            [candidate], 210, 270, synthetic_line_axis()
+        ))
+
+    def test_green_near_band_accepts_square_with_perspective(self):
+        candidate = synthetic_candidate((270, 230))
+        candidate["aspect_ratio"] = 0.72
+
+        self.assertTrue(camera_line_frame.green_seen_in_vertical_band(
+            [candidate], 210, 270, synthetic_line_axis()
+        ))
+
+    def test_green_path_rejects_isolated_far_black(self):
+        self.assertFalse(camera_line_frame.green_path_black_is_valid(
+            True,
+            True,
+            True,
+            260.0,
+            synthetic_line_axis(),
+            "DIREITA",
+        ))
+
+    def test_green_path_rejects_white_above_marker(self):
+        self.assertFalse(camera_line_frame.green_path_black_is_valid(
+            True,
+            False,
+            False,
+            0.0,
+            synthetic_line_axis(),
+            "DIREITA",
+        ))
+
+    def test_green_path_accepts_compatible_far_black(self):
+        self.assertTrue(camera_line_frame.green_path_black_is_valid(
+            True,
+            True,
+            True,
+            80.0,
+            synthetic_line_axis(),
+            "DIREITA",
+        ))
+
+    def test_actionable_right_marker_does_not_require_junction_topology(self):
+        candidate = synthetic_candidate((370, 230), side="DIREITA")
+
+        result = camera_line_frame.interpret_actionable_green_candidates(
+            [candidate]
+        )
+
+        self.assertEqual(result["interpretation"], "DIREITA")
+
+    def test_actionable_left_marker_does_not_require_junction_topology(self):
+        candidate = synthetic_candidate((270, 230), side="ESQUERDA")
+
+        result = camera_line_frame.interpret_actionable_green_candidates(
+            [candidate]
+        )
+
+        self.assertEqual(result["interpretation"], "ESQUERDA")
+
+    def test_actionable_marker_on_each_side_requests_turnaround(self):
+        candidates = [
+            synthetic_candidate((270, 230), side="ESQUERDA"),
+            synthetic_candidate((370, 230), side="DIREITA"),
+        ]
+
+        result = camera_line_frame.interpret_actionable_green_candidates(
+            candidates
+        )
+
+        self.assertEqual(result["interpretation"], "RETORNO_180")
+
+    def test_green_near_band_rejects_candidates_without_valid_line_axis(self):
+        self.assertFalse(camera_line_frame.green_seen_in_vertical_band(
+            [synthetic_candidate((270, 230))],
+            210,
+            270,
+            {"valid": False},
+        ))
+
+    def test_empty_green_status_does_not_report_green_in_near_band(self):
+        self.assertFalse(
+            camera_line_frame.empty_green_status()["greenNearSeen"]
+        )
 
     def test_green_diagonal_line_preserves_left_side(self):
         axis = camera_line_frame.build_line_axis((360, 280), (280, 180))

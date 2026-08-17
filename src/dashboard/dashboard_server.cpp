@@ -1335,6 +1335,20 @@ std::string DashboardServer::dashboardHtml()
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
+        green_turn_waiting_imu: ["VERDE: AGUARDANDO IMU", "warn", "machineStepPerception"],
+        green_reading: ["CONFIRMANDO VERDE", "warn", "machineStepPerception"],
+        green_ignored_straight: ["VERDE IGNORADO: RETO", "active", "machineStepDecision"],
+        green_turning: ["CURVA PELO VERDE", "active", "machineStepMotion"],
+        green_turn_completed: ["CURVA VERDE CONCLUÍDA", "active", "machineStepFeedback"],
+        green_pre_turn_ready: ["PREPARANDO AVANÇO", "warn", "machineStepMotion"],
+        green_pre_turn_driving: ["AVANÇANDO 5 CM", "active", "machineStepMotion"],
+        green_pre_turn_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        green_pre_turn_timeout: ["TEMPO LIMITE", "danger", "machineStepFeedback"],
+        green_pre_turn_stall: ["RODA SEM PROGRESSO", "danger", "machineStepFeedback"],
+        gap_searching_left: ["GAP: BUSCA À ESQUERDA", "warn", "machineStepMotion"],
+        gap_searching_right: ["GAP: BUSCA À DIREITA", "warn", "machineStepMotion"],
+        gap_search_waiting: ["GAP: AGUARDANDO LINHA", "warn", "machineStepPerception"],
+        gap_return_waiting: ["GAP: AGUARDANDO CONTINUAÇÃO", "warn", "machineStepPerception"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
         turn_correction: ["CORRIGINDO GIRO", "active", "machineStepMotion"],
@@ -1931,7 +1945,7 @@ std::string DashboardServer::dashboardHtml()
     }
 
     function selectDownwardCameraMode(mode) {
-      if (!["real", "line", "green"].includes(mode)) return;
+      if (!["real", "line"].includes(mode)) return;
       const camera = cameras.downward;
       camera.displayMode = mode;
       mountedCameraModeButtons.forEach(button => {
@@ -1951,8 +1965,7 @@ std::string DashboardServer::dashboardHtml()
       selector.setAttribute("aria-label", "Modo visual da câmera inferior");
       const modes = [
         ["real", "REAL"],
-        ["line", "LINHA"],
-        ["green", "VERDE"]
+        ["line", "LINHA"]
       ];
       modes.forEach(([mode, label]) => {
         const button = document.createElement("button");
@@ -2498,8 +2511,7 @@ bool DashboardServer::proxyCameraStream(SocketHandle client, const std::string& 
                     const std::size_t valueEnd = target.find('&', valueStart);
                     const std::string requestedMode = target.substr(
                         valueStart, valueEnd - valueStart);
-                    if (requestedMode == "real" || requestedMode == "line" ||
-                        requestedMode == "green")
+                    if (requestedMode == "real" || requestedMode == "line")
                     {
                         displayMode = requestedMode;
                     }

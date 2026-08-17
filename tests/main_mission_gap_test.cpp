@@ -2,10 +2,12 @@
 #include "obr/main_mission.h"
 #include "obr/robot_state.h"
 
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace
 {
@@ -41,12 +43,56 @@ CameraLineSnapshot trackedLine(std::uint64_t sequence)
     return line;
 }
 
+CameraLineSnapshot greenMarker(
+    std::uint64_t sequence,
+    GreenTurnDecision decision)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.greenNearSeen = true;
+    line.greenPathBlackValid = true;
+    line.greenConfirmed = true;
+    line.greenTurnDecision = decision;
+    return line;
+}
+
+CameraLineSnapshot unconfirmedGreen(std::uint64_t sequence)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.greenNearSeen = true;
+    line.greenPathBlackValid = true;
+    return line;
+}
+
+CameraLineSnapshot greenWithWhiteAbove(std::uint64_t sequence)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.greenNearSeen = true;
+    line.greenPathBlackValid = false;
+    return line;
+}
+
 CameraLineSnapshot gapLine(std::uint64_t sequence, double alignmentError)
 {
     CameraLineSnapshot line = trackedLine(sequence);
     line.gapCandidate = true;
     line.gapAlignmentValid = true;
     line.gapAlignmentError = alignmentError;
+    return line;
+}
+
+CameraLineSnapshot lineLost(std::uint64_t sequence)
+{
+    CameraLineSnapshot line;
+    line.sourceFresh = true;
+    line.lineSequence = sequence;
+    return line;
+}
+
+CameraLineSnapshot farLine(std::uint64_t sequence, double error)
+{
+    CameraLineSnapshot line = lineLost(sequence);
+    line.farValid = true;
+    line.farError = error;
     return line;
 }
 
@@ -68,137 +114,169 @@ struct MissionFixture
         mission.update(robotState, telemetry, cameraReady, line);
     }
 
-    void enterCrossing()
+    void enterCrossing(double alignmentError = 0.0)
     {
-        // Três frames confirmam a geometria e três confirmam o alinhamento.
-        // O terceiro frame do candidato também é o primeiro do alinhamento.
-        for (int sample = 0; sample < 5; ++sample)
+        for (int sample = 0; sample < config::kGapConfirmationSamples; ++sample)
         {
-            update(gapLine(++sequence, 0.0));
+            update(gapLine(++sequence, alignmentError));
         }
         require(
             robotState.snapshot().autonomousStatus.phase == "crossing_gap",
-            "O gap alinhado deveria iniciar a travessia.");
+            "Três frames deveriam iniciar o avanço reto do gap.");
+    }
+
+    void loseLine(long long leftCount, long long rightCount)
+    {
+        telemetry.leftEncoderCount = leftCount;
+        telemetry.rightEncoderCount = rightCount;
+        update(lineLost(++sequence));
+    }
+
+    void reachGapLimit()
+    {
+        const long long limitCounts = static_cast<long long>(std::ceil(
+            config::kGapMaximumDistanceCm *
+            config::kEncoderCountsPerCentimeter));
+        telemetry.leftEncoderCount += limitCounts;
+        telemetry.rightEncoderCount += limitCounts - 20;
+        update(lineLost(++sequence));
+        require(
+            robotState.snapshot().autonomousStatus.phase ==
+                "gap_searching_left",
+            "O limite do gap deveria iniciar a busca pela linha.");
     }
 };
 
-void testGapRequiresConfirmationAndAlignment()
+void testGapRequiresConfirmationAndNeverRealigns()
 {
     MissionFixture fixture;
-    fixture.update(gapLine(++fixture.sequence, -0.30));
-    fixture.update(gapLine(++fixture.sequence, -0.30));
-    require(
-        fixture.robotState.snapshot().autonomousStatus.phase == "tracking_near",
-        "Dois frames não podem confirmar um gap.");
-
-    fixture.update(gapLine(++fixture.sequence, -0.30));
-    const RobotSnapshot aligning = fixture.robotState.snapshot();
-    require(
-        aligning.autonomousStatus.phase == "aligning_for_gap",
-        "Três frames deveriam iniciar o alinhamento.");
-    require(
-        aligning.left < 0.0 && aligning.right > 0.0,
-        "Erro à esquerda deveria produzir contrarrotação à esquerda.");
-
-    fixture.update(gapLine(++fixture.sequence, 0.0));
-    fixture.update(gapLine(++fixture.sequence, 0.0));
+    fixture.update(gapLine(++fixture.sequence, -0.80));
+    fixture.update(gapLine(++fixture.sequence, -0.80));
     require(
         fixture.robotState.snapshot().autonomousStatus.phase ==
-            "aligning_for_gap",
-        "Dois frames alinhados ainda não podem mover para frente.");
-    fixture.update(gapLine(++fixture.sequence, 0.0));
-    require(
-        fixture.robotState.snapshot().autonomousStatus.phase == "crossing_gap",
-        "Três frames alinhados deveriam liberar a travessia.");
+            "tracking_near",
+        "Dois frames não podem confirmar um gap.");
+
+    fixture.update(gapLine(++fixture.sequence, -0.80));
+    const RobotSnapshot leftError = fixture.robotState.snapshot();
+    require(leftError.autonomousStatus.phase == "crossing_gap",
+            "O terceiro frame deveria iniciar a travessia.");
+    require(leftError.left > 0.0 && leftError.right > 0.0 &&
+                leftError.left == leftError.right,
+            "Erro de alinhamento não pode provocar giro no gap.");
 
     MissionFixture rightFixture;
-    for (int sample = 0; sample < config::kGapConfirmationSamples; ++sample)
-    {
-        rightFixture.update(gapLine(++rightFixture.sequence, 0.30));
-    }
-    const RobotSnapshot aligningRight = rightFixture.robotState.snapshot();
-    require(
-        aligningRight.left > 0.0 && aligningRight.right < 0.0,
-        "Erro à direita deveria produzir contrarrotação à direita.");
+    rightFixture.enterCrossing(0.80);
+    const RobotSnapshot rightError = rightFixture.robotState.snapshot();
+    require(rightError.left > 0.0 && rightError.right > 0.0 &&
+                rightError.left == rightError.right,
+            "O gap deve seguir reto para qualquer erro de alinhamento.");
 }
 
-void testGapCancellationReturnsToTracking()
+void testGapDistanceStartsOnlyAfterNearLoss()
 {
     MissionFixture fixture;
-    for (int sample = 0; sample < 3; ++sample)
-    {
-        fixture.update(gapLine(++fixture.sequence, 0.30));
-    }
+    fixture.telemetry.leftEncoderCount = 400;
+    fixture.telemetry.rightEncoderCount = 450;
+    fixture.enterCrossing(0.70);
 
-    CameraLineSnapshot normal = trackedLine(++fixture.sequence);
-    fixture.update(normal);
-    const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(
-        snapshot.autonomousStatus.phase == "tracking_near",
-        "Um candidato perdido deveria devolver o controle ao tracking.");
-    require(snapshot.left > 0.0 && snapshot.right > 0.0,
-            "O tracking deveria voltar a avançar sobre a fita válida.");
+    fixture.telemetry.leftEncoderCount = 900;
+    fixture.telemetry.rightEncoderCount = 950;
+    fixture.update(gapLine(++fixture.sequence, -0.70));
+    const RobotSnapshot approaching = fixture.robotState.snapshot();
+    require(approaching.autonomousStatus.phase == "crossing_gap",
+            "O robô deveria continuar reto antes de perder a linha.");
+    require(approaching.autonomousStatus.leftDistanceCm == 0.0 &&
+                approaching.autonomousStatus.rightDistanceCm == 0.0,
+            "A aproximação ainda sobre a linha não pode consumir os 20 cm.");
+
+    fixture.loseLine(900, 950);
+    fixture.telemetry.leftEncoderCount += 100;
+    fixture.telemetry.rightEncoderCount += 100;
+    fixture.update(lineLost(++fixture.sequence));
+    const RobotSnapshot crossing = fixture.robotState.snapshot();
+    require(crossing.autonomousStatus.leftDistanceCm > 0.0 &&
+                crossing.autonomousStatus.leftDistanceCm < 1.0,
+            "A distância deveria ser medida a partir da perda da NEAR.");
 }
 
-void testGapStopsAtMaximumWheelDistanceAndWaits()
+void testGapSearchesAtMaximumDistance()
 {
     MissionFixture fixture;
     fixture.enterCrossing();
-    const long long limitCounts = static_cast<long long>(std::ceil(
-        config::kGapMaximumDistanceCm * config::kEncoderCountsPerCentimeter));
-    fixture.telemetry.leftEncoderCount = limitCounts;
-    fixture.telemetry.rightEncoderCount = limitCounts - 20;
-    fixture.update(gapLine(++fixture.sequence, 0.0));
+    fixture.loseLine(1000, 1200);
+    fixture.reachGapLimit();
 
+    const RobotSnapshot searching = fixture.robotState.snapshot();
+    require(searching.mode == "autonomous",
+            "O limite de 20 cm deve manter a missão autônoma ativa.");
+    require(searching.left == 0.0 && searching.right == 0.0,
+            "A transição para a busca deve zerar os motores por um ciclo.");
+    require(searching.autonomousStatus.phase == "gap_searching_left",
+            "O limite do gap deveria iniciar a busca pela linha.");
+
+    fixture.update(lineLost(++fixture.sequence));
+    const RobotSnapshot rotating = fixture.robotState.snapshot();
+    require(rotating.mode == "autonomous" && rotating.left < 0.0 &&
+                rotating.right > 0.0,
+            "Depois da transição, o robô deveria procurar a linha girando.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1320));
+    fixture.update(lineLost(++fixture.sequence));
     const RobotSnapshot waiting = fixture.robotState.snapshot();
-    require(waiting.mode == "autonomous",
-            "O limite do gap deve manter a missão ativa.");
-    require(waiting.autonomousStatus.phase == "gap_waiting",
-            "O limite de 100 mm deveria entrar em espera.");
-    require(waiting.left == 0.0 && waiting.right == 0.0,
-            "A espera do gap deve manter os motores zerados.");
+    require(waiting.mode == "autonomous" && waiting.left == 0.0 &&
+                waiting.right == 0.0 &&
+                waiting.autonomousStatus.phase == "gap_search_waiting",
+            "Ao terminar a busca, a missão deveria aguardar sem ser encerrada.");
 
+    fixture.update(trackedLine(++fixture.sequence));
+    const RobotSnapshot recovered = fixture.robotState.snapshot();
+    require(recovered.mode == "autonomous" && recovered.left > 0.0 &&
+                recovered.right > 0.0,
+            "Uma nova linha deveria reativar o movimento automaticamente.");
+}
+
+void testGapReacquiresNearBeforeLimit()
+{
+    MissionFixture fixture;
+    fixture.enterCrossing();
+    fixture.loseLine(0, 0);
     for (int sample = 0; sample < config::kGapConfirmationSamples; ++sample)
     {
-        CameraLineSnapshot returned = trackedLine(++fixture.sequence);
-        fixture.update(returned);
+        fixture.telemetry.leftEncoderCount += 30;
+        fixture.telemetry.rightEncoderCount += 30;
+        fixture.update(trackedLine(++fixture.sequence));
     }
+
     require(
         fixture.robotState.snapshot().autonomousStatus.phase ==
             "reacquiring_near",
-        "A espera deveria retomar após três frames NEAR válidos.");
+        "A NEAR confirmada deveria encerrar a travessia antes do limite.");
 }
 
 void testGapReacquiresFarBeforeLimit()
 {
     MissionFixture fixture;
     fixture.enterCrossing();
+    fixture.loseLine(0, 0);
     for (int sample = 0; sample < config::kGapConfirmationSamples; ++sample)
     {
-        fixture.telemetry.leftEncoderCount += 50;
-        fixture.telemetry.rightEncoderCount += 50;
-        CameraLineSnapshot returned = trackedLine(++fixture.sequence);
-        returned.nearValid = false;
-        returned.farValid = true;
-        returned.farError = -0.20;
-        fixture.update(returned);
+        fixture.telemetry.leftEncoderCount += 30;
+        fixture.telemetry.rightEncoderCount += 30;
+        fixture.update(farLine(++fixture.sequence, -0.20));
     }
 
-    const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "recovering_far",
-            "A continuação FAR deveria encerrar a travessia.");
-    require(snapshot.left > 0.0 || snapshot.right > 0.0,
-            "A recuperação FAR deveria comandar uma correção controlada.");
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "recovering_far",
+            "A FAR confirmada deveria encerrar a travessia antes do limite.");
 }
 
-void testGapUsesDisconnectedReturnBeforeNearDisappears()
+void testGapUsesDisconnectedContinuation()
 {
     MissionFixture fixture;
     fixture.enterCrossing();
     for (int sample = 0; sample < config::kGapConfirmationSamples; ++sample)
     {
-        fixture.telemetry.leftEncoderCount += 30;
-        fixture.telemetry.rightEncoderCount += 30;
         CameraLineSnapshot returned = gapLine(++fixture.sequence, 0.0);
         returned.gapReturnValid = true;
         returned.gapReturnError = 0.20;
@@ -209,45 +287,218 @@ void testGapUsesDisconnectedReturnBeforeNearDisappears()
     require(snapshot.autonomousStatus.phase == "recovering_far",
             "A continuação desconectada deveria encerrar o avanço reto.");
     require(snapshot.left > snapshot.right,
-            "A continuação à direita deveria comandar correção à direita.");
-
-    CameraLineSnapshot stillVisible = gapLine(++fixture.sequence, 0.0);
-    stillVisible.gapReturnValid = true;
-    stillVisible.gapReturnError = 0.20;
-    fixture.update(stillVisible);
-    require(
-        fixture.robotState.snapshot().autonomousStatus.action ==
-            "Guiando pela continuação desconectada do gap",
-        "A fita antiga na NEAR não pode substituir a continuação confirmada.");
+            "A continuação à direita deveria corrigir para a direita.");
 }
 
-void testGapStopsWhenEncoderBecomesStale()
+void testGapStopsWhenEncoderBecomesStaleDuringCrossing()
 {
     MissionFixture fixture;
     fixture.enterCrossing();
     fixture.telemetry.lastSensorAgeMs = config::kGapEncoderFreshnessMs + 1;
-    fixture.update(gapLine(++fixture.sequence, 0.0));
+    fixture.update(lineLost(++fixture.sequence));
 
     const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.mode == "stopped",
-            "Encoder desatualizado deveria encerrar a missão.");
-    require(snapshot.left == 0.0 && snapshot.right == 0.0,
-            "Falha de encoder deve zerar os motores.");
+    require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0,
+            "Encoder desatualizado deve parar a travessia.");
     require(snapshot.autonomousStatus.phase == "gap_encoder_lost",
-            "A falha do encoder deveria permanecer visível na telemetria.");
+            "A falha de encoder deveria permanecer na telemetria.");
+}
+
+void testGapStopsOnStall()
+{
+    MissionFixture fixture;
+    fixture.enterCrossing();
+    fixture.loseLine(0, 0);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kGapStallTimeoutMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "stopped" &&
+                snapshot.autonomousStatus.phase == "gap_encoder_stall",
+            "Ausência de progresso deveria parar o gap.");
+}
+
+void testGapSearchesOnTraversalTimeout()
+{
+    MissionFixture fixture;
+    fixture.enterCrossing();
+    fixture.loseLine(0, 0);
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kGapTraversalTimeoutMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0,
+            "O tempo limite deveria trocar o avanço pela busca da linha.");
+    require(snapshot.autonomousStatus.phase == "gap_searching_left",
+            "A busca deveria permanecer visível na telemetria.");
 }
 
 void testGapStopsWhenCameraBecomesUnavailable()
 {
     MissionFixture fixture;
     fixture.enterCrossing();
-    fixture.update(gapLine(++fixture.sequence, 0.0), false);
+    fixture.update(lineLost(++fixture.sequence), false);
 
     const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.mode == "stopped",
-            "A perda da câmera deveria encerrar a missão.");
-    require(snapshot.left == 0.0 && snapshot.right == 0.0,
+    require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0,
             "A perda da câmera deve zerar os motores.");
+}
+
+void testEmergencyStopWinsDuringCrossing()
+{
+    MissionFixture fixture;
+    fixture.enterCrossing();
+    fixture.loseLine(0, 0);
+    fixture.robotState.emergencyStop();
+    fixture.update(lineLost(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.emergencyStop && snapshot.mode == "emergency" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "O E-Stop deve ter prioridade durante a travessia do gap.");
+}
+
+void testGreenMarkersStartExpectedTurns()
+{
+    const struct
+    {
+        GreenTurnDecision decision;
+        bool leftPositive;
+        const char* description;
+    } cases[] = {
+        {GreenTurnDecision::Right80, true, "80 graus à direita"},
+        {GreenTurnDecision::Left80, false, "80 graus à esquerda"},
+        {GreenTurnDecision::TurnAround180, true, "180 graus à direita"},
+    };
+
+    for (const auto& testCase : cases)
+    {
+        MissionFixture fixture;
+        fixture.telemetry.mpuOk = true;
+        fixture.telemetry.yawZDeg = 0.0;
+        fixture.telemetry.gyroZDegPerSec = 0.0;
+        fixture.update(greenMarker(++fixture.sequence, testCase.decision));
+
+        if (testCase.decision != GreenTurnDecision::TurnAround180)
+        {
+            require(
+                fixture.robotState.snapshot().autonomousStatus.phase ==
+                    "green_pre_turn_ready",
+                "A curva de 80 graus deveria preparar o avanço de 5 cm.");
+            const long long targetCounts = static_cast<long long>(std::ceil(
+                config::kGreenPreTurnDistanceCm *
+                config::kEncoderCountsPerCentimeter));
+            fixture.telemetry.leftEncoderCount += targetCounts;
+            fixture.telemetry.rightEncoderCount += targetCounts;
+            fixture.update(greenMarker(++fixture.sequence, testCase.decision));
+        }
+
+        const RobotSnapshot snapshot = fixture.robotState.snapshot();
+        require(snapshot.autonomousStatus.phase == "green_turning",
+                std::string("O marcador deveria iniciar o giro de ") +
+                    testCase.description + ".");
+        require(testCase.leftPositive ? snapshot.left > 0.0
+                                      : snapshot.left < 0.0,
+                "O motor esquerdo recebeu o sentido incorreto.");
+        require(testCase.leftPositive ? snapshot.right < 0.0
+                                      : snapshot.right > 0.0,
+                "O motor direito recebeu o sentido incorreto.");
+    }
+}
+
+void testGreenWithWhiteAboveKeepsFollowingStraight()
+{
+    MissionFixture fixture;
+    fixture.update(greenWithWhiteAbove(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
+                snapshot.right > 0.0 && snapshot.left == snapshot.right,
+            "Verde com branco acima deveria manter o movimento reto.");
+    require(snapshot.autonomousStatus.phase == "green_ignored_straight",
+            "O painel deveria informar que o verde branco foi ignorado.");
+}
+
+void testRobotStopsWhileConfirmingGreen()
+{
+    MissionFixture fixture;
+    fixture.update(unconfirmedGreen(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0,
+            "O robô deveria parar enquanto confirma o marcador verde.");
+    require(snapshot.autonomousStatus.phase == "green_reading",
+            "O painel deveria informar que a leitura verde está sendo confirmada.");
+}
+
+void testRobotResumesLineAfterUnconfirmedGreenReading()
+{
+    MissionFixture fixture;
+    for (int sample = 0; sample < config::kGreenReadingMaximumSamples; ++sample)
+    {
+        fixture.update(unconfirmedGreen(++fixture.sequence));
+    }
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
+                snapshot.right > 0.0,
+            "Leitura verde sem decisão deveria devolver o segue-faixa.");
+    require(snapshot.autonomousStatus.phase == "tracking_near",
+            "O painel deveria voltar a indicar o seguimento da linha.");
+}
+
+void testGreen80TurnDrivesFiveCentimetersBeforeTurning()
+{
+    MissionFixture fixture;
+    fixture.telemetry.mpuOk = true;
+    fixture.telemetry.yawZDeg = 0.0;
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::Right80));
+
+    require(
+        fixture.robotState.snapshot().autonomousStatus.phase ==
+            "green_pre_turn_ready",
+        "O verde confirmado deveria preparar o avanço antes da curva.");
+
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::Right80));
+    RobotSnapshot driving = fixture.robotState.snapshot();
+    require(driving.autonomousStatus.phase == "green_pre_turn_driving" &&
+                driving.left > 0.0 && driving.right > 0.0,
+            "Antes do giro, as duas rodas deveriam avançar.");
+
+    const long long targetCounts = static_cast<long long>(std::ceil(
+        config::kGreenPreTurnDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount += targetCounts;
+    fixture.telemetry.rightEncoderCount += targetCounts;
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::Right80));
+
+    const RobotSnapshot turning = fixture.robotState.snapshot();
+    require(turning.autonomousStatus.phase == "green_turning" &&
+                turning.left > 0.0 && turning.right < 0.0,
+            "Ao completar 5 cm, o giro de 80 graus deveria começar.");
+
+    fixture.telemetry.yawZDeg = config::kGreenTurnTargetDegrees;
+    fixture.telemetry.gyroZDegPerSec = 0.0;
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::Right80));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kTurn90SettleMs + 20));
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::Right80));
+
+    require(
+        fixture.robotState.snapshot().autonomousStatus.phase ==
+            "green_turn_completed",
+        "Depois do giro, a missão deveria retornar ao segue-faixa.");
 }
 }
 
@@ -255,14 +506,23 @@ int main()
 {
     try
     {
-        testGapRequiresConfirmationAndAlignment();
-        testGapCancellationReturnsToTracking();
-        testGapStopsAtMaximumWheelDistanceAndWaits();
+        testGapRequiresConfirmationAndNeverRealigns();
+        testGapDistanceStartsOnlyAfterNearLoss();
+        testGapSearchesAtMaximumDistance();
+        testGapReacquiresNearBeforeLimit();
         testGapReacquiresFarBeforeLimit();
-        testGapUsesDisconnectedReturnBeforeNearDisappears();
-        testGapStopsWhenEncoderBecomesStale();
+        testGapUsesDisconnectedContinuation();
+        testGapStopsWhenEncoderBecomesStaleDuringCrossing();
+        testGapStopsOnStall();
+        testGapSearchesOnTraversalTimeout();
         testGapStopsWhenCameraBecomesUnavailable();
-        std::cout << "7 testes da travessia de gap concluídos com sucesso."
+        testEmergencyStopWinsDuringCrossing();
+        testGreenMarkersStartExpectedTurns();
+        testGreenWithWhiteAboveKeepsFollowingStraight();
+        testRobotStopsWhileConfirmingGreen();
+        testRobotResumesLineAfterUnconfirmedGreenReading();
+        testGreen80TurnDrivesFiveCentimetersBeforeTurning();
+        std::cout << "16 testes da missão principal concluídos com sucesso."
                   << std::endl;
         return 0;
     }

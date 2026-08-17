@@ -2,8 +2,16 @@
 
 #include <cstdint>
 
+enum class GreenTurnDecision
+{
+    None,
+    Left80,
+    Right80,
+    TurnAround180
+};
+
 // Resultado tipado da telemetria rápida calculada pelo processo de visão.
-// Estes valores são somente diagnósticos e não participam do controle dos motores.
+// A Missão Principal usa estes valores para seguir e recuperar a linha.
 struct CameraLineSnapshot
 {
     bool sourceFresh = false;
@@ -25,13 +33,19 @@ struct CameraLineSnapshot
     double gapAlignmentError = 0.0;
     bool gapReturnValid = false;
     double gapReturnError = 0.0;
+    // A decisão verde já chega confirmada por vários frames e com a faixa
+    // preta validada. O C++ ainda decide se o movimento é seguro pelo IMU.
+    bool greenNearSeen = false;
+    bool greenPathBlackValid = false;
+    bool greenConfirmed = false;
+    GreenTurnDecision greenTurnDecision = GreenTurnDecision::None;
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;
     double ageMs = 0.0;
 };
 
-// Monitora a saúde da câmera e lê a telemetria visual somente para diagnóstico.
-// Este módulo não interpreta pixels nem participa de decisões de movimento.
+// Monitora a saúde da câmera e valida a telemetria visual usada pelo controle.
+// Este módulo não interpreta pixels; apenas rejeita dados ausentes ou inválidos.
 class CameraMonitor
 {
 public:

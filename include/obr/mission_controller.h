@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/esp32_bridge.h"
+#include "obr/imu_turn_controller.h"
 #include "obr/main_mission.h"
 #include "obr/robot_state.h"
 
@@ -19,14 +20,6 @@ public:
         const CameraLineSnapshot& cameraLineSnapshot);
 
 private:
-    enum class Turn90Phase
-    {
-        Idle,
-        Turning,
-        Settling,
-        CorrectionPulse
-    };
-
     enum class DistancePhase
     {
         Idle,
@@ -36,12 +29,7 @@ private:
     };
 
     MainMission mainMission_;
-    Turn90Phase turn90Phase_ = Turn90Phase::Idle;
-    double turn90StartYawDegrees_ = 0.0;
-    std::chrono::steady_clock::time_point turn90StartedAt_{};
-    std::chrono::steady_clock::time_point turn90PhaseStartedAt_{};
-    int turn90CorrectionPulseCount_ = 0;
-    double turn90CorrectionDirection_ = 1.0;
+    ImuTurnController testTurnController_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
     long long distanceStartLeftCount_ = 0;
@@ -63,5 +51,4 @@ private:
         double targetDistanceCm);
     void resetMissionState();
 
-    static double angularDistanceDegrees(double first, double second);
 };

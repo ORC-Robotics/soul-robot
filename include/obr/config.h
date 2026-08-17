@@ -18,7 +18,7 @@ constexpr const char* kCameraFramePath = "/tmp/obr_camera_frame.jpg";
 constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 
 // Arquivo JSON rápido com a última medição visual calculada pelo processo Python.
-// Esta fonte é usada somente para diagnóstico e não envia comandos aos motores.
+// A Missão Principal usa esta fonte para seguir e recuperar a linha.
 constexpr const char* kCameraLineStatusPath = "/dev/shm/obr_line_status.json";
 
 // O trigger habilita até 300 quadros ou 60 segundos da auditoria de regressão.
@@ -123,11 +123,15 @@ constexpr int kCameraStatusTimeoutMs = 400;
 // Ângulo-alvo, em graus, da missão de teste que gira o robô para a direita.
 constexpr double kTurn90TargetDegrees = 90.0;
 
+// Ângulo, em graus, das curvas comandadas pelos marcadores verdes laterais.
+// Este valor é independente da missão de diagnóstico de 90° do dashboard.
+constexpr double kGreenTurnTargetDegrees = 80.0;
+
 // Margem, em graus, usada para parar antes de ultrapassar demais o alvo.
 // Ajuste após testar a inércia real das rodas no piso da competição.
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
-// Comando lógico usado durante todo o giro de 90 graus e nas correções.
+// Comando lógico usado durante os giros por IMU e nas correções.
 // O perfil operacional transforma 0,01 em 0,65 nos dois lados; como eles giram
 // em sentidos opostos, o sincronismo por encoder permanece desativado.
 constexpr double kTurn90CommandPower = 0.01;
@@ -166,12 +170,40 @@ constexpr int kTurn90ImuFreshnessMs = 200;
 // travar, a missão para ao atingir esse limite.
 constexpr int kTurn90TimeoutMs = 5000;
 
+// O retorno de 180 graus usa o mesmo controle, mas recebe mais tempo para
+// concluir o dobro do deslocamento angular e suas correções.
+constexpr int kTurn180TimeoutMs = 8000;
+
 // Calibração empírica informada no teste: 3600 contagens produziram
 // 18,7 cm de deslocamento com rodas de 68 mm de diâmetro.
 constexpr double kEncoderCalibrationCounts = 3600.0;
 constexpr double kEncoderCalibrationDistanceCm = 18.7;
 constexpr double kEncoderCountsPerCentimeter =
     kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
+
+// Distância, em centímetros, percorrida antes de uma curva verde de 80°.
+// O retorno de 180° não usa este avanço preparatório.
+constexpr double kGreenPreTurnDistanceCm = 5.0;
+
+// Comando lógico usado no avanço antes da curva. O perfil operacional aplica o
+// piso seguro dos motores e mantém a sincronização das duas rodas pelos encoders.
+constexpr double kGreenPreTurnCommandPower = 0.01;
+
+// Comando reto aplicado quando há verde próximo, mas a região acima está
+// branca. Potências iguais impedem que esse falso marcador provoque uma curva.
+constexpr double kGreenIgnoredStraightCommandPower = 0.01;
+
+// Proteções do avanço de 5 cm. Telemetria antiga, roda travada ou tempo
+// excessivo encerram a missão com os motores zerados.
+constexpr int kGreenPreTurnEncoderFreshnessMs = 300;
+constexpr double kGreenPreTurnBrakePredictionSeconds = 0.14;
+constexpr double kGreenPreTurnMinimumProgressCounts = 10.0;
+constexpr int kGreenPreTurnStallTimeoutMs = 1500;
+constexpr int kGreenPreTurnTimeoutMs = 5000;
+
+// Quantidade máxima de quadros novos durante a parada para leitura do verde.
+// Se nenhuma curva for confirmada nesse intervalo, o segue-faixa é retomado.
+constexpr int kGreenReadingMaximumSamples = 3;
 
 // Distância inicial e faixa aceitas pelo modo de percurso por encoder.
 // O limite evita comandos acidentais excessivamente longos pelo dashboard.
@@ -210,16 +242,12 @@ constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
 constexpr int kDriveDistanceTimeoutMs = 60000;
 
 // Distância máxima, em centímetros, permitida durante a travessia de um gap.
-// O controle usa a roda que mais avançou para nenhuma lateral ultrapassar 100 mm.
-constexpr double kGapMaximumDistanceCm = 10.0;
+// O controle usa a roda que mais avançou para nenhuma lateral ultrapassar 200 mm.
+constexpr double kGapMaximumDistanceCm = 20.0;
 
-// Quantidade de frames novos exigida para confirmar o gap, o alinhamento e o
-// reencontro da fita. A confirmação evita agir sobre um único frame com ruído.
+// Quantidade de frames novos exigida para confirmar o gap e o reencontro da
+// fita. A confirmação evita agir sobre um único frame com ruído.
 constexpr int kGapConfirmationSamples = 3;
-
-// Maior erro normalizado aceito antes de atravessar. O valor considera tanto
-// a posição lateral quanto a diferença de direção entre as faixas NEAR e FAR.
-constexpr double kGapAlignmentTolerance = 0.10;
 
 // Comando lógico de avanço reto durante o gap. O perfil operacional transforma
 // este valor no piso de 0,65 e mantém o sincronismo dos dois lados por encoder.
@@ -229,7 +257,7 @@ constexpr double kGapDriveCommandPower = 0.01;
 // Dados mais antigos não podem autorizar movimento sem referência visual.
 constexpr int kGapEncoderFreshnessMs = 300;
 
-// Horizonte usado para cortar o PWM antes dos 100 mm e compensar a inércia.
+// Horizonte usado para cortar o PWM antes dos 200 mm e compensar a inércia.
 constexpr double kGapBrakePredictionSeconds = 0.14;
 
 // Avanço mínimo dos dois lados que renova a proteção contra travamento.
@@ -243,13 +271,23 @@ constexpr int kGapTraversalTimeoutMs = 3000;
 
 static_assert(kEncoderCountsPerCentimeter > 0.0,
               "A calibração do encoder deve produzir contagens por centímetro positivas.");
+static_assert(kGreenPreTurnDistanceCm > 0.0 &&
+                  kGreenPreTurnCommandPower > 0.0 &&
+                  kGreenPreTurnCommandPower <= kMaxMotorOutput,
+              "O avanço antes da curva verde deve permanecer na faixa segura.");
+static_assert(kGreenIgnoredStraightCommandPower > 0.0 &&
+                  kGreenIgnoredStraightCommandPower <= kMaxMotorOutput,
+              "O comando reto ao ignorar o verde deve permanecer seguro.");
+static_assert(kGreenTurnTargetDegrees > 0.0 &&
+                  kGreenTurnTargetDegrees < 180.0,
+              "A curva verde deve permanecer entre zero e 180 graus.");
+static_assert(kGreenReadingMaximumSamples > 0,
+              "A leitura do verde deve aceitar ao menos um quadro.");
 static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
                   kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
               "A faixa da missão de distância deve ser válida.");
 static_assert(kGapMaximumDistanceCm > 0.0 &&
                   kGapConfirmationSamples > 0 &&
-                  kGapAlignmentTolerance > 0.0 &&
-                  kGapAlignmentTolerance <= 1.0 &&
                   kGapDriveCommandPower > 0.0 &&
                   kGapDriveCommandPower <= kMaxMotorOutput,
               "Os limites da travessia de gap devem permanecer seguros.");

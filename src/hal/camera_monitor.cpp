@@ -160,6 +160,65 @@ bool tryGetJsonBool(
     return false;
 }
 
+bool tryGetJsonString(
+    const std::string& json,
+    const std::string& key,
+    std::string& value)
+{
+    const std::string marker = "\"" + key + "\":";
+    std::size_t valueStart = json.find(marker);
+    if (valueStart == std::string::npos)
+    {
+        return false;
+    }
+    valueStart += marker.size();
+    while (valueStart < json.size() &&
+           (json[valueStart] == ' ' || json[valueStart] == '\t' ||
+            json[valueStart] == '\r' || json[valueStart] == '\n'))
+    {
+        ++valueStart;
+    }
+    if (valueStart >= json.size() || json[valueStart] != '"')
+    {
+        return false;
+    }
+    const std::size_t valueEnd = json.find('"', valueStart + 1);
+    if (valueEnd == std::string::npos)
+    {
+        return false;
+    }
+    value = json.substr(valueStart + 1, valueEnd - valueStart - 1);
+    return true;
+}
+
+bool parseGreenTurnDecision(
+    const std::string& interpretation,
+    GreenTurnDecision& decision)
+{
+    if (interpretation == "SEM_DECISAO" || interpretation == "AMBIGUO" ||
+        interpretation == "VERDE_FALSO_NO_SENTIDO_ATUAL")
+    {
+        decision = GreenTurnDecision::None;
+        return true;
+    }
+    if (interpretation == "ESQUERDA")
+    {
+        decision = GreenTurnDecision::Left80;
+        return true;
+    }
+    if (interpretation == "DIREITA")
+    {
+        decision = GreenTurnDecision::Right80;
+        return true;
+    }
+    if (interpretation == "RETORNO_180")
+    {
+        decision = GreenTurnDecision::TurnAround180;
+        return true;
+    }
+    return false;
+}
+
 bool tryGetJsonUnsignedInteger(
     const std::string& json,
     const std::string& key,
@@ -224,6 +283,10 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.gapAlignmentError = 0.0;
     snapshot.gapReturnValid = false;
     snapshot.gapReturnError = 0.0;
+    snapshot.greenNearSeen = false;
+    snapshot.greenPathBlackValid = false;
+    snapshot.greenConfirmed = false;
+    snapshot.greenTurnDecision = GreenTurnDecision::None;
     if (hasCachedSnapshot)
     {
         snapshot.ageMs =
@@ -279,6 +342,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         const std::string json = content.str();
 
         CameraLineSnapshot candidate;
+        std::string greenInterpretation;
         if (!tryGetJsonBool(json, "nearValid", candidate.nearValid) ||
             !tryGetJsonNumber(json, "nearError", candidate.nearError) ||
             !tryGetJsonNumber(json, "controlError", candidate.controlError) ||
@@ -301,6 +365,16 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json, "gapReturnValid", candidate.gapReturnValid) ||
             !tryGetJsonNumber(
                 json, "gapReturnError", candidate.gapReturnError) ||
+            !tryGetJsonBool(
+                json, "greenNearSeen", candidate.greenNearSeen) ||
+            !tryGetJsonBool(
+                json, "greenPathBlackValid", candidate.greenPathBlackValid) ||
+            !tryGetJsonBool(
+                json, "greenConfirmed", candidate.greenConfirmed) ||
+            !tryGetJsonString(
+                json, "greenInterpretation", greenInterpretation) ||
+            !parseGreenTurnDecision(
+                greenInterpretation, candidate.greenTurnDecision) ||
             !tryGetJsonNumber(json, "lineTimestamp", candidate.lineTimestamp) ||
             !tryGetJsonUnsignedInteger(
                 json, "lineSequence", candidate.lineSequence))
@@ -325,6 +399,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             (!candidate.gapCandidate || candidate.nearValid) &&
             (!candidate.gapAlignmentValid || candidate.gapCandidate) &&
             (!candidate.gapReturnValid || candidate.gapCandidate) &&
+            (!candidate.greenConfirmed ||
+             candidate.greenTurnDecision != GreenTurnDecision::None) &&
             std::isfinite(candidate.lineTimestamp);
         if (!valuesValid)
         {
@@ -364,6 +440,10 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         {
             candidate.gapReturnError = 0.0;
         }
+        if (!candidate.greenConfirmed)
+        {
+            candidate.greenTurnDecision = GreenTurnDecision::None;
+        }
 
         if (!hasCachedLineSnapshot_ ||
             candidate.lineSequence != cachedLineSnapshot_.lineSequence)
@@ -396,6 +476,10 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.gapAlignmentError = 0.0;
             snapshot.gapReturnValid = false;
             snapshot.gapReturnError = 0.0;
+            snapshot.greenNearSeen = false;
+            snapshot.greenPathBlackValid = false;
+            snapshot.greenConfirmed = false;
+            snapshot.greenTurnDecision = GreenTurnDecision::None;
         }
         return snapshot;
     }
