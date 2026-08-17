@@ -1,6 +1,6 @@
 param(
-    [string]$HostName = "raspberrypi.local",
-    [string]$User = "obr",
+    [string]$HostName = "192.168.0.102",
+    [string]$User = "raspberry",
     [string]$ServiceName = "obr-robot",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\obr_raspberry"
 )

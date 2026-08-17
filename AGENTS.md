@@ -420,9 +420,9 @@ If telemetry code has comments, they must be written in Brazilian Portuguese wit
 * Windows deploy entrypoint: `scripts/deploy.ps1`.
 * Linux/macOS deploy entrypoint: `scripts/deploy.sh`.
 * The deployed service name is `obr-robot`.
-* Default robot host is `raspberrypi.local`.
-* Default robot user is `obr`.
-* Default remote directory is `/home/obr/OBR2026K`.
+* Default robot host is `192.168.0.102`.
+* Default robot user is `raspberry`.
+* Default remote directory is `/home/raspberry/OBR2026K`.
 * Deploy scripts should be understandable and commented.
 * Deploy scripts should fail clearly when SSH, build, or service restart fails.
 * Do not hide errors with silent redirects unless there is a clear reason.

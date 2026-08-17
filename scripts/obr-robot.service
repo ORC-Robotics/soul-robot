@@ -7,10 +7,10 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=obr
+User=raspberry
 SupplementaryGroups=gpio
-WorkingDirectory=/home/obr/OBR2026K
-ExecStart=/home/obr/OBR2026K/scripts/run_robot.sh
+WorkingDirectory=/home/raspberry/OBR2026K
+ExecStart=/home/raspberry/OBR2026K/scripts/run_robot.sh
 Restart=always
 RestartSec=2
 

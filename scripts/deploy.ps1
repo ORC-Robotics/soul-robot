@@ -1,7 +1,7 @@
 param(
-    [string]$HostName = "192.168.0.110",
-    [string]$User = "obr",
-    [string]$RemoteDir = "/home/obr/OBR2026K",
+    [string]$HostName = "192.168.0.102",
+    [string]$User = "raspberry",
+    [string]$RemoteDir = "/home/raspberry/OBR2026K",
     [string]$Target = "robot_test",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\obr_raspberry",
     [string]$ServiceName = "obr-robot",
@@ -29,6 +29,7 @@ $remote = "$User@$HostName"
 $remoteBuild = "$RemoteDir/build"
 $remoteStagingBuild = "$RemoteDir/.build-staging"
 $remoteCameraPattern = "$RemoteDir/scripts/[c]amera_line_frame.py"
+$remoteForwardCameraPattern = "$RemoteDir/scripts/[f]orward_camera_stream.py"
 $remoteRunScript = "$RemoteDir/scripts/run_robot.sh"
 $sshArgs = @()
 $scpArgs = @()
@@ -75,7 +76,7 @@ Invoke-Checked ssh @($sshArgs + @($remote, $atomicBuildCommand))
 
 Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"
 
-$stopOldCameraCommand = "pkill -f '$remoteCameraPattern' >/dev/null 2>&1 || true"
+$stopOldCameraCommand = "pkill -f '$remoteCameraPattern' >/dev/null 2>&1 || true; pkill -f '$remoteForwardCameraPattern' >/dev/null 2>&1 || true"
 $prepareScriptsCommand = "cd '$RemoteDir' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$remoteRunScript'"
 $installServiceCommand = "$prepareScriptsCommand && sudo cp '$RemoteDir/scripts/$ServiceName.service' '/etc/systemd/system/$ServiceName.service' && sudo systemctl daemon-reload && sudo systemctl enable $ServiceName.service >/dev/null 2>&1"
 $restartServiceCommand = "$installServiceCommand && sudo systemctl restart $ServiceName.service"

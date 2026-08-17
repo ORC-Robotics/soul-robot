@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-raspberrypi.local}"
-USER_NAME="${USER_NAME:-obr}"
+HOST_NAME="${HOST_NAME:-192.168.0.102}"
+USER_NAME="${USER_NAME:-raspberry}"
 SERVICE_NAME="${SERVICE_NAME:-obr-robot}"
 KEY_PATH="${KEY_PATH:-$HOME/.ssh/obr_raspberry}"
 

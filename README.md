@@ -257,7 +257,7 @@ Na pasta do projeto:
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1
 ```
 
-O deploy copia o código para `/home/obr/OBR2026K`, para o serviço e compila em
+O deploy copia o código para `/home/raspberry/OBR2026K`, para o serviço e compila em
 `.build-staging`. O executável em uso só é substituído depois que o novo build
 termina e passa pela validação de tamanho e permissão. A troca é atômica: se a
 compilação falhar ou for interrompida, um binário parcial ou vazio nunca é
@@ -267,7 +267,7 @@ instalado e o robô permanece parado. Depois da troca, o deploy reinicia o servi
 Se precisar escolher o host manualmente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.110
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.102
 ```
 
 Para apenas enviar e compilar, sem iniciar o robô:
@@ -282,7 +282,7 @@ pedida só nessa configuração inicial:
 
 ```powershell
 ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\obr_raspberry" -N ""
-Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh obr@raspberrypi.local "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh raspberry@192.168.0.102 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
 ```
 
 ## Deploy pelo Linux/macOS
@@ -301,7 +301,7 @@ No Linux/macOS, use a mesma chave esperada pelo script:
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/obr_raspberry -N ""
-ssh-copy-id -i ~/.ssh/obr_raspberry.pub obr@raspberrypi.local
+ssh-copy-id -i ~/.ssh/obr_raspberry.pub raspberry@192.168.0.102
 ```
 
 ## Botão de deploy local
@@ -360,7 +360,7 @@ journalctl -u obr-robot -f
 Depois do serviço subir, abra:
 
 ```txt
-http://raspberrypi.local:8080
+http://192.168.0.102:8080
 ```
 
 Se o nome não resolver na rede, use o IP atual da Raspberry:
@@ -438,7 +438,7 @@ O dashboard mostra a imagem direta da câmera pelo stream MJPEG na própria port
 dashboard:
 
 ```txt
-http://raspberrypi.local:8080/camera-stream.mjpg
+http://192.168.0.102:8080/camera-stream.mjpg
 ```
 
 O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
@@ -453,7 +453,7 @@ gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando
 modo físico `1920x1080` de 10 bits, pela rota:
 
 ```txt
-http://raspberrypi.local:8080/forward-camera-stream.mjpg
+http://192.168.0.102:8080/forward-camera-stream.mjpg
 ```
 
 Ao usar `DESATIVAR`, o Picamera2 é encerrado e a CAM1 é liberada; permanece apenas
@@ -473,7 +473,7 @@ desligado. O dashboard envia o mesmo controle pelo WebSocket com
 `{"command":"set_forward_camera","enabled":true}` ou `false`.
 
 ```sh
-cd /home/obr/OBR2026K
+cd /home/raspberry/OBR2026K
 python3 scripts/camera_line_frame.py
 ```
 
@@ -504,7 +504,7 @@ systemd com `Environment=OBR_CAMERA_ROLE=down` ou
 Se estiver em outra pasta, use o caminho completo:
 
 ```sh
-python3 /home/obr/OBR2026K/scripts/camera_line_frame.py
+python3 /home/raspberry/OBR2026K/scripts/camera_line_frame.py
 ```
 
 O script publica a máscara e os diagnósticos da linha usados pelo restante do
@@ -521,7 +521,7 @@ arquivo de serviço, reinstale uma vez pelo computador de desenvolvimento:
 bash scripts/install-service.sh
 ```
 
-Se você já estiver no terminal da Raspberry, dentro de `/home/obr/OBR2026K`, use:
+Se você já estiver no terminal da Raspberry, dentro de `/home/raspberry/OBR2026K`, use:
 
 ```sh
 sudo cp scripts/obr-robot.service /etc/systemd/system/obr-robot.service

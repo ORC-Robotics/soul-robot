@@ -2194,7 +2194,6 @@ std::string DashboardServer::dashboardHtml()
 
     async function refreshForwardCameraStatus() {
       const camera = cameras.forward;
-      const wasStreaming = camera.enabled && camera.active;
       try {
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("forward camera status unavailable");
@@ -2238,7 +2237,11 @@ std::string DashboardServer::dashboardHtml()
 
       updateForwardCameraButtons();
       const isStreaming = camera.enabled && camera.active;
-      if (cameraIsVisible("forward") && wasStreaming !== isStreaming) {
+      const streamIsMounted = mountedCameraImages.has("forward");
+      // O estado do processo e o elemento exibido podem chegar em ordens
+      // diferentes. A comparação com o DOM corrige essa corrida sem reabrir
+      // conexões MJPEG que já estejam funcionando.
+      if (cameraIsVisible("forward") && streamIsMounted !== isStreaming) {
         renderCameraView(activeCameraView);
       }
     }
@@ -2295,6 +2298,9 @@ void DashboardServer::sendHttpResponse(SocketHandle client, const std::string& c
     response << "HTTP/1.1 200 OK\r\n"
              << "Content-Type: " << contentType << "\r\n"
              << "Content-Length: " << content.size() << "\r\n"
+             << "Cache-Control: no-store, no-cache, must-revalidate\r\n"
+             << "Pragma: no-cache\r\n"
+             << "Expires: 0\r\n"
              << "Connection: close\r\n\r\n"
              << content;
 

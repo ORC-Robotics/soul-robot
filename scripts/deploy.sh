@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-raspberrypi.local}"
-USER_NAME="${USER_NAME:-obr}"
-REMOTE_DIR="${REMOTE_DIR:-/home/obr/OBR2026K}"
+HOST_NAME="${HOST_NAME:-192.168.0.102}"
+USER_NAME="${USER_NAME:-raspberry}"
+REMOTE_DIR="${REMOTE_DIR:-/home/raspberry/OBR2026K}"
 TARGET="${TARGET:-robot_test}"
 RUN_ROBOT="${RUN_ROBOT:-1}"
 KEY_PATH="${KEY_PATH:-$HOME/.ssh/obr_raspberry}"
@@ -68,6 +68,7 @@ REMOTE="${USER_NAME}@${HOST_NAME}"
 REMOTE_BUILD="${REMOTE_DIR}/build"
 REMOTE_STAGING_BUILD="${REMOTE_DIR}/.build-staging"
 REMOTE_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[c]amera_line_frame.py"
+REMOTE_FORWARD_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[f]orward_camera_stream.py"
 REMOTE_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_robot.sh"
 SSH_ARGS=()
 SCP_ARGS=()
@@ -95,7 +96,7 @@ ssh "${SSH_ARGS[@]}" "$REMOTE" "$atomic_build_command"
 
 echo "Deploy complete: ${REMOTE}:${REMOTE_BUILD}/${TARGET}"
 
-stop_old_camera_command="pkill -f '$REMOTE_CAMERA_PATTERN' >/dev/null 2>&1 || true"
+stop_old_camera_command="pkill -f '$REMOTE_CAMERA_PATTERN' >/dev/null 2>&1 || true; pkill -f '$REMOTE_FORWARD_CAMERA_PATTERN' >/dev/null 2>&1 || true"
 prepare_scripts_command="cd '$REMOTE_DIR' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$REMOTE_RUN_SCRIPT'"
 install_service_command="$prepare_scripts_command && sudo cp '$REMOTE_DIR/scripts/${SERVICE_NAME}.service' '/etc/systemd/system/${SERVICE_NAME}.service' && sudo systemctl daemon-reload && sudo systemctl enable '${SERVICE_NAME}.service'"
 restart_service_command="$install_service_command && sudo systemctl restart '${SERVICE_NAME}.service'"
