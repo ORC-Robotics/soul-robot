@@ -2205,10 +2205,6 @@ std::string DashboardServer::dashboardHtml()
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("forward camera status unavailable");
         const data = await response.json();
-        if (!Number.isFinite(Number(data.timestamp)) ||
-            Math.abs(Date.now() / 1000 - Number(data.timestamp)) > 2) {
-          throw new Error("forward camera status is stale");
-        }
         const backendEnabled = data.enabled === true;
         const backendActive = data.active === true;
         const backendFailed = data.state === "error";
@@ -2247,17 +2243,15 @@ std::string DashboardServer::dashboardHtml()
           ? `CAM1 ativa · ${camera.metadata.resolution} · sensor ${camera.metadata.sensor} · ${camera.metadata.fps} FPS`
           : "CAM1 desligada · captura e processamento frontal suspensos";
       } catch {
-        const keepOptimisticState = camera.transitioning &&
-          Date.now() < camera.transitionDeadlineMs;
-        if (!keepOptimisticState) {
-          camera.active = false;
+        // A telemetria confirma o estado, mas não controla o stream. Se essa
+        // consulta falhar, a imagem deve continuar no estado pedido pelo usuário.
+        if (camera.transitioning && Date.now() >= camera.transitionDeadlineMs) {
           camera.transitioning = false;
-          camera.error = "O gerenciador da câmera frontal não respondeu.";
-          setCameraStatus("forward", "OFFLINE");
         }
-        forwardCameraTelemetry.textContent = keepOptimisticState
-          ? "Aguardando a confirmação da CAM1…"
-          : camera.error;
+        camera.error = "A telemetria da câmera frontal não respondeu.";
+        forwardCameraTelemetry.textContent = camera.enabled
+          ? "CAM1 ativa · stream mantido; telemetria frontal indisponível"
+          : "CAM1 desligada · telemetria frontal indisponível";
       }
 
       updateForwardCameraButtons();
