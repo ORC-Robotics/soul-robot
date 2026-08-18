@@ -270,7 +270,7 @@ instalado e o robô permanece parado. Depois da troca, o deploy reinicia o servi
 Se precisar escolher o host manualmente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.102
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.104
 ```
 
 Para apenas enviar e compilar, sem iniciar o robô:
@@ -285,7 +285,7 @@ pedida só nessa configuração inicial:
 
 ```powershell
 ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\obr_raspberry" -N ""
-Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh raspberry@192.168.0.102 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh raspberry@192.168.0.104 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
 ```
 
 ## Deploy pelo Linux/macOS
@@ -304,7 +304,7 @@ No Linux/macOS, use a mesma chave esperada pelo script:
 
 ```sh
 ssh-keygen -t ed25519 -f ~/.ssh/obr_raspberry -N ""
-ssh-copy-id -i ~/.ssh/obr_raspberry.pub raspberry@192.168.0.102
+ssh-copy-id -i ~/.ssh/obr_raspberry.pub raspberry@192.168.0.104
 ```
 
 ## Botão de deploy local
@@ -361,12 +361,6 @@ journalctl -u obr-robot -f
 ## Dashboard
 
 Depois do serviço subir, abra:
-
-```txt
-http://192.168.0.102:8080
-```
-
-Se o nome não resolver na rede, use o IP atual da Raspberry:
 
 ```txt
 http://192.168.0.104:8080
@@ -441,7 +435,7 @@ O dashboard mostra a imagem direta da câmera pelo stream MJPEG na própria port
 dashboard:
 
 ```txt
-http://192.168.0.102:8080/camera-stream.mjpg
+http://192.168.0.104:8080/camera-stream.mjpg
 ```
 
 O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
@@ -456,7 +450,7 @@ gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando
 modo físico `1920x1080` de 10 bits, pela rota:
 
 ```txt
-http://192.168.0.102:8080/forward-camera-stream.mjpg
+http://192.168.0.104:8080/forward-camera-stream.mjpg
 ```
 
 Ao usar `DESATIVAR`, o Picamera2 é encerrado e a CAM1 é liberada; permanece apenas

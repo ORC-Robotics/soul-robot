@@ -25,7 +25,6 @@ private:
     {
         TrackingNear,
         TurningAtGreenMarker,
-        DrivingBeforeGreenTurn,
         TurningAhead,
         CrossingGap,
         ReacquiringNear,
@@ -44,15 +43,6 @@ private:
     LineFollowState state_ = LineFollowState::TrackingNear;
     ImuTurnController greenTurnController_;
     bool greenDecisionLatched_ = false;
-    bool greenReadingActive_ = false;
-    int greenReadingSamples_ = 0;
-    double greenTurnTargetDegrees_ = 0.0;
-    ImuTurnDirection greenTurnDirection_ = ImuTurnDirection::Right;
-    long long greenPreTurnStartLeftCount_ = 0;
-    long long greenPreTurnStartRightCount_ = 0;
-    double greenPreTurnLastProgressCounts_ = 0.0;
-    std::chrono::steady_clock::time_point greenPreTurnStartedAt_{};
-    std::chrono::steady_clock::time_point greenPreTurnLastProgressAt_{};
     LineDirection lastSignificantDirection_ = LineDirection::Unknown;
     LineDirection searchDirection_ = LineDirection::Unknown;
     double lastValidError_ = 0.0;
@@ -70,17 +60,7 @@ private:
     bool totalLossActive_ = false;
     std::chrono::steady_clock::time_point nearLostAt_{};
     std::chrono::steady_clock::time_point totalLossStartedAt_{};
-    int consecutiveGapCandidateSamples_ = 0;
-    int consecutiveGapNearReturnSamples_ = 0;
-    int consecutiveGapFarReturnSamples_ = 0;
     bool gapNearLossObserved_ = false;
-    bool gapReturnRecoveryActive_ = false;
-    bool gapSearchRecoveryActive_ = false;
-    long long gapStartLeftCount_ = 0;
-    long long gapStartRightCount_ = 0;
-    double gapLastProgressCounts_ = 0.0;
-    std::chrono::steady_clock::time_point gapStartedAt_{};
-    std::chrono::steady_clock::time_point gapLastProgressAt_{};
 
     void transitionTo(LineFollowState nextState);
     bool updateGreenTurn(
@@ -88,9 +68,6 @@ private:
         const Esp32TelemetrySnapshot& esp32Telemetry,
         const CameraLineSnapshot& cameraLineSnapshot,
         bool newLineSample);
-    bool updateGreenPreTurnDrive(
-        RobotState& robotState,
-        const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetGapTracking();
     void updateDirectionMemory(double error);
     LineDirection chooseSearchDirection();

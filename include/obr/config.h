@@ -77,7 +77,7 @@ constexpr double kMaxMotorOutput = 1.0;
 
 // Menor potência operacional usada para mover qualquer lado do robô.
 // Zero continua sendo parada real; comandos não nulos menores são elevados a 0,65.
-constexpr double kOperationalMinimumMotorPower = 0.65;
+constexpr double kOperationalMinimumMotorPower = 0.69;
 
 // Maior referência operacional aceita antes da correção pelos encoders.
 // O valor coincide com o limite absoluto do protocolo para liberar todo o PWM.
@@ -123,9 +123,9 @@ constexpr int kCameraStatusTimeoutMs = 400;
 // Ângulo-alvo, em graus, da missão de teste que gira o robô para a direita.
 constexpr double kTurn90TargetDegrees = 90.0;
 
-// Ângulo, em graus, das curvas comandadas pelos marcadores verdes laterais.
-// Este valor é independente da missão de diagnóstico de 90° do dashboard.
-constexpr double kGreenTurnTargetDegrees = 80.0;
+// Ângulo, em graus, do retorno comandado por dois marcadores verdes.
+// O IMU encerra o giro; nenhum tempo fixo pode manter os motores ligados.
+constexpr double kGreenTurnAroundTargetDegrees = 180.0;
 
 // Margem, em graus, usada para parar antes de ultrapassar demais o alvo.
 // Ajuste após testar a inércia real das rodas no piso da competição.
@@ -181,30 +181,6 @@ constexpr double kEncoderCalibrationDistanceCm = 18.7;
 constexpr double kEncoderCountsPerCentimeter =
     kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
 
-// Distância, em centímetros, percorrida antes de uma curva verde de 80°.
-// O retorno de 180° não usa este avanço preparatório.
-constexpr double kGreenPreTurnDistanceCm = 5.0;
-
-// Comando lógico usado no avanço antes da curva. O perfil operacional aplica o
-// piso seguro dos motores e mantém a sincronização das duas rodas pelos encoders.
-constexpr double kGreenPreTurnCommandPower = 0.01;
-
-// Comando reto aplicado quando há verde próximo, mas a região acima está
-// branca. Potências iguais impedem que esse falso marcador provoque uma curva.
-constexpr double kGreenIgnoredStraightCommandPower = 0.01;
-
-// Proteções do avanço de 5 cm. Telemetria antiga, roda travada ou tempo
-// excessivo encerram a missão com os motores zerados.
-constexpr int kGreenPreTurnEncoderFreshnessMs = 300;
-constexpr double kGreenPreTurnBrakePredictionSeconds = 0.14;
-constexpr double kGreenPreTurnMinimumProgressCounts = 10.0;
-constexpr int kGreenPreTurnStallTimeoutMs = 1500;
-constexpr int kGreenPreTurnTimeoutMs = 5000;
-
-// Quantidade máxima de quadros novos durante a parada para leitura do verde.
-// Se nenhuma curva for confirmada nesse intervalo, o segue-faixa é retomado.
-constexpr int kGreenReadingMaximumSamples = 3;
-
 // Distância inicial e faixa aceitas pelo modo de percurso por encoder.
 // O limite evita comandos acidentais excessivamente longos pelo dashboard.
 constexpr double kDriveDistanceDefaultTargetCm = 20.0;
@@ -241,56 +217,20 @@ constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
 // Tempo máximo da missão. Evita movimento indefinido se um encoder falhar.
 constexpr int kDriveDistanceTimeoutMs = 60000;
 
-// Distância máxima, em centímetros, permitida durante a travessia de um gap.
-// O controle usa a roda que mais avançou para nenhuma lateral ultrapassar 200 mm.
-constexpr double kGapMaximumDistanceCm = 20.0;
-
-// Quantidade de frames novos exigida para confirmar o gap e o reencontro da
-// fita. A confirmação evita agir sobre um único frame com ruído.
-constexpr int kGapConfirmationSamples = 3;
-
 // Comando lógico de avanço reto durante o gap. O perfil operacional transforma
 // este valor no piso de 0,65 e mantém o sincronismo dos dois lados por encoder.
 constexpr double kGapDriveCommandPower = 0.01;
 
-// Idade máxima, em milissegundos, da telemetria usada para limitar a travessia.
-// Dados mais antigos não podem autorizar movimento sem referência visual.
-constexpr int kGapEncoderFreshnessMs = 300;
-
-// Horizonte usado para cortar o PWM antes dos 200 mm e compensar a inércia.
-constexpr double kGapBrakePredictionSeconds = 0.14;
-
-// Avanço mínimo dos dois lados que renova a proteção contra travamento.
-// Se uma roda não avançar, o robô para em vez de descrever um arco no gap.
-constexpr double kGapMinimumProgressCounts = 10.0;
-constexpr int kGapStallTimeoutMs = 1500;
-
-// Tempo absoluto máximo da travessia. Ele limita o movimento mesmo se uma
-// leitura defeituosa dos encoders aparentar progresso contínuo insuficiente.
-constexpr int kGapTraversalTimeoutMs = 3000;
-
 static_assert(kEncoderCountsPerCentimeter > 0.0,
               "A calibração do encoder deve produzir contagens por centímetro positivas.");
-static_assert(kGreenPreTurnDistanceCm > 0.0 &&
-                  kGreenPreTurnCommandPower > 0.0 &&
-                  kGreenPreTurnCommandPower <= kMaxMotorOutput,
-              "O avanço antes da curva verde deve permanecer na faixa segura.");
-static_assert(kGreenIgnoredStraightCommandPower > 0.0 &&
-                  kGreenIgnoredStraightCommandPower <= kMaxMotorOutput,
-              "O comando reto ao ignorar o verde deve permanecer seguro.");
-static_assert(kGreenTurnTargetDegrees > 0.0 &&
-                  kGreenTurnTargetDegrees < 180.0,
-              "A curva verde deve permanecer entre zero e 180 graus.");
-static_assert(kGreenReadingMaximumSamples > 0,
-              "A leitura do verde deve aceitar ao menos um quadro.");
+static_assert(kGreenTurnAroundTargetDegrees == 180.0,
+              "O retorno verde duplo deve completar 180 graus.");
 static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
                   kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
               "A faixa da missão de distância deve ser válida.");
-static_assert(kGapMaximumDistanceCm > 0.0 &&
-                  kGapConfirmationSamples > 0 &&
-                  kGapDriveCommandPower > 0.0 &&
+static_assert(kGapDriveCommandPower > 0.0 &&
                   kGapDriveCommandPower <= kMaxMotorOutput,
-              "Os limites da travessia de gap devem permanecer seguros.");
+              "O comando da travessia de gap deve permanecer na faixa normalizada.");
 
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.

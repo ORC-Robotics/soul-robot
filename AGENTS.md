@@ -420,7 +420,7 @@ If telemetry code has comments, they must be written in Brazilian Portuguese wit
 * Windows deploy entrypoint: `scripts/deploy.ps1`.
 * Linux/macOS deploy entrypoint: `scripts/deploy.sh`.
 * The deployed service name is `obr-robot`.
-* Default robot host is `192.168.0.102`.
+* Default robot host is `192.168.0.104`.
 * Default robot user is `raspberry`.
 * Default remote directory is `/home/raspberry/OBR2026K`.
 * Deploy scripts should be understandable and commented.

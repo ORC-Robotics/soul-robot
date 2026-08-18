@@ -213,19 +213,22 @@ def resolve_green_experiment_mode(
 
 # Limites iniciais deliberadamente amplos para o verde. Estes valores ainda
 # precisam de calibração física sob a iluminação da pista da competição.
-GREEN_HUE_MIN = 35
+GREEN_HUE_MIN = 40
 GREEN_HUE_MAX = 90
 GREEN_SATURATION_MIN = 70
-GREEN_VALUE_MIN = 50
-GREEN_OPEN_KERNEL_SIZE = 3
+GREEN_VALUE_MIN = 60
+GREEN_OPEN_KERNEL_SIZE = 5
 GREEN_CLOSE_KERNEL_SIZE = 5
+GREEN_OPEN_ITERATIONS = 2
+GREEN_CLOSE_ITERATIONS = 2
+# O detector de referência exige que o verde ocupe mais de 6,25% da região
+# estrutural. Como a área cresce com a resolução, este limite não fica preso
+# aos 4.000 pixels usados originalmente em 320 x 200.
+GREEN_MIN_AREA_RATIO = 4000.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
 GREEN_ASPECT_RATIO_MAX = 1.0
-# Distância lateral máxima entre os centros NEAR e FAR para considerar que o
-# preto superior ainda pertence ao mesmo encontro, em pixels da imagem 640x480.
-GREEN_PATH_MAX_CENTER_DELTA_PX = 160.0
 GREEN_MIN_EXTENT = 0.35
 GREEN_PARTIAL_BORDER_TOLERANCE_PX = 4
 GREEN_PARTIAL_AREA_FACTOR = 0.40
@@ -237,13 +240,27 @@ GREEN_LINE_AXIS_MIN_LENGTH_PX = 20.0
 GREEN_SIDE_MIN_DISTANCE_PX = 5.0
 GREEN_LINE_DISTANCE_MAX_RATIO = 4.0
 GREEN_MARKER_TO_LINE_MIN_RATIO = 0.40
-GREEN_MARKER_TO_LINE_MAX_RATIO = 3.0
+GREEN_MARKER_TO_LINE_MAX_RATIO = 10.0
 GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS = 2.5
 GREEN_ENCOUNTER_DISTANCE_LINE_WIDTHS = 8.0
 GREEN_CONFIRMATION_FRAMES = 3
 GREEN_SINGLE_OBSERVATION_FRAMES = 3
 GREEN_CLEAR_HYSTERESIS_FRAMES = 2
 GREEN_TOPOLOGY_SAMPLE_STEP = 2
+# Cada ROI verde possui 10% da largura da imagem em cada lado. A metade abaixo
+# reproduz width // 20 do detector de referência sem fixar a resolução.
+GREEN_ROI_HALF_SIZE_DIVISOR = 20
+# Pelo menos metade da ROI nominal deve existir dentro da imagem. Uma amostra
+# menor poderia aceitar ruído de borda como se fosse a faixa preta.
+GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
+# Fração mínima de pixels ativos do componente preto em cada ROI.
+GREEN_ROI_MIN_BLACK_RATIO = 0.25
+# O alvo lateral usa 30 pixels em 320 de largura no detector de referência.
+GREEN_GUIDANCE_TARGET_OFFSET_RATIO = 30.0 / 320.0
+# Mantém a orientação durante meio segundo depois da última leitura válida.
+GREEN_DIRECTION_RETENTION_SECONDS = 0.5
+# A aproximação limita 70 unidades de velocidade a 50 no código de referência.
+GREEN_APPROACH_SPEED_RATIO = 50.0 / 70.0
 
 GREEN_OBSERVATION_STATES = {
     "SEM_VERDE",
@@ -256,6 +273,7 @@ GREEN_INTERPRETATIONS = {
     "ESQUERDA",
     "DIREITA",
     "RETORNO_180",
+    "APROXIMACAO",
     "VERDE_FALSO_NO_SENTIDO_ATUAL",
     "AMBIGUO",
 }
@@ -556,6 +574,7 @@ def green_status_overlay(green_processing_enabled, green_status):
         "ESQUERDA": "ESQUERDA",
         "DIREITA": "DIREITA",
         "RETORNO_180": "RETORNO 180 GRAUS",
+        "APROXIMACAO": "APROXIMANDO DO VERDE",
         "VERDE_FALSO_NO_SENTIDO_ATUAL": "FALSO NO SENTIDO ATUAL",
         "AMBIGUO": "AMBIGUO",
     }[interpretation]
@@ -1290,8 +1309,18 @@ def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
         cv2.MORPH_RECT,
         (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
     )
-    green_mask = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, open_kernel)
-    return cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, close_kernel)
+    green_mask = cv2.morphologyEx(
+        green_mask,
+        cv2.MORPH_OPEN,
+        open_kernel,
+        iterations=GREEN_OPEN_ITERATIONS,
+    )
+    return cv2.morphologyEx(
+        green_mask,
+        cv2.MORPH_CLOSE,
+        close_kernel,
+        iterations=GREEN_CLOSE_ITERATIONS,
+    )
 
 
 def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
@@ -1326,10 +1355,16 @@ def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
             (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
         )
         final_mask = cv2.morphologyEx(
-            final_mask, cv2.MORPH_OPEN, open_kernel
+            final_mask,
+            cv2.MORPH_OPEN,
+            open_kernel,
+            iterations=GREEN_OPEN_ITERATIONS,
         )
         final_mask = cv2.morphologyEx(
-            final_mask, cv2.MORPH_CLOSE, close_kernel
+            final_mask,
+            cv2.MORPH_CLOSE,
+            close_kernel,
+            iterations=GREEN_CLOSE_ITERATIONS,
         )
     return hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask
 
@@ -1650,6 +1685,9 @@ def find_green_candidates(
 
     candidates = []
     rejected = []
+    scaled_minimum_area = green_minimum_area(
+        frame.shape[1], green_mask.shape[0]
+    )
     for contour in merged_contours:
         description = describe_green_contour(
             contour,
@@ -1659,7 +1697,15 @@ def find_green_candidates(
             line_axis,
             sampled_line_points,
         )
-        if not description["geometry_valid"]:
+        description["scaled_minimum_area"] = scaled_minimum_area
+        description["scaled_area_valid"] = (
+            description["area"] > scaled_minimum_area
+        )
+        # O teste estrito preserva o comportamento original de area > 4000.
+        if (
+            not description["scaled_area_valid"]
+            or not description["geometry_valid"]
+        ):
             rejected.append(description)
             continue
         vote_state, _reason = classify_green_candidate_vote(
@@ -1675,6 +1721,12 @@ def find_green_candidates(
             time.perf_counter() - contours_started
         ) * 1000.0
     return green_mask, candidates, rejected
+
+
+def green_minimum_area(frame_width, useful_height):
+    """Escala os 4.000 px de referência pela área útil da resolução atual."""
+
+    return float(frame_width) * float(useful_height) * GREEN_MIN_AREA_RATIO
 
 
 def camera_array_rgb_channels(frame):
@@ -1726,6 +1778,8 @@ def green_geometry_rejection_reasons(candidate):
         minimum_extent = GREEN_PARTIAL_EXTENT_MIN
 
     reasons = []
+    if not candidate.get("scaled_area_valid", True):
+        reasons.append("area_below_scaled_reference")
     if not math.isfinite(candidate["area"]) or candidate["area"] < minimum_area:
         reasons.append("area_below_minimum")
     if candidate["short_side"] < minimum_dimension:
@@ -2430,6 +2484,299 @@ def actionable_green_candidates(candidates, band_start_y, band_end_y, line_axis)
     ]
 
 
+def select_near_connected_black_mask(
+    line_mask,
+    green_mask,
+    selected_near_contour,
+    near_band_start_y,
+):
+    """Mantém somente o componente preto que realmente alcança a banda NEAR."""
+
+    selected_mask = np.zeros_like(line_mask, dtype=np.uint8)
+    if (
+        line_mask is None
+        or line_mask.size == 0
+        or selected_near_contour is None
+    ):
+        return selected_mask
+
+    # A máscara verde é removida antes da conectividade para impedir que um
+    # marcador escuro una regiões pretas que não pertencem à mesma faixa.
+    black_without_green = np.where(line_mask > 0, 255, 0).astype(np.uint8)
+    useful_height = min(black_without_green.shape[0], green_mask.shape[0])
+    useful_width = min(black_without_green.shape[1], green_mask.shape[1])
+    black_without_green[:useful_height, :useful_width][
+        green_mask[:useful_height, :useful_width] > 0
+    ] = 0
+
+    component_count, labels = cv2.connectedComponents(
+        black_without_green,
+        connectivity=8,
+    )
+    if component_count <= 1:
+        return selected_mask
+
+    near_selector = np.zeros_like(black_without_green)
+    translated_contour = selected_near_contour.copy()
+    translated_contour[:, 0, 1] += int(near_band_start_y)
+    cv2.drawContours(
+        near_selector,
+        [translated_contour],
+        -1,
+        255,
+        cv2.FILLED,
+    )
+    overlapping_labels = labels[near_selector > 0]
+    overlapping_labels = overlapping_labels[overlapping_labels > 0]
+    if overlapping_labels.size == 0:
+        return selected_mask
+
+    label_counts = np.bincount(overlapping_labels)
+    selected_label = int(np.argmax(label_counts))
+    selected_mask[labels == selected_label] = 255
+    return selected_mask
+
+
+def green_marker_roi_geometry(contour, frame_width):
+    """Calcula os pontos médios e as três ROIs do retângulo verde rotacionado."""
+
+    box = cv2.boxPoints(cv2.minAreaRect(contour))
+    points = [tuple(float(value) for value in point) for point in box]
+    top_points = sorted(points, key=lambda point: point[1])[:2]
+    left_points = sorted(points, key=lambda point: point[0])[:2]
+    right_points = sorted(points, key=lambda point: point[0])[-2:]
+
+    def midpoint(pair):
+        return (
+            int(round(sum(point[0] for point in pair) / 2.0)),
+            int(round(sum(point[1] for point in pair) / 2.0)),
+        )
+
+    top_x, top_y = midpoint(top_points)
+    left_x, left_y = midpoint(left_points)
+    right_x, right_y = midpoint(right_points)
+    half_size = max(1, int(frame_width) // GREEN_ROI_HALF_SIZE_DIVISOR)
+
+    # A ROI superior tem x centralizado em top_x. Em y, ela termina exatamente
+    # em top_y e sobe 2 * half_size pixels, sem criar distância até o marcador.
+    upper_roi = (
+        top_x - half_size,
+        top_y - 2 * half_size,
+        top_x + half_size,
+        top_y,
+    )
+    # A ROI esquerda termina em left_x e usa left_y como centro vertical.
+    # Preto nessa região significa que o verde está à direita da linha.
+    left_roi = (
+        left_x - 2 * half_size,
+        left_y - half_size,
+        left_x,
+        left_y + half_size,
+    )
+    # A ROI direita começa em right_x e usa right_y como centro vertical.
+    # Preto nessa região significa que o verde está à esquerda da linha.
+    right_roi = (
+        right_x,
+        right_y - half_size,
+        right_x + 2 * half_size,
+        right_y + half_size,
+    )
+    return {
+        "box": box,
+        "top_midpoint": (top_x, top_y),
+        "left_midpoint": (left_x, left_y),
+        "right_midpoint": (right_x, right_y),
+        "upper_roi": upper_roi,
+        "left_roi": left_roi,
+        "right_roi": right_roi,
+    }
+
+
+def measure_black_roi(black_mask, roi):
+    """Mede preto somente quando ao menos metade da ROI permanece na imagem."""
+
+    x1, y1, x2, y2 = (int(value) for value in roi)
+    nominal_width = max(0, x2 - x1)
+    nominal_height = max(0, y2 - y1)
+    nominal_area = nominal_width * nominal_height
+    if black_mask is None or black_mask.size == 0 or nominal_area <= 0:
+        return {"valid": False, "black_ratio": 0.0, "visible_ratio": 0.0}
+
+    clipped_x1 = max(0, min(black_mask.shape[1], x1))
+    clipped_y1 = max(0, min(black_mask.shape[0], y1))
+    clipped_x2 = max(0, min(black_mask.shape[1], x2))
+    clipped_y2 = max(0, min(black_mask.shape[0], y2))
+    visible_width = max(0, clipped_x2 - clipped_x1)
+    visible_height = max(0, clipped_y2 - clipped_y1)
+    visible_area = visible_width * visible_height
+    visible_ratio = visible_area / nominal_area
+    if visible_area <= 0 or visible_ratio < GREEN_ROI_MIN_VISIBLE_RATIO:
+        return {
+            "valid": False,
+            "black_ratio": 0.0,
+            "visible_ratio": visible_ratio,
+        }
+
+    region = black_mask[clipped_y1:clipped_y2, clipped_x1:clipped_x2]
+    black_ratio = float(np.count_nonzero(region > 0)) / visible_area
+    return {
+        "valid": black_ratio >= GREEN_ROI_MIN_BLACK_RATIO,
+        "black_ratio": black_ratio,
+        "visible_ratio": visible_ratio,
+    }
+
+
+def analyze_green_marker_contours(green_contours, selected_black_mask):
+    """Classifica os marcadores pela ROI superior e depois pelas laterais."""
+
+    result = {
+        "action": "SEGUIR_LINHA",
+        "interpretation": "SEM_DECISAO",
+        "observation_state": "SEM_VERDE",
+        "left_seen": False,
+        "right_seen": False,
+        "pair_compatible": False,
+        "path_black_valid": False,
+        "markers": [],
+    }
+    if selected_black_mask is None or selected_black_mask.size == 0:
+        return result
+
+    upper_valid_markers = []
+    for contour in green_contours:
+        geometry = green_marker_roi_geometry(
+            contour,
+            selected_black_mask.shape[1],
+        )
+        upper_measurement = measure_black_roi(
+            selected_black_mask,
+            geometry["upper_roi"],
+        )
+        marker = {
+            "contour": contour,
+            "geometry": geometry,
+            "upper": upper_measurement,
+        }
+        result["markers"].append(marker)
+        if upper_measurement["valid"]:
+            upper_valid_markers.append(marker)
+
+    result["observation_state"] = green_observation_state(
+        len(upper_valid_markers)
+    )
+    if not upper_valid_markers:
+        return result
+
+    result["path_black_valid"] = True
+    if len(upper_valid_markers) >= 2:
+        result.update({
+            "action": "FAZER_180",
+            "interpretation": "RETORNO_180",
+            "left_seen": True,
+            "right_seen": True,
+            "pair_compatible": True,
+        })
+        return result
+
+    marker = upper_valid_markers[0]
+    if marker["geometry"]["top_midpoint"][1] < selected_black_mask.shape[0] // 3:
+        result.update({
+            "action": "APROXIMAR",
+            "interpretation": "APROXIMACAO",
+        })
+        return result
+
+    marker["left"] = measure_black_roi(
+        selected_black_mask,
+        marker["geometry"]["left_roi"],
+    )
+    marker["right"] = measure_black_roi(
+        selected_black_mask,
+        marker["geometry"]["right_roi"],
+    )
+    if marker["left"]["valid"]:
+        result.update({
+            "action": "VIRAR_DIREITA",
+            "interpretation": "DIREITA",
+            "right_seen": True,
+        })
+    elif marker["right"]["valid"]:
+        result.update({
+            "action": "VIRAR_ESQUERDA",
+            "interpretation": "ESQUERDA",
+            "left_seen": True,
+        })
+    else:
+        result["path_black_valid"] = False
+    return result
+
+
+def detect_green_marker_action(green_contours, selected_black_mask):
+    """Retorna a ação pública calculada para os contornos verdes recebidos."""
+
+    return analyze_green_marker_contours(
+        green_contours,
+        selected_black_mask,
+    )["action"]
+
+
+def calculate_green_guidance_preview(
+    selected_black_mask,
+    interpretation,
+    vision_profile,
+):
+    """Desloca o alvo lateral e reutiliza o controlador normal do segue-linha."""
+
+    if interpretation not in ("ESQUERDA", "DIREITA"):
+        return None
+    upper_half = selected_black_mask[: selected_black_mask.shape[0] // 2, :]
+    _active_y, active_x = np.nonzero(upper_half)
+    if active_x.size == 0:
+        return None
+
+    frame_width = selected_black_mask.shape[1]
+    frame_center_x = frame_width / 2.0
+    offset_px = frame_width * GREEN_GUIDANCE_TARGET_OFFSET_RATIO
+    # A câmera entrega a geometria corretamente orientada para a detecção, mas
+    # o teste físico mostrou que a polaridade aplicada aos motores ficou
+    # invertida somente nas ações verdes. Mantemos a classificação do código-
+    # modelo e espelhamos aqui apenas o alvo usado pela orientação especial.
+    if interpretation == "ESQUERDA":
+        model_target_x = min(
+            float(np.min(active_x)) + offset_px,
+            frame_center_x,
+        )
+    else:
+        model_target_x = max(
+            float(np.max(active_x)) - offset_px,
+            frame_center_x,
+        )
+    target_x = 2.0 * frame_center_x - model_target_x
+    target_error = (target_x - frame_center_x) / frame_center_x
+    return calculate_control_preview(
+        vision_profile,
+        True,
+        target_error,
+        False,
+        0.0,
+    )
+
+
+def scale_green_approach_preview(control_preview):
+    """Reduz as saídas para 50/70 sem alterar a direção da correção."""
+
+    guidance_error, control_error, correction, left_preview, right_preview = (
+        control_preview
+    )
+    return (
+        guidance_error,
+        control_error,
+        correction * GREEN_APPROACH_SPEED_RATIO,
+        left_preview * GREEN_APPROACH_SPEED_RATIO,
+        right_preview * GREEN_APPROACH_SPEED_RATIO,
+    )
+
+
 def interpret_actionable_green_candidates(candidates):
     """Decide a curva usando somente marcadores aceitos dentro da ROI azul."""
 
@@ -2460,27 +2807,6 @@ def interpret_actionable_green_candidates(candidates):
     return result
 
 
-def green_path_black_is_valid(
-    near_valid,
-    far_valid,
-    center_delta_valid,
-    center_delta_px,
-    line_axis,
-    interpretation,
-):
-    """Confirma que a faixa preta superior pertence ao mesmo trajeto."""
-
-    return bool(
-        near_valid
-        and far_valid
-        and center_delta_valid
-        and math.isfinite(float(center_delta_px))
-        and abs(float(center_delta_px)) <= GREEN_PATH_MAX_CENTER_DELTA_PX
-        and line_axis.get("valid", False)
-        and interpretation in ("ESQUERDA", "DIREITA", "RETORNO_180")
-    )
-
-
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""
 
@@ -2490,8 +2816,14 @@ class GreenObservationTracker:
         self.consecutive_samples = 0
         self.missing_samples = 0
         self.confirmed_interpretation = "SEM_DECISAO"
+        self.last_direction_seen_at = None
 
-    def update(self, line_sequence, interpretation):
+    def update(self, line_sequence, interpretation, observed_at=None):
+        """Confirma quadros novos e retém orientação lateral por 0,5 segundo."""
+
+        observed_at = (
+            time.perf_counter() if observed_at is None else float(observed_at)
+        )
         if line_sequence == self.last_sequence:
             return (
                 self.confirmed_interpretation,
@@ -2500,7 +2832,38 @@ class GreenObservationTracker:
             )
         self.last_sequence = line_sequence
 
+        if interpretation == "APROXIMACAO":
+            self.pending_interpretation = "SEM_DECISAO"
+            self.confirmed_interpretation = "SEM_DECISAO"
+            self.consecutive_samples = 0
+            self.missing_samples = 0
+            self.last_direction_seen_at = None
+            return "APROXIMACAO", False, 0
+
+        if interpretation in ("ESQUERDA", "DIREITA"):
+            # O instante é renovado em todo frame detectado, inclusive durante
+            # a confirmação, para que a retenção conte da última visão real.
+            self.last_direction_seen_at = observed_at
+
         if interpretation == "SEM_DECISAO":
+            direction_is_retained = (
+                self.confirmed_interpretation in ("ESQUERDA", "DIREITA")
+                and self.last_direction_seen_at is not None
+                and observed_at - self.last_direction_seen_at
+                < GREEN_DIRECTION_RETENTION_SECONDS
+            )
+            if direction_is_retained:
+                return (
+                    self.confirmed_interpretation,
+                    True,
+                    self.consecutive_samples,
+                )
+            if self.confirmed_interpretation in ("ESQUERDA", "DIREITA"):
+                self.pending_interpretation = "SEM_DECISAO"
+                self.confirmed_interpretation = "SEM_DECISAO"
+                self.consecutive_samples = 0
+                self.missing_samples = 0
+                return "SEM_DECISAO", False, 0
             self.missing_samples += 1
             if self.missing_samples >= GREEN_CLEAR_HYSTERESIS_FRAMES:
                 self.pending_interpretation = "SEM_DECISAO"
@@ -3313,8 +3676,8 @@ def main():
                 near_center,
             )
             line_axis = build_line_axis(near_center, far_center)
-            # A parada inicial pelo quadrado não depende de já existir preto
-            # na FAR. A curva continua exigindo o eixo real entre as duas ROIs.
+            # O eixo local continua protegendo a associação geométrica entre o
+            # marcador e a faixa, mesmo que a decisão final use ROIs próprias.
             green_line_axis = line_axis
             if not green_line_axis.get("valid", False) and near_center is not None:
                 green_line_axis = build_line_axis(
@@ -3334,11 +3697,11 @@ def main():
                 (vision_geometry["structural_end_y"], raw_frame.shape[1]),
                 dtype=np.uint8,
             )
+            selected_black_mask = np.zeros_like(line_candidate_mask)
             green_topology = analyze_line_topology(None, green_line_axis, 0.0)
-            green_interpretation = interpret_green_candidates(
-                green_candidates,
-                green_line_axis,
-                green_topology,
+            green_interpretation = analyze_green_marker_contours(
+                [],
+                selected_black_mask,
             )
             green_processing_started = time.perf_counter()
             if green_processing_enabled:
@@ -3374,14 +3737,15 @@ def main():
                         timings["topology_ms"] = (
                             time.perf_counter() - topology_started
                         ) * 1000.0
-                actionable_candidates = actionable_green_candidates(
-                    green_candidates,
+                selected_black_mask = select_near_connected_black_mask(
+                    line_candidate_mask,
+                    green_mask,
+                    selected_near_contour,
                     near_band_start_y,
-                    near_band_end_y,
-                    green_line_axis,
                 )
-                green_interpretation = interpret_actionable_green_candidates(
-                    actionable_candidates,
+                green_interpretation = analyze_green_marker_contours(
+                    [candidate["contour"] for candidate in green_candidates],
+                    selected_black_mask,
                 )
             green_processing_ms = (
                 time.perf_counter() - green_processing_started
@@ -3414,6 +3778,50 @@ def main():
                 far_error,
             )
 
+            line_timestamp = time.time()
+            line_sequence += 1
+            green_raw_interpretation = green_interpretation["interpretation"]
+            green_path_valid = green_interpretation["path_black_valid"]
+            tracker_interpretation = (
+                green_raw_interpretation
+                if green_decisions_enabled and green_path_valid
+                else "SEM_DECISAO"
+            )
+            green_tracker_result = green_tracker.update(
+                line_sequence,
+                tracker_interpretation,
+                time.perf_counter(),
+            )
+            published_green_interpretation = green_tracker_result[0]
+            if published_green_interpretation == "APROXIMACAO":
+                (
+                    _guidance_error,
+                    control_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                ) = scale_green_approach_preview((
+                    _guidance_error,
+                    control_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                ))
+            elif published_green_interpretation in ("ESQUERDA", "DIREITA"):
+                green_guidance = calculate_green_guidance_preview(
+                    selected_black_mask,
+                    published_green_interpretation,
+                    vision_profile,
+                )
+                if green_guidance is not None:
+                    (
+                        _guidance_error,
+                        control_error,
+                        correction,
+                        left_preview,
+                        right_preview,
+                    ) = green_guidance
+
             if not near_valid:
                 offset_px = None
                 preview_state = "LINHA INVALIDA"
@@ -3434,26 +3842,6 @@ def main():
                     preview_state = "RETO"
                     preview_direction = "RETO"
 
-            line_timestamp = time.time()
-            line_sequence += 1
-            green_raw_interpretation = green_interpretation["interpretation"]
-            green_path_valid = green_path_black_is_valid(
-                near_valid,
-                far_valid,
-                center_delta_valid,
-                center_delta_px,
-                green_line_axis,
-                green_raw_interpretation,
-            )
-            tracker_interpretation = (
-                green_raw_interpretation
-                if green_decisions_enabled and green_path_valid
-                else "SEM_DECISAO"
-            )
-            green_tracker_result = green_tracker.update(
-                line_sequence,
-                tracker_interpretation,
-            )
             green_status = build_green_status(
                 green_candidates,
                 len(green_rejected),

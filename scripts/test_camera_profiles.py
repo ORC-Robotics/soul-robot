@@ -52,6 +52,15 @@ def synthetic_topology(**branches):
     )
 
 
+def rectangle_contour(left, top, right, bottom):
+    """Cria um contorno retangular previsível para validar as ROIs verdes."""
+
+    return np.array(
+        [[[left, top]], [[right, top]], [[right, bottom]], [[left, bottom]]],
+        dtype=np.int32,
+    )
+
+
 def synthetic_gap_mask(
     left_x=310,
     right_x=330,
@@ -831,7 +840,7 @@ class CameraProfilesTest(unittest.TestCase):
         ))
         if CV2_AVAILABLE:
             frame = np.full((480, 640, 3), 255, dtype=np.uint8)
-            frame[190:216, 260:286] = (0, 255, 0)
+            frame[190:340, 160:310] = (0, 255, 0)
             line_mask = synthetic_line_mask(left_branch=True)
             _, candidates, rejected = camera_line_frame.find_green_candidates(
                 frame,
@@ -846,7 +855,7 @@ class CameraProfilesTest(unittest.TestCase):
         if not CV2_AVAILABLE:
             self.skipTest("OpenCV não está disponível")
         frame = np.full((480, 640, 3), 255, dtype=np.uint8)
-        frame[190:216, 260:286] = (0, 255, 0)
+        frame[190:340, 160:310] = (0, 255, 0)
         line_mask = synthetic_line_mask(left_branch=True)
         original_frame = frame.copy()
         original_line_mask = line_mask.copy()
@@ -865,7 +874,7 @@ class CameraProfilesTest(unittest.TestCase):
         if not CV2_AVAILABLE:
             self.skipTest("OpenCV não está disponível")
         frame = np.full((480, 640, 3), 255, dtype=np.uint8)
-        frame[190:216, 100:126] = (0, 255, 0)
+        frame[190:340, 10:160] = (0, 255, 0)
         line_mask = synthetic_line_mask(right_branch=True)
 
         _, candidates, rejected = camera_line_frame.find_green_candidates(
@@ -973,35 +982,174 @@ class CameraProfilesTest(unittest.TestCase):
             [candidate], 210, 270, synthetic_line_axis()
         ))
 
-    def test_green_path_rejects_isolated_far_black(self):
-        self.assertFalse(camera_line_frame.green_path_black_is_valid(
-            True,
-            True,
-            True,
-            260.0,
-            synthetic_line_axis(),
-            "DIREITA",
-        ))
+    def test_green_reference_area_scales_to_useful_resolution(self):
+        self.assertEqual(
+            camera_line_frame.green_minimum_area(640, 425),
+            17000.0,
+        )
 
-    def test_green_path_rejects_white_above_marker(self):
-        self.assertFalse(camera_line_frame.green_path_black_is_valid(
-            True,
-            False,
-            False,
-            0.0,
-            synthetic_line_axis(),
-            "DIREITA",
-        ))
+    def test_green_roi_coordinates_follow_rotated_box_midpoints(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        geometry = camera_line_frame.green_marker_roi_geometry(
+            rectangle_contour(200, 250, 300, 350),
+            640,
+        )
 
-    def test_green_path_accepts_compatible_far_black(self):
-        self.assertTrue(camera_line_frame.green_path_black_is_valid(
-            True,
-            True,
-            True,
-            80.0,
-            synthetic_line_axis(),
-            "DIREITA",
-        ))
+        self.assertEqual(geometry["upper_roi"], (218, 186, 282, 250))
+        self.assertEqual(geometry["left_roi"], (136, 268, 200, 332))
+        self.assertEqual(geometry["right_roi"], (300, 268, 364, 332))
+
+    def test_green_roi_requires_twenty_five_percent_black(self):
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        roi = (100, 100, 164, 164)
+        mask[100:164, 100:116] = 255
+        self.assertTrue(camera_line_frame.measure_black_roi(mask, roi)["valid"])
+
+        mask[:, :] = 0
+        mask[100:164, 100:115] = 255
+        self.assertFalse(camera_line_frame.measure_black_roi(mask, roi)["valid"])
+
+    def test_green_roi_requires_half_of_nominal_area_inside_image(self):
+        mask = np.full((480, 640), 255, dtype=np.uint8)
+        self.assertTrue(camera_line_frame.measure_black_roi(
+            mask, (-32, 100, 32, 164)
+        )["valid"])
+        self.assertFalse(camera_line_frame.measure_black_roi(
+            mask, (-33, 100, 31, 164)
+        )["valid"])
+
+    def green_action_mask(self, contour, upper=True, left=False, right=False):
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        geometry = camera_line_frame.green_marker_roi_geometry(contour, 640)
+        for enabled, name in (
+            (upper, "upper_roi"),
+            (left, "left_roi"),
+            (right, "right_roi"),
+        ):
+            if enabled:
+                x1, y1, x2, y2 = geometry[name]
+                mask[max(0, y1):min(mask.shape[0], y2),
+                     max(0, x1):min(mask.shape[1], x2)] = 255
+        return mask
+
+    def test_green_marker_action_precedence(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        close = rectangle_contour(200, 250, 300, 350)
+        distant = rectangle_contour(200, 100, 300, 200)
+
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action(
+                [close], self.green_action_mask(close, upper=False, left=True)
+            ),
+            "SEGUIR_LINHA",
+        )
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action(
+                [distant], self.green_action_mask(distant)
+            ),
+            "APROXIMAR",
+        )
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action(
+                [close], self.green_action_mask(close, left=True)
+            ),
+            "VIRAR_DIREITA",
+        )
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action(
+                [close], self.green_action_mask(close, right=True)
+            ),
+            "VIRAR_ESQUERDA",
+        )
+
+    def test_two_upper_valid_markers_request_turnaround(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        first = rectangle_contour(100, 250, 180, 330)
+        second = rectangle_contour(420, 250, 500, 330)
+        mask = self.green_action_mask(first)
+        mask |= self.green_action_mask(second)
+
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action(
+                [first, second], mask
+            ),
+            "FAZER_180",
+        )
+
+    def test_left_roi_has_priority_when_both_laterals_are_black(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        contour = rectangle_contour(200, 250, 300, 350)
+        mask = self.green_action_mask(contour, left=True, right=True)
+
+        self.assertEqual(
+            camera_line_frame.detect_green_marker_action([contour], mask),
+            "VIRAR_DIREITA",
+        )
+
+    def test_near_connected_mask_discards_other_black_components(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+        line_mask = np.zeros((480, 640), dtype=np.uint8)
+        line_mask[20:190, 310:331] = 255
+        line_mask[20:190, 50:90] = 255
+        near_contour = rectangle_contour(310, 0, 330, 59)
+        green_mask = np.zeros((425, 640), dtype=np.uint8)
+        original_line = line_mask.copy()
+        original_green = green_mask.copy()
+
+        selected = camera_line_frame.select_near_connected_black_mask(
+            line_mask, green_mask, near_contour, 130
+        )
+
+        self.assertGreater(np.count_nonzero(selected[:, 310:331]), 0)
+        self.assertEqual(np.count_nonzero(selected[:, 50:90]), 0)
+        self.assertTrue(np.array_equal(line_mask, original_line))
+        self.assertTrue(np.array_equal(green_mask, original_green))
+
+    def test_green_guidance_moves_target_to_requested_extreme(self):
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        mask[20:180, 100:121] = 255
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+
+        left = camera_line_frame.calculate_green_guidance_preview(
+            mask, "ESQUERDA", profile
+        )
+
+        self.assertGreater(left[0], 0.0)
+        self.assertGreater(left[3], left[4])
+
+        mask[:, :] = 0
+        mask[20:180, 520:541] = 255
+        right = camera_line_frame.calculate_green_guidance_preview(
+            mask, "DIREITA", profile
+        )
+        self.assertLess(right[0], 0.0)
+        self.assertLess(right[3], right[4])
+
+    def test_green_approach_scales_both_motor_previews(self):
+        scaled = camera_line_frame.scale_green_approach_preview(
+            (0.2, 0.1, 0.03, 0.70, 0.56)
+        )
+
+        self.assertAlmostEqual(scaled[2], 0.03 * 50.0 / 70.0)
+        self.assertAlmostEqual(scaled[3], 0.50)
+        self.assertAlmostEqual(scaled[4], 0.40)
+
+    def test_green_direction_is_retained_for_half_second(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        tracker.update(1, "ESQUERDA", 10.0)
+        tracker.update(2, "ESQUERDA", 10.1)
+        confirmed = tracker.update(3, "ESQUERDA", 10.2)
+        retained = tracker.update(4, "SEM_DECISAO", 10.69)
+        expired = tracker.update(5, "SEM_DECISAO", 10.70)
+
+        self.assertEqual(confirmed, ("ESQUERDA", True, 3))
+        self.assertEqual(retained[0], "ESQUERDA")
+        self.assertEqual(expired, ("SEM_DECISAO", False, 0))
 
     def test_actionable_right_marker_does_not_require_junction_topology(self):
         candidate = synthetic_candidate((370, 230), side="DIREITA")
@@ -1262,17 +1410,18 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertFalse(second[1])
         self.assertEqual(third, ("ESQUERDA", True, 3))
 
-    def test_green_disappearance_clears_after_hysteresis(self):
+    def test_green_disappearance_clears_after_retention(self):
         tracker = camera_line_frame.GreenObservationTracker()
-        for sequence in (1, 2, 3):
-            tracker.update(sequence, "DIREITA")
+        tracker.update(1, "DIREITA", 20.0)
+        tracker.update(2, "DIREITA", 20.1)
+        tracker.update(3, "DIREITA", 20.2)
 
-        first_missing = tracker.update(4, "SEM_DECISAO")
-        second_missing = tracker.update(5, "SEM_DECISAO")
+        first_missing = tracker.update(4, "SEM_DECISAO", 20.69)
+        expired = tracker.update(5, "SEM_DECISAO", 20.70)
 
         self.assertEqual(first_missing[0], "DIREITA")
         self.assertTrue(first_missing[1])
-        self.assertEqual(second_missing, ("SEM_DECISAO", False, 0))
+        self.assertEqual(expired, ("SEM_DECISAO", False, 0))
 
     def test_green_changes_do_not_modify_line_preview_calculation(self):
         self.assert_control_preview(

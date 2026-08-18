@@ -201,14 +201,19 @@ bool parseGreenTurnDecision(
         decision = GreenTurnDecision::None;
         return true;
     }
+    if (interpretation == "APROXIMACAO")
+    {
+        decision = GreenTurnDecision::Approach;
+        return true;
+    }
     if (interpretation == "ESQUERDA")
     {
-        decision = GreenTurnDecision::Left80;
+        decision = GreenTurnDecision::GuideLeft;
         return true;
     }
     if (interpretation == "DIREITA")
     {
-        decision = GreenTurnDecision::Right80;
+        decision = GreenTurnDecision::GuideRight;
         return true;
     }
     if (interpretation == "RETORNO_180")
@@ -440,7 +445,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         {
             candidate.gapReturnError = 0.0;
         }
-        if (!candidate.greenConfirmed)
+        if (!candidate.greenConfirmed &&
+            candidate.greenTurnDecision != GreenTurnDecision::Approach)
         {
             candidate.greenTurnDecision = GreenTurnDecision::None;
         }

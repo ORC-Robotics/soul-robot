@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-192.168.0.102}"
+HOST_NAME="${HOST_NAME:-192.168.0.104}"
 USER_NAME="${USER_NAME:-raspberry}"
 REMOTE_DIR="${REMOTE_DIR:-/home/raspberry/OBR2026K}"
 TARGET="${TARGET:-robot_test}"

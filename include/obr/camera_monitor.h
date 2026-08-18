@@ -5,8 +5,9 @@
 enum class GreenTurnDecision
 {
     None,
-    Left80,
-    Right80,
+    Approach,
+    GuideLeft,
+    GuideRight,
     TurnAround180
 };
 
@@ -33,8 +34,8 @@ struct CameraLineSnapshot
     double gapAlignmentError = 0.0;
     bool gapReturnValid = false;
     double gapReturnError = 0.0;
-    // A decisão verde já chega confirmada por vários frames e com a faixa
-    // preta validada. O C++ ainda decide se o movimento é seguro pelo IMU.
+    // A visão aplica as ROIs verdes às prévias somente depois de reconhecer o
+    // marcador. Sem verde, o segue-linha mantém integralmente o controle antigo.
     bool greenNearSeen = false;
     bool greenPathBlackValid = false;
     bool greenConfirmed = false;
