@@ -216,7 +216,7 @@ O comportamento esperado é:
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
 - a ESP32 converte diretamente o comando UART para PWM, sem remapeamento próprio;
-- a Raspberry aplica no controle normal o mínimo operacional de `0.65` e usa os
+- a Raspberry aplica no controle normal o mínimo operacional de `0.69` e usa os
   encoders para reduzir gradualmente somente o lado mecanicamente mais rápido;
 - os campos exatos do dashboard usam um caminho de diagnóstico direto, sem esse perfil;
 - o teste autônomo de giro de 90° usa comando lógico `0.01` pelo perfil operacional;
@@ -370,7 +370,7 @@ No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
 ré; `A/D` giram os dois lados em sentidos opostos e têm prioridade sobre `W/S`.
 Assim, uma combinação como `W+A` executa o giro completo, sem zerar um lado.
 Os limites separados de reta e
-curva começam em `0.65`, podem ser ajustados até `1.0` e ficam salvos no navegador. Soltar a tecla, trocar
+curva começam em `0.69`, podem ser ajustados até `1.0` e ficam salvos no navegador. Soltar a tecla, trocar
 de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
 nos modos Parado, Autônomo ou E-Stop.
 
@@ -380,7 +380,7 @@ encoders e mostra a escala aprendida e o PWM corrigido. No controle normal, o
 `MotorController` mede a eficiência em `cont/s por PWM`, filtra três amostras e
 reduz somente o lado mais rápido em passos máximos de `0.03` por nova telemetria.
 O ajuste individual desativa essa malha para diagnóstico, mas todo valor não nulo
-continua respeitando o piso operacional de `0,65`.
+continua respeitando o piso operacional de `0,69`.
 A ESP32 recalcula as taxas dos encoders no mesmo período de `100 ms` da UART para
 que cada atualização da escala use uma janela de velocidade realmente nova.
 
@@ -388,7 +388,7 @@ Os sliders e o WASD usam o perfil operacional: zero permanece parada e qualquer
 movimento parte do piso configurado para os motores. A correção aprendida é
 reutilizada entre paradas e atualizada conforme bateria, atrito e carga mudam.
 Giros em sentidos opostos não recebem sincronização. A missão isolada de giro de
-90° usa comando lógico `0.01`, resultando em aproximadamente `0.65 / -0.65`.
+90° usa comando lógico `0.01`, resultando em aproximadamente `0.69 / -0.69`.
 
 A Missão Principal está intencionalmente vazia nesta etapa. Ela funciona como o
 ponto de composição dos futuros comportamentos autônomos e mantém os dois motores

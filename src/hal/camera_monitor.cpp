@@ -273,16 +273,26 @@ CameraLineSnapshot unavailableLineSnapshot(
                                       : CameraLineSnapshot{};
     snapshot.sourceFresh = false;
     snapshot.nearValid = false;
+    snapshot.nearX = 0.0;
     snapshot.nearError = 0.0;
+    snapshot.farValid = false;
+    snapshot.farX = 0.0;
+    snapshot.farError = 0.0;
+    snapshot.lateralError = 0.0;
+    snapshot.headingError = 0.0;
+    snapshot.adaptivePreview = 0.0;
+    snapshot.previewError = 0.0;
+    snapshot.pTerm = 0.0;
+    snapshot.filteredDerivative = 0.0;
+    snapshot.dTerm = 0.0;
     snapshot.controlError = 0.0;
+    snapshot.previewFactor = 0.0;
+    snapshot.kControl = 0.0;
+    snapshot.kNear = 0.0;
+    snapshot.kFar = 0.0;
     snapshot.correction = 0.0;
     snapshot.leftPreview = 0.0;
     snapshot.rightPreview = 0.0;
-    snapshot.farValid = false;
-    snapshot.farError = 0.0;
-    snapshot.farArea = 0.0;
-    snapshot.centerDeltaValid = false;
-    snapshot.centerDeltaPx = 0.0;
     snapshot.gapCandidate = false;
     snapshot.gapAlignmentValid = false;
     snapshot.gapAlignmentError = 0.0;
@@ -349,18 +359,32 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         CameraLineSnapshot candidate;
         std::string greenInterpretation;
         if (!tryGetJsonBool(json, "nearValid", candidate.nearValid) ||
+            !tryGetJsonNumber(json, "nearX", candidate.nearX) ||
             !tryGetJsonNumber(json, "nearError", candidate.nearError) ||
+            !tryGetJsonBool(json, "farValid", candidate.farValid) ||
+            !tryGetJsonNumber(json, "farX", candidate.farX) ||
+            !tryGetJsonNumber(json, "farError", candidate.farError) ||
+            !tryGetJsonNumber(
+                json, "lateralError", candidate.lateralError) ||
+            !tryGetJsonNumber(
+                json, "headingError", candidate.headingError) ||
+            !tryGetJsonNumber(
+                json, "adaptivePreview", candidate.adaptivePreview) ||
+            !tryGetJsonNumber(
+                json, "previewError", candidate.previewError) ||
+            !tryGetJsonNumber(json, "pTerm", candidate.pTerm) ||
+            !tryGetJsonNumber(
+                json, "filteredDerivative", candidate.filteredDerivative) ||
+            !tryGetJsonNumber(json, "dTerm", candidate.dTerm) ||
             !tryGetJsonNumber(json, "controlError", candidate.controlError) ||
+            !tryGetJsonNumber(
+                json, "preview", candidate.previewFactor) ||
+            !tryGetJsonNumber(json, "kControl", candidate.kControl) ||
+            !tryGetJsonNumber(json, "kNear", candidate.kNear) ||
+            !tryGetJsonNumber(json, "kFar", candidate.kFar) ||
             !tryGetJsonNumber(json, "correction", candidate.correction) ||
             !tryGetJsonNumber(json, "leftPreview", candidate.leftPreview) ||
             !tryGetJsonNumber(json, "rightPreview", candidate.rightPreview) ||
-            !tryGetJsonBool(json, "farValid", candidate.farValid) ||
-            !tryGetJsonNumber(json, "farError", candidate.farError) ||
-            !tryGetJsonNumber(json, "farArea", candidate.farArea) ||
-            !tryGetJsonBool(
-                json, "centerDeltaValid", candidate.centerDeltaValid) ||
-            !tryGetJsonNumber(
-                json, "centerDeltaPx", candidate.centerDeltaPx) ||
             !tryGetJsonBool(json, "gapCandidate", candidate.gapCandidate) ||
             !tryGetJsonBool(
                 json, "gapAlignmentValid", candidate.gapAlignmentValid) ||
@@ -389,19 +413,36 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         }
 
         const bool valuesValid =
+            std::isfinite(candidate.nearX) && candidate.nearX >= 0.0 &&
             isNormalizedValue(candidate.nearError) &&
+            std::isfinite(candidate.farX) && candidate.farX >= 0.0 &&
+            isNormalizedValue(candidate.farError) &&
+            isNormalizedValue(candidate.lateralError) &&
+            isNormalizedValue(candidate.headingError) &&
+            std::isfinite(candidate.adaptivePreview) &&
+            candidate.adaptivePreview >= 0.0 &&
+            candidate.adaptivePreview <= 1.0 &&
+            isNormalizedValue(candidate.previewError) &&
+            std::isfinite(candidate.pTerm) && candidate.pTerm >= -2.0 &&
+            candidate.pTerm <= 2.0 &&
+            std::isfinite(candidate.filteredDerivative) &&
+            candidate.filteredDerivative >= -5.0 &&
+            candidate.filteredDerivative <= 5.0 &&
+            isNormalizedValue(candidate.dTerm) &&
             isNormalizedValue(candidate.controlError) &&
+            std::isfinite(candidate.previewFactor) &&
+            candidate.previewFactor >= 0.0 && candidate.previewFactor <= 1.0 &&
+            std::isfinite(candidate.kControl) && candidate.kControl >= 0.0 &&
+            candidate.kControl <= 2.0 &&
+            std::isfinite(candidate.kNear) && candidate.kNear >= 0.0 &&
+            candidate.kNear <= 2.0 &&
+            std::isfinite(candidate.kFar) && candidate.kFar >= 0.0 &&
+            candidate.kFar <= 2.0 &&
             isNormalizedValue(candidate.correction) &&
             isNormalizedValue(candidate.leftPreview) &&
             isNormalizedValue(candidate.rightPreview) &&
-            isNormalizedValue(candidate.farError) &&
-            std::isfinite(candidate.farArea) && candidate.farArea >= 0.0 &&
-            std::isfinite(candidate.centerDeltaPx) &&
-            (!candidate.centerDeltaValid ||
-             (candidate.nearValid && candidate.farValid)) &&
             isNormalizedValue(candidate.gapAlignmentError) &&
             isNormalizedValue(candidate.gapReturnError) &&
-            (!candidate.gapCandidate || candidate.nearValid) &&
             (!candidate.gapAlignmentValid || candidate.gapCandidate) &&
             (!candidate.gapReturnValid || candidate.gapCandidate) &&
             (!candidate.greenConfirmed ||
@@ -415,20 +456,26 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
 
         if (!candidate.nearValid)
         {
+            candidate.nearX = 0.0;
             candidate.nearError = 0.0;
+            candidate.lateralError = 0.0;
+        }
+        if (!candidate.farValid)
+        {
+            candidate.farX = 0.0;
+            candidate.farError = 0.0;
+        }
+        if (!candidate.nearValid || !candidate.farValid)
+        {
+            candidate.headingError = 0.0;
+            candidate.previewError = 0.0;
+        }
+        if (!candidate.nearValid && !candidate.farValid)
+        {
             candidate.controlError = 0.0;
             candidate.correction = 0.0;
             candidate.leftPreview = 0.0;
             candidate.rightPreview = 0.0;
-        }
-        if (!candidate.farValid)
-        {
-            candidate.farError = 0.0;
-            candidate.farArea = 0.0;
-        }
-        if (!candidate.centerDeltaValid)
-        {
-            candidate.centerDeltaPx = 0.0;
         }
         if (!candidate.gapCandidate)
         {
@@ -467,16 +514,26 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         if (!snapshot.sourceFresh)
         {
             snapshot.nearValid = false;
+            snapshot.nearX = 0.0;
             snapshot.nearError = 0.0;
+            snapshot.farValid = false;
+            snapshot.farX = 0.0;
+            snapshot.farError = 0.0;
+            snapshot.lateralError = 0.0;
+            snapshot.headingError = 0.0;
+            snapshot.adaptivePreview = 0.0;
+            snapshot.previewError = 0.0;
+            snapshot.pTerm = 0.0;
+            snapshot.filteredDerivative = 0.0;
+            snapshot.dTerm = 0.0;
             snapshot.controlError = 0.0;
+            snapshot.previewFactor = 0.0;
+            snapshot.kControl = 0.0;
+            snapshot.kNear = 0.0;
+            snapshot.kFar = 0.0;
             snapshot.correction = 0.0;
             snapshot.leftPreview = 0.0;
             snapshot.rightPreview = 0.0;
-            snapshot.farValid = false;
-            snapshot.farError = 0.0;
-            snapshot.farArea = 0.0;
-            snapshot.centerDeltaValid = false;
-            snapshot.centerDeltaPx = 0.0;
             snapshot.gapCandidate = false;
             snapshot.gapAlignmentValid = false;
             snapshot.gapAlignmentError = 0.0;

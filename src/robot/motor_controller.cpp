@@ -54,7 +54,7 @@ void MotorController::apply(const RobotSnapshot& state)
     if (state.rawMotorCommand)
     {
         // O ajuste individual não recebe sincronismo, mas ainda respeita o piso
-        // mecânico de 0,65. Abaixo dele os motores energizam sem conseguir girar.
+        // mecânico de 0,69. Abaixo dele um dos motores não consegue girar.
         leftPower = operationalMotorPower(leftPower);
         rightPower = operationalMotorPower(rightPower);
         suspendEncoderSynchronization(leftPower, rightPower);
@@ -64,7 +64,7 @@ void MotorController::apply(const RobotSnapshot& state)
 
     // O piso operacional é aplicado antes do sincronismo. A malha reduz somente
     // o lado mais eficiente e recebe outro piso depois da correção, garantindo
-    // pelo menos 0,65 em qualquer saída de movimento não nula.
+    // pelo menos 0,69 em qualquer saída de movimento não nula.
     leftPower = operationalMotorPower(leftPower);
     rightPower = operationalMotorPower(rightPower);
 
@@ -163,7 +163,7 @@ void MotorController::applyEncoderSynchronization(
         1.0);
 
     // Uma escala aprendida em velocidade maior não pode derrubar uma nova
-    // referência baixa para menos de 0,65 ao começar outro deslocamento.
+    // referência baixa para menos de 0,69 ao começar outro deslocamento.
     learnedLeftScale = std::max(learnedLeftScale, minimumLeftScale);
     learnedRightScale = std::max(learnedRightScale, minimumRightScale);
 
@@ -261,7 +261,7 @@ void MotorController::applyEncoderSynchronization(
     }
 
     // Esta segunda aplicação do perfil é uma defesa final contra arredondamento
-    // e estados aprendidos antigos: saída não nula nunca fica abaixo de 0,65.
+    // e estados aprendidos antigos: saída não nula nunca fica abaixo de 0,69.
     leftPower = operationalMotorPower(leftPower * learnedLeftScale);
     rightPower = operationalMotorPower(rightPower * learnedRightScale);
     publishSynchronization(

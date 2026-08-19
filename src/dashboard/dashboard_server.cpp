@@ -931,6 +931,7 @@ std::string DashboardServer::dashboardHtml()
               <h3>Near</h3>
               <dl class="camera-diagnostic-list">
                 <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraNearValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>nearX</dt><dd id="cameraNearX">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraNearError">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraNearArea">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraNearHeight">—</dd></div>
@@ -940,16 +941,24 @@ std::string DashboardServer::dashboardHtml()
               <h3>Far</h3>
               <dl class="camera-diagnostic-list">
                 <div class="camera-diagnostic-item"><dt>Válida</dt><dd id="cameraFarValid">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>farX</dt><dd id="cameraFarX">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraFarError">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraFarArea">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraFarHeight">—</dd></div>
-                <div class="camera-diagnostic-item"><dt>Delta de centro</dt><dd id="cameraCenterDelta">—</dd></div>
               </dl>
             </section>
             <section class="camera-diagnostic-group control">
               <h3>Controle</h3>
               <dl class="camera-diagnostic-list">
                 <div class="camera-diagnostic-item"><dt>Control error</dt><dd id="cameraControlError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Lateral error</dt><dd id="cameraLateralError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Heading error</dt><dd id="cameraHeadingError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Adaptive preview</dt><dd id="cameraAdaptivePreview">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Preview error</dt><dd id="cameraPreviewError">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>P</dt><dd id="cameraPTerm">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>Derivativo filtrado</dt><dd id="cameraFilteredDerivative">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>D</dt><dd id="cameraDTerm">—</dd></div>
+                <div class="camera-diagnostic-item"><dt>K_CONTROL</dt><dd id="cameraKControl">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Correction</dt><dd id="cameraCorrection">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
                 <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
@@ -1055,12 +1064,12 @@ std::string DashboardServer::dashboardHtml()
         </div>
         <div class="manual-speed-grid">
           <div class="drive-control">
-            <label for="manualDrivePower"><span>Velocidade reta</span><output id="manualDrivePowerValue">0.65</output></label>
-            <input id="manualDrivePower" type="range" min="0.65" max="1.00" step="0.01" value="0.65">
+            <label for="manualDrivePower"><span>Velocidade reta</span><output id="manualDrivePowerValue">0.69</output></label>
+            <input id="manualDrivePower" type="range" min="0.69" max="1.00" step="0.01" value="0.69">
           </div>
           <div class="drive-control">
-            <label for="manualTurnPower"><span>Velocidade em curva</span><output id="manualTurnPowerValue">0.65</output></label>
-            <input id="manualTurnPower" type="range" min="0.65" max="1.00" step="0.01" value="0.65">
+            <label for="manualTurnPower"><span>Velocidade em curva</span><output id="manualTurnPowerValue">0.69</output></label>
+            <input id="manualTurnPower" type="range" min="0.69" max="1.00" step="0.01" value="0.69">
           </div>
           <div class="manual-speed-help">Os dois limites começam no menor comando operacional real. A/D gira os dois lados em sentidos opostos e tem prioridade sobre W/S.</div>
         </div>
@@ -1085,7 +1094,7 @@ std::string DashboardServer::dashboardHtml()
           <div class="balance-detail"><span>Diferença entre os lados</span><strong id="balanceDifference">--%</strong></div>
           <div class="balance-recommendation"><span id="balanceRecommendation">O ajuste automático será ativado quando os dois lados avançarem ou recuarem juntos.</span></div>
         </div>
-        <div class="safety-note">Todo comando não nulo respeita o piso real de 0,65. O sincronismo reduz apenas o lado mais rápido sem atravessar esse piso; os campos individuais desativam o sincronismo, mas preservam mínimo, clamp, E-Stop e timeouts.</div>
+        <div class="safety-note">Todo comando não nulo respeita o piso real de 0,69. O sincronismo reduz apenas o lado mais rápido sem atravessar esse piso; os campos individuais desativam o sincronismo, mas preservam mínimo, clamp, E-Stop e timeouts.</div>
       </aside>
       </div>
     </section>
@@ -1227,11 +1236,21 @@ std::string DashboardServer::dashboardHtml()
     const forwardCameraTelemetry = element("forwardCameraTelemetry");
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const cameraDiagnosticFields = {
-      nearValid: element("cameraNearValid"), nearError: element("cameraNearError"),
+      nearValid: element("cameraNearValid"), nearX: element("cameraNearX"),
+      nearError: element("cameraNearError"),
       nearArea: element("cameraNearArea"), nearHeight: element("cameraNearHeight"),
-      farValid: element("cameraFarValid"), farError: element("cameraFarError"),
-      farArea: element("cameraFarArea"), farHeight: element("cameraFarHeight"),
-      centerDelta: element("cameraCenterDelta"), controlError: element("cameraControlError"),
+      farValid: element("cameraFarValid"), farX: element("cameraFarX"),
+      farError: element("cameraFarError"), farArea: element("cameraFarArea"),
+      farHeight: element("cameraFarHeight"),
+      lateralError: element("cameraLateralError"),
+      headingError: element("cameraHeadingError"),
+      adaptivePreview: element("cameraAdaptivePreview"),
+      previewError: element("cameraPreviewError"),
+      pTerm: element("cameraPTerm"),
+      filteredDerivative: element("cameraFilteredDerivative"),
+      dTerm: element("cameraDTerm"),
+      controlError: element("cameraControlError"),
+      kControl: element("cameraKControl"),
       correction: element("cameraCorrection"), leftPreview: element("cameraLeftPreview"),
       rightPreview: element("cameraRightPreview"), lineSequence: element("cameraLineSequence"),
       gapCandidate: element("cameraGapCandidate"),
@@ -1251,7 +1270,7 @@ std::string DashboardServer::dashboardHtml()
     let rawDiagnosticDrive = false;
     let filteredLeftEncoderRate = null;
     let filteredRightEncoderRate = null;
-    let manualMinimumPower = 0.65;
+    let manualMinimumPower = 0.69;
     let manualMaximumPower = 1.0;
     let activeCameraView = "downward";
     let cameraRenderGeneration = 0;
@@ -1471,7 +1490,7 @@ std::string DashboardServer::dashboardHtml()
         ? `${correctedLeft.toFixed(2)} / ${correctedRight.toFixed(2)}`
         : "-- / --";
       element("balanceRecommendation").textContent = data.rawMotorCommand === true
-        ? "Ajuste individual: sincronismo automático desativado; piso de 0,65 preservado."
+        ? "Ajuste individual: sincronismo automático desativado; piso de 0,69 preservado."
         : syncEligible
           ? `Escala automática E/D: ${scaleText} · PWM corrigido: ${correctedText}.`
           : "Sincronismo pausado: os lados não estão se movendo juntos no mesmo sentido.";
@@ -1754,11 +1773,11 @@ std::string DashboardServer::dashboardHtml()
 
     function restoreManualPowerSettings() {
       try {
-        manualDrivePower.value = localStorage.getItem("obrManualDrivePower") || "0.65";
-        manualTurnPower.value = localStorage.getItem("obrManualTurnPower") || "0.65";
+        manualDrivePower.value = localStorage.getItem("obrManualDrivePower") || "0.69";
+        manualTurnPower.value = localStorage.getItem("obrManualTurnPower") || "0.69";
       } catch {
-        manualDrivePower.value = "0.65";
-        manualTurnPower.value = "0.65";
+        manualDrivePower.value = "0.69";
+        manualTurnPower.value = "0.69";
       }
       updateManualPowerSettings();
     }
@@ -2145,15 +2164,17 @@ std::string DashboardServer::dashboardHtml()
 
     function updateCameraDiagnostics(data) {
       const numericFields = [
-        data.nearError, data.nearArea, data.nearHeightPx,
+        data.nearX, data.nearError, data.nearArea, data.nearHeightPx,
+        data.farX, data.farError, data.farArea, data.farHeightPx,
+        data.lateralError, data.headingError, data.adaptivePreview,
+        data.previewError, data.pTerm, data.filteredDerivative, data.dTerm,
+        data.preview, data.kControl,
         data.controlError, data.correction, data.leftPreview, data.rightPreview,
-        data.farError, data.farArea, data.farHeightPx, data.centerDeltaPx,
         data.gapAlignmentError, data.gapReturnError,
         data.lineTimestamp, data.lineSequence, data.timestamp
       ];
       const fieldsPresent = typeof data.nearValid === "boolean" &&
         typeof data.farValid === "boolean" &&
-        typeof data.centerDeltaValid === "boolean" &&
         typeof data.gapCandidate === "boolean" &&
         typeof data.gapAlignmentValid === "boolean" &&
         typeof data.gapReturnValid === "boolean" &&
@@ -2174,17 +2195,24 @@ std::string DashboardServer::dashboardHtml()
       }
 
       cameraDiagnosticFields.nearValid.textContent = data.nearValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.nearX.textContent = `${formatCameraDiagnostic(data.nearX, 1)} px`;
       cameraDiagnosticFields.nearError.textContent = formatCameraDiagnostic(data.nearError, 3);
       cameraDiagnosticFields.nearArea.textContent = formatCameraDiagnostic(data.nearArea, 1);
       cameraDiagnosticFields.nearHeight.textContent = `${Math.round(Number(data.nearHeightPx))} px`;
       cameraDiagnosticFields.farValid.textContent = data.farValid ? "SIM" : "NÃO";
+      cameraDiagnosticFields.farX.textContent = `${formatCameraDiagnostic(data.farX, 1)} px`;
       cameraDiagnosticFields.farError.textContent = formatCameraDiagnostic(data.farError, 3);
       cameraDiagnosticFields.farArea.textContent = formatCameraDiagnostic(data.farArea, 1);
       cameraDiagnosticFields.farHeight.textContent = `${Math.round(Number(data.farHeightPx))} px`;
-      cameraDiagnosticFields.centerDelta.textContent = data.centerDeltaValid
-        ? `${formatCameraDiagnostic(data.centerDeltaPx, 1)} px`
-        : "INVÁLIDO";
+      cameraDiagnosticFields.lateralError.textContent = formatCameraDiagnostic(data.lateralError, 3);
+      cameraDiagnosticFields.headingError.textContent = formatCameraDiagnostic(data.headingError, 3);
+      cameraDiagnosticFields.adaptivePreview.textContent = formatCameraDiagnostic(data.adaptivePreview, 3);
+      cameraDiagnosticFields.previewError.textContent = formatCameraDiagnostic(data.previewError, 3);
+      cameraDiagnosticFields.pTerm.textContent = formatCameraDiagnostic(data.pTerm, 3);
+      cameraDiagnosticFields.filteredDerivative.textContent = formatCameraDiagnostic(data.filteredDerivative, 3);
+      cameraDiagnosticFields.dTerm.textContent = formatCameraDiagnostic(data.dTerm, 3);
       cameraDiagnosticFields.controlError.textContent = formatCameraDiagnostic(data.controlError, 3);
+      cameraDiagnosticFields.kControl.textContent = formatCameraDiagnostic(data.kControl, 2);
       cameraDiagnosticFields.correction.textContent = formatCameraDiagnostic(data.correction, 3);
       cameraDiagnosticFields.leftPreview.textContent = formatCameraDiagnostic(data.leftPreview, 3);
       cameraDiagnosticFields.rightPreview.textContent = formatCameraDiagnostic(data.rightPreview, 3);

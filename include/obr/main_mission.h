@@ -25,10 +25,9 @@ private:
     {
         TrackingNear,
         TurningAtGreenMarker,
-        TurningAhead,
+        TurningNear,
         CrossingGap,
         ReacquiringNear,
-        RecoveringFar,
         SearchingLeft,
         SearchingRight
     };
@@ -49,18 +48,18 @@ private:
     std::uint64_t lastProcessedLineSequence_ = 0;
     bool hasProcessedLineSequence_ = false;
     int consecutiveNearValidSamples_ = 0;
-    bool aheadStrongTurnActive_ = false;
-    LineDirection aheadStrongTurnDirection_ = LineDirection::Unknown;
-    int aheadStrongTurnEnterSamples_ = 0;
-    int aheadStrongTurnExitSamples_ = 0;
-    std::uint64_t aheadStrongTurnLastLineSequence_ = 0;
-    bool aheadStrongTurnHasLineSequence_ = false;
-    double aheadStrongTurnLastHeadingError_ = 0.0;
+    bool strongTurnActive_ = false;
+    LineDirection strongTurnDirection_ = LineDirection::Unknown;
+    int strongTurnEnterSamples_ = 0;
+    int strongTurnExitSamples_ = 0;
+    std::uint64_t strongTurnLastLineSequence_ = 0;
+    bool strongTurnHasLineSequence_ = false;
     bool nearRecoveryActive_ = false;
     bool totalLossActive_ = false;
     std::chrono::steady_clock::time_point nearLostAt_{};
     std::chrono::steady_clock::time_point totalLossStartedAt_{};
     bool gapNearLossObserved_ = false;
+    std::chrono::steady_clock::time_point gapStartedAt_{};
 
     void transitionTo(LineFollowState nextState);
     bool updateGreenTurn(

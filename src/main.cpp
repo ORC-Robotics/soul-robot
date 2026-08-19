@@ -122,18 +122,30 @@ int main()
             std::cout << std::boolalpha
                       << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
                       << " nearValid=" << cameraLineSnapshot.nearValid
+                      << " nearX=" << cameraLineSnapshot.nearX
+                      << " farValid=" << cameraLineSnapshot.farValid
+                      << " farX=" << cameraLineSnapshot.farX
                       << " lineSequence=" << cameraLineSnapshot.lineSequence
                       << " ageMs=" << cameraLineSnapshot.ageMs
                       << " nearError=" << cameraLineSnapshot.nearError
+                      << " farError=" << cameraLineSnapshot.farError
+                      << " lateralError=" << cameraLineSnapshot.lateralError
+                      << " headingError=" << cameraLineSnapshot.headingError
+                      << " adaptivePreview="
+                      << cameraLineSnapshot.adaptivePreview
+                      << " previewError=" << cameraLineSnapshot.previewError
+                      << " pTerm=" << cameraLineSnapshot.pTerm
+                      << " filteredDerivative="
+                      << cameraLineSnapshot.filteredDerivative
+                      << " dTerm=" << cameraLineSnapshot.dTerm
+                      << " controlError=" << cameraLineSnapshot.controlError
+                      << " preview=" << cameraLineSnapshot.previewFactor
+                      << " kControl=" << cameraLineSnapshot.kControl
+                      << " kNear=" << cameraLineSnapshot.kNear
+                      << " kFar=" << cameraLineSnapshot.kFar
                       << " correction=" << cameraLineSnapshot.correction
                       << " leftPreview=" << cameraLineSnapshot.leftPreview
                       << " rightPreview=" << cameraLineSnapshot.rightPreview
-                      << " farValid=" << cameraLineSnapshot.farValid
-                      << " farError=" << cameraLineSnapshot.farError
-                      << " farArea=" << cameraLineSnapshot.farArea
-                      << " centerDeltaValid="
-                      << cameraLineSnapshot.centerDeltaValid
-                      << " centerDeltaPx=" << cameraLineSnapshot.centerDeltaPx
                       << std::noboolalpha << std::endl;
             lastCameraLineDiagnosticTime = cameraLineDiagnosticTime;
         }

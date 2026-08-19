@@ -36,7 +36,6 @@ CameraLineSnapshot trackedLine(std::uint64_t sequence)
     CameraLineSnapshot line;
     line.sourceFresh = true;
     line.nearValid = true;
-    line.farValid = true;
     line.leftPreview = 0.66;
     line.rightPreview = 0.66;
     line.lineSequence = sequence;
@@ -88,11 +87,28 @@ CameraLineSnapshot lineLost(std::uint64_t sequence)
     return line;
 }
 
-CameraLineSnapshot farLine(std::uint64_t sequence, double error)
+CameraLineSnapshot gapWithoutNear(std::uint64_t sequence)
+{
+    CameraLineSnapshot line = lineLost(sequence);
+    line.gapCandidate = true;
+    return line;
+}
+
+CameraLineSnapshot strongCurve(std::uint64_t sequence, double error)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.nearError = error;
+    line.controlError = error;
+    return line;
+}
+
+CameraLineSnapshot farOnlyLine(std::uint64_t sequence, double error)
 {
     CameraLineSnapshot line = lineLost(sequence);
     line.farValid = true;
+    line.farX = 320.0 * (1.0 + error);
     line.farError = error;
+    line.controlError = error;
     return line;
 }
 
@@ -179,16 +195,18 @@ void testGapReacquiresNearOnFirstFrame()
             "A primeira NEAR válida deveria encerrar a travessia.");
 }
 
-void testGapReacquiresFarOnFirstFrame()
+void testGapStartsWithNearInvalid()
 {
     MissionFixture fixture;
-    fixture.enterCrossing();
-    fixture.loseLine(0, 0);
-    fixture.update(farLine(++fixture.sequence, -0.20));
+    fixture.update(gapWithoutNear(++fixture.sequence));
 
     require(fixture.robotState.snapshot().autonomousStatus.phase ==
-                "recovering_far",
-            "A primeira FAR válida deveria encerrar a travessia.");
+                "crossing_gap",
+            "O componente inferior deveria iniciar o gap sem NEAR válida.");
+    fixture.update(trackedLine(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "reacquiring_near",
+            "A NEAR deve ser readquirida após o gap iniciado sem linha nela.");
 }
 
 void testGapUsesDisconnectedContinuationImmediately()
@@ -201,7 +219,7 @@ void testGapUsesDisconnectedContinuationImmediately()
     fixture.update(returned);
 
     const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "recovering_far",
+    require(snapshot.autonomousStatus.phase == "reacquiring_near",
             "A continuação desconectada deveria encerrar o avanço reto.");
     require(snapshot.left > snapshot.right,
             "A continuação à direita deveria corrigir para a direita.");
@@ -217,6 +235,75 @@ void testGapStopsWhenCameraBecomesUnavailable()
     require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
                 snapshot.right == 0.0,
             "A perda da câmera deve zerar os motores.");
+}
+
+void testGapTimeoutStopsMotors()
+{
+    MissionFixture fixture;
+    fixture.update(gapWithoutNear(++fixture.sequence));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2020));
+    fixture.update(lineLost(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0,
+            "Dois segundos sem linha devem zerar os motores no gap.");
+}
+
+void testStrongTurnUsesTwoNearSamplesAndThreeAlignedSamples()
+{
+    MissionFixture fixture;
+    fixture.update(strongCurve(++fixture.sequence, 0.50));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "tracking_near",
+            "Uma amostra forte ainda não deve iniciar a contrarrotação.");
+
+    fixture.update(strongCurve(++fixture.sequence, 0.50));
+    RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "turning_near" &&
+                snapshot.left == 0.69 && snapshot.right == -0.69,
+            "Duas amostras fortes da NEAR devem iniciar a contrarrotação.");
+
+    fixture.update(strongCurve(++fixture.sequence, 0.0));
+    fixture.update(strongCurve(++fixture.sequence, 0.0));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "turning_near",
+            "Duas amostras alinhadas ainda devem manter a curva forte.");
+    fixture.update(strongCurve(++fixture.sequence, 0.0));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "tracking_near",
+            "Três amostras alinhadas devem encerrar a curva forte.");
+}
+
+void testStrongTurnStopsImmediatelyOnErrorSignChange()
+{
+    MissionFixture fixture;
+    fixture.update(strongCurve(++fixture.sequence, -0.50));
+    fixture.update(strongCurve(++fixture.sequence, -0.50));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "turning_near",
+            "A curva forte à esquerda deveria estar ativa.");
+
+    fixture.update(strongCurve(++fixture.sequence, 0.01));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "tracking_near",
+            "A inversão do erro deve encerrar a curva no mesmo frame.");
+}
+
+void testFarOnlyUsesConservativeFallbackUntilNearReturns()
+{
+    MissionFixture fixture;
+    fixture.update(farOnlyLine(++fixture.sequence, 0.30));
+
+    RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "fallback_far" &&
+                snapshot.left > snapshot.right && snapshot.right > 0.0,
+            "A FAR isolada deve alinhar com correção limitada e positiva.");
+
+    fixture.update(trackedLine(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "reacquiring_near",
+            "A NEAR deve reassumir por meio da reaquisição já existente.");
 }
 
 void testEmergencyStopWinsDuringCrossing()
@@ -242,9 +329,9 @@ void testSingleGreenMarkersKeepContinuousGuidance()
         double rightPreview;
         const char* description;
     } cases[] = {
-        {GreenTurnDecision::Approach, 0.45, 0.45, "aproximação"},
-        {GreenTurnDecision::GuideLeft, 0.65, 0.78, "guia à esquerda"},
-        {GreenTurnDecision::GuideRight, 0.78, 0.65, "guia à direita"},
+        {GreenTurnDecision::Approach, 0.69, 0.69, "aproximação"},
+        {GreenTurnDecision::GuideLeft, 0.69, 0.71, "guia à esquerda"},
+        {GreenTurnDecision::GuideRight, 0.71, 0.69, "guia à direita"},
     };
 
     for (const auto& testCase : cases)
@@ -351,14 +438,18 @@ int main()
         testGapStartsImmediatelyAndNeverRealigns();
         testGapIgnoresEncoderStateAndDistance();
         testGapReacquiresNearOnFirstFrame();
-        testGapReacquiresFarOnFirstFrame();
+        testGapStartsWithNearInvalid();
         testGapUsesDisconnectedContinuationImmediately();
+        testGapTimeoutStopsMotors();
         testGapStopsWhenCameraBecomesUnavailable();
         testEmergencyStopWinsDuringCrossing();
+        testStrongTurnUsesTwoNearSamplesAndThreeAlignedSamples();
+        testStrongTurnStopsImmediatelyOnErrorSignChange();
+        testFarOnlyUsesConservativeFallbackUntilNearReturns();
         testSingleGreenMarkersKeepContinuousGuidance();
         testInvalidOrUnconfirmedGreenDoesNotStopTracking();
         testDoubleGreenUsesImuAndEntersRecovery();
-        std::cout << "10 testes da missão principal concluídos com sucesso."
+        std::cout << "14 testes da missão principal concluídos com sucesso."
                   << std::endl;
         return 0;
     }

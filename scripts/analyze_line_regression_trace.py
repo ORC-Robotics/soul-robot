@@ -7,7 +7,7 @@ import statistics
 
 
 # Este é o limite já usado pelo controle; o analisador somente conta ocorrências.
-CURRENT_MAX_CORRECTION = 0.15
+CURRENT_MAX_CORRECTION = 0.25
 
 
 def percentile(values, percentage):
@@ -72,7 +72,7 @@ def summarize(rows):
     for index, row in enumerate(rows):
         state = row.get("mainMissionState", "")
         near_valid = row.get("nearValid", "false").lower() == "true"
-        if state == "TurningAhead" and previous_state != "TurningAhead":
+        if state == "TurningNear" and previous_state != "TurningNear":
             turning_entries += 1
         if previous_near_valid is True and not near_valid:
             near_losses += 1
@@ -102,7 +102,7 @@ def summarize(rows):
         "maximumAbsControlError": max(
             (abs(value) for value in control_errors), default=0.0
         ),
-        "turningAheadEntries": turning_entries,
+        "turningNearEntries": turning_entries,
         "nearLosses": near_losses,
         "saturatedCorrections": sum(
             abs(value) >= CURRENT_MAX_CORRECTION - 1e-9

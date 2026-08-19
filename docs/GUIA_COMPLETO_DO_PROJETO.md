@@ -338,12 +338,12 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Saída máxima: 100%.
 - A ESP32 mantém relação direta: `0.05` é 5%, `0.50` é 50% e `1.00` é 100% de duty.
 - No controle normal, a Raspberry eleva qualquer comando não nulo para pelo menos
-  `0.65` antes da sincronização automática.
+  `0.69` antes da sincronização automática.
 - O `MotorController` mede `cont/s por PWM` e reduz gradualmente somente o lado
   mais eficiente. Não existe mais ganho fixo aplicado ao lado direito.
 - Os campos exatos do dashboard usam `drive_raw` e ignoram o perfil operacional.
 - A missão isolada de giro de 90° usa comando lógico `0.01`; o perfil o eleva
-  para aproximadamente `0.65 / -0.65`, garantindo a partida dos motores.
+  para aproximadamente `0.69 / -0.69`, garantindo a partida dos motores.
 - Zero permanece exatamente zero em parada, timeout, calibração e E-Stop.
 
 O software de navegação escolhe uma referência operacional. A interface mostra
@@ -609,7 +609,7 @@ de motor em zero e informa `main_waiting_behaviors` no dashboard.
 - Comanda esquerda positiva e direita negativa.
 - Alvo: 90°.
 - Usa comando lógico `0.01 / -0.01` durante todo o giro e nas correções.
-- O perfil operacional aplica aproximadamente `0.65 / -0.65` nos motores.
+- O perfil operacional aplica aproximadamente `0.69 / -0.69` nos motores.
 - O sincronismo fica desativado porque os lados giram em sentidos opostos.
 - Antecipa o corte do PWM usando velocidade angular, idade da amostra e inércia.
 - Aguarda 180 ms e velocidade angular de até 3°/s antes de avaliar o resultado.
@@ -729,16 +729,16 @@ Regras para os próximos comportamentos:
 - WASD: W/S para frente/ré; A/D gira os dois lados em sentidos opostos e tem
   prioridade sobre W/S, impedindo que combinações de teclas zerem um lado.
 - Sliders: frente/ré e giro.
-- Limites manuais separados: reta e curva, de `0.65` a `1.0`, persistidos no navegador.
-- Sliders e WASD: perfil operacional com mínimo `0.65` e sincronismo automático
+- Limites manuais separados: reta e curva, de `0.69` a `1.0`, persistidos no navegador.
+- Sliders e WASD: perfil operacional com mínimo `0.69` e sincronismo automático
   quando os lados se movem juntos no mesmo sentido.
 - Giro autônomo de 90°: comando `0.01` elevado pelo perfil operacional.
 - Ajuste individual: independente por lado em passos de `0.01`, destinado
-  somente a diagnóstico consciente; qualquer valor não nulo é elevado a `0.65`.
+  somente a diagnóstico consciente; qualquer valor não nulo é elevado a `0.69`.
 - Sincronização: calcula a eficiência de cada lado em `cont/s por PWM`, aguarda
   três amostras válidas e reduz somente o lado mais rápido em passos de até 0,03.
   A escala recebe um limite dinâmico para que a potência corrigida nunca atravesse
-  `0.65`. A correção aprendida é reutilizada entre paradas, mas é elevada
+  `0.69`. A correção aprendida é reutilizada entre paradas, mas é elevada
   imediatamente ao novo limite quando a referência diminui. Giros opostos e
   ajustes individuais não entram nessa malha.
 - A ESP32 atualiza a taxa dos encoders a cada 100 ms, sincronizada com o período

@@ -15,9 +15,7 @@ namespace
 constexpr auto kMaximumTraceDuration = std::chrono::seconds(60);
 constexpr int kMaximumTraceSamples = 300;
 // Estes limites espelham a implementação auditada sem participar do controle.
-constexpr double kTurningHeadingThreshold = 0.25;
 constexpr double kTurningControlEntryThreshold = 0.40;
-constexpr double kTurningControlExitThreshold = 0.12;
 constexpr double kTurningDirectionMinimum = 0.05;
 
 std::vector<std::string> splitCsvLine(const std::string& line)
@@ -92,26 +90,19 @@ void LineRegressionTrace::update(
     {
         const std::string missionState = missionStateName(
             robotSnapshot.autonomousStatus.phase);
-        const double headingError =
-            cameraLineSnapshot.nearValid && cameraLineSnapshot.farValid
-                ? cameraLineSnapshot.farError - cameraLineSnapshot.nearError
-                : 0.0;
-        const bool bandsValid =
-            cameraLineSnapshot.nearValid && cameraLineSnapshot.farValid;
         const double controlError = cameraLineSnapshot.controlError;
-        const bool headingDemand =
-            bandsValid && std::abs(headingError) >= kTurningHeadingThreshold;
         const bool controlDemand =
-            bandsValid &&
+            cameraLineSnapshot.nearValid &&
             std::abs(controlError) >= kTurningControlEntryThreshold;
         const bool directionUsable =
-            bandsValid && std::abs(controlError) >= kTurningDirectionMinimum;
+            cameraLineSnapshot.nearValid &&
+            std::abs(controlError) >= kTurningDirectionMinimum;
         const bool turningDemand =
-            directionUsable && (headingDemand || controlDemand);
+            directionUsable && controlDemand;
         const std::string sampleDirection = controlError < 0.0
                                                 ? "left"
                                                 : "right";
-        const bool wasTurning = previousState_ == "TurningAhead";
+        const bool wasTurning = previousState_ == "TurningNear";
         const std::string previousDirection = turningCandidateDirection_;
         if (!wasTurning)
         {
@@ -134,27 +125,18 @@ void LineRegressionTrace::update(
         std::string transitionReason = "steady";
         if (missionState != previousState_)
         {
-            if (missionState == "TurningAhead")
+            if (missionState == "TurningNear")
             {
-                transitionReason = headingDemand && controlDemand
-                                       ? "heading_and_control_thresholds"
-                                   : headingDemand
-                                       ? "heading_threshold"
-                                       : "control_threshold";
+                transitionReason = "control_threshold";
             }
             else if (wasTurning)
             {
                 const bool signCrossed =
-                    std::abs(controlError) > kTurningControlExitThreshold &&
                     ((previousDirection == "left" && controlError > 0.0) ||
                      (previousDirection == "right" && controlError < 0.0));
                 if (!cameraLineSnapshot.nearValid)
                 {
                     transitionReason = "near_lost";
-                }
-                else if (!cameraLineSnapshot.farValid)
-                {
-                    transitionReason = "far_lost";
                 }
                 else if (signCrossed)
                 {
@@ -203,11 +185,23 @@ void LineRegressionTrace::update(
                 << visionSample.ipcMs << ','
                 << visionSample.totalVisionMs << ','
                 << (cameraLineSnapshot.nearValid ? "true" : "false") << ','
+                << cameraLineSnapshot.nearX << ','
                 << cameraLineSnapshot.nearError << ','
                 << (cameraLineSnapshot.farValid ? "true" : "false") << ','
+                << cameraLineSnapshot.farX << ','
                 << cameraLineSnapshot.farError << ','
-                << headingError << ','
+                << cameraLineSnapshot.lateralError << ','
+                << cameraLineSnapshot.headingError << ','
+                << cameraLineSnapshot.adaptivePreview << ','
+                << cameraLineSnapshot.previewError << ','
+                << cameraLineSnapshot.pTerm << ','
+                << cameraLineSnapshot.filteredDerivative << ','
+                << cameraLineSnapshot.dTerm << ','
                 << cameraLineSnapshot.controlError << ','
+                << cameraLineSnapshot.previewFactor << ','
+                << cameraLineSnapshot.kControl << ','
+                << cameraLineSnapshot.kNear << ','
+                << cameraLineSnapshot.kFar << ','
                 << cameraLineSnapshot.correction << ','
                 << csvText(visionSample.greenRaw) << ','
                 << (visionSample.greenConfirmed ? "true" : "false") << ','
@@ -251,9 +245,11 @@ void LineRegressionTrace::start(std::chrono::steady_clock::time_point now)
                "mjpegOutputHz,captureMs,lineDetectionMs,greenMaskMs,"
                "greenContoursAndFiltersMs,topologyMs,greenProcessingMs,"
                "overlayMs,mjpegPublishMs,ipcPublishMs,totalVisionMs,nearValid,"
-               "nearError,farValid,farError,headingError,controlError,correction,"
+               "nearX,nearError,farValid,farX,farError,lateralError,headingError,"
+               "adaptivePreview,previewError,pTerm,filteredDerivative,dTerm,"
+               "controlError,preview,kControl,kNear,kFar,correction,"
                "greenRaw,greenConfirmed,mainMissionState,transitionReason,"
-               "turningAheadEntryCount,candidateDirection,"
+               "turningNearEntryCount,candidateDirection,"
                "requestedLeft,requestedRight,finalLeft,finalRight,syncEligible,"
                "syncActive,linearComponent,angularComponent\n";
     output_.flush();
@@ -335,17 +331,17 @@ std::string LineRegressionTrace::missionStateName(const std::string& phase)
     {
         return "TrackingNear";
     }
-    if (phase == "turning_ahead")
+    if (phase == "turning_near")
     {
-        return "TurningAhead";
+        return "TurningNear";
     }
     if (phase == "reacquiring_near")
     {
         return "ReacquiringNear";
     }
-    if (phase == "recovering_far")
+    if (phase == "fallback_far")
     {
-        return "RecoveringFar";
+        return "ReacquiringNear";
     }
     if (phase == "searching_left")
     {

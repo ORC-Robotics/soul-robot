@@ -76,7 +76,7 @@ constexpr double kMinMotorOutput = -1.0;
 constexpr double kMaxMotorOutput = 1.0;
 
 // Menor potência operacional usada para mover qualquer lado do robô.
-// Zero continua sendo parada real; comandos não nulos menores são elevados a 0,65.
+// Zero continua sendo parada real; comandos não nulos menores são elevados a 0,69.
 constexpr double kOperationalMinimumMotorPower = 0.69;
 
 // Maior referência operacional aceita antes da correção pelos encoders.
@@ -89,14 +89,14 @@ static_assert(kOperationalMinimumMotorPower > 0.0 &&
 
 // O sincronismo atua somente quando os dois lados avançam ou recuam juntos.
 // Ele reduz gradualmente o lado mais rápido, mas o PWM corrigido nunca pode
-// ficar abaixo do piso operacional de 0,65 enquanto o comando for diferente de zero.
+// ficar abaixo do piso operacional de 0,69 enquanto o comando for diferente de zero.
 constexpr int kEncoderSyncTelemetryMaxAgeMs = 250;
 constexpr double kEncoderSyncMinimumRateCountsPerSecond = 100.0;
 constexpr double kEncoderSyncMinimumAppliedPower = 0.10;
 constexpr double kEncoderSyncEfficiencyFilterAlpha = 0.25;
 constexpr int kEncoderSyncWarmupSamples = 3;
 constexpr double kEncoderSyncMaximumScaleStepPerSample = 0.03;
-// Mesmo na referência máxima, esta escala produz exatamente o piso de 0,65.
+// Mesmo na referência máxima, esta escala produz exatamente o piso de 0,69.
 // Para referências menores, o MotorController calcula um limite ainda maior.
 constexpr double kEncoderSyncMinimumScale =
     kOperationalMinimumMotorPower / kOperationalMaximumReferencePower;
@@ -132,7 +132,7 @@ constexpr double kGreenTurnAroundTargetDegrees = 180.0;
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
 // Comando lógico usado durante os giros por IMU e nas correções.
-// O perfil operacional transforma 0,01 em 0,65 nos dois lados; como eles giram
+// O perfil operacional transforma 0,01 em 0,69 nos dois lados; como eles giram
 // em sentidos opostos, o sincronismo por encoder permanece desativado.
 constexpr double kTurn90CommandPower = 0.01;
 
@@ -188,7 +188,7 @@ constexpr double kDriveDistanceMinimumTargetCm = 1.0;
 constexpr double kDriveDistanceMaximumTargetCm = 300.0;
 
 // Comando lógico para andar em linha reta no teste de distância. O perfil parte
-// de 0,65 / 0,65 e o sincronismo reduz o lado mecanicamente mais rápido.
+// de 0,69 / 0,69 e o sincronismo reduz o lado mecanicamente mais rápido.
 constexpr double kDriveDistanceCommandPower = 0.01;
 
 // Horizonte, em segundos, somado à idade da telemetria para prever quantas
@@ -218,7 +218,7 @@ constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
 constexpr int kDriveDistanceTimeoutMs = 60000;
 
 // Comando lógico de avanço reto durante o gap. O perfil operacional transforma
-// este valor no piso de 0,65 e mantém o sincronismo dos dois lados por encoder.
+// este valor no piso de 0,69 e mantém o sincronismo dos dois lados por encoder.
 constexpr double kGapDriveCommandPower = 0.01;
 
 static_assert(kEncoderCountsPerCentimeter > 0.0,

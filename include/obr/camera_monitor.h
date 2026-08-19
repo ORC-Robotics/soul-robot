@@ -17,18 +17,29 @@ struct CameraLineSnapshot
 {
     bool sourceFresh = false;
     bool nearValid = false;
+    double nearX = 0.0;
     double nearError = 0.0;
+    bool farValid = false;
+    double farX = 0.0;
+    double farError = 0.0;
+    double lateralError = 0.0;
+    double headingError = 0.0;
+    double adaptivePreview = 0.0;
+    double previewError = 0.0;
+    double pTerm = 0.0;
+    double filteredDerivative = 0.0;
+    double dTerm = 0.0;
     double controlError = 0.0;
+    double previewFactor = 0.0;
+    double kControl = 0.0;
+    // Mantidos apenas para consumidores antigos da telemetria.
+    double kNear = 0.0;
+    double kFar = 0.0;
     double correction = 0.0;
     double leftPreview = 0.0;
     double rightPreview = 0.0;
-    bool farValid = false;
-    double farError = 0.0;
-    double farArea = 0.0;
-    bool centerDeltaValid = false;
-    double centerDeltaPx = 0.0;
-    // A visão confirma a extremidade e calcula o alinhamento usando somente o
-    // componente de fita conectado à NEAR. Uma continuação deve ser desconectada.
+    // A visão confirma a extremidade usando o componente conectado à faixa
+    // inferior. A continuação projetada deve ser um componente desconectado.
     bool gapCandidate = false;
     bool gapAlignmentValid = false;
     double gapAlignmentError = 0.0;

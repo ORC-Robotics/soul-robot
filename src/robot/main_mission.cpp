@@ -10,12 +10,13 @@
 
 namespace
 {
-// Valores experimentais usados somente durante a recuperação pela FAR.
-constexpr double kFarBaseSpeed = 0.65;
-constexpr double kFarDeadzone = 0.10;
-constexpr double kFarProportionalGain = 0.30;
-constexpr double kFarMaximumCorrection = 0.15;
-constexpr double kFarExtremeError = 0.75;
+// Valores usados no alinhamento seguro ao reencontrar a linha.
+constexpr double kLineRecoveryBaseSpeed =
+    config::kOperationalMinimumMotorPower;
+constexpr double kLineRecoveryDeadzone = 0.10;
+constexpr double kLineRecoveryProportionalGain = 0.30;
+constexpr double kLineRecoveryMaximumCorrection = 0.15;
+constexpr double kLineRecoveryExtremeError = 0.75;
 
 // Um erro deste tamanho registra uma direção útil sem apagar a memória no centro.
 constexpr double kSignificantDirectionError = 0.20;
@@ -23,19 +24,19 @@ constexpr double kNearReacquireMaxAbsError = 0.40;
 
 // A histerese evita alternar entre tracking e pivô perto do mesmo limiar.
 // Somente sequências novas da câmera avançam as confirmações de entrada e saída.
-constexpr double kAheadStrongTurnEnterError = 0.25;
 constexpr double kStrongSteeringEnterError = 0.40;
 constexpr double kStrongSteeringExitError = 0.12;
 constexpr double kStrongSteeringDirectionMinimum = 0.05;
-constexpr int kAheadStrongTurnEnterSamples = 2;
-constexpr int kAheadStrongTurnExitSamples = 3;
+constexpr int kStrongTurnEnterSamples = 2;
+constexpr int kStrongTurnExitSamples = 3;
 // Potência exclusiva da contrarrotação antecipada. As recuperações
-// permanecem limitadas pela base de 0,65 definida acima.
-constexpr double kAheadStrongTurnPower = 0.65;
+// permanecem limitadas pelo piso mecânico de 0,69 definido em config.h.
+constexpr double kStrongTurnPower = config::kOperationalMinimumMotorPower;
 
 // Os limites impedem que o robô procure indefinidamente por uma linha perdida.
-constexpr auto kNearRecoveryTimeout = std::chrono::milliseconds(3000);
 constexpr auto kTotalLossTimeout = std::chrono::milliseconds(1300);
+// O robô nunca pode continuar avançando indefinidamente sem reencontrar a linha.
+constexpr auto kGapTimeout = std::chrono::milliseconds(2000);
 constexpr int kNearSamplesToConfirmRecovery = 3;
 
 struct MotorCommand
@@ -57,8 +58,8 @@ AutonomousStatus makeLineStatus(
 MotorCommand calculateOneWheelPivotCommand(double error)
 {
     return error < 0.0
-               ? MotorCommand{0.0, kFarBaseSpeed}
-               : MotorCommand{kFarBaseSpeed, 0.0};
+               ? MotorCommand{0.0, kLineRecoveryBaseSpeed}
+               : MotorCommand{kLineRecoveryBaseSpeed, 0.0};
 }
 
 MotorCommand calculateCounterRotationCommand(bool turnLeft, double power)
@@ -70,47 +71,54 @@ MotorCommand calculateCounterRotationCommand(bool turnLeft, double power)
 
 MotorCommand calculateNearReacquisitionCommand(double correction)
 {
-    // A reaquisição preserva a base validada de 0,65 mesmo quando o perfil
+    // A reaquisição preserva a base validada de 0,69 mesmo quando o perfil
     // inferior publica uma prévia mais rápida para o tracking normal.
     const double safeCorrection = std::clamp(
-        correction, -kFarMaximumCorrection, kFarMaximumCorrection);
+        correction,
+        -kLineRecoveryMaximumCorrection,
+        kLineRecoveryMaximumCorrection);
     if (safeCorrection > 0.0)
     {
-        return {kFarBaseSpeed + safeCorrection, kFarBaseSpeed};
+        return {kLineRecoveryBaseSpeed + safeCorrection,
+                kLineRecoveryBaseSpeed};
     }
     if (safeCorrection < 0.0)
     {
-        return {kFarBaseSpeed, kFarBaseSpeed + std::abs(safeCorrection)};
+        return {kLineRecoveryBaseSpeed,
+                kLineRecoveryBaseSpeed + std::abs(safeCorrection)};
     }
-    return {kFarBaseSpeed, kFarBaseSpeed};
+    return {kLineRecoveryBaseSpeed, kLineRecoveryBaseSpeed};
 }
 
-MotorCommand calculateFarRecoveryCommand(double farError)
+MotorCommand calculateLineRecoveryCommand(double lineError)
 {
-    const double safeFarError = std::clamp(farError, -1.0, 1.0);
-    const double errorMagnitude = std::abs(safeFarError);
+    const double safeLineError = std::clamp(lineError, -1.0, 1.0);
+    const double errorMagnitude = std::abs(safeLineError);
 
-    if (errorMagnitude >= kFarExtremeError)
+    if (errorMagnitude >= kLineRecoveryExtremeError)
     {
-        return calculateOneWheelPivotCommand(safeFarError);
+        return calculateOneWheelPivotCommand(safeLineError);
     }
 
-    if (errorMagnitude <= kFarDeadzone)
+    if (errorMagnitude <= kLineRecoveryDeadzone)
     {
-        return {kFarBaseSpeed, kFarBaseSpeed};
+        return {kLineRecoveryBaseSpeed, kLineRecoveryBaseSpeed};
     }
 
     const double normalizedMagnitude =
-        (errorMagnitude - kFarDeadzone) / (1.0 - kFarDeadzone);
+        (errorMagnitude - kLineRecoveryDeadzone) /
+        (1.0 - kLineRecoveryDeadzone);
     const double correction = std::min(
-        kFarMaximumCorrection,
-        kFarProportionalGain * normalizedMagnitude);
+        kLineRecoveryMaximumCorrection,
+        kLineRecoveryProportionalGain * normalizedMagnitude);
 
-    if (safeFarError < 0.0)
+    if (safeLineError < 0.0)
     {
-        return {kFarBaseSpeed, kFarBaseSpeed + correction};
+        return {kLineRecoveryBaseSpeed,
+                kLineRecoveryBaseSpeed + correction};
     }
-    return {kFarBaseSpeed + correction, kFarBaseSpeed};
+    return {kLineRecoveryBaseSpeed + correction,
+            kLineRecoveryBaseSpeed};
 }
 }
 
@@ -125,13 +133,12 @@ void MainMission::reset()
     lastProcessedLineSequence_ = 0;
     hasProcessedLineSequence_ = false;
     consecutiveNearValidSamples_ = 0;
-    aheadStrongTurnActive_ = false;
-    aheadStrongTurnDirection_ = LineDirection::Unknown;
-    aheadStrongTurnEnterSamples_ = 0;
-    aheadStrongTurnExitSamples_ = 0;
-    aheadStrongTurnLastLineSequence_ = 0;
-    aheadStrongTurnHasLineSequence_ = false;
-    aheadStrongTurnLastHeadingError_ = 0.0;
+    strongTurnActive_ = false;
+    strongTurnDirection_ = LineDirection::Unknown;
+    strongTurnEnterSamples_ = 0;
+    strongTurnExitSamples_ = 0;
+    strongTurnLastLineSequence_ = 0;
+    strongTurnHasLineSequence_ = false;
     nearRecoveryActive_ = false;
     totalLossActive_ = false;
     nearLostAt_ = {};
@@ -204,10 +211,10 @@ void MainMission::update(
     {
         // Somente um verde reconhecido pode substituir a prévia normal. Sem
         // verde, o segue-linha conserva exatamente o comportamento anterior.
-        aheadStrongTurnActive_ = false;
-        aheadStrongTurnDirection_ = LineDirection::Unknown;
-        aheadStrongTurnEnterSamples_ = 0;
-        aheadStrongTurnExitSamples_ = 0;
+        strongTurnActive_ = false;
+        strongTurnDirection_ = LineDirection::Unknown;
+        strongTurnEnterSamples_ = 0;
+        strongTurnExitSamples_ = 0;
         nearRecoveryActive_ = false;
         totalLossActive_ = false;
         transitionTo(LineFollowState::TrackingNear);
@@ -223,35 +230,43 @@ void MainMission::update(
     }
 
     const bool gapStateActive = state_ == LineFollowState::CrossingGap;
+    const bool strongTurnDemand =
+        cameraLineSnapshot.nearValid &&
+        std::abs(cameraLineSnapshot.controlError) >=
+            kStrongSteeringEnterError;
     if (!gapStateActive &&
         state_ == LineFollowState::TrackingNear &&
         newLineSample && cameraLineSnapshot.gapCandidate &&
-        !aheadStrongTurnActive_ && !nearRecoveryActive_ && !totalLossActive_ &&
-        std::abs(cameraLineSnapshot.controlError) <
-            kAheadStrongTurnEnterError &&
-        std::abs(cameraLineSnapshot.nearError) < kStrongSteeringEnterError)
+        !strongTurnActive_ && !strongTurnDemand &&
+        !nearRecoveryActive_ && !totalLossActive_)
     {
-        // O GAP é a última prioridade de percurso: curva e recuperação sempre
-        // vencem. A primeira detecção inicia o avanço reto sem realinhamento.
-        aheadStrongTurnActive_ = false;
-        aheadStrongTurnDirection_ = LineDirection::Unknown;
-        aheadStrongTurnEnterSamples_ = 0;
-        aheadStrongTurnExitSamples_ = 0;
+        // O gap tem prioridade menor que uma curva forte já visível. A
+        // detecção pode chegar com a NEAR vazia, pois usa a faixa inferior.
+        strongTurnActive_ = false;
+        strongTurnDirection_ = LineDirection::Unknown;
+        strongTurnEnterSamples_ = 0;
+        strongTurnExitSamples_ = 0;
         nearRecoveryActive_ = false;
         totalLossActive_ = false;
-        gapNearLossObserved_ = false;
+        gapNearLossObserved_ = !cameraLineSnapshot.nearValid;
+        gapStartedAt_ = now;
         transitionTo(LineFollowState::CrossingGap);
-        robotState.driveAutonomous(
-            config::kGapDriveCommandPower,
-            config::kGapDriveCommandPower);
-        robotState.updateAutonomousStatus(makeLineStatus(
-            "crossing_gap",
-            "Gap detectado: seguindo reto até reencontrar a linha"));
-        return;
     }
 
     if (state_ == LineFollowState::CrossingGap)
     {
+        if (gapStartedAt_ != std::chrono::steady_clock::time_point{} &&
+            now - gapStartedAt_ >= kGapTimeout)
+        {
+            // Sem linha ou continuação confirmada, avançar além deste limite
+            // seria inseguro. A parada é terminal para esta execução.
+            robotState.stop();
+            std::cout << "MainMission stopped: gap timeout ("
+                      << kGapTimeout.count() << " ms)" << std::endl;
+            resetGapTracking();
+            return;
+        }
+
         if (newLineSample && !gapNearLossObserved_ &&
             !cameraLineSnapshot.nearValid)
         {
@@ -285,28 +300,13 @@ void MainMission::update(
             resetGapTracking();
             nearRecoveryActive_ = true;
             nearLostAt_ = now;
-            transitionTo(LineFollowState::RecoveringFar);
+            transitionTo(LineFollowState::ReacquiringNear);
             const MotorCommand command =
-                calculateFarRecoveryCommand(returnError);
+                calculateLineRecoveryCommand(returnError);
             robotState.driveAutonomous(command.left, command.right);
             robotState.updateAutonomousStatus(makeLineStatus(
-                "recovering_far",
+                "reacquiring_near",
                 "Continuação do gap encontrada pela visão"));
-            return;
-        }
-        if (newLineSample && gapNearLossObserved_ &&
-            cameraLineSnapshot.farValid)
-        {
-            resetGapTracking();
-            nearRecoveryActive_ = true;
-            nearLostAt_ = now;
-            transitionTo(LineFollowState::RecoveringFar);
-            const MotorCommand command =
-                calculateFarRecoveryCommand(cameraLineSnapshot.farError);
-            robotState.driveAutonomous(command.left, command.right);
-            robotState.updateAutonomousStatus(makeLineStatus(
-                "recovering_far",
-                "Linha reencontrada pela FAR após o gap"));
             return;
         }
 
@@ -319,31 +319,28 @@ void MainMission::update(
         return;
     }
 
-    // Este detector possui sequência própria para nunca contar o mesmo frame
-    // novamente quando o loop C++ roda mais rápido que o processo de visão.
-    const bool newAheadStrongTurnSample =
-        !aheadStrongTurnHasLineSequence_ ||
-        cameraLineSnapshot.lineSequence != aheadStrongTurnLastLineSequence_;
-    if (newAheadStrongTurnSample)
+    // Este detector conta somente frames novos para manter a histerese
+    // independente da frequência do loop principal.
+    const bool newStrongTurnSample =
+        !strongTurnHasLineSequence_ ||
+        cameraLineSnapshot.lineSequence != strongTurnLastLineSequence_;
+    if (newStrongTurnSample)
     {
-        aheadStrongTurnHasLineSequence_ = true;
-        aheadStrongTurnLastLineSequence_ = cameraLineSnapshot.lineSequence;
+        strongTurnHasLineSequence_ = true;
+        strongTurnLastLineSequence_ = cameraLineSnapshot.lineSequence;
     }
 
-    const auto logAheadStrongTurnEvent =
+    const auto logStrongTurnEvent =
         [&](const char* event,
             const char* exitReason,
-            double headingError,
             const MotorCommand& command)
     {
-        std::cout << "MainMission ahead strong turn " << event << ":"
+        std::cout << "MainMission NEAR strong turn " << event << ":"
                   << " lineSequence=" << cameraLineSnapshot.lineSequence
                   << " nearError=" << cameraLineSnapshot.nearError
-                  << " farError=" << cameraLineSnapshot.farError
-                  << " headingError=" << headingError
                   << " controlError=" << cameraLineSnapshot.controlError
                   << " direction="
-                  << (aheadStrongTurnDirection_ == LineDirection::Left
+                  << (strongTurnDirection_ == LineDirection::Left
                           ? "left"
                           : "right")
                   << " leftCommand=" << command.left
@@ -352,150 +349,121 @@ void MainMission::update(
                   << std::endl;
     };
 
-    const auto exitAheadStrongTurn =
-        [&](const char* exitReason,
-            double headingError,
-            bool returnToTracking)
+    const auto exitStrongTurn = [&](const char* exitReason,
+                                    bool returnToTracking)
     {
-        const MotorCommand command =
-            calculateCounterRotationCommand(
-                aheadStrongTurnDirection_ == LineDirection::Left,
-                kAheadStrongTurnPower);
-        logAheadStrongTurnEvent(
-            "exited", exitReason, headingError, command);
-        aheadStrongTurnActive_ = false;
-        aheadStrongTurnDirection_ = LineDirection::Unknown;
-        aheadStrongTurnEnterSamples_ = 0;
-        aheadStrongTurnExitSamples_ = 0;
+        const MotorCommand command = calculateCounterRotationCommand(
+            strongTurnDirection_ == LineDirection::Left,
+            kStrongTurnPower);
+        logStrongTurnEvent("exited", exitReason, command);
+        strongTurnActive_ = false;
+        strongTurnDirection_ = LineDirection::Unknown;
+        strongTurnEnterSamples_ = 0;
+        strongTurnExitSamples_ = 0;
         if (returnToTracking)
         {
             transitionTo(LineFollowState::TrackingNear);
         }
     };
 
-    const bool aheadStrongTurnBandsValid =
-        cameraLineSnapshot.nearValid && cameraLineSnapshot.farValid;
-    if (aheadStrongTurnBandsValid)
+    if (cameraLineSnapshot.nearValid)
     {
-        const double headingError =
-            cameraLineSnapshot.farError - cameraLineSnapshot.nearError;
         const double steeringError = cameraLineSnapshot.controlError;
-        aheadStrongTurnLastHeadingError_ = headingError;
-
-        if (aheadStrongTurnActive_)
+        if (strongTurnActive_)
         {
-            if (newAheadStrongTurnSample)
+            if (newStrongTurnSample)
             {
                 const bool steeringSignCrossed =
-                    std::abs(steeringError) > kStrongSteeringExitError &&
-                    ((aheadStrongTurnDirection_ == LineDirection::Left &&
+                    ((strongTurnDirection_ == LineDirection::Left &&
                       steeringError > 0.0) ||
-                     (aheadStrongTurnDirection_ == LineDirection::Right &&
+                     (strongTurnDirection_ == LineDirection::Right &&
                       steeringError < 0.0));
                 if (steeringSignCrossed)
                 {
-                    exitAheadStrongTurn(
-                        "steering_sign_crossed", headingError, true);
+                    exitStrongTurn("steering_sign_crossed", true);
                 }
-                else if (std::abs(steeringError) <= kStrongSteeringExitError)
+                else if (std::abs(steeringError) <=
+                         kStrongSteeringExitError)
                 {
-                    ++aheadStrongTurnExitSamples_;
+                    ++strongTurnExitSamples_;
                 }
                 else
                 {
-                    aheadStrongTurnExitSamples_ = 0;
+                    strongTurnExitSamples_ = 0;
                 }
             }
 
-            if (aheadStrongTurnActive_ &&
-                aheadStrongTurnExitSamples_ >= kAheadStrongTurnExitSamples)
+            if (strongTurnActive_ &&
+                strongTurnExitSamples_ >= kStrongTurnExitSamples)
             {
-                exitAheadStrongTurn("control_aligned", headingError, true);
+                exitStrongTurn("control_aligned", true);
             }
 
-            if (aheadStrongTurnActive_)
+            if (strongTurnActive_)
             {
-                const MotorCommand command =
-                    calculateCounterRotationCommand(
-                        aheadStrongTurnDirection_ == LineDirection::Left,
-                        kAheadStrongTurnPower);
-                transitionTo(LineFollowState::TurningAhead);
+                const MotorCommand command = calculateCounterRotationCommand(
+                    strongTurnDirection_ == LineDirection::Left,
+                    kStrongTurnPower);
+                transitionTo(LineFollowState::TurningNear);
                 robotState.driveAutonomous(command.left, command.right);
                 robotState.updateAutonomousStatus(makeLineStatus(
-                    "turning_ahead", "Curva forte antecipada pela AHEAD"));
+                    "turning_near", "Curva forte antecipada pela NEAR"));
                 return;
             }
         }
-        else if (newAheadStrongTurnSample)
+        else if (newStrongTurnSample)
         {
-            const bool strongHeadingDemand =
-                std::abs(headingError) >= kAheadStrongTurnEnterError;
-            const bool strongSteeringDemand =
-                std::abs(steeringError) >= kStrongSteeringEnterError;
-            const bool directionIsUsable =
-                std::abs(steeringError) >= kStrongSteeringDirectionMinimum;
             const bool shouldEnterStrongTurn =
-                directionIsUsable &&
-                (strongHeadingDemand || strongSteeringDemand);
+                std::abs(steeringError) >= kStrongSteeringEnterError &&
+                std::abs(steeringError) >=
+                    kStrongSteeringDirectionMinimum;
             if (shouldEnterStrongTurn)
             {
                 const LineDirection sampleDirection =
                     steeringError < 0.0
                         ? LineDirection::Left
                         : LineDirection::Right;
-                if (sampleDirection == aheadStrongTurnDirection_)
+                if (sampleDirection == strongTurnDirection_)
                 {
-                    ++aheadStrongTurnEnterSamples_;
+                    ++strongTurnEnterSamples_;
                 }
                 else
                 {
-                    aheadStrongTurnDirection_ = sampleDirection;
-                    aheadStrongTurnEnterSamples_ = 1;
+                    strongTurnDirection_ = sampleDirection;
+                    strongTurnEnterSamples_ = 1;
                 }
             }
             else
             {
-                aheadStrongTurnEnterSamples_ = 0;
-                aheadStrongTurnDirection_ = LineDirection::Unknown;
+                strongTurnEnterSamples_ = 0;
+                strongTurnDirection_ = LineDirection::Unknown;
             }
 
-            if (aheadStrongTurnEnterSamples_ >= kAheadStrongTurnEnterSamples)
+            if (strongTurnEnterSamples_ >= kStrongTurnEnterSamples)
             {
-                aheadStrongTurnActive_ = true;
-                aheadStrongTurnExitSamples_ = 0;
-                const MotorCommand command =
-                    calculateCounterRotationCommand(
-                        aheadStrongTurnDirection_ == LineDirection::Left,
-                        kAheadStrongTurnPower);
-                logAheadStrongTurnEvent(
-                    "entered", "none", headingError, command);
-
-                transitionTo(LineFollowState::TurningAhead);
+                strongTurnActive_ = true;
+                strongTurnExitSamples_ = 0;
+                const MotorCommand command = calculateCounterRotationCommand(
+                    strongTurnDirection_ == LineDirection::Left,
+                    kStrongTurnPower);
+                logStrongTurnEvent("entered", "none", command);
+                transitionTo(LineFollowState::TurningNear);
                 robotState.driveAutonomous(command.left, command.right);
                 robotState.updateAutonomousStatus(makeLineStatus(
-                    "turning_ahead", "Curva forte antecipada pela AHEAD"));
+                    "turning_near", "Curva forte antecipada pela NEAR"));
                 return;
             }
         }
     }
+    else if (strongTurnActive_)
+    {
+        exitStrongTurn("near_lost", false);
+    }
     else
     {
-        if (aheadStrongTurnActive_)
-        {
-            const char* exitReason = cameraLineSnapshot.nearValid
-                                         ? "far_lost"
-                                         : "near_lost";
-            exitAheadStrongTurn(
-                exitReason,
-                aheadStrongTurnLastHeadingError_,
-                cameraLineSnapshot.nearValid);
-        }
-        else
-        {
-            aheadStrongTurnEnterSamples_ = 0;
-            aheadStrongTurnExitSamples_ = 0;
-            aheadStrongTurnDirection_ = LineDirection::Unknown;
-        }
+        strongTurnEnterSamples_ = 0;
+        strongTurnExitSamples_ = 0;
+        strongTurnDirection_ = LineDirection::Unknown;
     }
 
     if (cameraLineSnapshot.nearValid)
@@ -525,8 +493,8 @@ void MainMission::update(
         {
             consecutiveNearValidSamples_ = 0;
 
-            // Usa o mesmo pivô controlado de um lado empregado pela FAR extrema.
-            // Erro negativo aponta para a esquerda; erro positivo, para a direita.
+            // O pivô de uma roda reduz o risco de ultrapassar a linha durante
+            // um erro extremo de reaquisição.
             const MotorCommand command =
                 calculateOneWheelPivotCommand(cameraLineSnapshot.nearError);
             robotState.driveAutonomous(command.left, command.right);
@@ -563,44 +531,28 @@ void MainMission::update(
     consecutiveNearValidSamples_ = 0;
     if (!nearRecoveryActive_)
     {
-        // Este tempo mede somente a ausência contínua da NEAR. Qualquer nova
-        // amostra NEAR válida encerra esta contagem antes da reaquisição.
         nearRecoveryActive_ = true;
         nearLostAt_ = now;
         searchDirection_ = LineDirection::Unknown;
     }
-    if (now - nearLostAt_ >= kNearRecoveryTimeout &&
-        !cameraLineSnapshot.farValid)
-    {
-        // A parada é terminal: somente uma nova partida poderá mover o robô.
-        robotState.stop();
-        std::cout << "MainMission stopped: NEAR recovery timeout ("
-                  << kNearRecoveryTimeout.count() << " ms)"
-                  << " nearValid=" << std::boolalpha
-                  << cameraLineSnapshot.nearValid
-                  << " farValid=" << cameraLineSnapshot.farValid
-                  << std::noboolalpha
-                  << " nearError=" << cameraLineSnapshot.nearError
-                  << " state=" << stateName(state_) << std::endl;
-        return;
-    }
-
     if (cameraLineSnapshot.farValid)
     {
+        // A FAR isolada não volta ao tracking normal. Ela apenas mantém uma
+        // correção limitada até a NEAR reaparecer e confirmar a linha próxima.
         totalLossActive_ = false;
         totalLossStartedAt_ = {};
-        transitionTo(LineFollowState::RecoveringFar);
-
+        transitionTo(LineFollowState::ReacquiringNear);
         const MotorCommand command =
-            calculateFarRecoveryCommand(cameraLineSnapshot.farError);
+            calculateLineRecoveryCommand(cameraLineSnapshot.farError);
         robotState.driveAutonomous(command.left, command.right);
         robotState.updateAutonomousStatus(makeLineStatus(
-            "recovering_far", "Recuperando pela FAR"));
+            "fallback_far", "NEAR ausente: alinhando pela FAR"));
         return;
     }
-
     if (!totalLossActive_)
     {
+        // Sem qualquer banda válida, este limite curto impede contrarrotação
+        // indefinida sem linha visível.
         totalLossActive_ = true;
         totalLossStartedAt_ = now;
     }
@@ -618,7 +570,7 @@ void MainMission::update(
     {
         transitionTo(LineFollowState::SearchingRight);
         const MotorCommand command =
-            calculateCounterRotationCommand(false, kFarBaseSpeed);
+            calculateCounterRotationCommand(false, kLineRecoveryBaseSpeed);
         robotState.driveAutonomous(command.left, command.right);
         robotState.updateAutonomousStatus(makeLineStatus(
             "searching_right", "Procurando linha à direita"));
@@ -627,7 +579,7 @@ void MainMission::update(
 
     transitionTo(LineFollowState::SearchingLeft);
     const MotorCommand command =
-        calculateCounterRotationCommand(true, kFarBaseSpeed);
+        calculateCounterRotationCommand(true, kLineRecoveryBaseSpeed);
     robotState.driveAutonomous(command.left, command.right);
     robotState.updateAutonomousStatus(makeLineStatus(
         "searching_left", "Procurando linha à esquerda"));
@@ -728,7 +680,7 @@ bool MainMission::updateGreenTurn(
     }
 
     greenDecisionLatched_ = true;
-    aheadStrongTurnActive_ = false;
+    strongTurnActive_ = false;
     nearRecoveryActive_ = false;
     totalLossActive_ = false;
     resetGapTracking();
@@ -760,6 +712,7 @@ bool MainMission::updateGreenTurn(
 void MainMission::resetGapTracking()
 {
     gapNearLossObserved_ = false;
+    gapStartedAt_ = {};
 }
 
 void MainMission::updateDirectionMemory(double error)
@@ -806,14 +759,12 @@ const char* MainMission::stateName(LineFollowState state)
         return "TrackingNear";
     case LineFollowState::TurningAtGreenMarker:
         return "TurningAtGreenMarker";
-    case LineFollowState::TurningAhead:
-        return "TurningAhead";
+    case LineFollowState::TurningNear:
+        return "TurningNear";
     case LineFollowState::CrossingGap:
         return "CrossingGap";
     case LineFollowState::ReacquiringNear:
         return "ReacquiringNear";
-    case LineFollowState::RecoveringFar:
-        return "RecoveringFar";
     case LineFollowState::SearchingLeft:
         return "SearchingLeft";
     case LineFollowState::SearchingRight:

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -24,8 +25,8 @@ if not CV2_AVAILABLE:
     sys.modules.pop("cv2", None)
 
 
-def synthetic_line_axis(near=(320, 260), far=(320, 160)):
-    return camera_line_frame.build_line_axis(near, far)
+def synthetic_line_axis(robot_side=(320, 260), forward=(320, 160)):
+    return camera_line_frame.build_line_axis(robot_side, forward)
 
 
 def synthetic_line_mask(
@@ -163,7 +164,7 @@ def synthetic_candidate(
 
 
 class CameraProfilesTest(unittest.TestCase):
-    def analyze_synthetic_gap(self, mask, near_center=(320, 160)):
+    def analyze_synthetic_gap(self, mask):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         geometry = camera_line_frame.resolve_vision_geometry(480, profile)
         if CV2_AVAILABLE:
@@ -171,7 +172,6 @@ class CameraProfilesTest(unittest.TestCase):
                 mask,
                 geometry,
                 profile,
-                near_center,
             )
         with (
             mock.patch.object(
@@ -186,7 +186,6 @@ class CameraProfilesTest(unittest.TestCase):
                 mask,
                 geometry,
                 profile,
-                near_center,
             )
 
     def test_gap_detector_accepts_centered_endpoint(self):
@@ -197,12 +196,11 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertAlmostEqual(result["alignment_error"], 0.0, places=3)
         self.assertFalse(result["return_valid"])
 
-    def test_gap_detector_accepts_endpoint_inside_near_when_far_is_empty(self):
-        # Reproduz o enquadramento deslocado: a ponta está em y=155, abaixo do
-        # fim da FAR (y=100), mas o segmento ainda cruza a NEAR.
+    def test_gap_detector_accepts_endpoint_with_near_empty(self):
+        # A ponta em y=155 fica fora da NEAR, mas o componente inferior ainda
+        # deve identificar o gap sem depender da banda de controle.
         result = self.analyze_synthetic_gap(
             synthetic_gap_mask(endpoint_y=155),
-            near_center=(320, 165),
         )
 
         self.assertTrue(result["candidate"])
@@ -212,8 +210,9 @@ class CameraProfilesTest(unittest.TestCase):
     def test_gap_detector_rejects_continuous_line_curve_and_crossing(self):
         continuous = synthetic_gap_mask(continuous=True)
         curve = np.zeros((425, 640), dtype=np.uint8)
-        for y in range(0, 271):
-            center_x = 320 + int(round(40 * (1.0 - y / 270.0)))
+        for y in range(130, 425):
+            progress = (425 - y) / 295.0
+            center_x = 320 + int(round(140 * progress * progress))
             curve[y, center_x - 10:center_x + 11] = 255
         crossing = synthetic_gap_mask(branch=True)
 
@@ -224,7 +223,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_gap_detector_keeps_alignment_error_and_ignores_noise(self):
         mask = synthetic_gap_mask(left_x=390, right_x=410)
         mask[20:23, 40:43] = 255
-        result = self.analyze_synthetic_gap(mask, near_center=(400, 160))
+        result = self.analyze_synthetic_gap(mask)
 
         self.assertTrue(result["candidate"])
         self.assertGreater(result["alignment_error"], 0.20)
@@ -378,6 +377,51 @@ class CameraProfilesTest(unittest.TestCase):
             (64, 255, 96),
         )
 
+    def test_camera_hides_unconfirmed_rejected_and_unresolved_green(self):
+        line_axis = synthetic_line_axis()
+        valid = synthetic_candidate((370, 200))
+        rejected = synthetic_candidate((370, 200), associated=False)
+        unresolved = synthetic_candidate((320, 200))
+
+        self.assertEqual(
+            camera_line_frame.select_visible_green_candidates(
+                [valid], line_axis, "DIREITA", "SEM_DECISAO", False
+            ),
+            [],
+        )
+        visible = camera_line_frame.select_visible_green_candidates(
+            [valid, rejected, unresolved],
+            line_axis,
+            "DIREITA",
+            "DIREITA",
+            True,
+        )
+        self.assertEqual(visible, [valid])
+
+    def test_camera_hides_stale_or_ambiguous_green_decision(self):
+        line_axis = synthetic_line_axis()
+        candidate = synthetic_candidate((370, 200))
+
+        for raw_interpretation, published_interpretation in (
+            ("SEM_DECISAO", "DIREITA"),
+            ("AMBIGUO", "AMBIGUO"),
+            ("VERDE_FALSO_NO_SENTIDO_ATUAL", "VERDE_FALSO_NO_SENTIDO_ATUAL"),
+        ):
+            with self.subTest(
+                raw=raw_interpretation,
+                published=published_interpretation,
+            ):
+                self.assertEqual(
+                    camera_line_frame.select_visible_green_candidates(
+                        [candidate],
+                        line_axis,
+                        raw_interpretation,
+                        published_interpretation,
+                        True,
+                    ),
+                    [],
+                )
+
     def resolve_green_case(self, name, candidates, topology):
         """Executa e mostra o diagnóstico determinístico do resolvedor verde."""
 
@@ -508,9 +552,9 @@ class CameraProfilesTest(unittest.TestCase):
         profile_role,
         near_valid,
         near_error,
-        far_valid,
-        far_error,
         expected,
+        far_valid=False,
+        far_error=0.0,
     ):
         vision_profile = camera_line_frame.CAMERA_PROFILES[profile_role]["vision"]
         actual = camera_line_frame.calculate_control_preview(
@@ -540,7 +584,136 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(profile["sensor_bit_depth"], 10)
         self.assertEqual(profile["target_fps"], 30)
 
-    def test_down_rois_move_to_top_without_changing_dimensions(self):
+    def test_down_profile_uses_local_contrast_after_light_removal(self):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+
+        self.assertEqual(profile["line_background_kernel_size"], 201)
+        self.assertEqual(profile["line_max_background_ratio_percent"], 68)
+        self.assertEqual(profile["line_max_brightness"], 110)
+        self.assertEqual(profile["open_kernel_shape"], "ellipse")
+        self.assertEqual(profile["open_kernel_size"], 17)
+        self.assertEqual(profile["close_kernel_size"], 7)
+        self.assertEqual(profile["full_line_max_area_ratio"], 0.30)
+
+    def test_down_line_mask_rejects_dim_white_and_keeps_black_tape(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        width = 640
+        height = 480
+        brightness_gradient = np.linspace(55, 220, width, dtype=np.uint8)
+        gray_frame = np.tile(brightness_gradient, (height, 1))
+        gray_frame[:, 300:341] = 20
+        frame = np.repeat(gray_frame[:, :, None], 3, axis=2)
+
+        mask, _ = camera_line_frame.create_filtered_line_mask(
+            frame,
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+        )
+
+        tape_coverage = np.count_nonzero(mask[:425, 300:341]) / (425 * 41)
+        floor_pixels = np.concatenate((
+            mask[:425, :280].ravel(),
+            mask[:425, 361:].ravel(),
+        ))
+        floor_coverage = np.count_nonzero(floor_pixels) / floor_pixels.size
+        self.assertGreater(tape_coverage, 0.95)
+        self.assertLess(floor_coverage, 0.01)
+
+    def test_down_line_mask_finds_tape_inside_deep_shadow(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        gray_frame = np.full((480, 640), 205, dtype=np.uint8)
+        gray_frame[:, :320] = 65
+        gray_frame[:, 120:161] = 35
+        frame = np.repeat(gray_frame[:, :, None], 3, axis=2)
+
+        mask, _ = camera_line_frame.create_filtered_line_mask(
+            frame,
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+        )
+
+        tape_coverage = np.count_nonzero(mask[:425, 120:161]) / (425 * 41)
+        shadow_floor = np.concatenate((
+            mask[:425, :100].ravel(),
+            mask[:425, 181:300].ravel(),
+        ))
+        shadow_coverage = np.count_nonzero(shadow_floor) / shadow_floor.size
+        self.assertGreater(tape_coverage, 0.95)
+        self.assertLess(shadow_coverage, 0.01)
+
+    def test_down_line_mask_removes_thin_gap_connected_to_tape(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        gray_frame = np.full((480, 640), 205, dtype=np.uint8)
+        gray_frame[:, 285:356] = 20
+        camera_line_frame.cv2.line(
+            gray_frame,
+            (50, 390),
+            (590, 210),
+            20,
+            14,
+            camera_line_frame.cv2.LINE_8,
+        )
+        frame = np.repeat(gray_frame[:, :, None], 3, axis=2)
+
+        mask, _ = camera_line_frame.create_filtered_line_mask(
+            frame,
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+        )
+
+        gap_region = mask.copy()
+        gap_region[:, 260:381] = 0
+        tape_coverage = np.count_nonzero(mask[:425, 300:341]) / (425 * 41)
+        self.assertEqual(np.count_nonzero(gap_region), 0)
+        self.assertGreater(tape_coverage, 0.95)
+
+    def test_down_line_mask_preserves_twenty_pixel_diagonal_tape(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        gray_frame = np.full((480, 640), 205, dtype=np.uint8)
+        expected_tape = np.zeros((480, 640), dtype=np.uint8)
+        for target, color in ((gray_frame, 20), (expected_tape, 255)):
+            camera_line_frame.cv2.line(
+                target,
+                (180, 400),
+                (450, 20),
+                color,
+                20,
+                camera_line_frame.cv2.LINE_8,
+            )
+        frame = np.repeat(gray_frame[:, :, None], 3, axis=2)
+
+        mask, _ = camera_line_frame.create_filtered_line_mask(
+            frame,
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+        )
+
+        expected_pixels = expected_tape[:425] > 0
+        retained_pixels = np.count_nonzero(mask[:425][expected_pixels])
+        self.assertGreater(retained_pixels / np.count_nonzero(expected_pixels), 0.95)
+
+    def test_line_candidate_mask_rejects_giant_dark_component(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        structural_mask = np.zeros((425, 640), dtype=np.uint8)
+        structural_mask[:, :280] = 255
+        structural_mask[:, 320:361] = 255
+
+        candidate_mask = camera_line_frame.create_line_candidate_mask(
+            structural_mask,
+            profile,
+        )
+
+        self.assertEqual(np.count_nonzero(candidate_mask[:, :280]), 0)
+        self.assertGreater(np.count_nonzero(candidate_mask[:, 320:361]), 0)
+
+    def test_down_uses_far_and_near_percentages_of_roi(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         geometry = camera_line_frame.resolve_vision_geometry(480, profile)
 
@@ -550,21 +723,117 @@ class CameraProfilesTest(unittest.TestCase):
                 geometry["far_band_end_y"],
                 geometry["near_band_start_y"],
                 geometry["near_band_end_y"],
+                geometry["green_observation_start_y"],
+                geometry["green_observation_end_y"],
             ),
-            (0, 100, 130, 190),
+            (0, 96, 312, 408, 130, 190),
         )
         self.assertEqual(
             geometry["far_band_end_y"] - geometry["far_band_start_y"],
-            100,
+            96,
         )
         self.assertEqual(
             geometry["near_band_end_y"] - geometry["near_band_start_y"],
-            60,
+            96,
         )
         self.assertEqual(
-            geometry["near_band_start_y"] - geometry["far_band_end_y"],
-            30,
+            (geometry["gap_anchor_start_y"], geometry["gap_anchor_end_y"]),
+            (350, 425),
         )
+        self.assertEqual(
+            (geometry["gap_endpoint_start_y"], geometry["gap_endpoint_end_y"]),
+            (19, 180),
+        )
+        self.assertEqual(
+            set(geometry),
+            {
+                "structural_end_y",
+                "ignored_start_y",
+                "far_band_start_y",
+                "far_band_end_y",
+                "near_band_start_y",
+                "near_band_end_y",
+                "green_observation_start_y",
+                "green_observation_end_y",
+                "gap_anchor_start_y",
+                "gap_anchor_end_y",
+                "gap_endpoint_start_y",
+                "gap_endpoint_end_y",
+            },
+        )
+
+    def test_band_percentages_are_relative_to_roi_height(self):
+        geometry = camera_line_frame.resolve_vision_geometry(
+            400,
+            {
+                "line_roi_start_ratio": 0.25,
+                "far_band_start_ratio": 0.00,
+                "far_band_end_ratio": 0.20,
+                "near_band_start_ratio": 0.65,
+                "near_band_end_ratio": 0.85,
+            },
+        )
+
+        self.assertEqual(
+            (
+                geometry["far_band_start_y"],
+                geometry["far_band_end_y"],
+                geometry["near_band_start_y"],
+                geometry["near_band_end_y"],
+            ),
+            (100, 160, 295, 355),
+        )
+
+    def test_band_center_uses_median_of_rows_against_local_branch(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        mask = np.zeros((480, 640), dtype=np.uint8)
+        mask[312:408, 300:321] = 255
+        mask[350:354, 300:521] = 255
+        observation = camera_line_frame.analyze_line_band(
+            mask, 312, 408
+        )
+
+        self.assertTrue(observation["valid"])
+        self.assertAlmostEqual(observation["x"], 310.0, places=1)
+
+    def test_single_near_band_estimates_line_axis_internally(self):
+        if not CV2_AVAILABLE:
+            self.skipTest("OpenCV não está disponível")
+
+        contour = np.array(
+            [[[300, 0]], [[340, 0]], [[360, 99]], [[320, 99]]],
+            dtype=np.int32,
+        )
+        axis = camera_line_frame.build_single_band_line_axis(
+            (100, 640), contour, 0
+        )
+
+        self.assertTrue(axis["valid"])
+        self.assertLess(axis["forward"][1], 0.0)
+        self.assertLess(axis["forward"][0], 0.0)
+
+    def test_green_proximity_uses_its_separate_band(self):
+        geometry = camera_line_frame.resolve_vision_geometry(
+            480,
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+        )
+        inside = synthetic_candidate((270, 150))
+        outside = synthetic_candidate((270, 90))
+
+        self.assertTrue(camera_line_frame.green_seen_in_vertical_band(
+            [inside],
+            geometry["green_observation_start_y"],
+            geometry["green_observation_end_y"],
+            synthetic_line_axis(),
+        ))
+        self.assertFalse(camera_line_frame.green_seen_in_vertical_band(
+            [outside],
+            geometry["green_observation_start_y"],
+            geometry["green_observation_end_y"],
+            synthetic_line_axis(),
+        ))
 
     def test_argument_has_priority_over_environment(self):
         with mock.patch.dict(os.environ, {"OBR_CAMERA_ROLE": "forward"}):
@@ -588,54 +857,266 @@ class CameraProfilesTest(unittest.TestCase):
             {"x": 0, "y": 2, "width": 3280, "height": 2460},
         )
 
+    def test_fast_json_publishes_far_near_and_visual_errors(self):
+        control_terms = camera_line_frame.calculate_control_terms(
+            True,
+            -0.0625,
+            True,
+            -0.1875,
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            status_path = os.path.join(temporary_directory, "line.json")
+            temporary_path = os.path.join(temporary_directory, "line.tmp.json")
+            with (
+                mock.patch.object(
+                    camera_line_frame, "LINE_STATUS_PATH", status_path
+                ),
+                mock.patch.object(
+                    camera_line_frame,
+                    "TEMP_LINE_STATUS_PATH",
+                    temporary_path,
+                ),
+            ):
+                camera_line_frame.save_line_status(
+                    near_valid=True,
+                    near_x=300.0,
+                    near_error=-0.0625,
+                    far_valid=True,
+                    far_x=260.0,
+                    far_error=-0.1875,
+                    lateral_error=-0.0625,
+                    heading_error=-0.125,
+                    adaptive_preview=control_terms["adaptive_preview"],
+                    preview_error=control_terms["preview_error"],
+                    p_term=control_terms["p_term"],
+                    filtered_derivative=control_terms["filtered_derivative"],
+                    d_term=control_terms["d_term"],
+                    control_error=control_terms["control_error"],
+                    correction=-0.03,
+                    left_preview=0.69,
+                    right_preview=0.71,
+                    gap_candidate=False,
+                    gap_alignment_valid=False,
+                    gap_alignment_error=0.0,
+                    gap_return_valid=False,
+                    gap_return_error=0.0,
+                    line_timestamp=10.0,
+                    line_sequence=7,
+                )
+            with open(status_path, "r", encoding="utf-8") as status_file:
+                status = json.load(status_file)
+
+        self.assertTrue(status["nearValid"])
+        self.assertTrue(status["farValid"])
+        self.assertEqual(status["nearX"], 300.0)
+        self.assertEqual(status["farX"], 260.0)
+        self.assertEqual(status["lateralError"], -0.0625)
+        self.assertEqual(status["headingError"], -0.125)
+        self.assertEqual(
+            status["adaptivePreview"],
+            control_terms["adaptive_preview"],
+        )
+        self.assertEqual(status["previewError"], control_terms["preview_error"])
+        self.assertEqual(status["pTerm"], control_terms["p_term"])
+        self.assertEqual(status["filteredDerivative"], 0.0)
+        self.assertEqual(status["dTerm"], 0.0)
+        self.assertEqual(status["controlError"], control_terms["control_error"])
+        self.assertEqual(status["preview"], control_terms["adaptive_preview"])
+        self.assertEqual(status["kControl"], 1.60)
+        self.assertAlmostEqual(
+            status["kNear"],
+            1.60 * (1.0 - control_terms["adaptive_preview"]),
+        )
+        self.assertAlmostEqual(
+            status["kFar"],
+            1.60 * control_terms["adaptive_preview"],
+        )
+
     def test_down_guidance_on_centered_straight_line(self):
         self.assert_control_preview(
-            "down", True, 0.0, True, 0.0,
-            (0.0, 0.0, 0.0, 0.66, 0.66),
+            "down", True, 0.0,
+            (0.0, 0.0, 0.0, 0.70, 0.70),
         )
 
     def test_down_guidance_on_parallel_offset_straight_line(self):
         self.assert_control_preview(
-            "down", True, 0.30, True, 0.30,
-            (0.30, 2.0 / 9.0, 1.0 / 15.0, 0.67, 0.65),
+            "down",
+            True,
+            0.30,
+            (
+                1.60 * (0.27 / 0.97),
+                (1.60 * (0.27 / 0.97) - 0.10) / 0.90,
+                0.30 * (1.60 * (0.27 / 0.97) - 0.10) / 0.90,
+                0.71,
+                0.69,
+            ),
+            far_valid=True,
+            far_error=0.30,
         )
 
-    def test_down_guidance_anticipates_left_curve(self):
+    def test_down_guidance_reacts_to_left_curve_in_near(self):
         self.assert_control_preview(
-            "down", True, 0.036, True, -0.356,
-            (-0.3168, -0.2408888889, -0.0722666667, 0.65, 0.67),
+            "down", True, -0.356,
+            (-0.356, -0.2844444444, -0.0853333333, 0.69, 0.71),
         )
 
-    def test_down_guidance_anticipates_right_curve(self):
+    def test_down_guidance_separates_preview_and_control_gain(self):
+        self.assertEqual(camera_line_frame.PREVIEW_MIN, 0.20)
+        self.assertEqual(camera_line_frame.PREVIEW_MAX, 0.70)
+        self.assertEqual(camera_line_frame.K_CONTROL, 1.60)
+        self.assertEqual(camera_line_frame.MAX_CORRECTION_PREVIEW, 0.25)
+        self.assertAlmostEqual(
+            camera_line_frame.calculate_preview_error(0.10, 0.50),
+            0.38,
+        )
+        expected_control = 1.60 * (0.38 - 0.03) / 0.97
         self.assert_control_preview(
-            "down", True, -0.036, True, 0.356,
-            (0.3168, 0.2408888889, 0.0722666667, 0.67, 0.65),
+            "down",
+            True,
+            0.10,
+            (
+                expected_control,
+                (expected_control - 0.10) / 0.90,
+                0.30 * (expected_control - 0.10) / 0.90,
+                0.71,
+                0.69,
+            ),
+            far_valid=True,
+            far_error=0.50,
         )
 
-    def test_down_guidance_preserves_near_when_far_is_invalid(self):
+    def test_down_guidance_anticipates_before_lateral_error_grows(self):
+        result = camera_line_frame.calculate_control_preview(
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+            True,
+            0.02,
+            True,
+            -0.38,
+        )
+
+        self.assertAlmostEqual(
+            camera_line_frame.calculate_preview_error(0.02, -0.38),
+            -0.26,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            result[0],
+            -1.60 * (0.26 - 0.03) / 0.97,
+            places=6,
+        )
+        self.assertLess(result[2], 0.0)
+
+    def test_heading_error_is_diagnostic_and_clamped(self):
+        result = camera_line_frame.calculate_control_preview(
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+            True,
+            0.90,
+            True,
+            -0.90,
+        )
+
+        # O heading bruto fica limitado apenas para o overlay e a telemetria.
+        self.assertAlmostEqual(
+            result[0],
+            -1.60 * (0.36 - 0.03) / 0.97,
+            places=6,
+        )
+        self.assertEqual(
+            camera_line_frame.calculate_heading_error(0.90, -0.90),
+            -1.0,
+        )
+
+    def test_adaptive_preview_uses_near_on_straight_and_far_on_curve(self):
+        self.assertEqual(camera_line_frame.calculate_adaptive_preview(0.0), 0.20)
+        self.assertEqual(camera_line_frame.calculate_adaptive_preview(0.03), 0.20)
+        self.assertAlmostEqual(
+            camera_line_frame.calculate_adaptive_preview(0.115),
+            0.45,
+        )
+        self.assertEqual(camera_line_frame.calculate_adaptive_preview(0.20), 0.70)
+        self.assertEqual(camera_line_frame.calculate_adaptive_preview(-0.80), 0.70)
+
+    def test_error_deadband_is_zero_and_continuous_at_boundary(self):
+        self.assertEqual(camera_line_frame.apply_error_deadband(0.03), 0.0)
+        self.assertEqual(camera_line_frame.apply_error_deadband(-0.03), 0.0)
+        self.assertLess(
+            abs(camera_line_frame.apply_error_deadband(0.030001)),
+            0.000002,
+        )
+        self.assertAlmostEqual(
+            camera_line_frame.apply_error_deadband(0.10),
+            0.07 / 0.97,
+        )
+
+    def test_near_derivative_is_filtered_and_reduces_falling_error(self):
+        derivative_filter = camera_line_frame.NearDerivativeFilter()
+
+        self.assertEqual(derivative_filter.update(True, 0.20, 10.0), 0.0)
+        filtered = derivative_filter.update(True, 0.10, 10.1)
+        self.assertAlmostEqual(filtered, -0.25)
+
+        terms = camera_line_frame.calculate_control_terms(
+            True,
+            0.10,
+            True,
+            0.20,
+            filtered,
+        )
+        self.assertAlmostEqual(terms["d_term"], -0.005)
+        self.assertLess(terms["control_error"], terms["p_term"])
+
+    def test_near_derivative_resets_after_invalid_or_stale_interval(self):
+        derivative_filter = camera_line_frame.NearDerivativeFilter()
+        derivative_filter.update(True, 0.0, 1.0)
+        derivative_filter.update(True, 0.10, 1.1)
+        self.assertEqual(derivative_filter.update(False, 0.0, 1.2), 0.0)
+        self.assertEqual(derivative_filter.update(True, 0.20, 2.0), 0.0)
+        self.assertEqual(derivative_filter.update(True, 0.30, 2.5), 0.0)
+
+    def test_down_guidance_uses_near_only_fallback_without_weight_reduction(self):
         self.assert_control_preview(
-            "down", True, -0.30, False, 0.0,
-            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 0.65, 0.67),
+            "down", True, 0.30,
+            (0.30, 2.0 / 9.0, 1.0 / 15.0, 0.71, 0.69),
+        )
+
+    def test_down_guidance_uses_far_only_conservative_reference(self):
+        self.assert_control_preview(
+            "down",
+            False,
+            0.0,
+            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 0.69, 0.71),
+            far_valid=True,
+            far_error=-0.30,
+        )
+
+    def test_down_guidance_reacts_to_right_curve_in_near(self):
+        self.assert_control_preview(
+            "down", True, 0.356,
+            (0.356, 0.2844444444, 0.0853333333, 0.71, 0.69),
+        )
+
+    def test_down_guidance_uses_only_near(self):
+        self.assert_control_preview(
+            "down", True, -0.30,
+            (-0.30, -2.0 / 9.0, -1.0 / 15.0, 0.69, 0.71),
         )
 
     def test_down_guidance_stays_zero_when_near_is_invalid(self):
         self.assert_control_preview(
-            "down", False, 0.0, True, -0.80,
+            "down", False, 0.0,
             (0.0, 0.0, 0.0, 0.0, 0.0),
         )
 
     def test_down_guidance_clamps_combined_error(self):
-        for near_error, far_error, expected_guidance in (
-            (1.0, 3.0, 1.0),
-            (-1.0, -3.0, -1.0),
+        for near_error, expected_guidance in (
+            (3.0, 1.0),
+            (-3.0, -1.0),
         ):
             with self.subTest(expected_guidance=expected_guidance):
                 result = camera_line_frame.calculate_control_preview(
                     camera_line_frame.CAMERA_PROFILES["down"]["vision"],
                     True,
                     near_error,
-                    True,
-                    far_error,
                 )
                 self.assertEqual(result[0], expected_guidance)
                 self.assertGreaterEqual(result[1], -1.0)
@@ -644,46 +1125,68 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_balanced_differential_mixer(self):
         vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         cases = (
-            (0.0, 0.0, 0.660, 0.660),
-            (0.28, 0.06, 0.670, 0.650),
-            (-0.28, -0.06, 0.650, 0.670),
-            (0.55, 0.15, 0.670, 0.650),
-            (-0.55, -0.15, 0.650, 0.670),
+            (0.0, 0.0, 0.700, 0.700),
+            (0.28, 0.06, 0.710, 0.690),
+            (-0.28, -0.06, 0.690, 0.710),
+            (0.55, 0.15, 0.710, 0.690),
+            (-0.55, -0.15, 0.690, 0.710),
         )
 
         self.assertTrue(vision_profile["balanced_differential_mixing"])
-        self.assertEqual(vision_profile["base_speed_preview"], 0.66)
-        self.assertEqual(vision_profile["minimum_tracking_power"], 0.65)
+        self.assertEqual(vision_profile["base_speed_preview"], 0.70)
+        self.assertEqual(vision_profile["minimum_tracking_power"], 0.69)
         for guidance_error, correction, left, right in cases:
             with self.subTest(guidance_error=guidance_error):
                 result = camera_line_frame.calculate_control_preview(
-                    vision_profile, True, guidance_error, False, 0.0
+                    vision_profile, True, guidance_error
                 )
                 self.assertAlmostEqual(result[2], correction, places=6)
                 self.assertAlmostEqual(result[3], left, places=6)
                 self.assertAlmostEqual(result[4], right, places=6)
-                self.assertAlmostEqual((result[3] + result[4]) / 2.0, 0.66)
-                self.assertGreaterEqual(result[3], 0.65)
-                self.assertGreaterEqual(result[4], 0.65)
+                self.assertAlmostEqual((result[3] + result[4]) / 2.0, 0.70)
+                self.assertGreaterEqual(result[3], 0.69)
+                self.assertGreaterEqual(result[4], 0.69)
                 self.assertLessEqual(result[3], 1.0)
                 self.assertLessEqual(result[4], 1.0)
 
-    def test_forward_profile_ignores_far_for_control(self):
-        vision_profile = camera_line_frame.CAMERA_PROFILES["forward"]["vision"]
-        with_far = camera_line_frame.calculate_control_preview(
-            vision_profile, True, 0.036, True, -0.356
+    def test_every_nonzero_camera_preview_respects_motor_floor(self):
+        scenarios = (
+            ("down", True, 0.0, True, 0.0),
+            ("down", True, -0.50, True, -0.10),
+            ("down", True, 0.50, True, 0.10),
+            ("down", True, 0.30, False, 0.0),
+            ("down", False, 0.0, True, -0.30),
+            ("forward", True, -0.50, True, -0.10),
+            ("forward", True, 0.50, False, 0.0),
         )
-        without_far = camera_line_frame.calculate_control_preview(
-            vision_profile, True, 0.036, False, 0.0
+        for role, near_valid, near_error, far_valid, far_error in scenarios:
+            with self.subTest(role=role, near=near_error, far=far_error):
+                result = camera_line_frame.calculate_control_preview(
+                    camera_line_frame.CAMERA_PROFILES[role]["vision"],
+                    near_valid,
+                    near_error,
+                    far_valid,
+                    far_error,
+                )
+                for power in result[3:]:
+                    if power != 0.0:
+                        self.assertGreaterEqual(
+                            abs(power),
+                            camera_line_frame.MINIMUM_MOTOR_PREVIEW,
+                        )
+
+    def test_forward_profile_uses_near_for_control(self):
+        vision_profile = camera_line_frame.CAMERA_PROFILES["forward"]["vision"]
+        result = camera_line_frame.calculate_control_preview(
+            vision_profile, True, 0.036
         )
 
-        self.assertEqual(with_far, without_far)
-        self.assertEqual(with_far, (0.036, 0.0, 0.0, 0.65, 0.65))
+        self.assertEqual(result, (0.036, 0.0, 0.0, 0.69, 0.69))
 
     def test_forward_profile_preserves_one_sided_mixer(self):
         self.assert_control_preview(
-            "forward", True, 0.28, False, 0.0,
-            (0.28, 0.20, 0.06, 0.71, 0.65),
+            "forward", True, 0.28,
+            (0.28, 0.20, 0.06, 0.75, 0.69),
         )
 
     def test_down_deadzone_uses_ten_percent(self):
@@ -693,14 +1196,14 @@ class CameraProfilesTest(unittest.TestCase):
         for error in (0.08, -0.08):
             with self.subTest(error=error):
                 result = camera_line_frame.calculate_control_preview(
-                    vision_profile, True, error, False, 0.0
+                    vision_profile, True, error
                 )
                 self.assertEqual(result[1], 0.0)
-                self.assertEqual(result[3:], (0.66, 0.66))
+                self.assertEqual(result[3:], (0.70, 0.70))
         for error in (0.11, -0.11):
             with self.subTest(error=error):
                 result = camera_line_frame.calculate_control_preview(
-                    vision_profile, True, error, False, 0.0
+                    vision_profile, True, error
                 )
                 self.assertNotEqual(result[1], 0.0)
                 self.assertEqual(result[1] > 0.0, error > 0.0)
@@ -712,7 +1215,7 @@ class CameraProfilesTest(unittest.TestCase):
         for error in (0.08, -0.08):
             with self.subTest(error=error):
                 result = camera_line_frame.calculate_control_preview(
-                    vision_profile, True, error, False, 0.0
+                    vision_profile, True, error
                 )
                 self.assertEqual(result[1], 0.0)
 
@@ -1136,8 +1639,8 @@ class CameraProfilesTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(scaled[2], 0.03 * 50.0 / 70.0)
-        self.assertAlmostEqual(scaled[3], 0.50)
-        self.assertAlmostEqual(scaled[4], 0.40)
+        self.assertAlmostEqual(scaled[3], 0.79)
+        self.assertAlmostEqual(scaled[4], 0.69)
 
     def test_green_direction_is_retained_for_half_second(self):
         tracker = camera_line_frame.GreenObservationTracker()
@@ -1425,12 +1928,12 @@ class CameraProfilesTest(unittest.TestCase):
 
     def test_green_changes_do_not_modify_line_preview_calculation(self):
         self.assert_control_preview(
-            "down", True, 0.036, True, -0.356,
-            (-0.3168, -0.2408888889, -0.0722666667, 0.65, 0.67),
+            "down", True, -0.356,
+            (-0.356, -0.2844444444, -0.0853333333, 0.69, 0.71),
         )
         self.assert_control_preview(
-            "forward", True, 0.28, False, 0.0,
-            (0.28, 0.20, 0.06, 0.71, 0.65),
+            "forward", True, 0.28,
+            (0.28, 0.20, 0.06, 0.75, 0.69),
         )
 
     def test_green_fast_status_contains_only_finite_numbers(self):
