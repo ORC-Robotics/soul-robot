@@ -24,6 +24,18 @@ struct CameraLineSnapshot
     double farError = 0.0;
     double lateralError = 0.0;
     double headingError = 0.0;
+    // O controle principal usa estes campos somente quando o fit visual foi
+    // validado. As coordenadas são normalizadas e não representam metros.
+    bool trajectoryValid = false;
+    double fitA = 0.0;
+    double fitB = 0.0;
+    double fitC = 0.0;
+    double fitQuality = 0.0;
+    double fitRmsError = 0.0;
+    std::uint64_t fitSampleCount = 0;
+    double lookaheadX = 0.0;
+    double lookaheadY = 0.0;
+    double curvature = 0.0;
     double adaptivePreview = 0.0;
     double previewError = 0.0;
     double pTerm = 0.0;

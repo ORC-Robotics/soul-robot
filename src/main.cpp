@@ -89,7 +89,12 @@ int main()
     }
 
     std::cout << "OBR robot dashboard running\n";
+#ifdef _WIN32
+    // A compilação para Windows é usada somente para visualizar o dashboard localmente.
+    std::cout << "Open http://127.0.0.1:" << config::kDashboardPort << " in a browser\n";
+#else
     std::cout << "Open http://raspberrypi.local:" << config::kDashboardPort << " in a browser\n";
+#endif
 
     unsigned long long handledStartButtonPressSequence = 0;
     bool previousStartButtonPressed = false;
@@ -131,6 +136,18 @@ int main()
                       << " farError=" << cameraLineSnapshot.farError
                       << " lateralError=" << cameraLineSnapshot.lateralError
                       << " headingError=" << cameraLineSnapshot.headingError
+                      << " trajectoryValid="
+                      << cameraLineSnapshot.trajectoryValid
+                      << " fitA=" << cameraLineSnapshot.fitA
+                      << " fitB=" << cameraLineSnapshot.fitB
+                      << " fitC=" << cameraLineSnapshot.fitC
+                      << " fitQuality=" << cameraLineSnapshot.fitQuality
+                      << " fitRmsError=" << cameraLineSnapshot.fitRmsError
+                      << " fitSampleCount="
+                      << cameraLineSnapshot.fitSampleCount
+                      << " lookaheadX=" << cameraLineSnapshot.lookaheadX
+                      << " lookaheadY=" << cameraLineSnapshot.lookaheadY
+                      << " curvature=" << cameraLineSnapshot.curvature
                       << " adaptivePreview="
                       << cameraLineSnapshot.adaptivePreview
                       << " previewError=" << cameraLineSnapshot.previewError

@@ -210,7 +210,7 @@ void MainMission::update(
         (greenApproachActive || greenGuidanceActive))
     {
         // Somente um verde reconhecido pode substituir a prévia normal. Sem
-        // verde, o segue-linha conserva exatamente o comportamento anterior.
+        // verde, a trajetória visual ou seu fallback continuam responsáveis.
         strongTurnActive_ = false;
         strongTurnDirection_ = LineDirection::Unknown;
         strongTurnEnterSamples_ = 0;
@@ -483,7 +483,10 @@ void MainMission::update(
                 cameraLineSnapshot.leftPreview,
                 cameraLineSnapshot.rightPreview);
             robotState.updateAutonomousStatus(makeLineStatus(
-                "tracking_near", "Seguindo pela NEAR"));
+                "tracking_near",
+                cameraLineSnapshot.trajectoryValid
+                    ? "Seguindo a trajetória por visual pursuit"
+                    : "Seguindo pelo fallback FAR/NEAR"));
             return;
         }
 

@@ -226,6 +226,27 @@ O comportamento esperado é:
 
 Durante testes, levante as rodas antes de usar valores altos nos sliders.
 
+## Visualizar o dashboard localmente no Windows
+
+Para abrir a mesma interface da Raspberry Pi no computador, sem conectar o robô,
+execute na pasta do projeto:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-local-dashboard.ps1
+```
+
+Depois abra:
+
+```txt
+http://127.0.0.1:8080
+```
+
+O script configura e compila o projeto em uma pasta de build local e mantém o
+servidor no terminal atual. Quando o Ninja está instalado, ele é selecionado
+automaticamente. Pressione `Ctrl+C` para encerrar. No Windows, GPIO, UART e motores
+ficam inativos; por isso, a ESP32, os sensores e as câmeras aparecem desconectados,
+mas o layout e a navegação do dashboard podem ser avaliados.
+
 ## Dependências na Raspberry Pi
 
 Instale uma vez:

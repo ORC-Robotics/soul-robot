@@ -45,6 +45,36 @@ def synthetic_line_mask(
     return mask
 
 
+def synthetic_trajectory_mask(lateral_from_forward, selected_samples=None):
+    """Desenha uma centerline na escala normalizada do visual pursuit."""
+
+    height = 425
+    width = 640
+    center_x = width / 2.0
+    mask = np.zeros((height, width), dtype=np.uint8)
+    if selected_samples is None:
+        y_values = range(height)
+    else:
+        sample_rows = np.linspace(
+            height - 1,
+            0,
+            camera_line_frame.TRAJECTORY_SAMPLE_COUNT,
+        )
+        y_values = []
+        for sample_index in selected_samples:
+            center_y = int(round(sample_rows[sample_index]))
+            y_values.extend(range(max(0, center_y - 2), min(height, center_y + 3)))
+
+    for pixel_y in y_values:
+        forward = (height - pixel_y) / height
+        lateral = float(lateral_from_forward(forward))
+        pixel_x = int(round(center_x + lateral * height))
+        left_x = max(0, pixel_x - 10)
+        right_x = min(width, pixel_x + 11)
+        mask[pixel_y, left_x:right_x] = 255
+    return mask
+
+
 def synthetic_topology(**branches):
     return camera_line_frame.analyze_line_topology(
         synthetic_line_mask(**branches),
@@ -931,6 +961,167 @@ class CameraProfilesTest(unittest.TestCase):
             status["kFar"],
             1.60 * control_terms["adaptive_preview"],
         )
+        self.assertFalse(status["trajectoryValid"])
+        self.assertEqual(status["trajectoryMode"], "fallback_far_near")
+        self.assertEqual(status["fitSampleCount"], 0)
+        self.assertEqual(status["lookaheadX"], 0.0)
+        self.assertEqual(status["curvature"], 0.0)
+
+    def test_visual_trajectory_fits_centered_straight_line(self):
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            synthetic_trajectory_mask(lambda _forward: 0.0),
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+
+        self.assertTrue(trajectory["trajectory_valid"])
+        self.assertEqual(trajectory["trajectory_mode"], "quadratic")
+        self.assertGreaterEqual(
+            trajectory["fit_sample_count"],
+            camera_line_frame.QUADRATIC_FIT_MIN_SAMPLES,
+        )
+        self.assertAlmostEqual(trajectory["fit_a"], 0.0, places=4)
+        self.assertAlmostEqual(trajectory["fit_b"], 0.0, places=4)
+        self.assertAlmostEqual(trajectory["fit_c"], 0.0, places=4)
+        self.assertAlmostEqual(
+            trajectory["lookahead_y"],
+            camera_line_frame.VISUAL_PURSUIT_LOOKAHEAD,
+            places=4,
+        )
+        self.assertAlmostEqual(trajectory["curvature"], 0.0, places=4)
+
+    def test_visual_trajectory_curve_generates_continuous_right_arc(self):
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            synthetic_trajectory_mask(lambda forward: 0.25 * forward * forward),
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+        preview = camera_line_frame.calculate_visual_pursuit_preview(
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+            trajectory["curvature"],
+        )
+
+        self.assertTrue(trajectory["trajectory_valid"])
+        self.assertGreater(trajectory["fit_a"], 0.20)
+        self.assertGreater(trajectory["lookahead_x"], 0.0)
+        self.assertGreater(trajectory["curvature"], 0.0)
+        self.assertGreater(preview[2], 0.0)
+        self.assertGreater(preview[3], preview[4])
+        self.assertAlmostEqual(preview[3] - preview[4], preview[2], places=6)
+
+    def test_visual_trajectory_curve_preserves_left_sign(self):
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            synthetic_trajectory_mask(lambda forward: -0.20 * forward * forward),
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+        preview = camera_line_frame.calculate_visual_pursuit_preview(
+            camera_line_frame.CAMERA_PROFILES["down"]["vision"],
+            trajectory["curvature"],
+        )
+
+        self.assertTrue(trajectory["trajectory_valid"])
+        self.assertLess(trajectory["curvature"], 0.0)
+        self.assertLess(preview[2], 0.0)
+        self.assertLess(preview[3], preview[4])
+
+    def test_visual_trajectory_uses_linear_fallback_with_few_centers(self):
+        mask = synthetic_trajectory_mask(
+            lambda forward: 0.10 * forward,
+            selected_samples=(0, 2, 4, 6, 8, 10),
+        )
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            mask,
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+
+        self.assertTrue(trajectory["trajectory_valid"])
+        self.assertEqual(trajectory["trajectory_mode"], "linear_fallback")
+        self.assertEqual(trajectory["fit_degree"], 1)
+        self.assertEqual(trajectory["fit_a"], 0.0)
+        self.assertGreaterEqual(
+            trajectory["fit_sample_count"],
+            camera_line_frame.LINEAR_FIT_MIN_SAMPLES,
+        )
+
+    def test_visual_trajectory_does_not_invent_missing_line(self):
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            np.zeros((425, 640), dtype=np.uint8),
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+
+        self.assertFalse(trajectory["trajectory_valid"])
+        self.assertEqual(trajectory["trajectory_mode"], "fallback_far_near")
+        self.assertEqual(trajectory["fit_sample_count"], 0)
+
+    def test_quadratic_fit_rejects_isolated_center(self):
+        y_values = np.linspace(0.05, 0.95, 15)
+        points = [
+            (0.12 * forward * forward, forward)
+            for forward in y_values
+        ]
+        points[7] = (points[7][0] + 0.30, points[7][1])
+
+        fit = camera_line_frame.fit_trajectory_polynomial(points, 2)
+
+        self.assertIsNotNone(fit)
+        self.assertFalse(bool(fit["inliers"][7]))
+        self.assertAlmostEqual(fit["coefficients"][0], 0.12, places=4)
+        self.assertAlmostEqual(fit["rms_error"], 0.0, places=4)
+
+    def test_visual_pursuit_straight_deadband_and_correction_limit(self):
+        vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        straight = camera_line_frame.calculate_visual_pursuit_preview(
+            vision_profile,
+            0.05,
+        )
+        strong_curve = camera_line_frame.calculate_visual_pursuit_preview(
+            vision_profile,
+            5.0,
+        )
+
+        self.assertEqual(straight[1:], (0.0, 0.0, 0.70, 0.70))
+        self.assertEqual(
+            strong_curve[2],
+            camera_line_frame.MAX_CORRECTION_PREVIEW,
+        )
+        self.assertAlmostEqual(strong_curve[3], 0.94, places=6)
+        self.assertAlmostEqual(strong_curve[4], 0.69, places=6)
+
+    def test_fast_json_publishes_valid_trajectory(self):
+        trajectory = camera_line_frame.analyze_visual_trajectory(
+            synthetic_trajectory_mask(lambda forward: 0.15 * forward * forward),
+            0,
+            425,
+            320.0,
+            True,
+            320.0,
+        )
+        fields = camera_line_frame.trajectory_status_fields(trajectory)
+
+        self.assertTrue(fields["trajectoryValid"])
+        self.assertEqual(fields["trajectoryMode"], "quadratic")
+        self.assertGreater(fields["fitSampleCount"], 0)
+        self.assertGreater(fields["lookaheadX"], 0.0)
+        self.assertGreater(fields["lookaheadY"], 0.0)
+        self.assertGreater(fields["curvature"], 0.0)
 
     def test_down_guidance_on_centered_straight_line(self):
         self.assert_control_preview(

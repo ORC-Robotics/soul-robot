@@ -1,7 +1,6 @@
-"""Publica no dashboard a imagem da câmera selecionada.
+"""Processa a câmera selecionada e publica imagem, trajetória e telemetria.
 
-A segmentação experimental destaca a linha preta apenas na imagem de debug.
-Ela não calcula comandos nem interfere no controle do robô.
+Somente o papel ``down`` publica os comandos visuais usados pela missão.
 """
 
 import argparse
@@ -302,8 +301,8 @@ MINIMUM_MOTOR_PREVIEW = 0.69
 BASE_SPEED_PREVIEW = MINIMUM_MOTOR_PREVIEW
 KP_PREVIEW = 0.30
 MAX_CORRECTION_PREVIEW = 0.25
-# O preview adaptativo usa mais NEAR em retas e aumenta a influência da FAR
-# conforme a direção visual indica uma curva.
+# O preview adaptativo permanece apenas no fallback FAR/NEAR e na telemetria
+# comparativa. Uma trajetória válida nunca usa estes pesos no controle.
 PREVIEW_MIN = 0.20
 PREVIEW_MAX = 0.70
 HEADING_STRAIGHT = 0.03
@@ -322,6 +321,43 @@ MAX_FILTERED_DERIVATIVE = 5.0
 MAX_OPERATIONAL_PREVIEW = 1.00
 # A conversão aproximada considera a fita física de 2 cm apenas para debug.
 REFERENCE_LINE_WIDTH_CM = 2.0
+
+# A trajetória reutiliza a máscara pronta e mede poucos cortes horizontais.
+# Aumentar muito esta quantidade eleva o custo por frame sem criar informação
+# nova; reduzir demais enfraquece a rejeição de pontos fora da curva.
+TRAJECTORY_SAMPLE_COUNT = 15
+# Cada corte consulta cinco linhas vizinhas para atravessar pequenas falhas da
+# máscara sem refazer threshold, morfologia ou contornos da imagem inteira.
+TRAJECTORY_SAMPLE_WINDOW_RADIUS = 2
+# Componentes mais largos que 25% do frame normalmente são cruzamentos ou
+# curvas de 90 graus e não devem contaminar o fit de uma trajetória suave.
+TRAJECTORY_MAX_RUN_WIDTH_RATIO = 0.25
+# Entre cortes consecutivos, o centro pode deslocar até 20% da largura. Saltos
+# maiores indicam outro componente e fazem a extração parar com segurança.
+TRAJECTORY_MAX_CENTER_JUMP_RATIO = 0.20
+TRAJECTORY_MAX_MISSING_SAMPLES = 2
+
+# O fit quadrático exige amostras distribuídas por pelo menos 35% da altura
+# útil. O fallback linear aceita menos pontos, mas conserva a mesma extensão.
+QUADRATIC_FIT_MIN_SAMPLES = 7
+LINEAR_FIT_MIN_SAMPLES = 4
+TRAJECTORY_MIN_FORWARD_SPAN = 0.35
+# Resíduos usam a altura útil como unidade. Em uma ROI de 425 px, 0,035
+# corresponde a aproximadamente 15 px e limita a influência de ramificações.
+TRAJECTORY_OUTLIER_RESIDUAL = 0.035
+TRAJECTORY_MAX_RMS_ERROR = 0.025
+# Este limite rejeita polinômios que mudam lateralmente mais de 2,5 unidades
+# visuais para cada unidade longitudinal normalizada.
+TRAJECTORY_MAX_ABS_SLOPE = 2.5
+
+# O lookahead inicial fica a 72% da altura útil à frente do eixo do robô.
+# Ele nunca ultrapassa a amostra mais distante realmente observada.
+VISUAL_PURSUIT_LOOKAHEAD = 0.72
+VISUAL_PURSUIT_MIN_LOOKAHEAD = 0.35
+# A curvatura visual não é métrica. Este ganho apenas a leva para a faixa
+# normalizada do mixer; não representa centímetros, metros ou entre-eixos.
+VISUAL_PURSUIT_CURVATURE_GAIN = 1.0
+VISUAL_PURSUIT_CORRECTION_GAIN = 0.30
 
 # Cada papel define de forma independente a captura e os parâmetros visuais.
 # O perfil inferior não herda ROIs nem limites em pixels da câmera frontal.
@@ -697,7 +733,7 @@ def calculate_control_terms(
     far_error=0.0,
     filtered_near_derivative=0.0,
 ):
-    """Separa antecipação, proporcional e derivativo antes do clamp final."""
+    """Calcula os termos antigos para fallback e comparação de telemetria."""
 
     safe_near_error = max(-1.0, min(float(near_error), 1.0))
     safe_far_error = max(-1.0, min(float(far_error), 1.0))
@@ -815,7 +851,7 @@ def calculate_control_preview(
     filtered_near_derivative=0.0,
     control_terms=None,
 ):
-    """Aplica antecipação e ganho geral antes de reutilizar o mixer atual."""
+    """Preserva o controlador FAR/NEAR usado quando o fit não é confiável."""
 
     if not near_valid and not far_valid:
         return 0.0, 0.0, 0.0, 0.0, 0.0
@@ -876,6 +912,74 @@ def calculate_control_preview(
     return (
         guidance_error,
         control_error,
+        correction,
+        left_preview,
+        right_preview,
+    )
+
+
+def calculate_visual_pursuit_preview(vision_profile, curvature):
+    """Converte a curvatura visual em diferencial contínuo entre as rodas."""
+
+    if not math.isfinite(float(curvature)):
+        return 0.0, 0.0, 0.0, 0.0, 0.0
+
+    control_error = max(
+        -1.0,
+        min(
+            float(curvature) * VISUAL_PURSUIT_CURVATURE_GAIN,
+            1.0,
+        ),
+    )
+    deadzone_ratio = vision_profile["near_deadzone_ratio"]
+    if abs(control_error) <= deadzone_ratio:
+        steering_error = 0.0
+    else:
+        steering_error = math.copysign(
+            (abs(control_error) - deadzone_ratio) / (1.0 - deadzone_ratio),
+            control_error,
+        )
+    correction = max(
+        -MAX_CORRECTION_PREVIEW,
+        min(
+            VISUAL_PURSUIT_CORRECTION_GAIN * steering_error,
+            MAX_CORRECTION_PREVIEW,
+        ),
+    )
+
+    base_speed = vision_profile.get("base_speed_preview", BASE_SPEED_PREVIEW)
+    if correction == 0.0:
+        return control_error, steering_error, 0.0, base_speed, base_speed
+
+    if vision_profile.get("balanced_differential_mixing", False):
+        # O diferencial fica centrado na velocidade base. Quando uma roda cairia
+        # abaixo do piso mecânico, ambas são elevadas igualmente; assim o arco
+        # pedido é preservado sem produzir comando incapaz de mover um motor.
+        left_preview = base_speed + correction * 0.5
+        right_preview = base_speed - correction * 0.5
+        minimum_power = vision_profile["minimum_tracking_power"]
+        minimum_preview = min(left_preview, right_preview)
+        if minimum_preview < minimum_power:
+            lift = minimum_power - minimum_preview
+            left_preview += lift
+            right_preview += lift
+        maximum_preview = max(left_preview, right_preview)
+        if maximum_preview > MAX_OPERATIONAL_PREVIEW:
+            reduction = maximum_preview - MAX_OPERATIONAL_PREVIEW
+            left_preview -= reduction
+            right_preview -= reduction
+    elif correction > 0.0:
+        left_preview = base_speed + correction
+        right_preview = base_speed
+    else:
+        left_preview = base_speed
+        right_preview = base_speed + abs(correction)
+
+    left_preview = max(0.0, min(left_preview, MAX_OPERATIONAL_PREVIEW))
+    right_preview = max(0.0, min(right_preview, MAX_OPERATIONAL_PREVIEW))
+    return (
+        control_error,
+        steering_error,
         correction,
         left_preview,
         right_preview,
@@ -1439,6 +1543,362 @@ def analyze_line_band(
         ),
     })
     return observation
+
+
+def empty_trajectory_result():
+    """Cria um resultado seguro para frames sem trajetória confiável."""
+
+    return {
+        "trajectory_valid": False,
+        "trajectory_mode": "fallback_far_near",
+        "fit_degree": 0,
+        "fit_a": 0.0,
+        "fit_b": 0.0,
+        "fit_c": 0.0,
+        "fit_quality": 0.0,
+        "fit_rms_error": 0.0,
+        "fit_sample_count": 0,
+        "trajectory_sample_count": 0,
+        "lookahead_x": 0.0,
+        "lookahead_y": 0.0,
+        "lookahead_pixel": None,
+        "curvature": 0.0,
+        "sample_points": [],
+        "fit_points": [],
+    }
+
+
+def find_row_runs(row):
+    """Encontra trechos ativos contíguos sem percorrer toda a linha em Python."""
+
+    active_x = np.flatnonzero(row)
+    if active_x.size == 0:
+        return []
+
+    split_after = np.flatnonzero(np.diff(active_x) > 1)
+    starts = np.concatenate((active_x[:1], active_x[split_after + 1]))
+    ends = np.concatenate((active_x[split_after], active_x[-1:]))
+    return [
+        (int(start_x), int(end_x))
+        for start_x, end_x in zip(starts, ends)
+    ]
+
+
+def extract_trajectory_samples(
+    line_candidate_mask,
+    roi_start_y,
+    structural_end_y,
+    anchor_x,
+):
+    """Segue centros da faixa de baixo para cima usando a máscara já filtrada."""
+
+    if (
+        line_candidate_mask.ndim != 2
+        or line_candidate_mask.size == 0
+        or anchor_x is None
+        or not math.isfinite(float(anchor_x))
+    ):
+        return []
+
+    mask_height, frame_width = line_candidate_mask.shape
+    useful_end_y = min(structural_end_y, roi_start_y + mask_height)
+    if useful_end_y <= roi_start_y:
+        return []
+
+    maximum_run_width = max(
+        1,
+        int(round(frame_width * TRAJECTORY_MAX_RUN_WIDTH_RATIO)),
+    )
+    maximum_center_jump = (
+        frame_width * TRAJECTORY_MAX_CENTER_JUMP_RATIO
+    )
+    sample_y_values = np.linspace(
+        useful_end_y - 1,
+        roi_start_y,
+        TRAJECTORY_SAMPLE_COUNT,
+    )
+
+    samples = []
+    previous_x = float(anchor_x)
+    missing_samples = 0
+    for sample_y_value in sample_y_values:
+        sample_y = int(round(sample_y_value))
+        row_centers = []
+        row_positions = []
+        for frame_y in range(
+            sample_y - TRAJECTORY_SAMPLE_WINDOW_RADIUS,
+            sample_y + TRAJECTORY_SAMPLE_WINDOW_RADIUS + 1,
+        ):
+            mask_y = frame_y - roi_start_y
+            if mask_y < 0 or mask_y >= mask_height:
+                continue
+
+            valid_runs = [
+                (run_start, run_end)
+                for run_start, run_end in find_row_runs(
+                    line_candidate_mask[mask_y, :]
+                )
+                if run_end - run_start + 1 <= maximum_run_width
+            ]
+            if not valid_runs:
+                continue
+
+            selected_run = min(
+                valid_runs,
+                key=lambda run: abs(
+                    ((run[0] + run[1]) * 0.5) - previous_x
+                ),
+            )
+            center_x = (selected_run[0] + selected_run[1]) * 0.5
+            if abs(center_x - previous_x) > maximum_center_jump:
+                continue
+            row_centers.append(center_x)
+            row_positions.append(frame_y)
+
+        if not row_centers:
+            if samples:
+                missing_samples += 1
+                if missing_samples > TRAJECTORY_MAX_MISSING_SAMPLES:
+                    break
+            continue
+
+        center_x = float(np.median(row_centers))
+        center_y = float(np.median(row_positions))
+        samples.append((center_x, center_y))
+        previous_x = center_x
+        missing_samples = 0
+
+    return samples
+
+
+def fit_trajectory_polynomial(normalized_points, degree):
+    """Ajusta um polinômio robusto e rejeita resíduos claramente isolados."""
+
+    minimum_samples = (
+        QUADRATIC_FIT_MIN_SAMPLES if degree == 2 else LINEAR_FIT_MIN_SAMPLES
+    )
+    if len(normalized_points) < minimum_samples:
+        return None
+
+    point_array = np.asarray(normalized_points, dtype=np.float64)
+    x_values = point_array[:, 0]
+    y_values = point_array[:, 1]
+    inliers = np.ones(len(point_array), dtype=bool)
+    coefficients = None
+
+    for _iteration in range(3):
+        active_y = y_values[inliers]
+        active_x = x_values[inliers]
+        if active_x.size < minimum_samples:
+            return None
+        design = (
+            np.column_stack((active_y * active_y, active_y, np.ones_like(active_y)))
+            if degree == 2
+            else np.column_stack((active_y, np.ones_like(active_y)))
+        )
+        solved, _residuals, rank, _singular_values = np.linalg.lstsq(
+            design,
+            active_x,
+            rcond=None,
+        )
+        if rank != degree + 1 or not np.all(np.isfinite(solved)):
+            return None
+
+        coefficients = (
+            solved
+            if degree == 2
+            else np.array((0.0, solved[0], solved[1]))
+        )
+        predicted_x = (
+            coefficients[0] * y_values * y_values
+            + coefficients[1] * y_values
+            + coefficients[2]
+        )
+        absolute_residuals = np.abs(x_values - predicted_x)
+        active_residuals = absolute_residuals[inliers]
+        residual_median = float(np.median(active_residuals))
+        residual_mad = float(np.median(
+            np.abs(active_residuals - residual_median)
+        ))
+        residual_limit = min(
+            TRAJECTORY_OUTLIER_RESIDUAL * 2.0,
+            max(
+                TRAJECTORY_OUTLIER_RESIDUAL,
+                residual_median + 2.5 * 1.4826 * residual_mad,
+            ),
+        )
+        updated_inliers = absolute_residuals <= residual_limit
+        if np.array_equal(updated_inliers, inliers):
+            break
+        inliers = updated_inliers
+
+    if coefficients is None or np.count_nonzero(inliers) < minimum_samples:
+        return None
+
+    active_y = y_values[inliers]
+    active_x = x_values[inliers]
+    design = (
+        np.column_stack((active_y * active_y, active_y, np.ones_like(active_y)))
+        if degree == 2
+        else np.column_stack((active_y, np.ones_like(active_y)))
+    )
+    solved, _residuals, rank, _singular_values = np.linalg.lstsq(
+        design,
+        active_x,
+        rcond=None,
+    )
+    if rank != degree + 1 or not np.all(np.isfinite(solved)):
+        return None
+    coefficients = (
+        solved
+        if degree == 2
+        else np.array((0.0, solved[0], solved[1]))
+    )
+    predicted_x = (
+        coefficients[0] * active_y * active_y
+        + coefficients[1] * active_y
+        + coefficients[2]
+    )
+    rms_error = float(np.sqrt(np.mean((active_x - predicted_x) ** 2)))
+    forward_span = float(active_y.max() - active_y.min())
+    if (
+        not math.isfinite(rms_error)
+        or rms_error > TRAJECTORY_MAX_RMS_ERROR
+        or forward_span < TRAJECTORY_MIN_FORWARD_SPAN
+    ):
+        return None
+
+    return {
+        "coefficients": tuple(float(value) for value in coefficients),
+        "inliers": inliers,
+        "rms_error": rms_error,
+        "quality": max(
+            0.0,
+            min(1.0, 1.0 - rms_error / TRAJECTORY_MAX_RMS_ERROR),
+        ),
+    }
+
+
+def select_visual_pursuit_lookahead(maximum_observed_y):
+    """Centraliza a política fixa para permitir futura adaptação por velocidade."""
+
+    # Nesta etapa a velocidade não participa da decisão. Uma adaptação futura
+    # deve alterar somente esta política e continuar limitada ao trecho visto.
+    return min(VISUAL_PURSUIT_LOOKAHEAD, float(maximum_observed_y))
+
+
+def analyze_visual_trajectory(
+    line_candidate_mask,
+    roi_start_y,
+    structural_end_y,
+    frame_center_x,
+    near_valid,
+    near_x,
+):
+    """Calcula fit, lookahead e curvatura em coordenadas visuais normalizadas."""
+
+    result = empty_trajectory_result()
+    if not near_valid:
+        return result
+
+    samples = extract_trajectory_samples(
+        line_candidate_mask,
+        roi_start_y,
+        structural_end_y,
+        near_x,
+    )
+    result["sample_points"] = samples
+    result["trajectory_sample_count"] = len(samples)
+    useful_height = float(structural_end_y - roi_start_y)
+    if useful_height <= 0.0:
+        return result
+
+    normalized_points = [
+        (
+            (point_x - frame_center_x) / useful_height,
+            (structural_end_y - point_y) / useful_height,
+        )
+        for point_x, point_y in samples
+    ]
+    for degree, mode in ((2, "quadratic"), (1, "linear_fallback")):
+        fit = fit_trajectory_polynomial(normalized_points, degree)
+        if fit is None:
+            continue
+
+        fit_a, fit_b, fit_c = fit["coefficients"]
+        inlier_points = [
+            point
+            for point, is_inlier in zip(samples, fit["inliers"])
+            if is_inlier
+        ]
+        normalized_inliers = [
+            point
+            for point, is_inlier in zip(normalized_points, fit["inliers"])
+            if is_inlier
+        ]
+        maximum_observed_y = max(point[1] for point in normalized_inliers)
+        lookahead_y = select_visual_pursuit_lookahead(maximum_observed_y)
+        if lookahead_y < VISUAL_PURSUIT_MIN_LOOKAHEAD:
+            continue
+
+        minimum_observed_y = min(point[1] for point in normalized_inliers)
+        slope_values = (
+            2.0 * fit_a * minimum_observed_y + fit_b,
+            2.0 * fit_a * maximum_observed_y + fit_b,
+            2.0 * fit_a * lookahead_y + fit_b,
+        )
+        if max(abs(value) for value in slope_values) > TRAJECTORY_MAX_ABS_SLOPE:
+            continue
+
+        lookahead_x = (
+            fit_a * lookahead_y * lookahead_y
+            + fit_b * lookahead_y
+            + fit_c
+        )
+        lookahead_pixel_x = frame_center_x + lookahead_x * useful_height
+        lookahead_pixel_y = structural_end_y - lookahead_y * useful_height
+        frame_width = line_candidate_mask.shape[1]
+        if not (
+            math.isfinite(lookahead_x)
+            and abs(fit_a) <= 10.0
+            and abs(fit_b) <= 10.0
+            and abs(fit_c) <= 2.0
+            and 0.0 <= lookahead_pixel_x < frame_width
+            and roi_start_y <= lookahead_pixel_y < structural_end_y
+        ):
+            continue
+
+        lookahead_distance_squared = (
+            lookahead_x * lookahead_x + lookahead_y * lookahead_y
+        )
+        if lookahead_distance_squared <= 0.0:
+            continue
+        curvature = 2.0 * lookahead_x / lookahead_distance_squared
+        if not math.isfinite(curvature):
+            continue
+
+        result.update({
+            "trajectory_valid": True,
+            "trajectory_mode": mode,
+            "fit_degree": degree,
+            "fit_a": fit_a,
+            "fit_b": fit_b,
+            "fit_c": fit_c,
+            "fit_quality": fit["quality"],
+            "fit_rms_error": fit["rms_error"],
+            "fit_sample_count": len(inlier_points),
+            "lookahead_x": float(lookahead_x),
+            "lookahead_y": float(lookahead_y),
+            "lookahead_pixel": (
+                int(round(lookahead_pixel_x)),
+                int(round(lookahead_pixel_y)),
+            ),
+            "curvature": float(curvature),
+            "fit_points": inlier_points,
+        })
+        return result
+
+    return result
 
 
 def build_single_band_line_axis(band_shape, selected_contour, band_start_y):
@@ -3408,6 +3868,76 @@ def save_frame(jpeg):
     os.replace(TEMP_FRAME_PATH, FRAME_PATH)
 
 
+def trajectory_status_fields(trajectory):
+    """Valida a telemetria do visual pursuit antes de escrever qualquer JSON."""
+
+    trajectory = trajectory or empty_trajectory_result()
+    try:
+        fit_degree = int(trajectory.get("fit_degree", 0))
+        fit_sample_count = int(trajectory.get("fit_sample_count", 0))
+        trajectory_sample_count = int(
+            trajectory.get("trajectory_sample_count", 0)
+        )
+        numeric_values = {
+            "fitA": float(trajectory.get("fit_a", 0.0)),
+            "fitB": float(trajectory.get("fit_b", 0.0)),
+            "fitC": float(trajectory.get("fit_c", 0.0)),
+            "fitQuality": float(trajectory.get("fit_quality", 0.0)),
+            "fitRmsError": float(trajectory.get("fit_rms_error", 0.0)),
+            "lookaheadX": float(trajectory.get("lookahead_x", 0.0)),
+            "lookaheadY": float(trajectory.get("lookahead_y", 0.0)),
+            "curvature": float(trajectory.get("curvature", 0.0)),
+        }
+        values_finite = all(
+            math.isfinite(value) for value in numeric_values.values()
+        )
+    except (TypeError, ValueError):
+        fit_degree = 0
+        fit_sample_count = 0
+        trajectory_sample_count = 0
+        numeric_values = {}
+        values_finite = False
+
+    trajectory_valid = bool(
+        trajectory.get("trajectory_valid", False)
+        and values_finite
+        and fit_degree in (1, 2)
+        and fit_sample_count >= LINEAR_FIT_MIN_SAMPLES
+        and trajectory_sample_count >= fit_sample_count
+        and 0.0 <= numeric_values["fitQuality"] <= 1.0
+        and 0.0 <= numeric_values["fitRmsError"] <= TRAJECTORY_MAX_RMS_ERROR
+        and numeric_values["lookaheadY"] >= VISUAL_PURSUIT_MIN_LOOKAHEAD
+    )
+    if not trajectory_valid:
+        fit_degree = 0
+        fit_sample_count = 0
+        numeric_values = {
+            "fitA": 0.0,
+            "fitB": 0.0,
+            "fitC": 0.0,
+            "fitQuality": 0.0,
+            "fitRmsError": 0.0,
+            "lookaheadX": 0.0,
+            "lookaheadY": 0.0,
+            "curvature": 0.0,
+        }
+
+    mode = str(trajectory.get("trajectory_mode", "fallback_far_near"))
+    if mode not in ("quadratic", "linear_fallback", "fallback_far_near"):
+        mode = "fallback_far_near"
+    if not trajectory_valid:
+        mode = "fallback_far_near"
+
+    return {
+        "trajectoryValid": trajectory_valid,
+        "trajectoryMode": mode,
+        "fitDegree": fit_degree,
+        **numeric_values,
+        "fitSampleCount": fit_sample_count,
+        "trajectorySampleCount": max(0, trajectory_sample_count),
+    }
+
+
 def save_line_status(
     near_valid,
     near_x,
@@ -3434,6 +3964,7 @@ def save_line_status(
     line_timestamp,
     line_sequence,
     green_status=None,
+    trajectory=None,
 ):
     """Publica em memória compartilhada o resultado visual já calculado."""
 
@@ -3583,6 +4114,7 @@ def save_line_status(
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
         }
+        line_status.update(trajectory_status_fields(trajectory))
         line_status.update(green_status or empty_green_status())
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
@@ -3626,6 +4158,7 @@ def save_status(
     gap_return_error=0.0,
     line_timestamp=0.0,
     line_sequence=0,
+    trajectory=None,
 ):
     """Publica saúde da câmera e a telemetria visual já calculada."""
 
@@ -3839,6 +4372,7 @@ def save_status(
         "lineTimestamp": line_timestamp,
         "lineSequence": line_sequence,
     }
+    status.update(trajectory_status_fields(trajectory))
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -4160,6 +4694,14 @@ def main():
             filtered_near_derivative = control_terms["filtered_derivative"]
             d_term = control_terms["d_term"]
             line_center_x = near_x if near_valid else far_x
+            trajectory = analyze_visual_trajectory(
+                line_candidate_mask,
+                roi_start_y,
+                vision_geometry["structural_end_y"],
+                frame_half_width,
+                near_valid,
+                near_x if near_valid else None,
+            )
 
             gap_observation = analyze_gap_geometry(
                 line_candidate_mask,
@@ -4263,21 +4805,35 @@ def main():
                 vision_profile,
             )
 
-            (
-                control_error,
-                steering_error,
-                correction,
-                left_preview,
-                right_preview,
-            ) = calculate_control_preview(
-                vision_profile,
-                near_valid,
-                lateral_error,
-                far_valid,
-                far_error if far_valid else 0.0,
-                filtered_near_derivative,
-                control_terms,
-            )
+            if trajectory["trajectory_valid"]:
+                (
+                    control_error,
+                    steering_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                ) = calculate_visual_pursuit_preview(
+                    vision_profile,
+                    trajectory["curvature"],
+                )
+            else:
+                # Sem fit seguro, o comportamento FAR/NEAR validado continua
+                # responsável pelo comando e pelos fallbacks especiais.
+                (
+                    control_error,
+                    steering_error,
+                    correction,
+                    left_preview,
+                    right_preview,
+                ) = calculate_control_preview(
+                    vision_profile,
+                    near_valid,
+                    lateral_error,
+                    far_valid,
+                    far_error if far_valid else 0.0,
+                    filtered_near_derivative,
+                    control_terms,
+                )
 
             line_timestamp = time.time()
             line_sequence += 1
@@ -4330,6 +4886,22 @@ def main():
             elif not near_valid:
                 offset_px = far_error * (frame_width / 2.0)
                 preview_state = "FALLBACK FAR"
+                preview_direction = (
+                    "DIREITA" if correction > 0.0
+                    else "ESQUERDA" if correction < 0.0
+                    else "RETO"
+                )
+            elif trajectory["trajectory_valid"] and steering_error == 0.0:
+                offset_px = lateral_error * (frame_width / 2.0)
+                preview_state = "VISUAL PURSUIT RETO"
+                preview_direction = "RETO"
+            elif trajectory["trajectory_valid"]:
+                offset_px = lateral_error * (frame_width / 2.0)
+                preview_state = (
+                    "VISUAL PURSUIT QUADRATIC"
+                    if trajectory["fit_degree"] == 2
+                    else "VISUAL PURSUIT LINEAR"
+                )
                 preview_direction = (
                     "DIREITA" if correction > 0.0
                     else "ESQUERDA" if correction < 0.0
@@ -4397,6 +4969,7 @@ def main():
                     line_timestamp,
                     line_sequence,
                     green_status,
+                    trajectory,
                 )
             if trace_active:
                 ipc_completed = time.perf_counter()
@@ -4723,7 +5296,108 @@ def main():
 
             # Estes valores são obrigatórios no diagnóstico e permanecem
             # visíveis mesmo quando os textos detalhados estão desabilitados.
+            # O eixo visual parte do centro do robô na borda útil da ROI. Ele
+            # deixa explícito que as coordenadas abaixo não são métricas.
+            robot_axis_center = (
+                int(round(frame_center_x)),
+                min(frame_height - 1, vision_geometry["structural_end_y"] - 1),
+            )
+            robot_axis_forward = (
+                robot_axis_center[0],
+                max(
+                    roi_start_y,
+                    robot_axis_center[1]
+                    - int(round(
+                        0.16
+                        * (vision_geometry["structural_end_y"] - roi_start_y)
+                    )),
+                ),
+            )
+            cv2.circle(frame, robot_axis_center, 6, (255, 255, 255), 2)
+            cv2.line(
+                frame,
+                robot_axis_center,
+                robot_axis_forward,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+            for point_x, point_y in trajectory["fit_points"]:
+                cv2.circle(
+                    frame,
+                    (int(round(point_x)), int(round(point_y))),
+                    3,
+                    (0, 255, 255),
+                    -1,
+                )
+
+            if trajectory["trajectory_valid"]:
+                useful_height = float(
+                    vision_geometry["structural_end_y"] - roi_start_y
+                )
+                fit_forward_values = [
+                    (vision_geometry["structural_end_y"] - point_y)
+                    / useful_height
+                    for _point_x, point_y in trajectory["fit_points"]
+                ]
+                curve_points = []
+                for curve_y in np.linspace(
+                    min(fit_forward_values),
+                    max(fit_forward_values),
+                    36,
+                ):
+                    curve_x = (
+                        trajectory["fit_a"] * curve_y * curve_y
+                        + trajectory["fit_b"] * curve_y
+                        + trajectory["fit_c"]
+                    )
+                    curve_points.append((
+                        int(round(frame_center_x + curve_x * useful_height)),
+                        int(round(
+                            vision_geometry["structural_end_y"]
+                            - curve_y * useful_height
+                        )),
+                    ))
+                cv2.polylines(
+                    frame,
+                    [np.asarray(curve_points, dtype=np.int32)],
+                    False,
+                    (0, 255, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                lookahead_pixel = trajectory["lookahead_pixel"]
+                cv2.line(
+                    frame,
+                    robot_axis_center,
+                    lookahead_pixel,
+                    (255, 0, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.circle(frame, lookahead_pixel, 7, (255, 0, 255), 2)
+
             mandatory_control_lines = (
+                (
+                    f"trajectory={trajectory['trajectory_mode']} VALID"
+                    if trajectory["trajectory_valid"]
+                    else "trajectory=FALLBACK FAR/NEAR"
+                ),
+                (
+                    f"fitQuality={trajectory['fit_quality']:.3f} "
+                    f"rms={trajectory['fit_rms_error']:.3f} "
+                    f"n={trajectory['fit_sample_count']}"
+                ),
+                (
+                    f"fitA={trajectory['fit_a']:+.3f} "
+                    f"fitB={trajectory['fit_b']:+.3f} "
+                    f"fitC={trajectory['fit_c']:+.3f}"
+                ),
+                f"lookaheadX={trajectory['lookahead_x']:+.3f}",
+                f"lookaheadY={trajectory['lookahead_y']:+.3f}",
+                f"curvature={trajectory['curvature']:+.3f}",
+                f"controlError={control_error:+.3f}",
                 (
                     f"nearError={near_error:+.3f}"
                     if near_valid else "nearError=INVALID"
@@ -4732,15 +5406,8 @@ def main():
                     f"farError={far_error:+.3f}"
                     if far_valid else "farError=INVALID"
                 ),
-                f"lateralError={lateral_error:+.3f}",
                 f"headingError={heading_error:+.3f}",
-                f"adaptivePreview={adaptive_preview:.3f}",
-                f"previewError={preview_error:+.3f}",
-                f"P={p_term:+.3f}",
-                f"filteredDerivative={filtered_near_derivative:+.3f}",
-                f"D={d_term:+.3f}",
-                f"controlError={control_error:+.3f}",
-                f"K_CONTROL={K_CONTROL:.2f}",
+                f"correction={correction:+.3f}",
             )
             for index, diagnostic_text in enumerate(mandatory_control_lines):
                 cv2.putText(
@@ -5112,6 +5779,7 @@ def main():
                     gap_return_error=gap_observation["return_error"],
                     line_timestamp=line_timestamp,
                     line_sequence=line_sequence,
+                    trajectory=trajectory,
                 )
                 last_status_time = now
             if trace_active:

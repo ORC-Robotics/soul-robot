@@ -192,6 +192,16 @@ void LineRegressionTrace::update(
                 << cameraLineSnapshot.farError << ','
                 << cameraLineSnapshot.lateralError << ','
                 << cameraLineSnapshot.headingError << ','
+                << (cameraLineSnapshot.trajectoryValid ? "true" : "false") << ','
+                << cameraLineSnapshot.fitA << ','
+                << cameraLineSnapshot.fitB << ','
+                << cameraLineSnapshot.fitC << ','
+                << cameraLineSnapshot.fitQuality << ','
+                << cameraLineSnapshot.fitRmsError << ','
+                << cameraLineSnapshot.fitSampleCount << ','
+                << cameraLineSnapshot.lookaheadX << ','
+                << cameraLineSnapshot.lookaheadY << ','
+                << cameraLineSnapshot.curvature << ','
                 << cameraLineSnapshot.adaptivePreview << ','
                 << cameraLineSnapshot.previewError << ','
                 << cameraLineSnapshot.pTerm << ','
@@ -246,6 +256,8 @@ void LineRegressionTrace::start(std::chrono::steady_clock::time_point now)
                "greenContoursAndFiltersMs,topologyMs,greenProcessingMs,"
                "overlayMs,mjpegPublishMs,ipcPublishMs,totalVisionMs,nearValid,"
                "nearX,nearError,farValid,farX,farError,lateralError,headingError,"
+               "trajectoryValid,fitA,fitB,fitC,fitQuality,fitRmsError,"
+               "fitSampleCount,lookaheadX,lookaheadY,curvature,"
                "adaptivePreview,previewError,pTerm,filteredDerivative,dTerm,"
                "controlError,preview,kControl,kNear,kFar,correction,"
                "greenRaw,greenConfirmed,mainMissionState,transitionReason,"

@@ -280,6 +280,16 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.farError = 0.0;
     snapshot.lateralError = 0.0;
     snapshot.headingError = 0.0;
+    snapshot.trajectoryValid = false;
+    snapshot.fitA = 0.0;
+    snapshot.fitB = 0.0;
+    snapshot.fitC = 0.0;
+    snapshot.fitQuality = 0.0;
+    snapshot.fitRmsError = 0.0;
+    snapshot.fitSampleCount = 0;
+    snapshot.lookaheadX = 0.0;
+    snapshot.lookaheadY = 0.0;
+    snapshot.curvature = 0.0;
     snapshot.adaptivePreview = 0.0;
     snapshot.previewError = 0.0;
     snapshot.pTerm = 0.0;
@@ -368,6 +378,23 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json, "lateralError", candidate.lateralError) ||
             !tryGetJsonNumber(
                 json, "headingError", candidate.headingError) ||
+            !tryGetJsonBool(
+                json, "trajectoryValid", candidate.trajectoryValid) ||
+            !tryGetJsonNumber(json, "fitA", candidate.fitA) ||
+            !tryGetJsonNumber(json, "fitB", candidate.fitB) ||
+            !tryGetJsonNumber(json, "fitC", candidate.fitC) ||
+            !tryGetJsonNumber(
+                json, "fitQuality", candidate.fitQuality) ||
+            !tryGetJsonNumber(
+                json, "fitRmsError", candidate.fitRmsError) ||
+            !tryGetJsonUnsignedInteger(
+                json, "fitSampleCount", candidate.fitSampleCount) ||
+            !tryGetJsonNumber(
+                json, "lookaheadX", candidate.lookaheadX) ||
+            !tryGetJsonNumber(
+                json, "lookaheadY", candidate.lookaheadY) ||
+            !tryGetJsonNumber(
+                json, "curvature", candidate.curvature) ||
             !tryGetJsonNumber(
                 json, "adaptivePreview", candidate.adaptivePreview) ||
             !tryGetJsonNumber(
@@ -419,6 +446,26 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             isNormalizedValue(candidate.farError) &&
             isNormalizedValue(candidate.lateralError) &&
             isNormalizedValue(candidate.headingError) &&
+            std::isfinite(candidate.fitA) && candidate.fitA >= -10.0 &&
+            candidate.fitA <= 10.0 &&
+            std::isfinite(candidate.fitB) && candidate.fitB >= -10.0 &&
+            candidate.fitB <= 10.0 &&
+            std::isfinite(candidate.fitC) && candidate.fitC >= -2.0 &&
+            candidate.fitC <= 2.0 &&
+            std::isfinite(candidate.fitQuality) &&
+            candidate.fitQuality >= 0.0 && candidate.fitQuality <= 1.0 &&
+            std::isfinite(candidate.fitRmsError) &&
+            candidate.fitRmsError >= 0.0 && candidate.fitRmsError <= 0.10 &&
+            candidate.fitSampleCount <= 64 &&
+            std::isfinite(candidate.lookaheadX) &&
+            candidate.lookaheadX >= -2.0 && candidate.lookaheadX <= 2.0 &&
+            std::isfinite(candidate.lookaheadY) &&
+            candidate.lookaheadY >= 0.0 && candidate.lookaheadY <= 1.10 &&
+            std::isfinite(candidate.curvature) &&
+            candidate.curvature >= -10.0 && candidate.curvature <= 10.0 &&
+            (!candidate.trajectoryValid ||
+             (candidate.nearValid && candidate.fitSampleCount >= 4 &&
+              candidate.lookaheadY > 0.0)) &&
             std::isfinite(candidate.adaptivePreview) &&
             candidate.adaptivePreview >= 0.0 &&
             candidate.adaptivePreview <= 1.0 &&
@@ -469,6 +516,18 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         {
             candidate.headingError = 0.0;
             candidate.previewError = 0.0;
+        }
+        if (!candidate.trajectoryValid)
+        {
+            candidate.fitA = 0.0;
+            candidate.fitB = 0.0;
+            candidate.fitC = 0.0;
+            candidate.fitQuality = 0.0;
+            candidate.fitRmsError = 0.0;
+            candidate.fitSampleCount = 0;
+            candidate.lookaheadX = 0.0;
+            candidate.lookaheadY = 0.0;
+            candidate.curvature = 0.0;
         }
         if (!candidate.nearValid && !candidate.farValid)
         {
@@ -521,6 +580,16 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.farError = 0.0;
             snapshot.lateralError = 0.0;
             snapshot.headingError = 0.0;
+            snapshot.trajectoryValid = false;
+            snapshot.fitA = 0.0;
+            snapshot.fitB = 0.0;
+            snapshot.fitC = 0.0;
+            snapshot.fitQuality = 0.0;
+            snapshot.fitRmsError = 0.0;
+            snapshot.fitSampleCount = 0;
+            snapshot.lookaheadX = 0.0;
+            snapshot.lookaheadY = 0.0;
+            snapshot.curvature = 0.0;
             snapshot.adaptivePreview = 0.0;
             snapshot.previewError = 0.0;
             snapshot.pTerm = 0.0;

@@ -7,6 +7,7 @@
 #include "obr/telemetry.h"
 
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -124,6 +125,9 @@ private:
     std::thread telemetryThread_;
     std::mutex clientsMutex_;
     std::vector<SocketHandle> clients_;
+    // A sequência permite medir perdas e frequência no cliente sem criar
+    // outro timer ou aumentar a taxa de telemetria do servidor.
+    std::uint64_t telemetrySequence_ = 0;
 
     bool initializeSockets();
     void cleanupSockets();
@@ -140,10 +144,17 @@ private:
     void broadcast(const std::string& message);
     void handleCommand(const std::string& message);
 
-    std::string buildTelemetryJson(const TelemetrySample& sample) const;
+    std::string buildTelemetryJson(
+        const TelemetrySample& sample,
+        std::uint64_t sequence,
+        long long generatedUnixMs,
+        double effectiveIntervalMs,
+        double previousWorkMs,
+        std::size_t websocketClientCount) const;
 
     static std::string dashboardHtml();
     static void sendHttpResponse(SocketHandle client, const std::string& content, const std::string& contentType);
+    static bool sendStaticFile(SocketHandle client, const char* path, const char* contentType);
     static void sendHttpNotFound(SocketHandle client);
     static bool sendCameraFrame(SocketHandle client);
     static bool sendCameraStreamHead(SocketHandle client, int streamPort);
