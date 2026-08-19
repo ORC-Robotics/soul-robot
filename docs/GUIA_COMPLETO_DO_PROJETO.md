@@ -251,16 +251,23 @@ esp32/obr_esp32_bridge/
   Núcleo compartilhado e firmware de bancada com dashboard local.
 
 scripts/camera_line_frame.py
-  Captura direta, status básico e stream MJPEG, sem interpretação visual.
+  Captura inferior, processamento visual, IPC fresco do segue-faixa e stream MJPEG.
 
 scripts/deploy.ps1 e scripts/deploy.sh
   Deploy atômico para a Raspberry.
 
 scripts/run_robot.sh
-  Supervisor do programa C++ e da câmera dentro do serviço.
+  Supervisor do programa C++ e do gerenciador ocioso da câmera frontal.
+
+scripts/run_line_camera.sh
+  Supervisor exclusivo da câmera inferior: remove IPC antigo, publica o estado
+  do serviço e inicia uma única instância da visão.
 
 scripts/obr-robot.service
-  Unidade systemd iniciada automaticamente no boot.
+  Unidade systemd do programa C++, dashboard e ESP32.
+
+scripts/obr-line-camera.service
+  Unidade systemd independente da captura e visão da câmera inferior.
 ```
 
 ### Responsabilidade dos módulos C++
@@ -271,10 +278,10 @@ scripts/obr-robot.service
 | `RobotState` | Guarda modo, missão, E-Stop, potências e idade do comando |
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
-| `MotorController` | Aplica perfil operacional, sincroniza os lados pelos encoders e envia comandos seguros para a ESP32 |
+| `MotorController` | Aplica START/RUN por roda no autônomo, sincroniza somente a reta pelos encoders e envia comandos seguros para a ESP32 |
 | `MissionController` | Seleciona a missão e reinicia o estado interno a cada nova execução |
-| `MainMission` | Ponto de composição dos futuros comportamentos; atualmente mantém os motores parados |
-| `CameraMonitor` | Verifica somente se a captura e o stream estão ativos |
+| `MainMission` | Coordena o segue-faixa, seus fallbacks e os demais comportamentos autônomos |
+| `CameraMonitor` | Valida captura e telemetria visual antes de liberar prévias para a missão |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
 | `StatusLed` | LED de sistema pronto |
@@ -337,13 +344,19 @@ os dois motores do mesmo lado girem no mesmo sentido.
 - Duty máximo: 1023.
 - Saída máxima: 100%.
 - A ESP32 mantém relação direta: `0.05` é 5%, `0.50` é 50% e `1.00` é 100% de duty.
-- No controle normal, a Raspberry eleva qualquer comando não nulo para pelo menos
-  `0.69` antes da sincronização automática.
-- O `MotorController` mede `cont/s por PWM` e reduz gradualmente somente o lado
-  mais eficiente. Não existe mais ganho fixo aplicado ao lado direito.
-- Os campos exatos do dashboard usam `drive_raw` e ignoram o perfil operacional.
-- A missão isolada de giro de 90° usa comando lógico `0.01`; o perfil o eleva
-  para aproximadamente `0.69 / -0.69`, garantindo a partida dos motores.
+- No modo autônomo, uma roda considerada parada recebe no mínimo `0.67`. Essa
+  regra é individual por lado e vale para frente e ré.
+- Uma roda só troca de STARTING para RUNNING após duas amostras novas, recentes
+  e coerentes do encoder: PWM aplicado no mesmo sentido e taxa de pelo menos
+  `20 cont/s`. Em RUNNING, o menor comando não nulo permitido é `0.61`.
+- Três amostras recentes inválidas retornam a roda para STARTING. Zero ou troca
+  de sentido também reiniciam essa confirmação.
+- O `MotorController` mede `cont/s por PWM` e, somente em avanço reto, reduz
+  gradualmente o lado mais eficiente. Não existe ganho fixo aplicado ao lado direito.
+- Os controles manuais do dashboard usam `drive_raw`: ignoram START/RUN e
+  sincronismo para permitir diagnóstico direto entre `0.05` e `1.00`.
+- A missão isolada de giro de 90° usa comando lógico `0.01`; o perfil autônomo
+  o eleva inicialmente para aproximadamente `0.67 / -0.67`, garantindo a partida.
 - Zero permanece exatamente zero em parada, timeout, calibração e E-Stop.
 
 O software de navegação escolhe uma referência operacional. A interface mostra
@@ -362,9 +375,10 @@ contagem acumulada só é zerada por reset ou calibração explícita. O painel 
 converte a contagem em posição desde o último reset usando a calibração atual de
 `3600 contagens = 18,7 cm`, equivalente a aproximadamente `192,51 contagens/cm`.
 
-O perfil normal não altera potência automaticamente com esse feedback. A exceção
-é a missão isolada `drive_distance`, que usa os encoders para decidir quando
-zerar o PWM e concluir o trecho solicitado.
+Além da missão `drive_distance`, os encoders confirmam individualmente que cada
+roda saiu da inércia antes de liberar o piso RUNNING de `0.61`. O sincronismo de
+eficiência continua deliberadamente restrito à reta; ele não corrige curvas,
+giros nem comandos manuais diretos.
 
 ## 11. Camadas de segurança
 
@@ -374,8 +388,8 @@ zerar o PWM e concluir o trecho solicitado.
 | Startup normal | Driver só é habilitado após os quatro PWMs estarem em zero |
 | Estado parado | Raspberry envia `STOP`; ESP32 zera os quatro PWMs |
 | Limites | Raspberry e ESP32 limitam comandos a `[-1, 1]` |
-| Controle independente | Cada lado mantém sinal próprio; o perfil operacional calibra o PWM direito |
-| Feedback dos encoders | Contagens e taxas são exibidas; a missão de distância usa os dois lados |
+| Controle independente | Cada lado mantém sinal, STARTING/RUNNING e confirmação de encoder próprios |
+| Feedback dos encoders | Contagens e taxas são exibidas; confirmam START/RUN, sincronizam somente a reta e atendem a missão de distância |
 | Timeout Raspberry | Após 2000 ms sem comando válido, `RobotState` zera potências |
 | Timeout ESP32 | Após 500 ms sem comando, os PWMs são zerados |
 | E-Stop | Tem prioridade sobre manual, autônomo e dashboard |
@@ -596,12 +610,9 @@ mudam o modo por conta própria.
 
 #### `main_mission` — padrão
 
-É o encapsulamento da estratégia completa da prova. Futuros comportamentos devem
-ser chamados explicitamente por este módulo conforme cada situação exigir.
-
-Neste momento nenhum comportamento está instalado. Iniciar a Missão Principal
-é seguro: o estado muda para autônomo, mas `MainMission` mantém os dois comandos
-de motor em zero e informa `main_waiting_behaviors` no dashboard.
+É o encapsulamento da estratégia completa da prova. Atualmente executa o
+segue-faixa por trajetória visual e seus fallbacks seguros; futuros comportamentos
+devem ser chamados explicitamente por este módulo conforme cada situação exigir.
 
 #### `turn_right_90`
 
@@ -609,7 +620,7 @@ de motor em zero e informa `main_waiting_behaviors` no dashboard.
 - Comanda esquerda positiva e direita negativa.
 - Alvo: 90°.
 - Usa comando lógico `0.01 / -0.01` durante todo o giro e nas correções.
-- O perfil operacional aplica aproximadamente `0.69 / -0.69` nos motores.
+- O perfil autônomo aplica inicialmente aproximadamente `0.67 / -0.67` nos motores.
 - O sincronismo fica desativado porque os lados giram em sentidos opostos.
 - Antecipa o corte do PWM usando velocidade angular, idade da amostra e inércia.
 - Aguarda 180 ms e velocidade angular de até 3°/s antes de avaliar o resultado.
@@ -649,8 +660,8 @@ Arquivo: `scripts/camera_line_frame.py`.
 
 | Parâmetro | Valor atual |
 | --- | --- |
-| Resolução do dashboard | 960×540 |
-| FPS alvo da câmera | 30 |
+| Resolução da câmera inferior | 480×360 |
+| FPS alvo da câmera inferior | 30 |
 | Stream MJPEG | Porta local 8090, `/stream.mjpg` |
 | Qualidade JPEG | 82 |
 | Snapshot compatível | 2 FPS em `/tmp/obr_camera_frame.jpg` |
@@ -662,10 +673,26 @@ O dashboard principal faz proxy do MJPEG pela porta 8080, evitando que o usuári
 precise acessar diretamente a porta 8090. O vídeo é exibido sem máscaras,
 marcações ou decisões de navegação.
 
-`CameraMonitor` valida somente a saúde da captura por meio dos campos `active`,
-`fps` e `timestamp`. A câmera não interpreta pixels e não participa de comandos
-de movimento. Uma futura implementação de visão deve ser adicionada como módulo
-independente e integrada explicitamente à missão que precisar dela.
+`CameraMonitor` valida a saúde da captura e a telemetria rápida publicada pela
+visão. Ele rejeita trajetória, prévias ou campos de controle inválidos antes que
+`MainMission` use qualquer comando. A interpretação de pixels permanece isolada
+no processo Python; a decisão de movimento permanece em C++ e passa por
+`RobotState` e `MotorController`.
+
+A câmera inferior pertence ao serviço `obr-line-camera`, separado de
+`obr-robot`. Ao parar ou reiniciar esse serviço, o supervisor remove
+`/dev/shm/obr_line_status.json`; por isso uma Missão Principal em curso não pode
+reaproveitar uma trajetória velha e fica parada até uma publicação nova e fresca.
+FAR/NEAR, gap, verde, Corner90 e kernels usam a resolução recebida como base: a
+referência validada de 640×480 é escalada para 480×360 sem manter cortes fixos.
+
+O dashboard controla a câmera inferior pelo mesmo IPC simples usado pela câmera
+frontal. O botão alterna apenas `{"command":"set_line_camera","enabled":true}`
+ou `false` pelo WebSocket; o C++ grava o arquivo de controle atômico em
+`/dev/shm`, sem executar `sudo`, `systemctl` ou qualquer comando recebido do
+navegador. O gerenciador `obr-line-camera` fica ocioso quando desativado e remove
+o IPC de visão. `ONLINE` só aparece depois de uma publicação nova da visão;
+`PARADA`, `INICIANDO` e `FALHA` continuam explícitos quando ela não pode ser usada.
 
 ## 17. Estrutura autônoma atual
 
@@ -674,15 +701,32 @@ reiniciar seu estado quando uma nova execução começar. Ele preserva duas miss
 isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
 prova para `MainMission`.
 
-`MainMission` é o ponto de composição dos futuros comportamentos da prova.
-Atualmente ela não executa nenhum comportamento e mantém os dois comandos de
-motor em zero. Isso deixa uma base segura e explícita para receber novos módulos
-de pista, obstáculo, rampa ou resgate quando suas regras forem definidas.
+`MainMission` executa o segue-faixa pela câmera inferior e continua sendo o ponto
+de composição dos demais comportamentos da prova. O processo Python ajusta a
+imagem, estima uma trajetória e publica uma prévia normalizada para cada lado.
+
+Quando `trajectoryValid=true`, o Pure Pursuit usa a curvatura como erro de
+controle, remove ruído com zona morta de `0.025`, limita a correção a `±0.25` e
+aplica mistura diferencial centrada na base `0.70`. O resultado é contínuo: a
+roda interna diminui e a externa aumenta; no limite, a prévia pode chegar a
+`0.86 / 0.61`. Antes da aplicação física, a camada START/RUN ainda protege cada
+roda parada com `0.67`.
+
+Depois do clamp de `±0.25` e antes da mistura diferencial, o tracking normal usa
+um slew limiter com `dt` monotônico real: `1.5` unidades de correção/s para
+entrada e `2.5` unidades/s para retorno a zero. Na inversão de sinal, a saída
+chega primeiro a zero. Estados especiais não usam essa saída atrasada e resetam
+seu histórico.
+
+`TurningNear` não é a estratégia de curva normal. Ele é um fallback de
+contrarrotação usado apenas quando NEAR é válida, mas não há trajetória visual
+confiável. Se uma trajetória válida reaparece, a missão abandona esse fallback no
+mesmo ciclo e retorna ao diferencial contínuo. Gap, recuperação de linha,
+marcadores verdes, timeout, E-Stop e falha de câmera permanecem estados separados
+e têm prioridade de segurança.
 
 Cada comportamento novo deve ser integrado de forma deliberada pelo
-`MainMission`, com critérios claros de entrada, término e falha. A câmera bruta
-pode continuar sendo usada no dashboard durante o desenvolvimento sem influenciar
-o movimento do robô.
+`MainMission`, com critérios claros de entrada, término e falha.
 
 Regras para os próximos comportamentos:
 
@@ -698,8 +742,8 @@ Regras para os próximos comportamentos:
 
 - Ultrassônico não interrompe movimento nem desvia de obstáculos.
 - Inclinação de rampa é apenas telemetria/OLED.
-- Encoders medem equilíbrio e executam a missão isolada de distância, mas ainda
-  não fecham a velocidade da missão principal.
+- Encoders não fecham velocidade, mas confirmam START/RUN por roda e sincronizam
+  eficiência exclusivamente nos deslocamentos retos.
 - PCA9685 não aciona mecanismos.
 - Não existe lógica documentada para área de resgate, vítimas ou kit.
 
@@ -729,18 +773,17 @@ Regras para os próximos comportamentos:
 - WASD: W/S para frente/ré; A/D gira os dois lados em sentidos opostos e tem
   prioridade sobre W/S, impedindo que combinações de teclas zerem um lado.
 - Sliders: frente/ré e giro.
-- Limites manuais separados: reta e curva, de `0.69` a `1.0`, persistidos no navegador.
-- Sliders e WASD: perfil operacional com mínimo `0.69` e sincronismo automático
-  quando os lados se movem juntos no mesmo sentido.
-- Giro autônomo de 90°: comando `0.01` elevado pelo perfil operacional.
-- Ajuste individual: independente por lado em passos de `0.01`, destinado
-  somente a diagnóstico consciente; qualquer valor não nulo é elevado a `0.69`.
+- Limites manuais separados: reta e curva, de `0.05` a `1.0`, persistidos no navegador.
+- Sliders, WASD e ajuste individual enviam `drive_raw`: são comandos diretos,
+  sem START/RUN e sem sincronismo, destinados ao diagnóstico consciente.
+- Perfil autônomo: roda parada recebe no mínimo `0.67`; após duas confirmações
+  recentes do encoder, pode manter `0.61`.
+- Giro autônomo de 90°: comando `0.01` elevado inicialmente pelo perfil de partida.
 - Sincronização: calcula a eficiência de cada lado em `cont/s por PWM`, aguarda
   três amostras válidas e reduz somente o lado mais rápido em passos de até 0,03.
-  A escala recebe um limite dinâmico para que a potência corrigida nunca atravesse
-  `0.69`. A correção aprendida é reutilizada entre paradas, mas é elevada
-  imediatamente ao novo limite quando a referência diminui. Giros opostos e
-  ajustes individuais não entram nessa malha.
+  A escala respeita o estado de cada roda: não rebaixa STARTING abaixo de `0.67`
+  nem RUNNING abaixo de `0.61`. Giros opostos, curvas diferenciais e ajustes
+  individuais não entram nessa malha.
 - A ESP32 atualiza a taxa dos encoders a cada 100 ms, sincronizada com o período
   da telemetria UART; a Raspberry filtra essas amostras antes de ajustar a escala.
 
@@ -755,8 +798,12 @@ ativos.
 - link, uptime e idade da ESP32;
 - CPU, RAM e temperatura da Raspberry;
 - câmera, FPS, resolução e formato;
-- potências solicitadas e aplicadas;
+- potência solicitada pela Raspberry, comando final e PWM aplicado pela ESP32;
+- estado STARTING/RUNNING e amostras de confirmação de cada lado;
 - contagens e taxas dos encoders;
+- diagnósticos do segue-faixa: `rawControlError`, `finalCorrection`,
+  `targetCorrection`, `appliedCorrection`, `steerRateUsed` e prévias
+  esquerda/direita;
 - ultrassônico;
 - MPU6050, yaw, rampa, gyro, aceleração e temperatura;
 - PCA9685 e OLED;
@@ -856,15 +903,15 @@ bash scripts/deploy.sh --host raspberrypi.local --service
 
 ### Comportamento seguro do deploy
 
-1. Para `obr-robot` antes de alterar código/binário.
+1. Para `obr-robot` e `obr-line-camera` antes de alterar código/binário.
 2. Copia fontes e scripts.
 3. Compila em `/home/obr/OBR2026K/.build-staging`.
 4. Confirma que o novo `robot_test` não está vazio.
 5. Instala como `robot_test.new`.
 6. Faz `mv` atômico para o caminho final.
-7. Reinstala a unidade systemd.
-8. Habilita o serviço no boot.
-9. Reinicia e exige estado `active`.
+7. Reinstala as duas unidades systemd.
+8. Habilita os dois serviços no boot.
+9. Reinicia e exige estado `active` dos dois serviços.
 
 Se o build falhar, o executável anterior não é substituído e o robô permanece
 parado.
@@ -873,12 +920,12 @@ parado.
 
 | Item | Valor |
 | --- | --- |
-| Nome | `obr-robot.service` |
-| Usuário | `obr` |
+| Nome | `obr-robot.service` e `obr-line-camera.service` |
+| Usuário | `raspberry` |
 | Grupo suplementar | `gpio` |
 | Diretório | `/home/obr/OBR2026K` |
-| Entrada | `scripts/run_robot.sh` |
-| Reinício | sempre, após 2 s |
+| Entrada | `scripts/run_robot.sh` e `scripts/run_line_camera.sh` |
+| Reinício | `obr-robot`: sempre; `obr-line-camera`: apenas em falha, após 2 s |
 | Limite | 5 partidas em 30 s |
 | Boot | `multi-user.target` |
 
@@ -888,7 +935,8 @@ validação do deploy verifica que o arquivo não está vazio, não exige um tam
 fixo.
 
 `run_robot.sh` recusa binário ausente, vazio ou sem permissão de execução antes
-de iniciar câmera ou programa principal.
+de iniciar o programa principal. Ele não inicia a câmera inferior; isso evita duas
+instâncias e deixa a visão desligável sem afetar dashboard ou ESP32.
 
 ## 22. Procedimento recomendado de operação
 

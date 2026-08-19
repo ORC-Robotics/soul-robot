@@ -371,8 +371,8 @@ class CameraProfilesTest(unittest.TestCase):
             line,
             np.array(
                 [
-                    [[0, 0, 0], [0, 0, 0]],
-                    [[0, 0, 0], [0, 0, 0]],
+                    [[0, 0, 0], [0, 255, 0]],
+                    [[0, 255, 0], [0, 0, 0]],
                     [[0, 0, 0], [255, 255, 255]],
                     [[255, 255, 255], [0, 0, 0]],
                 ],
@@ -407,6 +407,10 @@ class CameraProfilesTest(unittest.TestCase):
             (64, 255, 96),
         )
 
+    def test_green_saturation_rejects_light_floor_tint(self):
+        self.assertTrue(camera_line_frame.is_hsv_green(75, 255, 90))
+        self.assertFalse(camera_line_frame.is_hsv_green(75, 136, 146))
+
     def test_camera_hides_unconfirmed_rejected_and_unresolved_green(self):
         line_axis = synthetic_line_axis()
         valid = synthetic_candidate((370, 200))
@@ -427,6 +431,28 @@ class CameraProfilesTest(unittest.TestCase):
             True,
         )
         self.assertEqual(visible, [valid])
+
+    @unittest.skipUnless(CV2_AVAILABLE, "OpenCV não está disponível")
+    def test_strong_green_overlay_is_symbolic_without_text(self):
+        line_axis = synthetic_line_axis()
+        candidate = synthetic_candidate((370, 200))
+        candidate["contour"] = rectangle_contour(355, 185, 385, 215)
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+
+        strong = camera_line_frame.select_strong_green_candidates(
+            [candidate], line_axis, "DIREITA"
+        )
+        self.assertEqual(strong, [candidate])
+
+        # O vídeo de produção não pode pagar o custo de renderização de texto.
+        with mock.patch.object(camera_line_frame.cv2, "putText") as put_text:
+            camera_line_frame.draw_green_candidate_overlays(
+                frame, strong, "DIREITA", False
+            )
+            camera_line_frame.draw_line_mode_green_overlays(
+                frame, strong, "DIREITA", True
+            )
+        put_text.assert_not_called()
 
     def test_camera_hides_stale_or_ambiguous_green_decision(self):
         line_axis = synthetic_line_axis()
@@ -451,6 +477,40 @@ class CameraProfilesTest(unittest.TestCase):
                     ),
                     [],
                 )
+
+    def test_green_occlusion_uses_only_recent_line_axis_and_rejects_bad_pair(self):
+        line_axis = synthetic_line_axis()
+        left = synthetic_candidate((270, 130), associated=False)
+        for candidate in (left,):
+            candidate.update({
+                "long_side": 25.0,
+                "geometry_valid": True,
+                "frameHeight": 480,
+            })
+
+        camera_line_frame.apply_green_occlusion_axis(
+            [left], line_axis, 21.0
+        )
+        decision = camera_line_frame.interpret_occluded_green_candidates(
+            [left], line_axis, 97, 306
+        )
+        self.assertEqual(decision["interpretation"], "ESQUERDA")
+        self.assertTrue(decision["path_black_valid"])
+
+        right_farther = synthetic_candidate((370, 220), associated=False)
+        right_farther.update({
+            "long_side": 25.0,
+            "geometry_valid": True,
+            "frameHeight": 480,
+        })
+        camera_line_frame.apply_green_occlusion_axis(
+            [left, right_farther], line_axis, 21.0
+        )
+        ambiguous = camera_line_frame.interpret_occluded_green_candidates(
+            [left, right_farther], line_axis, 97, 306
+        )
+        self.assertEqual(ambiguous["interpretation"], "AMBIGUO")
+        self.assertFalse(ambiguous["path_black_valid"])
 
     def resolve_green_case(self, name, candidates, topology):
         """Executa e mostra o diagnóstico determinístico do resolvedor verde."""
@@ -609,7 +669,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_profile_uses_full_fov_sensor_mode(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]
 
-        self.assertEqual(profile["main_size"], (640, 480))
+        self.assertEqual(profile["main_size"], (480, 360))
         self.assertEqual(profile["sensor_size"], (1640, 1232))
         self.assertEqual(profile["sensor_bit_depth"], 10)
         self.assertEqual(profile["target_fps"], 30)
@@ -624,6 +684,24 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(profile["open_kernel_size"], 17)
         self.assertEqual(profile["close_kernel_size"], 7)
         self.assertEqual(profile["full_line_max_area_ratio"], 0.30)
+
+    def test_down_profile_scales_reference_geometry_and_kernels_at_480x360(self):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        geometry = camera_line_frame.resolve_vision_geometry(360, profile)
+
+        self.assertEqual(geometry["structural_end_y"], 319)
+        self.assertEqual(geometry["far_band_end_y"], 72)
+        self.assertEqual(geometry["near_band_start_y"], 234)
+        self.assertEqual(geometry["near_band_end_y"], 306)
+        self.assertEqual(
+            camera_line_frame.scaled_odd_kernel_size(201, 360), 151
+        )
+        self.assertEqual(
+            camera_line_frame.scaled_odd_kernel_size(17, 360), 13
+        )
+        self.assertEqual(
+            camera_line_frame.scaled_odd_kernel_size(7, 360), 5
+        )
 
     def test_down_line_mask_rejects_dim_white_and_keeps_black_tape(self):
         if not CV2_AVAILABLE:
@@ -923,6 +1001,9 @@ class CameraProfilesTest(unittest.TestCase):
                     d_term=control_terms["d_term"],
                     control_error=control_terms["control_error"],
                     correction=-0.03,
+                    target_correction=-0.08,
+                    applied_correction=-0.03,
+                    steer_rate_used=2.5,
                     left_preview=0.69,
                     right_preview=0.71,
                     gap_candidate=False,
@@ -951,6 +1032,9 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(status["filteredDerivative"], 0.0)
         self.assertEqual(status["dTerm"], 0.0)
         self.assertEqual(status["controlError"], control_terms["control_error"])
+        self.assertEqual(status["targetCorrection"], -0.08)
+        self.assertEqual(status["appliedCorrection"], -0.03)
+        self.assertEqual(status["steerRateUsed"], 2.5)
         self.assertEqual(status["preview"], control_terms["adaptive_preview"])
         self.assertEqual(status["kControl"], 1.60)
         self.assertAlmostEqual(
@@ -1071,6 +1155,100 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(trajectory["trajectory_mode"], "fallback_far_near")
         self.assertEqual(trajectory["fit_sample_count"], 0)
 
+    def test_corner90_component_detects_connected_right_branch(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        cv2.rectangle(mask, (232, 200), (248, 306), 255, -1)
+        cv2.rectangle(mask, (232, 200), (400, 216), 255, -1)
+
+        corner = camera_line_frame.analyze_corner90_component(
+            mask,
+            0,
+            (240, 270),
+            0.0,
+        )
+
+        self.assertTrue(corner["corner90_candidate"])
+        self.assertEqual(corner["corner90_direction"], "RIGHT")
+        self.assertEqual(corner["corner90_angle"], 90.0)
+
+    def test_corner90_component_detects_distant_connected_branch_at_zero_gate(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        cv2.rectangle(mask, (232, 75), (248, 306), 255, -1)
+        cv2.rectangle(mask, (232, 75), (400, 91), 255, -1)
+
+        corner = camera_line_frame.analyze_corner90_component(
+            mask,
+            0,
+            (240, 270),
+            0.0,
+        )
+
+        self.assertTrue(corner["corner90_candidate"])
+        self.assertEqual(corner["corner90_direction"], "RIGHT")
+
+    def test_corner90_bands_detects_distant_left_branch(self):
+        corner = camera_line_frame.analyze_corner90_bands(
+            {"valid": True, "x": 240.0},
+            {
+                "valid": True,
+                "x": 149.0,
+                "bounding_width_px": 210,
+                "bounding_height_px": 70,
+            },
+            480,
+        )
+
+        self.assertTrue(corner["corner90_candidate"])
+        self.assertEqual(corner["corner90_direction"], "LEFT")
+        self.assertEqual(corner["corner90_angle"], -90.0)
+
+    def test_corner90_bands_confirms_centered_straight_exit(self):
+        corner = camera_line_frame.analyze_corner90_bands(
+            {"valid": True, "x": 240.0},
+            {
+                "valid": True,
+                "x": 244.0,
+                "bounding_width_px": 20,
+                "bounding_height_px": 70,
+            },
+            480,
+        )
+
+        self.assertFalse(corner["corner90_candidate"])
+        self.assertTrue(corner["corner90_exit_alignment"])
+
+    def test_corner90_bands_accepts_tolerant_exit_alignment(self):
+        corner = camera_line_frame.analyze_corner90_bands(
+            {"valid": True, "x": 285.0},
+            {
+                "valid": True,
+                "x": 289.0,
+                "bounding_width_px": 20,
+                "bounding_height_px": 70,
+            },
+            480,
+        )
+
+        self.assertFalse(corner["corner90_candidate"])
+        self.assertTrue(corner["corner90_exit_alignment"])
+
+    def test_corner90_visual_handoff_uses_near_without_far(self):
+        self.assertTrue(camera_line_frame.corner90_visual_handoff_ready(
+            False, True, 0.45,
+        ))
+        self.assertTrue(camera_line_frame.corner90_visual_handoff_ready(
+            False, True, -0.45,
+        ))
+        self.assertFalse(camera_line_frame.corner90_visual_handoff_ready(
+            True, True, 0.0,
+        ))
+        self.assertFalse(camera_line_frame.corner90_visual_handoff_ready(
+            False, True, 0.451,
+        ))
+        self.assertFalse(camera_line_frame.corner90_visual_handoff_ready(
+            False, False, 0.0,
+        ))
+
     def test_quadratic_fit_rejects_isolated_center(self):
         y_values = np.linspace(0.05, 0.95, 15)
         points = [
@@ -1086,9 +1264,15 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertAlmostEqual(fit["coefficients"][0], 0.12, places=4)
         self.assertAlmostEqual(fit["rms_error"], 0.0, places=4)
 
-    def test_visual_pursuit_straight_deadband_and_correction_limit(self):
+    def test_visual_pursuit_uses_small_deadband_and_run_floor(self):
         vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        self.assertEqual(vision_profile["tracking_deadzone_ratio"], 0.025)
+        self.assertEqual(vision_profile["visual_tracking_minimum_power"], 0.61)
         straight = camera_line_frame.calculate_visual_pursuit_preview(
+            vision_profile,
+            0.02,
+        )
+        light_curve = camera_line_frame.calculate_visual_pursuit_preview(
             vision_profile,
             0.05,
         )
@@ -1098,12 +1282,165 @@ class CameraProfilesTest(unittest.TestCase):
         )
 
         self.assertEqual(straight[1:], (0.0, 0.0, 0.70, 0.70))
+        self.assertGreater(light_curve[1], 0.0)
+        self.assertGreater(light_curve[3], 0.70)
+        self.assertLess(light_curve[4], 0.70)
         self.assertEqual(
             strong_curve[2],
             camera_line_frame.MAX_CORRECTION_PREVIEW,
         )
-        self.assertAlmostEqual(strong_curve[3], 0.94, places=6)
-        self.assertAlmostEqual(strong_curve[4], 0.69, places=6)
+        self.assertAlmostEqual(strong_curve[3], 0.86, places=6)
+        self.assertAlmostEqual(strong_curve[4], 0.61, places=6)
+
+    def test_steering_slew_limiter_uses_real_dt_and_crosses_zero(self):
+        limiter = camera_line_frame.SteeringSlewRateLimiter()
+        samples = [
+            limiter.update(0.22, timestamp)[0]
+            for timestamp in (0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.14, 0.16)
+        ]
+        expected = (0.00, 0.036, 0.072, 0.108, 0.144, 0.180, 0.216, 0.22, 0.22)
+        for actual, target in zip(samples, expected):
+            self.assertAlmostEqual(actual, target, places=6)
+
+        applied, release_rate = limiter.update(0.0, 0.18)
+        self.assertAlmostEqual(release_rate, 2.5)
+        self.assertAlmostEqual(applied, 0.17, places=6)
+
+        limiter.reset()
+        limiter.update(0.15, 1.00)
+        self.assertAlmostEqual(limiter.update(0.15, 1.02)[0], 0.036, places=6)
+        self.assertAlmostEqual(limiter.update(-0.15, 1.04)[0], 0.00, places=6)
+        self.assertAlmostEqual(limiter.update(-0.15, 1.06)[0], -0.036, places=6)
+
+    def test_corner90_geometry_requires_a_consistent_right_angle(self):
+        straight_then_right = [
+            (0.0, 0.05), (0.0, 0.15), (0.0, 0.25),
+            (0.30, 0.35), (0.70, 0.45), (1.10, 0.55),
+            (1.50, 0.65), (1.90, 0.75), (2.30, 0.85),
+        ]
+        corner = camera_line_frame.analyze_corner90_geometry(
+            straight_then_right,
+            0.0,
+        )
+
+        self.assertTrue(corner["corner90_candidate"])
+        self.assertEqual(corner["corner90_direction"], "RIGHT")
+        self.assertGreaterEqual(corner["corner90_angle"], 70.0)
+
+    def test_corner90_geometry_rejects_line_too_far_from_center(self):
+        straight_then_right = [
+            (0.0, 0.05), (0.0, 0.15), (0.0, 0.25),
+            (0.30, 0.35), (0.70, 0.45), (1.10, 0.55),
+            (1.50, 0.65), (1.90, 0.75), (2.30, 0.85),
+        ]
+        corner = camera_line_frame.analyze_corner90_geometry(
+            straight_then_right,
+            0.21,
+        )
+
+        self.assertFalse(corner["corner90_candidate"])
+
+    def test_corner90_tracker_confirms_three_frames_then_exit_alignment(self):
+        tracker = camera_line_frame.Corner90ConfirmationTracker()
+        trajectory = camera_line_frame.empty_trajectory_result()
+        trajectory.update({
+            "corner90_candidate": True,
+            "corner90_direction": "LEFT",
+        })
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_confirm_frames"], 1)
+        self.assertEqual(trajectory["corner90_state"], "confirming")
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_confirm_frames"], 2)
+        self.assertEqual(trajectory["corner90_state"], "confirming")
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_state"], "confirmed")
+
+        # A geometria antiga pode continuar visível enquanto o robô gira.
+        # Ela mantém o candidato até desaparecer; só então a saída pode procurar
+        # a nova reta, evitando encerrar o pivot pela linha de chegada.
+        trajectory.update({
+            "corner90_candidate": False,
+            "corner90_exit_alignment": False,
+        })
+        tracker.update(trajectory, True)
+        self.assertFalse(trajectory["corner90_candidate"])
+        self.assertEqual(trajectory["corner90_state"], "pivoting")
+
+        trajectory.update({
+            "corner90_candidate": True,
+            "corner90_exit_alignment": True,
+        })
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_state"], "pivoting")
+        self.assertFalse(trajectory["corner90_exit_alignment"])
+
+        trajectory.update({
+            "corner90_candidate": False,
+            "corner90_exit_alignment": True,
+        })
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_state"], "exit_aligned")
+
+    def test_corner90_tracker_rearms_after_geometry_clears(self):
+        tracker = camera_line_frame.Corner90ConfirmationTracker()
+        trajectory = camera_line_frame.empty_trajectory_result()
+        trajectory.update({
+            "corner90_candidate": True,
+            "corner90_direction": "RIGHT",
+        })
+        for _ in range(camera_line_frame.CORNER90_CONFIRM_FRAMES):
+            tracker.update(trajectory, True)
+
+        trajectory.update({
+            "corner90_candidate": False,
+            "corner90_exit_alignment": False,
+        })
+        tracker.update(trajectory, True)
+        trajectory["corner90_exit_alignment"] = True
+        for _ in range(camera_line_frame.CORNER90_EXIT_ALIGNMENT_FRAMES):
+            tracker.update(trajectory, True)
+
+        trajectory.update({
+            "corner90_candidate": True,
+            "corner90_direction": "RIGHT",
+            "corner90_exit_alignment": False,
+        })
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_state"], "rearming")
+        self.assertFalse(trajectory["corner90_candidate"])
+
+        trajectory.update({
+            "corner90_candidate": False,
+            "corner90_exit_alignment": False,
+        })
+        for _ in range(camera_line_frame.CORNER90_REARM_CLEAR_FRAMES):
+            tracker.update(trajectory, True)
+            self.assertEqual(trajectory["corner90_state"], "rearming")
+
+        trajectory.update({
+            "corner90_candidate": True,
+            "corner90_direction": "RIGHT",
+        })
+        tracker.update(trajectory, True)
+        self.assertEqual(trajectory["corner90_state"], "confirming")
+        self.assertEqual(trajectory["corner90_confirm_frames"], 1)
+
+    def test_slew_limited_visual_mixing_preserves_target_authority(self):
+        vision_profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        left_preview, right_preview = camera_line_frame.mix_visual_pursuit_correction(
+            vision_profile,
+            0.06,
+        )
+        self.assertAlmostEqual(left_preview, 0.73, places=6)
+        self.assertAlmostEqual(right_preview, 0.67, places=6)
+
+        left_preview, right_preview = camera_line_frame.mix_visual_pursuit_correction(
+            vision_profile,
+            camera_line_frame.MAX_CORRECTION_PREVIEW,
+        )
+        self.assertAlmostEqual(left_preview, 0.86, places=6)
+        self.assertAlmostEqual(right_preview, 0.61, places=6)
 
     def test_fast_json_publishes_valid_trajectory(self):
         trajectory = camera_line_frame.analyze_visual_trajectory(

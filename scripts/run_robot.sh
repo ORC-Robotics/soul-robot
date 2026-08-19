@@ -4,12 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${OBR_APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ROBOT_BIN="$APP_DIR/build/robot_test"
-CAMERA_SCRIPT="$APP_DIR/scripts/camera_line_frame.py"
-CAMERA_PATTERN="$APP_DIR/scripts/[c]amera_line_frame.py"
 FORWARD_CAMERA_SCRIPT="$APP_DIR/scripts/forward_camera_stream.py"
 FORWARD_CAMERA_PATTERN="$APP_DIR/scripts/[f]orward_camera_stream.py"
 PYTHON_BIN="$APP_DIR/.venv/bin/python3"
-CAMERA_PID=""
 FORWARD_CAMERA_PID=""
 ROBOT_PID=""
 
@@ -18,14 +15,6 @@ if [[ ! -x "$PYTHON_BIN" ]]; then
   # Python do sistema quando todas as dependências já estiverem disponíveis.
   PYTHON_BIN="$(command -v python3)"
 fi
-
-stop_camera() {
-  if [[ -n "$CAMERA_PID" ]] && kill -0 "$CAMERA_PID" >/dev/null 2>&1; then
-    # Para a câmera antes de sair para desligar a iluminação e liberar o hardware.
-    kill "$CAMERA_PID"
-    wait "$CAMERA_PID" >/dev/null 2>&1 || true
-  fi
-}
 
 stop_forward_camera() {
   if [[ -n "$FORWARD_CAMERA_PID" ]] && kill -0 "$FORWARD_CAMERA_PID" >/dev/null 2>&1; then
@@ -46,7 +35,6 @@ stop_robot() {
 cleanup() {
   stop_robot
   stop_forward_camera
-  stop_camera
 }
 
 trap cleanup EXIT INT TERM
@@ -64,18 +52,6 @@ if [[ ! -x "$ROBOT_BIN" ]]; then
   # O serviço nunca deve iniciar câmera ou motores sem um binário executável.
   echo "Robot binary is not executable: $ROBOT_BIN" >&2
   exit 1
-fi
-
-if [[ -f "$CAMERA_SCRIPT" ]]; then
-  # Remove uma instância antiga do mesmo script, caso uma reinicialização anterior
-  # tenha deixado a porta do stream ocupada.
-  pkill -f "$CAMERA_PATTERN" >/dev/null 2>&1 || true
-
-  # A câmera é uma ajuda para o dashboard, mas não deve impedir o robô de iniciar.
-  OBR_CAMERA_ROLE="${OBR_CAMERA_ROLE:-down}" "$PYTHON_BIN" -u "$CAMERA_SCRIPT" &
-  CAMERA_PID="$!"
-else
-  echo "Camera script not found: $CAMERA_SCRIPT"
 fi
 
 if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then

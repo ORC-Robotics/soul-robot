@@ -37,6 +37,7 @@ void MotorController::apply(const RobotSnapshot& state)
     {
         // A parada de emergência também é enviada para a ESP32.
         // Mesmo que o dashboard continue mandando comandos, a ESP32 recebe zero nos motores.
+        resetMotorMotion();
         suspendEncoderSynchronization(0.0, 0.0);
         esp32_.sendEmergencyStop();
         return;
@@ -53,20 +54,42 @@ void MotorController::apply(const RobotSnapshot& state)
 
     if (state.rawMotorCommand)
     {
-        // O ajuste individual não recebe sincronismo, mas ainda respeita o piso
-        // mecânico de 0,69. Abaixo dele um dos motores não consegue girar.
-        leftPower = operationalMotorPower(leftPower);
-        rightPower = operationalMotorPower(rightPower);
+        // O ajuste manual de teste usa o duty solicitado pelo dashboard sem o
+        // piso operacional de 0,69. Isso permite medir a partida real de cada
+        // lado; os limites, o timeout e a parada de emergência continuam ativos.
+        resetMotorMotion();
         suspendEncoderSynchronization(leftPower, rightPower);
         esp32_.sendMotorCommand(leftPower, rightPower, false);
         return;
     }
 
-    // O piso operacional é aplicado antes do sincronismo. A malha reduz somente
-    // o lado mais eficiente e recebe outro piso depois da correção, garantindo
-    // pelo menos 0,69 em qualquer saída de movimento não nula.
-    leftPower = operationalMotorPower(leftPower);
-    rightPower = operationalMotorPower(rightPower);
+    const Esp32TelemetrySnapshot telemetry = esp32_.telemetrySnapshot();
+    const bool telemetrySampleChanged =
+        telemetry.esp32UptimeMs != lastMotorMotionSampleUptimeMs_;
+    if (telemetrySampleChanged)
+    {
+        lastMotorMotionSampleUptimeMs_ = telemetry.esp32UptimeMs;
+    }
+    const bool encoderSampleIsNew =
+        telemetrySampleChanged && telemetry.sensorFresh &&
+        telemetry.lastSensorAgeMs >= 0 &&
+        telemetry.lastSensorAgeMs <= config::kEncoderSyncTelemetryMaxAgeMs;
+
+    // Cada roda começa em 0,67 e só pode usar o piso de 0,61 depois que os
+    // encoders confirmarem movimento. Isso preserva a partida e libera curvas
+    // suaves quando a roda interna já está girando.
+    leftPower = applyMotorMinimumPower(
+        leftPower,
+        leftMotorMotion_,
+        telemetry.appliedLeftPower,
+        telemetry.leftEncoderRate,
+        encoderSampleIsNew);
+    rightPower = applyMotorMinimumPower(
+        rightPower,
+        rightMotorMotion_,
+        telemetry.appliedRightPower,
+        telemetry.rightEncoderRate,
+        encoderSampleIsNew);
 
     const bool straightForwardCommand =
         leftPower > 0.0 && rightPower > 0.0 &&
@@ -74,7 +97,7 @@ void MotorController::apply(const RobotSnapshot& state)
     if (straightForwardCommand)
     {
         applyEncoderSynchronization(
-            leftPower, rightPower, esp32_.telemetrySnapshot());
+            leftPower, rightPower, telemetry);
     }
     else
     {
@@ -89,6 +112,7 @@ void MotorController::apply(const RobotSnapshot& state)
 void MotorController::stop()
 {
     // O STOP mantém a ESP32 sem movimento e não libera a parada de emergência do RobotState.
+    resetMotorMotion();
     suspendEncoderSynchronization(0.0, 0.0);
     esp32_.sendStop();
 }
@@ -109,21 +133,81 @@ double MotorController::safeMotorPower(double command)
     return std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
 }
 
-double MotorController::operationalMotorPower(double command)
+double MotorController::applyMotorMinimumPower(
+    double command,
+    MotorMotionState& motion,
+    double appliedPower,
+    double encoderRate,
+    bool encoderSampleIsNew)
 {
     const double safeCommand = safeMotorPower(command);
     if (std::abs(safeCommand) < 0.000001)
     {
         // Zero permanece zero para que parada, timeout e E-Stop nunca acionem
-        // o piso operacional de potência.
+        // os pisos de partida ou movimento.
+        motion = {};
         return 0.0;
     }
 
+    const int direction = safeCommand > 0.0 ? 1 : -1;
+    if (motion.direction != direction)
+    {
+        // Uma inversão exige uma nova partida confirmada; o estado RUNNING do
+        // sentido anterior não pode liberar o piso menor para a nova direção.
+        motion = {};
+        motion.direction = direction;
+    }
+
+    if (encoderSampleIsNew)
+    {
+        const bool encoderConfirmsMotion =
+            std::isfinite(appliedPower) && std::isfinite(encoderRate) &&
+            appliedPower * direction > 0.0 &&
+            std::abs(encoderRate) >=
+                config::kMotorRunConfirmationMinimumRateCountsPerSecond;
+        if (encoderConfirmsMotion)
+        {
+            motion.lossSamples = 0;
+            if (!motion.running)
+            {
+                ++motion.confirmationSamples;
+                if (motion.confirmationSamples >=
+                    config::kMotorRunConfirmationSamples)
+                {
+                    motion.running = true;
+                }
+            }
+        }
+        else
+        {
+            motion.confirmationSamples = 0;
+            if (motion.running)
+            {
+                ++motion.lossSamples;
+                if (motion.lossSamples >= config::kMotorRunLossSamples)
+                {
+                    motion.running = false;
+                    motion.lossSamples = 0;
+                }
+            }
+        }
+    }
+
+    const double minimumPower = motion.running
+                                    ? config::kMotorRunMinimumPower
+                                    : config::kMotorStartMinimumPower;
     const double referenceMagnitude = std::clamp(
         std::abs(safeCommand),
-        config::kOperationalMinimumMotorPower,
+        minimumPower,
         config::kOperationalMaximumReferencePower);
     return std::copysign(referenceMagnitude, safeCommand);
+}
+
+void MotorController::resetMotorMotion()
+{
+    leftMotorMotion_ = {};
+    rightMotorMotion_ = {};
+    lastMotorMotionSampleUptimeMs_ = -1;
 }
 
 double MotorController::moveToward(
@@ -154,16 +238,16 @@ void MotorController::applyEncoderSynchronization(
     const double requestedLeftMagnitude = std::abs(leftPower);
     const double requestedRightMagnitude = std::abs(rightPower);
     const double minimumLeftScale = std::clamp(
-        config::kOperationalMinimumMotorPower / requestedLeftMagnitude,
+        config::kMotorRunMinimumPower / requestedLeftMagnitude,
         config::kEncoderSyncMinimumScale,
         1.0);
     const double minimumRightScale = std::clamp(
-        config::kOperationalMinimumMotorPower / requestedRightMagnitude,
+        config::kMotorRunMinimumPower / requestedRightMagnitude,
         config::kEncoderSyncMinimumScale,
         1.0);
 
     // Uma escala aprendida em velocidade maior não pode derrubar uma nova
-    // referência baixa para menos de 0,69 ao começar outro deslocamento.
+    // referência baixa para menos de 0,61 quando a roda já está em movimento.
     learnedLeftScale = std::max(learnedLeftScale, minimumLeftScale);
     learnedRightScale = std::max(learnedRightScale, minimumRightScale);
 
@@ -260,10 +344,21 @@ void MotorController::applyEncoderSynchronization(
         }
     }
 
-    // Esta segunda aplicação do perfil é uma defesa final contra arredondamento
-    // e estados aprendidos antigos: saída não nula nunca fica abaixo de 0,69.
-    leftPower = operationalMotorPower(leftPower * learnedLeftScale);
-    rightPower = operationalMotorPower(rightPower * learnedRightScale);
+    // Reaplica os pisos depois do sincronismo. O estado de cada roda continua
+    // sendo o mesmo: a correção não pode rebaixar uma partida nem elevar uma
+    // roda já confirmada de 0,61 para 0,67.
+    leftPower = applyMotorMinimumPower(
+        leftPower * learnedLeftScale,
+        leftMotorMotion_,
+        telemetry.appliedLeftPower,
+        telemetry.leftEncoderRate,
+        false);
+    rightPower = applyMotorMinimumPower(
+        rightPower * learnedRightScale,
+        rightMotorMotion_,
+        telemetry.appliedRightPower,
+        telemetry.rightEncoderRate,
+        false);
     publishSynchronization(
         true,
         encoderDataValid &&
@@ -318,4 +413,14 @@ void MotorController::publishSynchronization(
     synchronization_.filteredRightEfficiency = filteredRightEfficiency_;
     synchronization_.correctedLeftPower = correctedLeftPower;
     synchronization_.correctedRightPower = correctedRightPower;
+    synchronization_.leftMotorStarting =
+        leftMotorMotion_.direction != 0 && !leftMotorMotion_.running;
+    synchronization_.rightMotorStarting =
+        rightMotorMotion_.direction != 0 && !rightMotorMotion_.running;
+    synchronization_.leftMotorRunning = leftMotorMotion_.running;
+    synchronization_.rightMotorRunning = rightMotorMotion_.running;
+    synchronization_.leftMotorConfirmationSamples =
+        leftMotorMotion_.confirmationSamples;
+    synchronization_.rightMotorConfirmationSamples =
+        rightMotorMotion_.confirmationSamples;
 }

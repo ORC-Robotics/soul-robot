@@ -175,8 +175,10 @@ pela UART da Raspberry, mantendo timeout e E-Stop locais na ESP32.
 A comunicação usa UART em `115200` bps. Na Raspberry Pi, o código abre
 `/dev/serial0`, que normalmente usa GPIO14 como TXD e GPIO15 como RXD.
 
-As potências são definidas diretamente pelo controle manual ou autônomo na
-Raspberry. O protocolo UART apenas transmite os valores esquerdo e direito.
+As potências são definidas na Raspberry e o protocolo UART apenas transmite os
+valores esquerdo e direito. No modo manual de diagnóstico, o duty escolhido é
+enviado diretamente. No modo autônomo, o `MotorController` aplica o perfil
+START/RUN descrito na seção de segurança antes de enviar a mensagem.
 
 | Raspberry Pi | ESP32 | Função |
 | --- | --- | --- |
@@ -216,9 +218,16 @@ O comportamento esperado é:
 - se a Raspberry ou a UART pararem de enviar comandos, a ESP32 também para os motores;
 - os comandos locais são limitados entre `-1.00` e `1.00`;
 - a ESP32 converte diretamente o comando UART para PWM, sem remapeamento próprio;
-- a Raspberry aplica no controle normal o mínimo operacional de `0.69` e usa os
-  encoders para reduzir gradualmente somente o lado mecanicamente mais rápido;
-- os campos exatos do dashboard usam um caminho de diagnóstico direto, sem esse perfil;
+- no modo autônomo, cada roda parada recebe no mínimo `0.67`; ela só pode usar
+  `0.61` depois de duas amostras recentes do encoder confirmarem movimento no
+  mesmo sentido, com taxa de pelo menos `20 cont/s`;
+- três amostras recentes inválidas fazem a roda voltar ao estado de partida;
+- o modo Manual do dashboard usa `drive_raw`: é diagnóstico direto, sem piso
+  START/RUN e sem sincronismo, portanto permite testar valores entre `0.05` e
+  `1.00` por lado;
+- o sincronismo por encoder atua somente em avanço reto, com os dois lados no
+  mesmo sentido e praticamente com o mesmo comando; curvas e giros preservam o
+  diferencial pedido pela visão;
 - o teste autônomo de giro de 90° usa comando lógico `0.01` pelo perfil operacional;
 - os lados esquerdo e direito podem ser controlados independentemente;
 - o E-Stop tem prioridade sobre dashboard e UART;
@@ -363,13 +372,16 @@ No Linux/macOS:
 bash scripts/install-service.sh
 ```
 
-Depois disso, a Raspberry inicia o programa automaticamente no boot. O deploy
-normal já reinicia o serviço com a versão nova.
+Depois disso, a Raspberry inicia dois serviços automaticamente no boot:
+`obr-robot`, que mantém dashboard, ESP32 e controle principal, e
+`obr-line-camera`, que captura e processa exclusivamente a câmera inferior.
+O deploy normal reinicia ambos com a versão nova.
 
-Antes de iniciar câmera e controle, `run_robot.sh` também confirma que
-`build/robot_test` existe, não está vazio e possui permissão de execução. Em caso
-de falha, o motivo aparece no `journalctl` e o systemd limita reinicializações
-rápidas para não permanecer em um ciclo infinito.
+Antes de iniciar controle, `run_robot.sh` confirma que `build/robot_test` existe,
+não está vazio e possui permissão de execução. A câmera inferior não é iniciada por
+esse script: ela pertence somente a `obr-line-camera`, evitando duas instâncias do
+processamento de visão. Em caso de falha, o motivo aparece no `journalctl` e o
+systemd limita reinicializações rápidas para não permanecer em um ciclo infinito.
 
 Comandos úteis na Raspberry:
 
@@ -377,7 +389,19 @@ Comandos úteis na Raspberry:
 sudo systemctl status obr-robot
 sudo systemctl restart obr-robot
 journalctl -u obr-robot -f
+
+# Controle dedicado da visão inferior; parar este serviço não para o dashboard.
+sudo systemctl status obr-line-camera
+sudo systemctl stop obr-line-camera
+sudo systemctl start obr-line-camera
+sudo systemctl restart obr-line-camera
+journalctl -u obr-line-camera -f
 ```
+
+Ao parar `obr-line-camera`, a Missão Principal não aceita o JSON anterior: o
+supervisor remove o IPC de linha antes de iniciar e ao parar, e a missão só se
+arma após receber uma publicação nova e fresca. Dashboard, ESP32 e os demais
+processos continuam ativos, mas o segue-faixa permanece parado por segurança.
 
 ## Dashboard
 
@@ -391,7 +415,8 @@ No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
 ré; `A/D` giram os dois lados em sentidos opostos e têm prioridade sobre `W/S`.
 Assim, uma combinação como `W+A` executa o giro completo, sem zerar um lado.
 Os limites separados de reta e
-curva começam em `0.69`, podem ser ajustados até `1.0` e ficam salvos no navegador. Soltar a tecla, trocar
+curva começam em `0.05`, podem ser ajustados até `1.0` e ficam salvos no navegador. Eles usam o caminho
+manual direto (`drive_raw`) para permitir ensaios abaixo do piso autônomo. Soltar a tecla, trocar
 de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
 nos modos Parado, Autônomo ou E-Stop.
 
@@ -400,21 +425,40 @@ passos de `0.01`. O painel de sincronização compara o módulo das taxas dos do
 encoders e mostra a escala aprendida e o PWM corrigido. No controle normal, o
 `MotorController` mede a eficiência em `cont/s por PWM`, filtra três amostras e
 reduz somente o lado mais rápido em passos máximos de `0.03` por nova telemetria.
-O ajuste individual desativa essa malha para diagnóstico, mas todo valor não nulo
-continua respeitando o piso operacional de `0,69`.
+O ajuste individual desativa essa malha e também o perfil START/RUN para
+diagnóstico. Use-o apenas com rodas suspensas ao testar valores baixos.
 A ESP32 recalcula as taxas dos encoders no mesmo período de `100 ms` da UART para
 que cada atualização da escala use uma janela de velocidade realmente nova.
 
-Os sliders e o WASD usam o perfil operacional: zero permanece parada e qualquer
-movimento parte do piso configurado para os motores. A correção aprendida é
-reutilizada entre paradas e atualizada conforme bateria, atrito e carga mudam.
-Giros em sentidos opostos não recebem sincronização. A missão isolada de giro de
-90° usa comando lógico `0.01`, resultando em aproximadamente `0.69 / -0.69`.
+Os sliders e o WASD são manuais e diretos. Já os comandos autônomos usam o perfil
+START/RUN: zero permanece parada; uma roda parada parte em `0.67`; após
+confirmação individual do encoder ela pode manter `0.61`. Giros em sentidos
+opostos não recebem sincronização. A missão isolada de giro de 90° usa comando
+lógico `0.01`, inicialmente convertido em aproximadamente `0.67 / -0.67`.
 
-A Missão Principal está intencionalmente vazia nesta etapa. Ela funciona como o
-ponto de composição dos futuros comportamentos autônomos e mantém os dois motores
-zerados enquanto nenhum comportamento estiver instalado. A câmera publica somente
-a imagem ao vivo e dados básicos de saúde.
+### Segue-faixa autônomo
+
+A Missão Principal usa a câmera inferior (`down`) para publicar uma trajetória
+visual. Quando esse fit é válido, o Pure Pursuit calcula curvatura, aplica zona
+morta de `0.025`, limita a correção a `±0.25` e mistura continuamente os lados
+em torno da base `0.70`. Assim, a curva reduz a roda interna e aumenta a externa
+sem contrarrotação automática; no limite, a prévia visual é `0.86 / 0.61`.
+
+Antes dessa mistura, o tracking normal passa a correção-alvo por um slew limiter
+baseado no `dt` monotônico real: sobe até `1.5` unidades/s e volta em direção a
+zero até `2.5` unidades/s. Uma inversão de sinal atravessa zero sem salto. Gap,
+verde, recuperação, pivôs, perda de linha e paradas de segurança não recebem esse
+atraso e reiniciam o histórico do limitador.
+
+Enquanto a trajetória for válida, o estado `TurningNear` não pode ser acionado.
+Ele é um fallback para NEAR válida sem trajetória visual confiável. Perda de
+linha, recuperação, gap, marcadores verdes, E-Stop, timeout e falha de câmera
+mantêm seus comportamentos próprios e conservadores.
+
+O dashboard mostra `rawControlError`, `targetCorrection`, `appliedCorrection`,
+`steerRateUsed`, prévias esquerda/direita,
+comando solicitado pela Raspberry, comando final, PWM aplicado pela ESP32,
+STARTING/RUNNING de cada lado e as taxas dos encoders.
 
 O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
 é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
@@ -510,14 +554,16 @@ OBR_CAMERA_ROLE=down python3 scripts/camera_line_frame.py
 
 O perfil `forward` preserva a saída `960x540` e seleciona explicitamente o modo
 físico `1920x1080`. O gerenciador frontal reutiliza somente essa configuração de
-captura, sem chamar a visão de linha. O perfil `down` usa saída `640x480` e seleciona
-explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver como
-full-FOV. Sem argumento nem variável de ambiente, o perfil `forward` continua
-sendo usado por compatibilidade.
+captura, sem chamar a visão de linha. O perfil `down` usa saída `480x360 @ 30 FPS`
+e seleciona explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver
+como full-FOV. A geometria de FAR/NEAR, gap, verde, Corner90 e os kernels da
+máscara são derivados da resolução atual; os valores de referência de `640x480`
+não ficam aplicados como pixels fixos. Sem argumento nem variável de ambiente, o
+perfil `forward` continua sendo usado por compatibilidade.
 
-Para selecionar um papel de forma persistente no serviço, crie um override do
-systemd com `Environment=OBR_CAMERA_ROLE=down` ou
-`Environment=OBR_CAMERA_ROLE=forward` e reinicie `obr-robot`.
+Para executar a visão inferior manualmente fora do systemd, use o comando abaixo.
+No robô em operação, use `ATIVAR` e `DESATIVAR` no cartão da câmera inferior;
+`obr-robot` não inicia outra cópia desse processo.
 
 Se estiver em outra pasta, use o caminho completo:
 
@@ -526,14 +572,14 @@ python3 /home/raspberry/OBR2026K/scripts/camera_line_frame.py
 ```
 
 O script publica a máscara e os diagnósticos da linha usados pelo restante do
-projeto. A configuração padrão `forward` usa `960x540`, JPEG `82` e stream alvo
+projeto, incluindo `rawControlError`, `finalCorrection`, `leftPreview` e
+`rightPreview`. A configuração padrão `forward` usa `960x540`, JPEG `82` e stream alvo
 de `30 FPS`. Como a câmera está montada de cabeça para baixo, o Picamera2 aplica
 rotação de 180°. Se o script não estiver rodando ou a câmera falhar, o painel
 continua disponível e mostra a câmera como indisponível.
 
-Quando o serviço `obr-robot` estiver instalado com a versão atual dos scripts,
-ele inicia esse script automaticamente junto com o robô. Depois de atualizar o
-arquivo de serviço, reinstale uma vez pelo computador de desenvolvimento:
+Depois de atualizar os arquivos de serviço, reinstale uma vez pelo computador de
+desenvolvimento:
 
 ```sh
 bash scripts/install-service.sh
@@ -542,10 +588,22 @@ bash scripts/install-service.sh
 Se você já estiver no terminal da Raspberry, dentro de `/home/raspberry/OBR2026K`, use:
 
 ```sh
-sudo cp scripts/obr-robot.service /etc/systemd/system/obr-robot.service
+sudo cp scripts/obr-robot.service scripts/obr-line-camera.service /etc/systemd/system/
+chmod +x scripts/run_robot.sh scripts/run_line_camera.sh
 sudo systemctl daemon-reload
-sudo systemctl restart obr-robot
+sudo systemctl enable --now obr-robot obr-line-camera
 ```
+
+O cartão da câmera inferior do dashboard mostra os estados `ONLINE`, `PARADA`,
+`INICIANDO` e `FALHA`, com o mesmo botão de alternância da câmera frontal:
+`ATIVAR` ou `DESATIVAR`. Pelo WebSocket, o dashboard envia apenas
+`{"command":"set_line_camera","enabled":true}` ou `false`.
+
+Esse comando grava um único IPC em `/dev/shm`; ele não executa `sudo`,
+`systemctl` nem comandos Linux enviados pelo navegador. O gerenciador
+`obr-line-camera` permanece ocioso quando desativado, encerra o Python, remove o
+IPC visual e publica `PARADA`. Ao ativar, remove qualquer IPC antigo, inicia a
+câmera e só informa `ONLINE` após uma publicação atual da visão.
 
 ## VS Code
 

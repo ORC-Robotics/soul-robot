@@ -12,7 +12,7 @@ namespace
 {
 // Valores usados no alinhamento seguro ao reencontrar a linha.
 constexpr double kLineRecoveryBaseSpeed =
-    config::kOperationalMinimumMotorPower;
+    config::kMotorStartMinimumPower;
 constexpr double kLineRecoveryDeadzone = 0.10;
 constexpr double kLineRecoveryProportionalGain = 0.30;
 constexpr double kLineRecoveryMaximumCorrection = 0.15;
@@ -22,22 +22,22 @@ constexpr double kLineRecoveryExtremeError = 0.75;
 constexpr double kSignificantDirectionError = 0.20;
 constexpr double kNearReacquireMaxAbsError = 0.40;
 
-// A histerese evita alternar entre tracking e pivô perto do mesmo limiar.
-// Somente sequências novas da câmera avançam as confirmações de entrada e saída.
-constexpr double kStrongSteeringEnterError = 0.40;
-constexpr double kStrongSteeringExitError = 0.12;
-constexpr double kStrongSteeringDirectionMinimum = 0.05;
-constexpr int kStrongTurnEnterSamples = 2;
-constexpr int kStrongTurnExitSamples = 3;
-// Potência exclusiva da contrarrotação antecipada. As recuperações
-// permanecem limitadas pelo piso mecânico de 0,69 definido em config.h.
-constexpr double kStrongTurnPower = config::kOperationalMinimumMotorPower;
-
 // Os limites impedem que o robô procure indefinidamente por uma linha perdida.
 constexpr auto kTotalLossTimeout = std::chrono::milliseconds(1300);
 // O robô nunca pode continuar avançando indefinidamente sem reencontrar a linha.
 constexpr auto kGapTimeout = std::chrono::milliseconds(2000);
 constexpr int kNearSamplesToConfirmRecovery = 3;
+
+double angularDistanceDegrees(double firstDegrees, double secondDegrees)
+{
+    double difference = std::fmod(
+        std::abs(secondDegrees - firstDegrees), 360.0);
+    if (difference > 180.0)
+    {
+        difference = 360.0 - difference;
+    }
+    return difference;
+}
 
 struct MotorCommand
 {
@@ -69,9 +69,32 @@ MotorCommand calculateCounterRotationCommand(bool turnLeft, double power)
                : MotorCommand{power, -power};
 }
 
+bool isDirectionalGreenTurn(GreenTurnDecision decision)
+{
+    return decision == GreenTurnDecision::GuideLeft ||
+           decision == GreenTurnDecision::GuideRight;
+}
+
+bool isStrongGreenCandidate(const CameraLineSnapshot& snapshot)
+{
+    return snapshot.greenPathBlackValid &&
+           (isDirectionalGreenTurn(snapshot.greenCandidateDecision) ||
+            snapshot.greenCandidateDecision ==
+                GreenTurnDecision::TurnAround180);
+}
+
+bool isStrongCorner90Candidate(const CameraLineSnapshot& snapshot)
+{
+    return snapshot.corner90Candidate &&
+           snapshot.corner90Direction != Corner90Direction::None &&
+           std::abs(snapshot.corner90Angle) >=
+               config::kCorner90MinimumStrongAngleDegrees &&
+           std::abs(snapshot.nearError) <= config::kCorner90MaximumCenterError;
+}
+
 MotorCommand calculateNearReacquisitionCommand(double correction)
 {
-    // A reaquisição preserva a base validada de 0,69 mesmo quando o perfil
+    // A reaquisição preserva a base de partida validada de 0,67 mesmo quando o perfil
     // inferior publica uma prévia mais rápida para o tracking normal.
     const double safeCorrection = std::clamp(
         correction,
@@ -127,18 +150,20 @@ void MainMission::reset()
     state_ = LineFollowState::TrackingNear;
     greenTurnController_.reset();
     greenDecisionLatched_ = false;
+    greenTurnAuthorized_ = false;
     lastSignificantDirection_ = LineDirection::Unknown;
     searchDirection_ = LineDirection::Unknown;
     lastValidError_ = 0.0;
     lastProcessedLineSequence_ = 0;
     hasProcessedLineSequence_ = false;
     consecutiveNearValidSamples_ = 0;
-    strongTurnActive_ = false;
-    strongTurnDirection_ = LineDirection::Unknown;
-    strongTurnEnterSamples_ = 0;
-    strongTurnExitSamples_ = 0;
-    strongTurnLastLineSequence_ = 0;
-    strongTurnHasLineSequence_ = false;
+    corner90Direction_ = Corner90Direction::None;
+    corner90EnterSamples_ = 0;
+    corner90ExitSamples_ = 0;
+    resetCorner90Watchdog();
+    greenTurnDirection_ = GreenTurnDecision::None;
+    greenTurnConfirmSamples_ = 0;
+    greenTurnExitSamples_ = 0;
     nearRecoveryActive_ = false;
     totalLossActive_ = false;
     nearLostAt_ = {};
@@ -163,7 +188,28 @@ void MainMission::update(
         !cameraLineSnapshot.sourceFresh)
     {
         // Uma fonte obrigatória indisponível encerra a execução e zera os motores.
+        // O motivo terminal permanece no dashboard para diferenciar falha da
+        // ESP32, da captura ou do IPC visual sem reutilizar dados antigos.
+        std::string phase;
+        std::string action;
+        if (!esp32Telemetry.readyForOperation())
+        {
+            phase = "esp32_not_ready";
+            action = "Missão interrompida: ESP32 sem telemetria pronta";
+        }
+        else if (!cameraReady)
+        {
+            phase = "camera_not_ready";
+            action = "Missão interrompida: câmera inferior indisponível";
+        }
+        else
+        {
+            phase = "line_ipc_stale";
+            action = "Missão interrompida: IPC visual ausente ou antigo";
+        }
         robotState.stop();
+        robotState.updateAutonomousStatus(makeLineStatus(phase, action));
+        std::cout << "MainMission stopped: " << phase << std::endl;
         return;
     }
 
@@ -200,21 +246,172 @@ void MainMission::update(
     const bool greenApproachActive =
         cameraLineSnapshot.greenPathBlackValid &&
         cameraLineSnapshot.greenTurnDecision == GreenTurnDecision::Approach;
-    const bool greenGuidanceActive =
-        cameraLineSnapshot.greenConfirmed &&
-        (cameraLineSnapshot.greenTurnDecision ==
-             GreenTurnDecision::GuideLeft ||
-         cameraLineSnapshot.greenTurnDecision ==
-             GreenTurnDecision::GuideRight);
-    if (cameraLineSnapshot.nearValid &&
-        (greenApproachActive || greenGuidanceActive))
+
+    const bool greenDecisionConfirming =
+        state_ == LineFollowState::GreenDecisionConfirming;
+    if (greenDecisionConfirming)
     {
-        // Somente um verde reconhecido pode substituir a prévia normal. Sem
-        // verde, a trajetória visual ou seu fallback continuam responsáveis.
-        strongTurnActive_ = false;
-        strongTurnDirection_ = LineDirection::Unknown;
-        strongTurnEnterSamples_ = 0;
-        strongTurnExitSamples_ = 0;
+        if (newLineSample)
+        {
+            const bool sameCandidate =
+                !cameraLineSnapshot.gapCandidate &&
+                isStrongGreenCandidate(cameraLineSnapshot) &&
+                cameraLineSnapshot.greenCandidateDecision ==
+                    greenTurnDirection_;
+            if (!sameCandidate)
+            {
+                // Uma observação ausente, ambígua ou de lado diferente cancela
+                // o verde antes de qualquer pivot ou retorno pelo IMU.
+                greenTurnDirection_ = GreenTurnDecision::None;
+                greenTurnConfirmSamples_ = 0;
+                greenTurnAuthorized_ = false;
+                transitionTo(LineFollowState::TrackingNear);
+                robotState.driveAutonomous(
+                    cameraLineSnapshot.leftPreview,
+                    cameraLineSnapshot.rightPreview);
+                robotState.updateAutonomousStatus(makeLineStatus(
+                    "green_cancelled",
+                    "Marcador verde cancelado: decisão não se manteve"));
+                return;
+            }
+            ++greenTurnConfirmSamples_;
+        }
+
+        if (greenTurnConfirmSamples_ >= config::kGreenTurnConfirmationFrames)
+        {
+            greenDecisionLatched_ = true;
+            greenTurnAuthorized_ = true;
+            corner90Direction_ = Corner90Direction::None;
+            corner90EnterSamples_ = 0;
+            corner90ExitSamples_ = 0;
+            nearRecoveryActive_ = false;
+            totalLossActive_ = false;
+            resetGapTracking();
+
+            if (greenTurnDirection_ == GreenTurnDecision::TurnAround180)
+            {
+                // O retorno mantém a checagem de IMU e a máquina existente.
+                if (updateGreenTurn(
+                        robotState,
+                        esp32Telemetry,
+                        cameraLineSnapshot,
+                        newLineSample))
+                {
+                    return;
+                }
+            }
+            else
+            {
+                const bool turnLeft =
+                    greenTurnDirection_ == GreenTurnDecision::GuideLeft;
+                greenTurnAuthorized_ = false;
+                greenTurnExitSamples_ = 0;
+                transitionTo(turnLeft ? LineFollowState::GreenTurnLeft
+                                      : LineFollowState::GreenTurnRight);
+                const MotorCommand command = calculateCounterRotationCommand(
+                    turnLeft,
+                    config::kCorner90PivotStartPower);
+                robotState.driveAutonomous(command.left, command.right);
+                robotState.updateAutonomousStatus(makeLineStatus(
+                    turnLeft ? "green_turn_left" : "green_turn_right",
+                    "Marcador verde confirmado: iniciando pivot direcionado"));
+                return;
+            }
+        }
+
+        // A confirmação usa somente quadros novos e mantém os motores zerados.
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            "green_confirming",
+            "Marcador verde: amostras " +
+                std::to_string(greenTurnConfirmSamples_) + "/" +
+                std::to_string(config::kGreenTurnConfirmationFrames)));
+        return;
+    }
+
+    const bool greenConfirmationEntryAllowed =
+        (state_ == LineFollowState::TrackingNear ||
+         state_ == LineFollowState::Corner90Confirming) &&
+        !cameraLineSnapshot.gapCandidate && !greenDecisionLatched_;
+    if (newLineSample && greenConfirmationEntryAllowed &&
+        isStrongGreenCandidate(cameraLineSnapshot))
+    {
+        // Um candidato verde forte tem prioridade sobre o cotovelo de linha.
+        // O robô para antes de decidir para não atravessar duas curvas próximas.
+        greenTurnDirection_ = cameraLineSnapshot.greenCandidateDecision;
+        greenTurnConfirmSamples_ = 1;
+        greenTurnAuthorized_ = false;
+        corner90Direction_ = Corner90Direction::None;
+        corner90EnterSamples_ = 0;
+        corner90ExitSamples_ = 0;
+        transitionTo(LineFollowState::GreenDecisionConfirming);
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            "green_confirming",
+            "Marcador verde: amostras 1/" +
+                std::to_string(config::kGreenTurnConfirmationFrames)));
+        return;
+    }
+
+    const bool directionalGreenTurnActive =
+        state_ == LineFollowState::GreenTurnLeft ||
+        state_ == LineFollowState::GreenTurnRight;
+    if (directionalGreenTurnActive)
+    {
+        // O marcador precisa sair completamente antes de a linha nova poder
+        // encerrar o pivô. Isso impede que a faixa de chegada ao verde seja
+        // interpretada como a direção já adquirida.
+        const bool markerCleared = !cameraLineSnapshot.greenNearSeen &&
+                                   !cameraLineSnapshot.greenConfirmed;
+        if (newLineSample)
+        {
+            if (markerCleared && cameraLineSnapshot.corner90ExitAlignment)
+            {
+                ++greenTurnExitSamples_;
+            }
+            else
+            {
+                greenTurnExitSamples_ = 0;
+            }
+        }
+
+        if (greenTurnExitSamples_ >= config::kGreenTurnExitAlignmentFrames)
+        {
+            greenTurnDirection_ = GreenTurnDecision::None;
+            greenTurnExitSamples_ = 0;
+            transitionTo(LineFollowState::TrackingNear);
+            robotState.driveAutonomous(
+                cameraLineSnapshot.leftPreview,
+                cameraLineSnapshot.rightPreview);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "tracking_near",
+                "Curva verde alinhada: retornando ao visual pursuit"));
+            return;
+        }
+
+        const bool turnLeft = state_ == LineFollowState::GreenTurnLeft;
+        const double pivotPower = markerCleared &&
+                                          cameraLineSnapshot.corner90ExitAlignment
+                                      ? config::kCorner90PivotRunPower
+                                      : config::kCorner90PivotStartPower;
+        const MotorCommand command =
+            calculateCounterRotationCommand(turnLeft, pivotPower);
+        robotState.driveAutonomous(command.left, command.right);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            turnLeft ? "green_turn_left" : "green_turn_right",
+            "Pivot pelo marcador verde: alinhamento " +
+                std::to_string(greenTurnExitSamples_) + "/" +
+                std::to_string(config::kGreenTurnExitAlignmentFrames)));
+        return;
+    }
+
+    if (cameraLineSnapshot.nearValid && greenApproachActive)
+    {
+        // A aproximação ainda usa a prévia reduzida publicada pela visão. Um
+        // verde direcional confirmado segue pelo pivô dedicado acima.
+        corner90Direction_ = Corner90Direction::None;
+        corner90EnterSamples_ = 0;
+        corner90ExitSamples_ = 0;
         nearRecoveryActive_ = false;
         totalLossActive_ = false;
         transitionTo(LineFollowState::TrackingNear);
@@ -222,30 +419,175 @@ void MainMission::update(
             cameraLineSnapshot.leftPreview,
             cameraLineSnapshot.rightPreview);
         robotState.updateAutonomousStatus(makeLineStatus(
-            greenApproachActive ? "green_approach" : "green_guidance",
-            greenApproachActive
-                ? "Aproximando do marcador verde com velocidade reduzida"
-                : "Seguindo o alvo deslocado pelo marcador verde"));
+            "green_approach",
+            "Aproximando do marcador verde com velocidade reduzida"));
         return;
     }
 
-    const bool gapStateActive = state_ == LineFollowState::CrossingGap;
-    const bool strongTurnDemand =
+    const bool corner90Confirming =
+        state_ == LineFollowState::Corner90Confirming;
+    if (corner90Confirming)
+    {
+        if (newLineSample)
+        {
+            const bool sameStrongCorner =
+                isStrongCorner90Candidate(cameraLineSnapshot) &&
+                cameraLineSnapshot.corner90Direction == corner90Direction_;
+            if (!sameStrongCorner)
+            {
+                // Uma amostra incompatível cancela a hipótese antes de qualquer
+                // giro. O tracking normal retoma com a prévia visual atual.
+                corner90Direction_ = Corner90Direction::None;
+                corner90EnterSamples_ = 0;
+                transitionTo(LineFollowState::TrackingNear);
+                robotState.driveAutonomous(
+                    cameraLineSnapshot.leftPreview,
+                    cameraLineSnapshot.rightPreview);
+                robotState.updateAutonomousStatus(makeLineStatus(
+                    "corner90_cancelled",
+                    "Cotovelo cancelado: geometria não se manteve"));
+                return;
+            }
+
+            ++corner90EnterSamples_;
+        }
+
+        if (corner90EnterSamples_ >= config::kCorner90ConfirmationFrames)
+        {
+            corner90ExitSamples_ = 0;
+            const bool turnLeft =
+                corner90Direction_ == Corner90Direction::Left;
+            transitionTo(turnLeft ? LineFollowState::Corner90Left
+                                  : LineFollowState::Corner90Right);
+            startCorner90Watchdog(esp32Telemetry, now);
+            const MotorCommand command = calculateCounterRotationCommand(
+                turnLeft,
+                config::kCorner90PivotStartPower);
+            robotState.driveAutonomous(command.left, command.right);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                turnLeft ? "corner90_left" : "corner90_right",
+                "Cotovelo forte confirmado: iniciando pivot"));
+            return;
+        }
+
+        // Parada curta de decisão: os frames novos confirmam ou rejeitam a
+        // geometria sem deixar o robô avançar até ultrapassar o cotovelo.
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            "corner90_confirming",
+            "Cotovelo forte: amostras " +
+                std::to_string(corner90EnterSamples_) + "/" +
+                std::to_string(config::kCorner90ConfirmationFrames)));
+        return;
+    }
+
+    const bool corner90Active =
+        state_ == LineFollowState::Corner90Left ||
+        state_ == LineFollowState::Corner90Right;
+    if (corner90Active)
+    {
+        if (const char* abortReason = corner90AbortReason(
+                esp32Telemetry, cameraLineSnapshot, newLineSample, now))
+        {
+            const std::string action =
+                std::string(abortReason) == "corner90_stall"
+                    ? "Pivot interrompido: motores ou encoders sem giro"
+                    : std::string(abortReason) == "corner90_line_lost"
+                          ? "Pivot interrompido: linha não foi reencontrada"
+                          : "Pivot interrompido: limite angular excedido";
+            corner90Direction_ = Corner90Direction::None;
+            corner90EnterSamples_ = 0;
+            corner90ExitSamples_ = 0;
+            resetCorner90Watchdog();
+            // Uma falha de atuação ou de visão durante contrarrotação não pode
+            // delegar a parada ao timeout externo: os motores são zerados aqui.
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeLineStatus(abortReason, action));
+            return;
+        }
+
+        if (newLineSample)
+        {
+            if (cameraLineSnapshot.corner90ExitAlignment)
+            {
+                ++corner90ExitSamples_;
+            }
+            else
+            {
+                corner90ExitSamples_ = 0;
+            }
+        }
+
+        if (corner90ExitSamples_ >= config::kCorner90ExitAlignmentFrames)
+        {
+            // A nova faixa foi vista em duas imagens novas dentro da margem de
+            // saída. O Pure Pursuit corrige o restante sem prolongar o pivô.
+            corner90Direction_ = Corner90Direction::None;
+            corner90EnterSamples_ = 0;
+            corner90ExitSamples_ = 0;
+            resetCorner90Watchdog();
+            transitionTo(LineFollowState::TrackingNear);
+            robotState.driveAutonomous(
+                cameraLineSnapshot.leftPreview,
+                cameraLineSnapshot.rightPreview);
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "tracking_near",
+                "Cotovelo de 90° alinhado: retornando ao visual pursuit"));
+            return;
+        }
+
+        const bool turnLeft = state_ == LineFollowState::Corner90Left;
+        const double pivotPower = cameraLineSnapshot.corner90ExitAlignment
+                                      ? config::kCorner90PivotRunPower
+                                      : config::kCorner90PivotStartPower;
+        const MotorCommand command =
+            calculateCounterRotationCommand(turnLeft, pivotPower);
+        robotState.driveAutonomous(command.left, command.right);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            turnLeft ? "corner90_left" : "corner90_right",
+            "Pivot no cotovelo de 90°: alinhamento " +
+                std::to_string(corner90ExitSamples_) + "/" +
+                std::to_string(config::kCorner90ExitAlignmentFrames)));
+        return;
+    }
+
+    const bool corner90EntryAllowed =
+        state_ == LineFollowState::TrackingNear &&
         cameraLineSnapshot.nearValid &&
-        std::abs(cameraLineSnapshot.controlError) >=
-            kStrongSteeringEnterError;
+        !cameraLineSnapshot.gapCandidate &&
+        !cameraLineSnapshot.greenNearSeen &&
+        !cameraLineSnapshot.greenConfirmed &&
+        !greenApproachActive;
+    if (newLineSample && corner90EntryAllowed &&
+        isStrongCorner90Candidate(cameraLineSnapshot))
+    {
+        corner90Direction_ = cameraLineSnapshot.corner90Direction;
+        corner90EnterSamples_ = 1;
+        corner90ExitSamples_ = 0;
+        transitionTo(LineFollowState::Corner90Confirming);
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeLineStatus(
+            "corner90_confirming",
+            "Cotovelo forte: amostras 1/" +
+                std::to_string(config::kCorner90ConfirmationFrames)));
+        return;
+    }
+    else if (newLineSample)
+    {
+        corner90Direction_ = Corner90Direction::None;
+        corner90EnterSamples_ = 0;
+    }
+
+    const bool gapStateActive = state_ == LineFollowState::CrossingGap;
     if (!gapStateActive &&
         state_ == LineFollowState::TrackingNear &&
         newLineSample && cameraLineSnapshot.gapCandidate &&
-        !strongTurnActive_ && !strongTurnDemand &&
         !nearRecoveryActive_ && !totalLossActive_)
     {
-        // O gap tem prioridade menor que uma curva forte já visível. A
-        // detecção pode chegar com a NEAR vazia, pois usa a faixa inferior.
-        strongTurnActive_ = false;
-        strongTurnDirection_ = LineDirection::Unknown;
-        strongTurnEnterSamples_ = 0;
-        strongTurnExitSamples_ = 0;
+        // A detecção pode chegar com a NEAR vazia, pois usa a faixa inferior.
+        corner90Direction_ = Corner90Direction::None;
+        corner90EnterSamples_ = 0;
+        corner90ExitSamples_ = 0;
         nearRecoveryActive_ = false;
         totalLossActive_ = false;
         gapNearLossObserved_ = !cameraLineSnapshot.nearValid;
@@ -261,6 +603,10 @@ void MainMission::update(
             // Sem linha ou continuação confirmada, avançar além deste limite
             // seria inseguro. A parada é terminal para esta execução.
             robotState.stop();
+            robotState.updateAutonomousStatus(makeLineStatus(
+                "gap_timeout",
+                "Missão interrompida: gap sem linha por " +
+                    std::to_string(kGapTimeout.count()) + " ms"));
             std::cout << "MainMission stopped: gap timeout ("
                       << kGapTimeout.count() << " ms)" << std::endl;
             resetGapTracking();
@@ -287,7 +633,7 @@ void MainMission::update(
                     ? calculateOneWheelPivotCommand(
                           cameraLineSnapshot.nearError)
                     : calculateNearReacquisitionCommand(
-                          cameraLineSnapshot.correction);
+                          cameraLineSnapshot.targetCorrection);
             robotState.driveAutonomous(command.left, command.right);
             robotState.updateAutonomousStatus(makeLineStatus(
                 "reacquiring_near",
@@ -317,153 +663,6 @@ void MainMission::update(
             "crossing_gap",
             "Atravessando gap até reencontrar a linha"));
         return;
-    }
-
-    // Este detector conta somente frames novos para manter a histerese
-    // independente da frequência do loop principal.
-    const bool newStrongTurnSample =
-        !strongTurnHasLineSequence_ ||
-        cameraLineSnapshot.lineSequence != strongTurnLastLineSequence_;
-    if (newStrongTurnSample)
-    {
-        strongTurnHasLineSequence_ = true;
-        strongTurnLastLineSequence_ = cameraLineSnapshot.lineSequence;
-    }
-
-    const auto logStrongTurnEvent =
-        [&](const char* event,
-            const char* exitReason,
-            const MotorCommand& command)
-    {
-        std::cout << "MainMission NEAR strong turn " << event << ":"
-                  << " lineSequence=" << cameraLineSnapshot.lineSequence
-                  << " nearError=" << cameraLineSnapshot.nearError
-                  << " controlError=" << cameraLineSnapshot.controlError
-                  << " direction="
-                  << (strongTurnDirection_ == LineDirection::Left
-                          ? "left"
-                          : "right")
-                  << " leftCommand=" << command.left
-                  << " rightCommand=" << command.right
-                  << " exitReason=" << exitReason
-                  << std::endl;
-    };
-
-    const auto exitStrongTurn = [&](const char* exitReason,
-                                    bool returnToTracking)
-    {
-        const MotorCommand command = calculateCounterRotationCommand(
-            strongTurnDirection_ == LineDirection::Left,
-            kStrongTurnPower);
-        logStrongTurnEvent("exited", exitReason, command);
-        strongTurnActive_ = false;
-        strongTurnDirection_ = LineDirection::Unknown;
-        strongTurnEnterSamples_ = 0;
-        strongTurnExitSamples_ = 0;
-        if (returnToTracking)
-        {
-            transitionTo(LineFollowState::TrackingNear);
-        }
-    };
-
-    if (cameraLineSnapshot.nearValid)
-    {
-        const double steeringError = cameraLineSnapshot.controlError;
-        if (strongTurnActive_)
-        {
-            if (newStrongTurnSample)
-            {
-                const bool steeringSignCrossed =
-                    ((strongTurnDirection_ == LineDirection::Left &&
-                      steeringError > 0.0) ||
-                     (strongTurnDirection_ == LineDirection::Right &&
-                      steeringError < 0.0));
-                if (steeringSignCrossed)
-                {
-                    exitStrongTurn("steering_sign_crossed", true);
-                }
-                else if (std::abs(steeringError) <=
-                         kStrongSteeringExitError)
-                {
-                    ++strongTurnExitSamples_;
-                }
-                else
-                {
-                    strongTurnExitSamples_ = 0;
-                }
-            }
-
-            if (strongTurnActive_ &&
-                strongTurnExitSamples_ >= kStrongTurnExitSamples)
-            {
-                exitStrongTurn("control_aligned", true);
-            }
-
-            if (strongTurnActive_)
-            {
-                const MotorCommand command = calculateCounterRotationCommand(
-                    strongTurnDirection_ == LineDirection::Left,
-                    kStrongTurnPower);
-                transitionTo(LineFollowState::TurningNear);
-                robotState.driveAutonomous(command.left, command.right);
-                robotState.updateAutonomousStatus(makeLineStatus(
-                    "turning_near", "Curva forte antecipada pela NEAR"));
-                return;
-            }
-        }
-        else if (newStrongTurnSample)
-        {
-            const bool shouldEnterStrongTurn =
-                std::abs(steeringError) >= kStrongSteeringEnterError &&
-                std::abs(steeringError) >=
-                    kStrongSteeringDirectionMinimum;
-            if (shouldEnterStrongTurn)
-            {
-                const LineDirection sampleDirection =
-                    steeringError < 0.0
-                        ? LineDirection::Left
-                        : LineDirection::Right;
-                if (sampleDirection == strongTurnDirection_)
-                {
-                    ++strongTurnEnterSamples_;
-                }
-                else
-                {
-                    strongTurnDirection_ = sampleDirection;
-                    strongTurnEnterSamples_ = 1;
-                }
-            }
-            else
-            {
-                strongTurnEnterSamples_ = 0;
-                strongTurnDirection_ = LineDirection::Unknown;
-            }
-
-            if (strongTurnEnterSamples_ >= kStrongTurnEnterSamples)
-            {
-                strongTurnActive_ = true;
-                strongTurnExitSamples_ = 0;
-                const MotorCommand command = calculateCounterRotationCommand(
-                    strongTurnDirection_ == LineDirection::Left,
-                    kStrongTurnPower);
-                logStrongTurnEvent("entered", "none", command);
-                transitionTo(LineFollowState::TurningNear);
-                robotState.driveAutonomous(command.left, command.right);
-                robotState.updateAutonomousStatus(makeLineStatus(
-                    "turning_near", "Curva forte antecipada pela NEAR"));
-                return;
-            }
-        }
-    }
-    else if (strongTurnActive_)
-    {
-        exitStrongTurn("near_lost", false);
-    }
-    else
-    {
-        strongTurnEnterSamples_ = 0;
-        strongTurnExitSamples_ = 0;
-        strongTurnDirection_ = LineDirection::Unknown;
     }
 
     if (cameraLineSnapshot.nearValid)
@@ -513,7 +712,8 @@ void MainMission::update(
         }
 
         const MotorCommand command =
-            calculateNearReacquisitionCommand(cameraLineSnapshot.correction);
+            calculateNearReacquisitionCommand(
+                cameraLineSnapshot.targetCorrection);
         robotState.driveAutonomous(command.left, command.right);
         robotState.updateAutonomousStatus(makeLineStatus(
             "reacquiring_near",
@@ -563,6 +763,10 @@ void MainMission::update(
     {
         // Sem qualquer linha visível, o giro também possui limite independente.
         robotState.stop();
+        robotState.updateAutonomousStatus(makeLineStatus(
+            "line_lost_timeout",
+            "Missão interrompida: linha não reencontrada por " +
+                std::to_string(kTotalLossTimeout.count()) + " ms"));
         std::cout << "MainMission stopped: total line loss timeout ("
                   << kTotalLossTimeout.count() << " ms)" << std::endl;
         return;
@@ -593,6 +797,16 @@ void MainMission::transitionTo(LineFollowState nextState)
     if (state_ == nextState)
     {
         return;
+    }
+
+    const bool leavingCorner90 =
+        (state_ == LineFollowState::Corner90Left ||
+         state_ == LineFollowState::Corner90Right) &&
+        nextState != LineFollowState::Corner90Left &&
+        nextState != LineFollowState::Corner90Right;
+    if (leavingCorner90)
+    {
+        resetCorner90Watchdog();
     }
 
     state_ = nextState;
@@ -648,27 +862,28 @@ bool MainMission::updateGreenTurn(
         return true;
     }
 
-    if (newLineSample && !cameraLineSnapshot.greenNearSeen &&
-        !cameraLineSnapshot.greenConfirmed)
+    if (newLineSample && state_ != LineFollowState::GreenDecisionConfirming &&
+        !cameraLineSnapshot.greenNearSeen && !cameraLineSnapshot.greenConfirmed)
     {
         // Só libera outro retorno depois que o marcador anterior sair por
         // completo da cena, evitando repetir o giro sobre o mesmo verde duplo.
         greenDecisionLatched_ = false;
+        greenTurnAuthorized_ = false;
+        greenTurnDirection_ = GreenTurnDecision::None;
+        greenTurnConfirmSamples_ = 0;
     }
-    if (greenDecisionLatched_)
+    const bool confirmedTurnAround =
+        greenTurnAuthorized_ &&
+        greenTurnDirection_ == GreenTurnDecision::TurnAround180;
+    if (greenDecisionLatched_ && !confirmedTurnAround)
     {
         return false;
     }
 
-    const bool confirmedTurnAround =
-        cameraLineSnapshot.greenConfirmed &&
-        cameraLineSnapshot.greenPathBlackValid &&
-        cameraLineSnapshot.greenTurnDecision ==
-            GreenTurnDecision::TurnAround180;
     if (!confirmedTurnAround)
     {
-        // APPROACH, LEFT e RIGHT já estão incorporados às prévias publicadas
-        // pela visão. Eles não iniciam uma manobra paralela neste módulo.
+        // APPROACH continua nas prévias da visão. LEFT e RIGHT são tratados
+        // por estados de pivô dedicados no início de update().
         return false;
     }
 
@@ -683,7 +898,9 @@ bool MainMission::updateGreenTurn(
     }
 
     greenDecisionLatched_ = true;
-    strongTurnActive_ = false;
+    corner90Direction_ = Corner90Direction::None;
+    corner90EnterSamples_ = 0;
+    corner90ExitSamples_ = 0;
     nearRecoveryActive_ = false;
     totalLossActive_ = false;
     resetGapTracking();
@@ -701,6 +918,8 @@ bool MainMission::updateGreenTurn(
     }
 
     transitionTo(LineFollowState::TurningAtGreenMarker);
+    greenTurnAuthorized_ = false;
+    greenTurnConfirmSamples_ = 0;
 
     const ImuTurnOutput output = greenTurnController_.update(esp32Telemetry);
     robotState.driveAutonomous(output.leftPower, output.rightPower);
@@ -716,6 +935,80 @@ void MainMission::resetGapTracking()
 {
     gapNearLossObserved_ = false;
     gapStartedAt_ = {};
+}
+
+void MainMission::startCorner90Watchdog(
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    std::chrono::steady_clock::time_point now)
+{
+    // O relógio começa junto com o primeiro comando de pivot. A linha já era
+    // válida na entrada do Corner90, portanto este instante também é a última
+    // referência visual conhecida até chegarem novos frames da câmera.
+    corner90WatchdogActive_ = true;
+    corner90StartedAt_ = now;
+    corner90LastLineSeenAt_ = now;
+    corner90StartYawDegrees_ = esp32Telemetry.yawZDeg;
+}
+
+void MainMission::resetCorner90Watchdog()
+{
+    corner90WatchdogActive_ = false;
+    corner90StartedAt_ = {};
+    corner90LastLineSeenAt_ = {};
+    corner90StartYawDegrees_ = 0.0;
+}
+
+const char* MainMission::corner90AbortReason(
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const CameraLineSnapshot& cameraLineSnapshot,
+    bool newLineSample,
+    std::chrono::steady_clock::time_point now)
+{
+    if (!corner90WatchdogActive_)
+    {
+        return nullptr;
+    }
+
+    if (newLineSample &&
+        (cameraLineSnapshot.nearValid || cameraLineSnapshot.farValid))
+    {
+        corner90LastLineSeenAt_ = now;
+    }
+
+    const bool imuReady = ImuTurnController::imuReady(esp32Telemetry);
+    const double yawChangeDegrees = imuReady
+                                        ? angularDistanceDegrees(
+                                              corner90StartYawDegrees_,
+                                              esp32Telemetry.yawZDeg)
+                                        : 0.0;
+    if (imuReady && yawChangeDegrees >= config::kCorner90MaximumYawDegrees)
+    {
+        return "corner90_overturn";
+    }
+
+    const bool bothEncodersMoving =
+        std::abs(esp32Telemetry.leftEncoderRate) >=
+            config::kCorner90MinimumEncoderRateCountsPerSecond &&
+        std::abs(esp32Telemetry.rightEncoderRate) >=
+            config::kCorner90MinimumEncoderRateCountsPerSecond;
+    const bool imuShowsMotion = imuReady &&
+                                (std::abs(esp32Telemetry.gyroZDegPerSec) >=
+                                     config::kCorner90MinimumYawRateDegPerSec ||
+                                 yawChangeDegrees >=
+                                     config::kCorner90MinimumYawChangeDegrees);
+    if (now - corner90StartedAt_ >= std::chrono::milliseconds(
+                                        config::kCorner90MotionConfirmationTimeoutMs) &&
+        !bothEncodersMoving && !imuShowsMotion)
+    {
+        return "corner90_stall";
+    }
+
+    if (now - corner90LastLineSeenAt_ >= std::chrono::milliseconds(
+                                               config::kCorner90LineLossTimeoutMs))
+    {
+        return "corner90_line_lost";
+    }
+    return nullptr;
 }
 
 void MainMission::updateDirectionMemory(double error)
@@ -762,8 +1055,18 @@ const char* MainMission::stateName(LineFollowState state)
         return "TrackingNear";
     case LineFollowState::TurningAtGreenMarker:
         return "TurningAtGreenMarker";
-    case LineFollowState::TurningNear:
-        return "TurningNear";
+    case LineFollowState::GreenDecisionConfirming:
+        return "GreenDecisionConfirming";
+    case LineFollowState::GreenTurnLeft:
+        return "GreenTurnLeft";
+    case LineFollowState::GreenTurnRight:
+        return "GreenTurnRight";
+    case LineFollowState::Corner90Confirming:
+        return "Corner90Confirming";
+    case LineFollowState::Corner90Left:
+        return "Corner90Left";
+    case LineFollowState::Corner90Right:
+        return "Corner90Right";
     case LineFollowState::CrossingGap:
         return "CrossingGap";
     case LineFollowState::ReacquiringNear:

@@ -224,6 +224,34 @@ bool parseGreenTurnDecision(
     return false;
 }
 
+bool isDirectionalGreenTurn(GreenTurnDecision decision)
+{
+    return decision == GreenTurnDecision::GuideLeft ||
+           decision == GreenTurnDecision::GuideRight;
+}
+
+bool parseCorner90Direction(
+    const std::string& text,
+    Corner90Direction& direction)
+{
+    if (text == "NONE")
+    {
+        direction = Corner90Direction::None;
+        return true;
+    }
+    if (text == "LEFT")
+    {
+        direction = Corner90Direction::Left;
+        return true;
+    }
+    if (text == "RIGHT")
+    {
+        direction = Corner90Direction::Right;
+        return true;
+    }
+    return false;
+}
+
 bool tryGetJsonUnsignedInteger(
     const std::string& json,
     const std::string& key,
@@ -290,6 +318,11 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lookaheadX = 0.0;
     snapshot.lookaheadY = 0.0;
     snapshot.curvature = 0.0;
+    snapshot.corner90Candidate = false;
+    snapshot.corner90Direction = Corner90Direction::None;
+    snapshot.corner90Angle = 0.0;
+    snapshot.corner90ConfirmFrames = 0;
+    snapshot.corner90ExitAlignment = false;
     snapshot.adaptivePreview = 0.0;
     snapshot.previewError = 0.0;
     snapshot.pTerm = 0.0;
@@ -310,6 +343,8 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.gapReturnError = 0.0;
     snapshot.greenNearSeen = false;
     snapshot.greenPathBlackValid = false;
+    snapshot.greenCandidateDecision = GreenTurnDecision::None;
+    snapshot.greenCandidateFrames = 0;
     snapshot.greenConfirmed = false;
     snapshot.greenTurnDecision = GreenTurnDecision::None;
     if (hasCachedSnapshot)
@@ -368,6 +403,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
 
         CameraLineSnapshot candidate;
         std::string greenInterpretation;
+        std::string greenRawInterpretation;
+        std::string corner90Direction;
         if (!tryGetJsonBool(json, "nearValid", candidate.nearValid) ||
             !tryGetJsonNumber(json, "nearX", candidate.nearX) ||
             !tryGetJsonNumber(json, "nearError", candidate.nearError) ||
@@ -395,6 +432,22 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json, "lookaheadY", candidate.lookaheadY) ||
             !tryGetJsonNumber(
                 json, "curvature", candidate.curvature) ||
+            !tryGetJsonBool(
+                json, "corner90Candidate", candidate.corner90Candidate) ||
+            !tryGetJsonString(
+                json, "corner90Direction", corner90Direction) ||
+            !parseCorner90Direction(
+                corner90Direction, candidate.corner90Direction) ||
+            !tryGetJsonNumber(
+                json, "corner90Angle", candidate.corner90Angle) ||
+            !tryGetJsonUnsignedInteger(
+                json,
+                "corner90ConfirmFrames",
+                candidate.corner90ConfirmFrames) ||
+            !tryGetJsonBool(
+                json,
+                "corner90ExitAlignment",
+                candidate.corner90ExitAlignment) ||
             !tryGetJsonNumber(
                 json, "adaptivePreview", candidate.adaptivePreview) ||
             !tryGetJsonNumber(
@@ -409,6 +462,12 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             !tryGetJsonNumber(json, "kControl", candidate.kControl) ||
             !tryGetJsonNumber(json, "kNear", candidate.kNear) ||
             !tryGetJsonNumber(json, "kFar", candidate.kFar) ||
+            !tryGetJsonNumber(
+                json, "targetCorrection", candidate.targetCorrection) ||
+            !tryGetJsonNumber(
+                json, "appliedCorrection", candidate.appliedCorrection) ||
+            !tryGetJsonNumber(
+                json, "steerRateUsed", candidate.steerRateUsed) ||
             !tryGetJsonNumber(json, "correction", candidate.correction) ||
             !tryGetJsonNumber(json, "leftPreview", candidate.leftPreview) ||
             !tryGetJsonNumber(json, "rightPreview", candidate.rightPreview) ||
@@ -425,6 +484,12 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json, "greenNearSeen", candidate.greenNearSeen) ||
             !tryGetJsonBool(
                 json, "greenPathBlackValid", candidate.greenPathBlackValid) ||
+            !tryGetJsonString(
+                json, "greenRawInterpretation", greenRawInterpretation) ||
+            !parseGreenTurnDecision(
+                greenRawInterpretation, candidate.greenCandidateDecision) ||
+            !tryGetJsonUnsignedInteger(
+                json, "greenConsecutiveSamples", candidate.greenCandidateFrames) ||
             !tryGetJsonBool(
                 json, "greenConfirmed", candidate.greenConfirmed) ||
             !tryGetJsonString(
@@ -463,6 +528,12 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lookaheadY >= 0.0 && candidate.lookaheadY <= 1.10 &&
             std::isfinite(candidate.curvature) &&
             candidate.curvature >= -10.0 && candidate.curvature <= 10.0 &&
+            std::isfinite(candidate.corner90Angle) &&
+            candidate.corner90Angle >= -180.0 &&
+            candidate.corner90Angle <= 180.0 &&
+            candidate.corner90ConfirmFrames <= 3 &&
+            (!candidate.corner90Candidate ||
+             candidate.corner90Direction != Corner90Direction::None) &&
             (!candidate.trajectoryValid ||
              (candidate.nearValid && candidate.fitSampleCount >= 4 &&
               candidate.lookaheadY > 0.0)) &&
@@ -485,6 +556,10 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.kNear <= 2.0 &&
             std::isfinite(candidate.kFar) && candidate.kFar >= 0.0 &&
             candidate.kFar <= 2.0 &&
+            isNormalizedValue(candidate.targetCorrection) &&
+            isNormalizedValue(candidate.appliedCorrection) &&
+            std::isfinite(candidate.steerRateUsed) &&
+            candidate.steerRateUsed >= 0.0 && candidate.steerRateUsed <= 10.0 &&
             isNormalizedValue(candidate.correction) &&
             isNormalizedValue(candidate.leftPreview) &&
             isNormalizedValue(candidate.rightPreview) &&
@@ -494,6 +569,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             (!candidate.gapReturnValid || candidate.gapCandidate) &&
             (!candidate.greenConfirmed ||
              candidate.greenTurnDecision != GreenTurnDecision::None) &&
+            candidate.greenCandidateFrames <= 1000 &&
             std::isfinite(candidate.lineTimestamp);
         if (!valuesValid)
         {
@@ -529,6 +605,12 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lookaheadY = 0.0;
             candidate.curvature = 0.0;
         }
+        if (!candidate.corner90Candidate)
+        {
+            candidate.corner90Direction = Corner90Direction::None;
+            candidate.corner90Angle = 0.0;
+            candidate.corner90ConfirmFrames = 0;
+        }
         if (!candidate.nearValid && !candidate.farValid)
         {
             candidate.controlError = 0.0;
@@ -555,6 +637,13 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.greenTurnDecision != GreenTurnDecision::Approach)
         {
             candidate.greenTurnDecision = GreenTurnDecision::None;
+        }
+        if (!candidate.greenPathBlackValid ||
+            (!isDirectionalGreenTurn(candidate.greenCandidateDecision) &&
+             candidate.greenCandidateDecision != GreenTurnDecision::TurnAround180))
+        {
+            candidate.greenCandidateDecision = GreenTurnDecision::None;
+            candidate.greenCandidateFrames = 0;
         }
 
         if (!hasCachedLineSnapshot_ ||
@@ -590,6 +679,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.lookaheadX = 0.0;
             snapshot.lookaheadY = 0.0;
             snapshot.curvature = 0.0;
+            snapshot.corner90Candidate = false;
+            snapshot.corner90Direction = Corner90Direction::None;
+            snapshot.corner90Angle = 0.0;
+            snapshot.corner90ConfirmFrames = 0;
+            snapshot.corner90ExitAlignment = false;
             snapshot.adaptivePreview = 0.0;
             snapshot.previewError = 0.0;
             snapshot.pTerm = 0.0;
@@ -610,6 +704,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.gapReturnError = 0.0;
             snapshot.greenNearSeen = false;
             snapshot.greenPathBlackValid = false;
+            snapshot.greenCandidateDecision = GreenTurnDecision::None;
+            snapshot.greenCandidateFrames = 0;
             snapshot.greenConfirmed = false;
             snapshot.greenTurnDecision = GreenTurnDecision::None;
         }

@@ -70,8 +70,24 @@ REMOTE_STAGING_BUILD="${REMOTE_DIR}/.build-staging"
 REMOTE_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[c]amera_line_frame.py"
 REMOTE_FORWARD_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[f]orward_camera_stream.py"
 REMOTE_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_robot.sh"
+REMOTE_LINE_CAMERA_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_line_camera.sh"
+LINE_CAMERA_SERVICE_NAME="obr-line-camera"
 SSH_ARGS=()
 SCP_ARGS=()
+
+# As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
+# parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
+required_dashboard_assets=(
+  "$WORKSPACE/assets/dashboard-logo.png"
+  "$WORKSPACE/assets/soul-sync-favicon.png"
+)
+
+for asset_path in "${required_dashboard_assets[@]}"; do
+  if [[ ! -s "$asset_path" ]]; then
+    echo "Dashboard asset not found or empty: $asset_path" >&2
+    exit 1
+  fi
+done
 
 if [[ -f "$KEY_PATH" ]]; then
   SSH_ARGS=(-i "$KEY_PATH")
@@ -86,24 +102,25 @@ ssh "${SSH_ARGS[@]}" "$REMOTE" "mkdir -p '$REMOTE_DIR' '$REMOTE_BUILD'"
 
 # Para o serviço antes de trocar código ou binário. Se o build falhar, o robô
 # permanece parado e o executável válido anterior não é substituído.
-ssh "${SSH_ARGS[@]}" "$REMOTE" "sudo systemctl stop '${SERVICE_NAME}.service' >/dev/null 2>&1 || true"
+ssh "${SSH_ARGS[@]}" "$REMOTE" "sudo systemctl stop '${SERVICE_NAME}.service' '${LINE_CAMERA_SERVICE_NAME}.service' >/dev/null 2>&1 || true"
 scp "${SCP_ARGS[@]}" "$WORKSPACE/CMakeLists.txt" "${REMOTE}:${REMOTE_DIR}/CMakeLists.txt"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/src" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/include" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/scripts" "${REMOTE}:${REMOTE_DIR}/"
+scp "${SCP_ARGS[@]}" -r "$WORKSPACE/assets" "${REMOTE}:${REMOTE_DIR}/"
 
 # O deploy copia apenas os arquivos necessários para executar o robô. Os testes
 # continuam ativos no build local, mas não podem exigir a pasta tests na Raspberry.
-atomic_build_command="cd '$REMOTE_DIR' && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$REMOTE_STAGING_BUILD' -DBUILD_TESTING=OFF && cmake --build '$REMOTE_STAGING_BUILD' --target '$TARGET' && test -s '$REMOTE_STAGING_BUILD/$TARGET' && install -m 755 '$REMOTE_STAGING_BUILD/$TARGET' '$REMOTE_BUILD/$TARGET.new' && mv -f '$REMOTE_BUILD/$TARGET.new' '$REMOTE_BUILD/$TARGET' && test -s '$REMOTE_BUILD/$TARGET'"
+atomic_build_command="cd '$REMOTE_DIR' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$REMOTE_STAGING_BUILD' -DBUILD_TESTING=OFF && cmake --build '$REMOTE_STAGING_BUILD' --target '$TARGET' && test -s '$REMOTE_STAGING_BUILD/$TARGET' && install -m 755 '$REMOTE_STAGING_BUILD/$TARGET' '$REMOTE_BUILD/$TARGET.new' && mv -f '$REMOTE_BUILD/$TARGET.new' '$REMOTE_BUILD/$TARGET' && test -s '$REMOTE_BUILD/$TARGET'"
 ssh "${SSH_ARGS[@]}" "$REMOTE" "$atomic_build_command"
 
 echo "Deploy complete: ${REMOTE}:${REMOTE_BUILD}/${TARGET}"
 
 stop_old_camera_command="pkill -f '$REMOTE_CAMERA_PATTERN' >/dev/null 2>&1 || true; pkill -f '$REMOTE_FORWARD_CAMERA_PATTERN' >/dev/null 2>&1 || true"
-prepare_scripts_command="cd '$REMOTE_DIR' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$REMOTE_RUN_SCRIPT'"
-install_service_command="$prepare_scripts_command && sudo cp '$REMOTE_DIR/scripts/${SERVICE_NAME}.service' '/etc/systemd/system/${SERVICE_NAME}.service' && sudo systemctl daemon-reload && sudo systemctl enable '${SERVICE_NAME}.service'"
-restart_service_command="$install_service_command && sudo systemctl restart '${SERVICE_NAME}.service'"
-status_service_command="sudo systemctl is-active --quiet '${SERVICE_NAME}.service' && sudo systemctl status '${SERVICE_NAME}.service' --no-pager"
+prepare_scripts_command="cd '$REMOTE_DIR' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$REMOTE_RUN_SCRIPT' '$REMOTE_LINE_CAMERA_RUN_SCRIPT'"
+install_service_command="$prepare_scripts_command && sudo cp '$REMOTE_DIR/scripts/${SERVICE_NAME}.service' '/etc/systemd/system/${SERVICE_NAME}.service' && sudo cp '$REMOTE_DIR/scripts/${LINE_CAMERA_SERVICE_NAME}.service' '/etc/systemd/system/${LINE_CAMERA_SERVICE_NAME}.service' && sudo systemctl daemon-reload && sudo systemctl enable '${SERVICE_NAME}.service' '${LINE_CAMERA_SERVICE_NAME}.service'"
+restart_service_command="$install_service_command && sudo systemctl restart '${SERVICE_NAME}.service' '${LINE_CAMERA_SERVICE_NAME}.service'"
+status_service_command="sudo systemctl is-active --quiet '${SERVICE_NAME}.service' && sudo systemctl is-active --quiet '${LINE_CAMERA_SERVICE_NAME}.service' && sudo systemctl status '${SERVICE_NAME}.service' '${LINE_CAMERA_SERVICE_NAME}.service' --no-pager"
 
 if [[ "$RUN_MODE" == "no-run" ]]; then
   echo "Robot was deployed but is not running."

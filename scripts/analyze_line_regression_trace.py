@@ -72,7 +72,10 @@ def summarize(rows):
     for index, row in enumerate(rows):
         state = row.get("mainMissionState", "")
         near_valid = row.get("nearValid", "false").lower() == "true"
-        if state == "TurningNear" and previous_state != "TurningNear":
+        if (
+            state in ("Corner90Left", "Corner90Right")
+            and previous_state not in ("Corner90Left", "Corner90Right")
+        ):
             turning_entries += 1
         if previous_near_valid is True and not near_valid:
             near_losses += 1

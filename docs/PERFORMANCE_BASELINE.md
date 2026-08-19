@@ -5,11 +5,15 @@ prejudiquem a missão, a visão ou o controle do robô.
 
 ## Arquitetura medida
 
-O serviço `obr-robot` executa `scripts/run_robot.sh`, que mantém três processos:
+O serviço `obr-robot` executa `scripts/run_robot.sh` e mantém dois processos:
 
 - `build/robot_test`: missão, controle, UART e servidor HTTP/WebSocket do dashboard;
-- `scripts/camera_line_frame.py`: captura inferior, visão, IPC e MJPEG;
 - `scripts/forward_camera_stream.py`: gerenciador da câmera frontal, normalmente ocioso.
+
+O serviço independente `obr-line-camera` executa `scripts/run_line_camera.sh`, que
+mantém uma única instância de `scripts/camera_line_frame.py` para captura inferior,
+visão, IPC e MJPEG. Isso permite desligar a carga de visão quando o segue-faixa não
+está em teste, sem desligar dashboard, ESP32 ou o programa principal.
 
 O dashboard não é um processo separado. O `DashboardServer` usa uma thread de
 aceitação, uma thread de telemetria e uma thread curta por conexão HTTP/WebSocket
@@ -24,7 +28,7 @@ tempo gasto no ciclo periódico do servidor sem instrumentar o loop de controle.
 - heartbeat de comando manual no navegador: 100 ms, 10 Hz, somente em modo Manual;
 - status inferior e frontal consultados pelo navegador: 500 ms, 2 Hz;
 - status publicado pelos processos de câmera: 5 Hz;
-- captura inferior: alvo de 30 FPS, com FPS real no status da câmera;
+- captura inferior: 480×360, alvo de 30 FPS, com FPS real no status da câmera;
 - publicação MJPEG inferior: limite de 30 FPS;
 - snapshot JPEG em `/tmp`: 2 Hz;
 - IPC rápido da linha em `/dev/shm`: uma publicação por frame processado;

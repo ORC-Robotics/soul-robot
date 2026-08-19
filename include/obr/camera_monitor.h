@@ -11,6 +11,14 @@ enum class GreenTurnDecision
     TurnAround180
 };
 
+// Direção geométrica do cotovelo detectado pela câmera antes do pivô.
+enum class Corner90Direction
+{
+    None,
+    Left,
+    Right
+};
+
 // Resultado tipado da telemetria rápida calculada pelo processo de visão.
 // A Missão Principal usa estes valores para seguir e recuperar a linha.
 struct CameraLineSnapshot
@@ -36,6 +44,13 @@ struct CameraLineSnapshot
     double lookaheadX = 0.0;
     double lookaheadY = 0.0;
     double curvature = 0.0;
+    // O cotovelo usa as amostras brutas, pois um fit quadrático não descreve
+    // corretamente uma mudança abrupta de direção.
+    bool corner90Candidate = false;
+    Corner90Direction corner90Direction = Corner90Direction::None;
+    double corner90Angle = 0.0;
+    std::uint64_t corner90ConfirmFrames = 0;
+    bool corner90ExitAlignment = false;
     double adaptivePreview = 0.0;
     double previewError = 0.0;
     double pTerm = 0.0;
@@ -47,6 +62,11 @@ struct CameraLineSnapshot
     // Mantidos apenas para consumidores antigos da telemetria.
     double kNear = 0.0;
     double kFar = 0.0;
+    // A correção-alvo permanece disponível para estados especiais que não
+    // devem receber atraso do slew limiter aplicado ao tracking normal.
+    double targetCorrection = 0.0;
+    double appliedCorrection = 0.0;
+    double steerRateUsed = 0.0;
     double correction = 0.0;
     double leftPreview = 0.0;
     double rightPreview = 0.0;
@@ -61,6 +81,10 @@ struct CameraLineSnapshot
     // marcador. Sem verde, o segue-linha mantém integralmente o controle antigo.
     bool greenNearSeen = false;
     bool greenPathBlackValid = false;
+    // Decisão bruta já validada pela visão, antes da confirmação temporal.
+    // A Missão Principal a usa somente para parar e confirmar o marcador.
+    GreenTurnDecision greenCandidateDecision = GreenTurnDecision::None;
+    std::uint64_t greenCandidateFrames = 0;
     bool greenConfirmed = false;
     GreenTurnDecision greenTurnDecision = GreenTurnDecision::None;
     double lineTimestamp = 0.0;

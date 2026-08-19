@@ -21,6 +21,12 @@ struct MotorSynchronizationSnapshot
     double filteredRightEfficiency = 0.0;
     double correctedLeftPower = 0.0;
     double correctedRightPower = 0.0;
+    bool leftMotorStarting = false;
+    bool rightMotorStarting = false;
+    bool leftMotorRunning = false;
+    bool rightMotorRunning = false;
+    int leftMotorConfirmationSamples = 0;
+    int rightMotorConfirmationSamples = 0;
 };
 
 // Converte comandos seguros do RobotState em mensagens UART para a ESP32.
@@ -36,6 +42,14 @@ public:
     MotorSynchronizationSnapshot synchronizationSnapshot() const;
 
 private:
+    struct MotorMotionState
+    {
+        int direction = 0;
+        int confirmationSamples = 0;
+        int lossSamples = 0;
+        bool running = false;
+    };
+
     Esp32Bridge& esp32_;
     mutable std::mutex synchronizationMutex_;
     MotorSynchronizationSnapshot synchronization_;
@@ -49,10 +63,19 @@ private:
     double forwardRightScale_ = 1.0;
     double reverseLeftScale_ = 1.0;
     double reverseRightScale_ = 1.0;
+    MotorMotionState leftMotorMotion_;
+    MotorMotionState rightMotorMotion_;
+    long long lastMotorMotionSampleUptimeMs_ = -1;
 
     static double safeMotorPower(double command);
-    static double operationalMotorPower(double command);
     static double moveToward(double current, double target, double maximumStep);
+    double applyMotorMinimumPower(
+        double command,
+        MotorMotionState& motion,
+        double appliedPower,
+        double encoderRate,
+        bool encoderSampleIsNew);
+    void resetMotorMotion();
     void applyEncoderSynchronization(
         double& leftPower,
         double& rightPower,

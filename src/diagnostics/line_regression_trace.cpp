@@ -347,6 +347,14 @@ std::string LineRegressionTrace::missionStateName(const std::string& phase)
     {
         return "TurningNear";
     }
+    if (phase == "corner90_left")
+    {
+        return "Corner90Left";
+    }
+    if (phase == "corner90_right")
+    {
+        return "Corner90Right";
+    }
     if (phase == "reacquiring_near")
     {
         return "ReacquiringNear";

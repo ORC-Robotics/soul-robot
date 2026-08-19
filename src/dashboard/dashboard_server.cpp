@@ -524,6 +524,23 @@ void DashboardServer::handleCommand(const std::string& message)
                       << (enabled ? "enabled" : "disabled") << "\n";
         }
     }
+    else if (message.find("\"command\":\"set_line_camera\"") != std::string::npos)
+    {
+        bool enabled = false;
+        if (!getJsonBool(message, "enabled", enabled))
+        {
+            std::cerr << "Line camera command ignored: enabled must be boolean\n";
+        }
+        else if (!setLineCameraEnabled(enabled))
+        {
+            std::cerr << "Line camera state could not be written\n";
+        }
+        else
+        {
+            std::cout << "Line camera requested: "
+                      << (enabled ? "enabled" : "disabled") << "\n";
+        }
+    }
     else if (message.find("\"command\":\"drive_raw\"") != std::string::npos)
     {
         const double left = getJsonNumber(message, "left", 0.0);
@@ -575,8 +592,10 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
          << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
-         << ",\"left\":" << state.left
-         << ",\"right\":" << state.right
+          << ",\"left\":" << state.left
+          << ",\"right\":" << state.right
+         << ",\"requestedLeft\":" << state.left
+         << ",\"requestedRight\":" << state.right
          << ",\"emergency\":" << (state.emergencyStop ? "true" : "false")
          << ",\"esp32SerialOpen\":" << (esp32.serialOpen ? "true" : "false")
          << ",\"esp32SensorFresh\":" << (esp32.sensorFresh ? "true" : "false")
@@ -601,6 +620,22 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"rightEncoderRate\":" << esp32.rightEncoderRate
          << ",\"esp32AppliedLeftPower\":" << esp32.appliedLeftPower
          << ",\"esp32AppliedRightPower\":" << esp32.appliedRightPower
+         << ",\"commandedLeft\":" << motorSync.correctedLeftPower
+         << ",\"commandedRight\":" << motorSync.correctedRightPower
+         << ",\"appliedLeft\":" << esp32.appliedLeftPower
+         << ",\"appliedRight\":" << esp32.appliedRightPower
+         << ",\"leftMotorStarting\":"
+         << (motorSync.leftMotorStarting ? "true" : "false")
+         << ",\"rightMotorStarting\":"
+         << (motorSync.rightMotorStarting ? "true" : "false")
+         << ",\"leftMotorRunning\":"
+         << (motorSync.leftMotorRunning ? "true" : "false")
+         << ",\"rightMotorRunning\":"
+         << (motorSync.rightMotorRunning ? "true" : "false")
+         << ",\"leftMotorConfirmationSamples\":"
+         << motorSync.leftMotorConfirmationSamples
+         << ",\"rightMotorConfirmationSamples\":"
+         << motorSync.rightMotorConfirmationSamples
          << ",\"motorSyncEligible\":" << (motorSync.eligible ? "true" : "false")
          << ",\"motorSyncActive\":" << (motorSync.active ? "true" : "false")
          << ",\"motorSyncEncoderDataValid\":"
@@ -628,7 +663,10 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"esp32UptimeMs\":" << esp32.esp32UptimeMs
          << ",\"raspberryCommandTimeoutMs\":" << config::kCommandTimeoutMs
          << ",\"esp32MotorCommandTimeoutMs\":" << config::kEsp32MotorCommandTimeoutMs
-         << ",\"operationalMinimumMotorPower\":" << config::kOperationalMinimumMotorPower
+         << ",\"motorStartMinimumPower\":" << config::kMotorStartMinimumPower
+         << ",\"motorRunMinimumPower\":" << config::kMotorRunMinimumPower
+         << ",\"motorRunConfirmationRequiredSamples\":"
+         << config::kMotorRunConfirmationSamples
          << ",\"operationalMaximumReferencePower\":" << config::kOperationalMaximumReferencePower
          << ",\"encoderSyncWarmupSamples\":" << config::kEncoderSyncWarmupSamples
          << ",\"encoderCountsPerCentimeter\":" << config::kEncoderCountsPerCentimeter
@@ -1035,6 +1073,7 @@ std::string DashboardServer::dashboardHtml()
     input[type="range"] { width: 100%; accent-color: var(--text-primary); }
     .manual-speed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .manual-speed-grid .drive-control { border-color: var(--border-primary); background: var(--bg-primary); }
+    .manual-test-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
     .requested-drive { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .request-value { padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
     .request-value span { display: block; color: var(--muted); font-size: .67rem; text-transform: uppercase; }
@@ -1321,13 +1360,14 @@ std::string DashboardServer::dashboardHtml()
                 </div>
                 <div class="manual-speed-grid">
                   <div class="drive-control">
-                    <label for="manualDrivePower"><span>Velocidade reta</span><output id="manualDrivePowerValue">0.69</output></label>
-                    <input id="manualDrivePower" type="range" min="0.69" max="1.00" step="0.01" value="0.69">
+                    <label for="manualDrivePower"><span>Velocidade reta de teste</span><output id="manualDrivePowerValue">0.69</output></label>
+                    <input id="manualDrivePower" type="range" min="0.05" max="1.00" step="0.01" value="0.69">
                   </div>
                   <div class="drive-control">
-                    <label for="manualTurnPower"><span>Velocidade em curva</span><output id="manualTurnPowerValue">0.69</output></label>
-                    <input id="manualTurnPower" type="range" min="0.69" max="1.00" step="0.01" value="0.69">
+                    <label for="manualTurnPower"><span>Velocidade em curva de teste</span><output id="manualTurnPowerValue">0.69</output></label>
+                    <input id="manualTurnPower" type="range" min="0.05" max="1.00" step="0.01" value="0.69">
                   </div>
+                  <p class="manual-test-note">Os controles manuais enviam o duty exato entre 0,05 e 1,00. Eles não alteram a velocidade autônoma.</p>
                 </div>
               </div>
             </details>
@@ -1424,6 +1464,26 @@ std::string DashboardServer::dashboardHtml()
                     <div class="camera-diagnostic-item"><dt>Curvature</dt><dd id="tuningCurvature">—</dd></div>
                   </dl>
                 </div>
+                <div class="tuning-metric-group">
+                  <h4>Cotovelo 90°</h4>
+                  <dl class="camera-diagnostic-list">
+                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraCorner90Candidate">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraCorner90Direction">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Ângulo</dt><dd id="cameraCorner90Angle">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Confirmação</dt><dd id="cameraCorner90ConfirmFrames">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraCorner90State">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Alinhamento de saída</dt><dd id="cameraCorner90ExitAlignment">—</dd></div>
+                  </dl>
+                </div>
+                <div class="tuning-metric-group">
+                  <h4>Marcador verde</h4>
+                  <dl class="camera-diagnostic-list">
+                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraGreenDecisionState">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Candidato bruto</dt><dd id="cameraGreenRawInterpretation">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Aceito</dt><dd id="cameraGreenConfirmed">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Amostras</dt><dd id="cameraGreenConsecutiveSamples">—</dd></div>
+                  </dl>
+                </div>
               </div>
             </section>
 
@@ -1452,7 +1512,9 @@ std::string DashboardServer::dashboardHtml()
                 <div class="tuning-metric-group">
                   <h4>Saída</h4>
                   <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Correction</dt><dd id="tuningCorrection">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Target correction</dt><dd id="tuningTargetCorrection">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Applied correction</dt><dd id="tuningAppliedCorrection">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Steer rate used</dt><dd id="tuningSteerRateUsed">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
                   </dl>
@@ -1561,7 +1623,9 @@ std::string DashboardServer::dashboardHtml()
           <div class="big-reading"><span>Direita · 2 motores</span><strong id="appliedRight">0.00</strong><div class="motor-bar"><div id="rightMotorBar"></div></div></div>
         </div>
         <div class="telemetry-list">
-          <div class="telemetry-row"><span>Comando Raspberry · esquerda / direita</span><strong><span id="requestedLeft">0.00</span> / <span id="requestedRight">0.00</span></strong></div>
+           <div class="telemetry-row"><span>Comando Raspberry · esquerda / direita</span><strong><span id="requestedLeft">0.00</span> / <span id="requestedRight">0.00</span></strong></div>
+           <div class="telemetry-row"><span>Comando final · esquerda / direita</span><strong><span id="commandedLeft">0.00</span> / <span id="commandedRight">0.00</span></strong></div>
+           <div class="telemetry-row"><span>Estado dos pisos</span><strong id="motorMotionState">--</strong></div>
           <div class="telemetry-row"><span>Driver</span><strong>2 × DRV8833 · 4 motores</strong></div>
           <div class="telemetry-row"><span>DRV8833 nSLEEP · GPIO26</span><strong id="sleepState">--</strong></div>
           <div class="telemetry-row"><span>Perfil de potência</span><strong id="motorCommandProfile">--</strong></div>
@@ -1668,7 +1732,13 @@ std::string DashboardServer::dashboardHtml()
         streamUrl: "/camera-stream.mjpg",
         statusUrl: "/camera-status.json",
         displayMode: "real",
-        status: "CARREGANDO",
+        status: "INICIANDO",
+        enabled: true,
+        active: false,
+        transitioning: false,
+        requestedEnabled: true,
+        transitionDeadlineMs: 0,
+        error: "",
         metadata: { fps: "--", resolution: "--", sensor: "--", crop: "--", format: "--" }
       },
       forward: {
@@ -1733,7 +1803,17 @@ std::string DashboardServer::dashboardHtml()
         fitQuality: element("cameraFitQuality"), fitRmsError: element("cameraFitRmsError"),
         fitA: element("cameraFitA"), fitB: element("cameraFitB"), fitC: element("cameraFitC"),
         lookaheadX: element("cameraLookaheadX"), lookaheadY: element("cameraLookaheadY"),
-        curvature: element("tuningCurvature")
+        curvature: element("tuningCurvature"),
+        corner90Candidate: element("cameraCorner90Candidate"),
+        corner90Direction: element("cameraCorner90Direction"),
+        corner90Angle: element("cameraCorner90Angle"),
+        corner90ConfirmFrames: element("cameraCorner90ConfirmFrames"),
+        corner90State: element("cameraCorner90State"),
+        corner90ExitAlignment: element("cameraCorner90ExitAlignment"),
+        greenDecisionState: element("cameraGreenDecisionState"),
+        greenRawInterpretation: element("cameraGreenRawInterpretation"),
+        greenConfirmed: element("cameraGreenConfirmed"),
+        greenConsecutiveSamples: element("cameraGreenConsecutiveSamples")
       },
       control: {
         controlError: element("cameraControlError"),
@@ -1742,7 +1822,8 @@ std::string DashboardServer::dashboardHtml()
         adaptivePreview: element("cameraAdaptivePreview"),
         previewError: element("cameraPreviewError"), pTerm: element("cameraPTerm"),
         filteredDerivative: element("cameraFilteredDerivative"), dTerm: element("cameraDTerm"),
-        kControl: element("cameraKControl"), correction: element("tuningCorrection"),
+        kControl: element("cameraKControl"), targetCorrection: element("tuningTargetCorrection"),
+        appliedCorrection: element("tuningAppliedCorrection"), steerRateUsed: element("tuningSteerRateUsed"),
         leftPreview: element("cameraLeftPreview"), rightPreview: element("cameraRightPreview")
       },
       gap: {
@@ -1779,7 +1860,7 @@ std::string DashboardServer::dashboardHtml()
     let rawDiagnosticDrive = false;
     let filteredLeftEncoderRate = null;
     let filteredRightEncoderRate = null;
-    let manualMinimumPower = 0.69;
+    const manualTestMinimumPower = 0.05;
     let manualMaximumPower = 1.0;
     let activeCameraView = "downward";
     let activeDashboardMode = "operation";
@@ -2081,7 +2162,11 @@ std::string DashboardServer::dashboardHtml()
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
         green_turn_waiting_imu: ["VERDE: AGUARDANDO IMU", "warn", "machineStepPerception"],
+        green_confirming: ["VERDE: CONFIRMANDO", "warn", "machineStepPerception"],
+        green_cancelled: ["VERDE: CANCELADO", "warn", "machineStepFeedback"],
         green_approach: ["VERDE: APROXIMAÇÃO", "active", "machineStepMotion"],
+        green_turn_left: ["VERDE: PIVOT ESQUERDA", "active", "machineStepMotion"],
+        green_turn_right: ["VERDE: PIVOT DIREITA", "active", "machineStepMotion"],
         green_guidance: ["VERDE: ALVO DESLOCADO", "active", "machineStepMotion"],
         green_turning: ["RETORNO VERDE", "active", "machineStepMotion"],
         green_turn_completed: ["RETORNO VERDE CONCLUÍDO", "active", "machineStepFeedback"],
@@ -2219,7 +2304,7 @@ std::string DashboardServer::dashboardHtml()
         ? `${correctedLeft.toFixed(2)} / ${correctedRight.toFixed(2)}`
         : "-- / --";
       element("balanceRecommendation").textContent = data.rawMotorCommand === true
-        ? "Ajuste individual: sincronismo automático desativado; piso de 0,69 preservado."
+        ? "Ajuste individual: sincronismo automático desativado; duty direto preservado."
         : syncEligible
           ? `Escala automática E/D: ${scaleText} · PWM corrigido: ${correctedText}.`
           : "Sincronismo pausado: os lados não estão se movendo juntos no mesmo sentido.";
@@ -2299,15 +2384,14 @@ std::string DashboardServer::dashboardHtml()
     }
 
     function updateEsp32Telemetry(data) {
-      const receivedMinimumPower = Number(data.operationalMinimumMotorPower);
+      const receivedMinimumPower = Number(data.motorStartMinimumPower);
       const receivedMaximumPower = Number(data.operationalMaximumReferencePower);
       if (Number.isFinite(receivedMinimumPower) && Number.isFinite(receivedMaximumPower) &&
           receivedMinimumPower > 0 && receivedMaximumPower >= receivedMinimumPower) {
-        manualMinimumPower = receivedMinimumPower;
         manualMaximumPower = receivedMaximumPower;
-        manualDrivePower.min = manualMinimumPower.toFixed(2);
+        manualDrivePower.min = manualTestMinimumPower.toFixed(2);
         manualDrivePower.max = manualMaximumPower.toFixed(2);
-        manualTurnPower.min = manualMinimumPower.toFixed(2);
+        manualTurnPower.min = manualTestMinimumPower.toFixed(2);
         manualTurnPower.max = manualMaximumPower.toFixed(2);
         manualDrivePower.value = clampManualPower(manualDrivePower.value).toFixed(2);
         manualTurnPower.value = clampManualPower(manualTurnPower.value).toFixed(2);
@@ -2345,15 +2429,25 @@ std::string DashboardServer::dashboardHtml()
       element("batteryFill").style.width = `${batteryPercent * 100}%`;
 
       setTelemetryValue("diagnosticUptime", fresh, formatUptime(data.esp32UptimeMs));
-      element("requestedLeft").textContent = formatNumber(data.left, 2);
-      element("requestedRight").textContent = formatNumber(data.right, 2);
+      element("requestedLeft").textContent = formatNumber(data.requestedLeft, 2);
+      element("requestedRight").textContent = formatNumber(data.requestedRight, 2);
+      setTelemetryValue("commandedLeft", fresh, formatNumber(data.commandedLeft, 2));
+      setTelemetryValue("commandedRight", fresh, formatNumber(data.commandedRight, 2));
       const motorCommandProfile = element("motorCommandProfile");
       motorCommandProfile.textContent = data.rawMotorCommand === true
-        ? `ajuste individual · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · sem sincronismo`
-        : `operacional · mín. ${formatNumber(data.operationalMinimumMotorPower, 2)} · sincronismo automático`;
+        ? "ajuste individual direto · sem piso operacional e sem sincronismo"
+        : `partida ${formatNumber(data.motorStartMinimumPower, 2)} · execução ${formatNumber(data.motorRunMinimumPower, 2)} · sincronismo somente em reta`;
       motorCommandProfile.className = data.rawMotorCommand === true ? "state-warn" : "state-good";
-      setTelemetryValue("appliedLeft", fresh, formatNumber(data.esp32AppliedLeftPower, 2));
-      setTelemetryValue("appliedRight", fresh, formatNumber(data.esp32AppliedRightPower, 2));
+      setTelemetryValue("appliedLeft", fresh, formatNumber(data.appliedLeft, 2));
+      setTelemetryValue("appliedRight", fresh, formatNumber(data.appliedRight, 2));
+      const motorMotionState = element("motorMotionState");
+      const leftMotion = data.leftMotorRunning === true ? "RUNNING" : (data.leftMotorStarting === true ? "STARTING" : "STOPPED");
+      const rightMotion = data.rightMotorRunning === true ? "RUNNING" : (data.rightMotorStarting === true ? "STARTING" : "STOPPED");
+      const requiredMotionSamples = Number(data.motorRunConfirmationRequiredSamples) || 0;
+      motorMotionState.textContent = fresh
+        ? `E ${leftMotion} (${Number(data.leftMotorConfirmationSamples) || 0}/${requiredMotionSamples}) · D ${rightMotion} (${Number(data.rightMotorConfirmationSamples) || 0}/${requiredMotionSamples})`
+        : "sem telemetria";
+      motorMotionState.className = fresh && leftMotion === "RUNNING" && rightMotion === "RUNNING" ? "state-good" : "state-warn";
       element("leftMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedLeftPower)) * 100)}%` : "0%";
       element("rightMotorBar").style.width = fresh ? `${Math.min(100, Math.abs(Number(data.esp32AppliedRightPower)) * 100)}%` : "0%";
       if (fresh) {
@@ -2545,14 +2639,14 @@ std::string DashboardServer::dashboardHtml()
     function clamp(value) { return Math.max(-1, Math.min(1, value)); }
 
     function clampManualPower(value) {
-      return Math.max(manualMinimumPower, Math.min(manualMaximumPower, Number(value) || manualMinimumPower));
+      return Math.max(manualTestMinimumPower, Math.min(manualMaximumPower, Number(value) || manualTestMinimumPower));
     }
 
     function scaleOperationalAxis(axis, maximumPower) {
       const safeAxis = clamp(axis);
       if (Math.abs(safeAxis) < 0.0001) return 0;
-      const magnitude = manualMinimumPower +
-        (clampManualPower(maximumPower) - manualMinimumPower) * Math.abs(safeAxis);
+      const magnitude = manualTestMinimumPower +
+        (clampManualPower(maximumPower) - manualTestMinimumPower) * Math.abs(safeAxis);
       return Math.sign(safeAxis) * magnitude;
     }
 
@@ -2600,7 +2694,9 @@ std::string DashboardServer::dashboardHtml()
 
       requestedLeft = scaleOperationalAxis(leftAxis, selectedPower);
       requestedRight = scaleOperationalAxis(rightAxis, selectedPower);
-      rawDiagnosticDrive = false;
+      // O modo manual é destinado a testes e deve preservar a potência escolhida.
+      // O perfil START/RUN permanece exclusivo do controle autônomo.
+      rawDiagnosticDrive = true;
       leftValue.value = requestedLeft.toFixed(2);
       rightValue.value = requestedRight.toFixed(2);
       sendCurrentDrive();
@@ -2673,9 +2769,9 @@ std::string DashboardServer::dashboardHtml()
 
     function cameraStatusClass(status) {
       if (status === "ONLINE") return "online";
-      if (status === "OFFLINE" || status === "ERRO") return "offline";
+      if (status === "OFFLINE" || status === "ERRO" || status === "FALHA") return "offline";
       if (status === "CARREGANDO" || status === "INICIANDO" || status === "DESLIGANDO") return "loading";
-      if (status === "DESLIGADA") return "disabled";
+      if (status === "DESLIGADA" || status === "PARADA") return "disabled";
       return "unconfigured";
     }
 
@@ -2687,6 +2783,7 @@ std::string DashboardServer::dashboardHtml()
         statusElement.textContent = status;
         statusElement.className = `camera-status ${cameraStatusClass(status)}`;
       }
+      if (cameraId === "downward") updateLineCameraButtons();
       renderCameraMetadata();
     }
 
@@ -2780,7 +2877,7 @@ std::string DashboardServer::dashboardHtml()
       clearCameraReconnect(camera.id);
       frame.className = "camera-frame loading";
       setCameraFrameMessage(frame, "AGUARDANDO STREAM", "Conectando à câmera selecionada.");
-      setCameraStatus(camera.id, "CARREGANDO");
+      if (camera.id !== "downward") setCameraStatus(camera.id, "CARREGANDO");
       // O mesmo elemento é reutilizado; remover o src encerra a conexão MJPEG
       // anterior antes que o modo escolhido abra uma nova conexão única.
       image.removeAttribute("src");
@@ -2834,13 +2931,17 @@ std::string DashboardServer::dashboardHtml()
       image.onload = () => {
         if (generation !== cameraRenderGeneration) return;
         frame.className = "camera-frame online";
-        setCameraStatus(camera.id, "ONLINE");
+        // Para a câmera inferior, stream MJPEG não substitui a confirmação do IPC.
+        if (camera.id !== "downward") setCameraStatus(camera.id, "ONLINE");
       };
       image.onerror = () => {
         if (generation !== cameraRenderGeneration || !cameraIsVisible(camera.id)) return;
         frame.className = "camera-frame offline";
-        setCameraFrameMessage(frame, "CÂMERA OFFLINE", "O stream não respondeu. Uma nova tentativa será feita automaticamente.");
-        setCameraStatus(camera.id, "OFFLINE");
+        setCameraFrameMessage(frame, "CÂMERA INDISPONÍVEL", "O stream não respondeu. Uma nova tentativa será feita automaticamente.");
+        // A câmera inferior recebe o estado definitivo pelo IPC do serviço.
+        // Não a marque como ONLINE nem reutilize o último frame enquanto ele estiver parado.
+        if (camera.id === "downward") refreshCameraStatus();
+        else setCameraStatus(camera.id, "OFFLINE");
         clearCameraReconnect(camera.id);
         cameraReconnectTimers.set(camera.id, window.setTimeout(
           () => connectCameraImage(camera, image, frame, generation),
@@ -2864,16 +2965,23 @@ std::string DashboardServer::dashboardHtml()
       const placeholder = document.createElement("div");
       placeholder.className = "camera-placeholder";
       const title = document.createElement("strong");
-      title.textContent = camera.status === "ERRO" ? "FALHA NA CÂMERA FRONTAL" : "CÂMERA FRONTAL";
+      const isDownward = camera.id === "downward";
+      title.textContent = isDownward
+        ? (camera.status === "FALHA" ? "FALHA NA CÂMERA INFERIOR" : "CÂMERA INFERIOR")
+        : (camera.status === "ERRO" ? "FALHA NA CÂMERA FRONTAL" : "CÂMERA FRONTAL");
       const message = document.createElement("p");
-      if (camera.status === "ERRO") message.textContent = camera.error || "Não foi possível abrir a CAM1.";
-      else if (camera.enabled) message.textContent = "Abrindo a CAM1 e preparando o stream…";
+      if (camera.status === "ERRO" || camera.status === "FALHA") message.textContent = camera.error || "Não foi possível abrir a câmera.";
+      else if (camera.enabled) message.textContent = isDownward
+        ? "Abrindo a câmera inferior e preparando o stream…"
+        : "Abrindo a CAM1 e preparando o stream…";
       else message.textContent = "Desligada para economizar processamento.";
       const plannedLabel = document.createElement("span");
       plannedLabel.className = "planned-use";
       plannedLabel.textContent = "Configuração:";
       const plannedUse = document.createElement("p");
-      plannedUse.textContent = "Saída 960×540 · sensor 1920×1080 · 30 FPS";
+      plannedUse.textContent = isDownward
+        ? "Saída 480×360 · 30 FPS"
+        : "Saída 960×540 · sensor 1920×1080 · 30 FPS";
       placeholder.append(title, message, plannedLabel, plannedUse);
       frame.appendChild(placeholder);
     }
@@ -2922,6 +3030,48 @@ std::string DashboardServer::dashboardHtml()
       return button;
     }
 
+    function updateLineCameraButtons() {
+      document.querySelectorAll("[data-line-camera-toggle]").forEach(button => {
+        const camera = cameras.downward;
+        button.disabled = camera.transitioning;
+        button.classList.toggle("active", camera.enabled);
+        button.setAttribute("aria-pressed", camera.enabled ? "true" : "false");
+        button.textContent = camera.transitioning
+          ? "AGUARDE"
+          : (camera.enabled ? "DESATIVAR" : "ATIVAR");
+      });
+    }
+
+    function toggleLineCamera() {
+      const camera = cameras.downward;
+      if (camera.transitioning) return;
+      const enabled = !camera.enabled;
+      if (!send({ command: "set_line_camera", enabled })) {
+        camera.error = "O dashboard está sem conexão com o robô.";
+        setCameraStatus("downward", "FALHA");
+        if (cameraIsVisible("downward")) renderCameraView(activeCameraView);
+        return;
+      }
+      camera.transitioning = true;
+      camera.requestedEnabled = enabled;
+      camera.transitionDeadlineMs = Date.now() + 5000;
+      camera.enabled = enabled;
+      camera.active = enabled;
+      camera.error = "";
+      setCameraStatus("downward", enabled ? "INICIANDO" : "PARADA");
+      updateLineCameraButtons();
+      if (cameraIsVisible("downward")) renderCameraView(activeCameraView);
+    }
+
+    function buildLineCameraToggle() {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "camera-power-button";
+      button.dataset.lineCameraToggle = "";
+      button.addEventListener("click", toggleLineCamera);
+      return button;
+    }
+
     function buildCameraFeed(cameraId, generation) {
       const camera = cameras[cameraId];
       const feed = document.createElement("article");
@@ -2938,6 +3088,7 @@ std::string DashboardServer::dashboardHtml()
       if (camera.id === "downward") identity.appendChild(buildCameraModeSelector(camera));
       const actions = document.createElement("div");
       actions.className = "camera-feed-actions";
+      if (camera.id === "downward") actions.appendChild(buildLineCameraToggle());
       if (camera.id === "forward") actions.appendChild(buildForwardCameraToggle());
       const status = document.createElement("span");
       status.className = `camera-status ${cameraStatusClass(camera.status)}`;
@@ -2947,13 +3098,14 @@ std::string DashboardServer::dashboardHtml()
       header.append(identity, actions);
 
       const frame = document.createElement("div");
-      const shouldMountStream = camera.id === "downward" || (camera.enabled && camera.active);
+      const shouldMountStream = camera.enabled && camera.active;
       frame.className = shouldMountStream ? "camera-frame loading" : "camera-frame unconfigured";
       if (shouldMountStream) mountCameraStream(camera, frame, generation);
       else buildCameraPlaceholder(camera, frame);
       if (camera.id === "downward") frame.appendChild(downwardCameraTelemetry);
       feed.append(header, frame);
       updateForwardCameraButtons();
+      updateLineCameraButtons();
       return feed;
     }
 
@@ -3076,6 +3228,16 @@ std::string DashboardServer::dashboardHtml()
         setTextIfChanged(fields.lookaheadX, formatCameraDiagnostic(data.lookaheadX, 4));
         setTextIfChanged(fields.lookaheadY, formatCameraDiagnostic(data.lookaheadY, 4));
         setTextIfChanged(fields.curvature, formatCameraDiagnostic(data.curvature, 4));
+        setTextIfChanged(fields.corner90Candidate, data.corner90Candidate ? "SIM" : "NÃO");
+        setTextIfChanged(fields.corner90Direction, String(data.corner90Direction));
+        setTextIfChanged(fields.corner90Angle, `${formatCameraDiagnostic(data.corner90Angle, 1)}°`);
+        setTextIfChanged(fields.corner90ConfirmFrames, `${Math.trunc(Number(data.corner90ConfirmFrames))}/3`);
+        setTextIfChanged(fields.corner90State, String(data.corner90State));
+        setTextIfChanged(fields.corner90ExitAlignment, data.corner90ExitAlignment ? "SIM" : "NÃO");
+        setTextIfChanged(fields.greenDecisionState, String(data.greenDecisionState || "idle"));
+        setTextIfChanged(fields.greenRawInterpretation, String(data.greenRawInterpretation || "SEM_DECISAO"));
+        setTextIfChanged(fields.greenConfirmed, data.greenConfirmed ? "SIM" : "NÃO");
+        setTextIfChanged(fields.greenConsecutiveSamples, `${Math.trunc(Number(data.greenConsecutiveSamples || 0))}/3`);
         return;
       }
       if (panelName === "control") {
@@ -3088,7 +3250,9 @@ std::string DashboardServer::dashboardHtml()
         setTextIfChanged(fields.filteredDerivative, formatCameraDiagnostic(data.filteredDerivative, 3));
         setTextIfChanged(fields.dTerm, formatCameraDiagnostic(data.dTerm, 3));
         setTextIfChanged(fields.kControl, formatCameraDiagnostic(data.kControl, 2));
-        setTextIfChanged(fields.correction, formatCameraDiagnostic(data.correction, 3));
+        setTextIfChanged(fields.targetCorrection, formatCameraDiagnostic(data.targetCorrection, 3));
+        setTextIfChanged(fields.appliedCorrection, formatCameraDiagnostic(data.appliedCorrection, 3));
+        setTextIfChanged(fields.steerRateUsed, formatCameraDiagnostic(data.steerRateUsed, 2));
         setTextIfChanged(fields.leftPreview, formatCameraDiagnostic(data.leftPreview, 3));
         setTextIfChanged(fields.rightPreview, formatCameraDiagnostic(data.rightPreview, 3));
         return;
@@ -3128,10 +3292,12 @@ std::string DashboardServer::dashboardHtml()
         data.farX, data.farError, data.farArea, data.farHeightPx,
         data.fitA, data.fitB, data.fitC, data.fitQuality, data.fitRmsError,
         data.fitSampleCount, data.lookaheadX, data.lookaheadY, data.curvature,
+        data.corner90Angle, data.corner90ConfirmFrames,
         data.lateralError, data.headingError, data.adaptivePreview,
         data.previewError, data.pTerm, data.filteredDerivative, data.dTerm,
         data.preview, data.kControl,
-        data.controlError, data.correction, data.leftPreview, data.rightPreview,
+        data.controlError, data.targetCorrection, data.appliedCorrection,
+        data.steerRateUsed, data.correction, data.leftPreview, data.rightPreview,
         data.gapAlignmentError, data.gapReturnError,
         data.lineTimestamp, data.lineSequence, data.timestamp
       ];
@@ -3139,6 +3305,10 @@ std::string DashboardServer::dashboardHtml()
         typeof data.farValid === "boolean" &&
         typeof data.trajectoryValid === "boolean" &&
         typeof data.trajectoryMode === "string" &&
+        typeof data.corner90Candidate === "boolean" &&
+        typeof data.corner90Direction === "string" &&
+        typeof data.corner90State === "string" &&
+        typeof data.corner90ExitAlignment === "boolean" &&
         typeof data.gapCandidate === "boolean" &&
         typeof data.gapAlignmentValid === "boolean" &&
         typeof data.gapReturnValid === "boolean" &&
@@ -3169,27 +3339,62 @@ std::string DashboardServer::dashboardHtml()
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
-        if (data.active !== true || Number(data.fps) <= 0) {
-          setCameraStatus("downward", "OFFLINE");
-          clearCameraDiagnostics();
-          return;
+        let visualState = String(data.state || "FALHA").toUpperCase();
+        const statusAgeSeconds = Date.now() / 1000 - Number(data.timestamp);
+        const statusFresh = Number.isFinite(statusAgeSeconds) && statusAgeSeconds <= 0.75;
+        if (!statusFresh) {
+          // Um JSON antigo não confirma uma câmera em execução após parar o serviço.
+          visualState = "FALHA";
         }
-        const width = Number(data.width);
-        const height = Number(data.height);
-        const sensorMode = data.sensorMode || {};
-        const scalerCrop = data.scalerCrop || {};
-        camera.metadata.fps = Number(data.fps).toFixed(1);
-        camera.metadata.resolution = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "--";
-        camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
-        camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
-        camera.metadata.format = data.cameraFormat || "--";
-        const mountedImage = mountedCameraImages.get("downward");
-        if (mountedImage && mountedImage.naturalWidth > 0) setCameraStatus("downward", "ONLINE");
-        else renderCameraMetadata();
-        updateCameraDiagnostics(data);
+        if (!["ONLINE", "PARADA", "INICIANDO", "FALHA"].includes(visualState)) {
+          throw new Error("invalid line camera state");
+        }
+        const backendEnabled = data.enabled === true;
+        const backendActive = data.active === true;
+        const backendFailed = visualState === "FALHA";
+        const requestedStateReady = camera.requestedEnabled
+          ? backendEnabled && backendActive
+          : !backendEnabled && !backendActive;
+        const waitForRequestedState = camera.transitioning &&
+          !requestedStateReady && !backendFailed &&
+          Date.now() < camera.transitionDeadlineMs;
+        if (!waitForRequestedState) {
+          camera.enabled = backendEnabled;
+          camera.active = backendActive && statusFresh;
+        }
+        camera.error = data.error || "";
+        if (camera.transitioning && (requestedStateReady || backendFailed ||
+            Date.now() >= camera.transitionDeadlineMs)) {
+          camera.transitioning = false;
+        }
+        setCameraStatus("downward", visualState);
+        if (visualState !== "ONLINE") {
+          clearCameraDiagnostics();
+        }
+        else {
+          const width = Number(data.width);
+          const height = Number(data.height);
+          const sensorMode = data.sensorMode || {};
+          const scalerCrop = data.scalerCrop || {};
+          camera.metadata.fps = Number(data.fps).toFixed(1);
+          camera.metadata.resolution = width > 0 && height > 0 ? `${width.toFixed(0)}×${height.toFixed(0)}` : "--";
+          camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
+          camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
+          camera.metadata.format = data.cameraFormat || "--";
+          updateCameraDiagnostics(data);
+        }
       } catch {
-        setCameraStatus("downward", "OFFLINE");
+        // Sem IPC não existe visão válida para o segue-faixa; a missão já bloqueia
+        // o movimento por sourceFresh, e o painel expõe a falha sem estado ambíguo.
+        setCameraStatus("downward", "FALHA");
         clearCameraDiagnostics();
+      }
+
+      updateLineCameraButtons();
+      const isStreaming = camera.enabled && camera.active;
+      const streamIsMounted = mountedCameraImages.has("downward");
+      if (cameraIsVisible("downward") && streamIsMounted !== isStreaming) {
+        renderCameraView(activeCameraView);
       }
     }
 
@@ -3575,6 +3780,111 @@ bool DashboardServer::sendCameraStatus(SocketHandle client, const char* statusPa
     return sendAll(client, header.c_str(), header.size()) && sendAll(client, status.c_str(), status.size());
 }
 
+#if 0
+void DashboardServer::sendLineCameraStatus(SocketHandle client)
+{
+    // O systemd indica a vida do processo, mas somente o IPC recente prova que
+    // a visão inferior voltou a produzir dados que a Missão Principal pode usar.
+    const FixedCommandResult serviceResult = runLineCameraSystemctl(
+        "is-active", false);
+    const std::string reportedServiceState = trimCopy(serviceResult.output);
+    const std::string serviceState =
+        reportedServiceState == "active" || reportedServiceState == "inactive" ||
+                reportedServiceState == "activating" ||
+                reportedServiceState == "deactivating" ||
+                reportedServiceState == "failed"
+            ? reportedServiceState
+            : "unknown";
+    const std::string cameraStatus = readTextFile(config::kCameraStatusPath);
+    const std::string cameraState = lowerCopy(
+        getJsonString(cameraStatus, "state", ""));
+    bool cameraReportedActive = false;
+    const bool cameraActive = getJsonBool(
+                                  cameraStatus, "active", cameraReportedActive) &&
+                              cameraReportedActive &&
+                              getJsonNumber(cameraStatus, "fps", 0.0) > 0.0 &&
+                              cameraState != "falha";
+    // Reutiliza a validação completa do IPC usada pela Missão Principal, em vez
+    // de considerar fresco um JSON que possua apenas um timestamp válido.
+    CameraMonitor cameraMonitor;
+    const bool lineIpcFresh = cameraMonitor.lineSnapshot().sourceFresh;
+
+    std::string visualState = "FALHA";
+    if (serviceState == "inactive" || serviceState == "deactivating")
+    {
+        visualState = "PARADA";
+    }
+    else if (serviceState == "activating" || cameraState == "iniciando")
+    {
+        visualState = "INICIANDO";
+    }
+    else if (serviceState == "active")
+    {
+        if (cameraState == "falha")
+        {
+            visualState = "FALHA";
+        }
+        else if (cameraActive && lineIpcFresh)
+        {
+            visualState = "ONLINE";
+        }
+        else if (cameraStatus.empty())
+        {
+            // O wrapper ainda não teve tempo de publicar INICIANDO.
+            visualState = "INICIANDO";
+        }
+    }
+    std::ostringstream json;
+    json << "{\"state\":\"" << visualState
+         << "\",\"serviceState\":\""
+         << serviceState
+         << "\",\"ipcFresh\":" << (lineIpcFresh ? "true" : "false")
+         << "}";
+    sendHttpResponse(client, json.str(), "application/json; charset=utf-8");
+}
+
+void DashboardServer::handleLineCameraAction(
+    SocketHandle client,
+    const char* action)
+{
+    // A rota escolhe uma das três ações literais. Esta verificação impede que
+    // uma chamada futura transforme este ponto em executor de comandos livres.
+    const std::string requestedAction = action == nullptr ? "" : action;
+    if (requestedAction != "start" && requestedAction != "stop" &&
+        requestedAction != "restart")
+    {
+        sendHttpResponse(
+            client,
+            "{\"ok\":false,\"error\":\"invalid_action\"}",
+            "application/json; charset=utf-8");
+        return;
+    }
+
+    // Serializa os três botões para não intercalar start/stop de dois clientes.
+    std::lock_guard<std::mutex> lock(lineCameraActionMutex);
+    const FixedCommandResult result = runLineCameraSystemctl(
+        requestedAction.c_str(), true);
+    if (result.exitCode != 0)
+    {
+        std::cerr << "Line camera " << requestedAction
+                  << " failed with exit code " << result.exitCode
+                  << ": " << trimCopy(result.output) << "\n";
+        sendHttpResponse(
+            client,
+            "{\"ok\":false,\"error\":\"systemctl_failed\"}",
+            "application/json; charset=utf-8");
+        return;
+    }
+
+    const char* serviceState = requestedAction == "stop" ? "stopping" : "starting";
+    std::ostringstream json;
+    json << "{\"ok\":true,\"action\":\"" << requestedAction
+         << "\",\"serviceState\":\"" << serviceState << "\"}";
+    sendHttpResponse(client, json.str(), "application/json; charset=utf-8");
+}
+
+#endif
+
 bool DashboardServer::setForwardCameraEnabled(bool enabled)
 {
     // A troca atômica impede que o processo Python leia um comando incompleto.
@@ -3597,6 +3907,33 @@ bool DashboardServer::setForwardCameraEnabled(bool enabled)
                     config::kForwardCameraControlPath) != 0)
     {
         std::remove(config::kForwardCameraTemporaryControlPath);
+        return false;
+    }
+    return true;
+}
+
+bool DashboardServer::setLineCameraEnabled(bool enabled)
+{
+    // A troca atômica impede que o gerenciador leia um comando incompleto.
+    // Este IPC não executa comandos Linux e não tem efeito direto nos motores.
+    {
+        std::ofstream control(config::kLineCameraTemporaryControlPath,
+                              std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << (enabled ? "1\n" : "0\n");
+        if (!control)
+        {
+            return false;
+        }
+    }
+
+    if (std::rename(config::kLineCameraTemporaryControlPath,
+                    config::kLineCameraControlPath) != 0)
+    {
+        std::remove(config::kLineCameraTemporaryControlPath);
         return false;
     }
     return true;

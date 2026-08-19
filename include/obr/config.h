@@ -21,6 +21,14 @@ constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 // A Missão Principal usa esta fonte para seguir e recuperar a linha.
 constexpr const char* kCameraLineStatusPath = "/dev/shm/obr_line_status.json";
 
+// O dashboard altera somente este pequeno IPC para solicitar a câmera inferior.
+// O gerenciador encerra o processo Python e remove a visão publicada quando
+// recebe zero, mantendo a Missão Principal bloqueada com segurança.
+constexpr const char* kLineCameraControlPath =
+    "/dev/shm/obr_line_camera_enabled";
+constexpr const char* kLineCameraTemporaryControlPath =
+    "/dev/shm/obr_line_camera_enabled.tmp";
+
 // O trigger habilita até 300 quadros ou 60 segundos da auditoria de regressão.
 // Estes arquivos são diagnósticos e não substituem o IPC normal da visão.
 constexpr const char* kLineRegressionTraceRequestPath =
@@ -75,31 +83,110 @@ constexpr int kMainLoopPeriodMs = 20;
 constexpr double kMinMotorOutput = -1.0;
 constexpr double kMaxMotorOutput = 1.0;
 
-// Menor potência operacional usada para mover qualquer lado do robô.
-// Zero continua sendo parada real; comandos não nulos menores são elevados a 0,69.
-constexpr double kOperationalMinimumMotorPower = 0.69;
+// Potência mínima para iniciar uma roda que estava parada.
+// Este valor foi validado fisicamente; reduzi-lo pode impedir a partida do motor.
+constexpr double kMotorStartMinimumPower = 0.67;
+
+// Potência mínima para manter uma roda que os encoders já confirmaram em movimento.
+// Ela permite desacelerar a roda interna nas curvas sem voltar ao piso de partida.
+constexpr double kMotorRunMinimumPower = 0.61;
+
+// Potência do pivô exclusivo para um cotovelo de 90° confirmado pela visão.
+// O primeiro comando usa o piso de partida; depois da confirmação pelos
+// encoders a missão pode pedir o piso de execução para reduzir o overshoot.
+// Potência inicial exclusiva do pivô para um cotovelo de 90° confirmado.
+// A potência de 0,69 vence a carga estática observada na manobra; depois da
+// confirmação pelos encoders a missão pede o piso RUN para reduzir o overshoot.
+// Não altera a velocidade do tracking normal nem do dashboard.
+constexpr double kCorner90PivotStartPower = 0.69;
+constexpr double kCorner90PivotRunPower = kMotorRunMinimumPower;
+
+// O pivot precisa demonstrar giro físico logo após iniciar. A validação aceita
+// os dois encoders em movimento ou o MPU6050 indicando rotação, para não
+// confundir um encoder isoladamente defeituoso com uma roda parada.
+constexpr int kCorner90MotionConfirmationTimeoutMs = 600;
+constexpr double kCorner90MinimumEncoderRateCountsPerSecond = 20.0;
+constexpr double kCorner90MinimumYawRateDegPerSec = 8.0;
+constexpr double kCorner90MinimumYawChangeDegrees = 6.0;
+
+// Sem nova linha por este período, ou após exceder este giro relativo, o pivot
+// para os motores. Esses limites impedem que uma perda visual ou roda travada
+// deixe o robô contrarrotacionando indefinidamente.
+constexpr int kCorner90LineLossTimeoutMs = 1200;
+constexpr double kCorner90MaximumYawDegrees = 135.0;
+
+// Um cotovelo precisa manter a mesma geometria em três imagens novas antes de
+// liberar o pivô. Durante essa confirmação os motores ficam parados, evitando
+// que uma reta deslocada seja confundida com um giro brusco.
+constexpr int kCorner90ConfirmationFrames = 3;
+// Quatro imagens novas com a nova faixa adquirida evitam devolver o controle
+// ao Pure Pursuit pela reta de chegada ainda visível. A confirmação continua
+// visual, sem usar uma duração fixa, FAR ou IMU como condição de saída.
+constexpr int kCorner90ExitAlignmentFrames = 4;
+
+// O retorno por marcador verde preserva três imagens de saída, pois o marcador
+// pode ocultar a faixa e exige uma confirmação visual mais conservadora.
+constexpr int kGreenTurnExitAlignmentFrames = 3;
+
+// Ângulo bruto mínimo, em graus, para considerar uma geometria como cotovelo.
+// Curvas contínuas abaixo deste limite permanecem sob o Pure Pursuit normal.
+constexpr double kCorner90MinimumStrongAngleDegrees = 70.0;
+
+// Erro lateral normalizado máximo aceito na decisão e na saída do cotovelo.
+// A margem evita exigir alinhamento perfeito; o Pure Pursuit corrige o restante.
+constexpr double kCorner90MaximumCenterError = 0.20;
+
+// Frames visuais novos exigidos para aceitar um marcador verde direcional.
+// Durante a confirmação o robô permanece parado para não decidir um verde
+// ambíguo ou dois cotovelos muito próximos enquanto ainda está avançando.
+constexpr int kGreenTurnConfirmationFrames = 3;
+
+// Taxa mínima, em contagens por segundo, que confirma movimento durante a partida.
+// Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
+// medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
+constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
+
+// Quantidade de amostras novas e válidas dos encoders para trocar STARTING por RUNNING.
+// A confirmação evita liberar 0,61 por um pico isolado ou ruído de telemetria.
+constexpr int kMotorRunConfirmationSamples = 2;
+
+// Quantidade de amostras inválidas consecutivas que faz uma roda voltar a STARTING.
+// A histerese evita alternância rápida, mas volta ao piso de partida se a roda parar.
+constexpr int kMotorRunLossSamples = 3;
 
 // Maior referência operacional aceita antes da correção pelos encoders.
 // O valor coincide com o limite absoluto do protocolo para liberar todo o PWM.
 constexpr double kOperationalMaximumReferencePower = 1.0;
 
-static_assert(kOperationalMinimumMotorPower > 0.0 &&
-                  kOperationalMinimumMotorPower < kOperationalMaximumReferencePower,
-              "A potência mínima deve caber na faixa operacional.");
+static_assert(kMotorRunMinimumPower > 0.0 &&
+                  kMotorRunMinimumPower <= kMotorStartMinimumPower &&
+                  kMotorStartMinimumPower < kOperationalMaximumReferencePower,
+              "Os pisos de partida e movimento devem caber na faixa operacional.");
+static_assert(kCorner90PivotStartPower >= kMotorStartMinimumPower &&
+                  kCorner90PivotStartPower <= kOperationalMaximumReferencePower &&
+                  kCorner90MotionConfirmationTimeoutMs > 0 &&
+                  kCorner90LineLossTimeoutMs >
+                      kCorner90MotionConfirmationTimeoutMs &&
+                  kCorner90MaximumYawDegrees > 90.0 &&
+                  kCorner90MaximumYawDegrees < 180.0,
+              "Os limites de segurança do pivot devem ser coerentes.");
+static_assert(kMotorRunConfirmationMinimumRateCountsPerSecond > 0.0 &&
+                  kMotorRunConfirmationSamples > 0 && kMotorRunLossSamples > 0,
+              "A confirmação de movimento pelos encoders deve ser positiva.");
 
 // O sincronismo atua somente quando os dois lados avançam ou recuam juntos.
 // Ele reduz gradualmente o lado mais rápido, mas o PWM corrigido nunca pode
-// ficar abaixo do piso operacional de 0,69 enquanto o comando for diferente de zero.
+// ficar abaixo do piso de execução de 0,61 enquanto o comando for diferente de zero.
 constexpr int kEncoderSyncTelemetryMaxAgeMs = 250;
 constexpr double kEncoderSyncMinimumRateCountsPerSecond = 100.0;
 constexpr double kEncoderSyncMinimumAppliedPower = 0.10;
 constexpr double kEncoderSyncEfficiencyFilterAlpha = 0.25;
 constexpr int kEncoderSyncWarmupSamples = 3;
 constexpr double kEncoderSyncMaximumScaleStepPerSample = 0.03;
-// Mesmo na referência máxima, esta escala produz exatamente o piso de 0,69.
+// Mesmo na referência máxima, esta escala produz exatamente o piso de 0,61.
 // Para referências menores, o MotorController calcula um limite ainda maior.
 constexpr double kEncoderSyncMinimumScale =
-    kOperationalMinimumMotorPower / kOperationalMaximumReferencePower;
+    kMotorRunMinimumPower / kOperationalMaximumReferencePower;
 constexpr double kEncoderSyncEfficiencyDeadbandRatio = 0.02;
 
 static_assert(kEncoderSyncTelemetryMaxAgeMs > 0 &&
@@ -132,7 +219,7 @@ constexpr double kGreenTurnAroundTargetDegrees = 180.0;
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
 // Comando lógico usado durante os giros por IMU e nas correções.
-// O perfil operacional transforma 0,01 em 0,69 nos dois lados; como eles giram
+// O perfil operacional transforma 0,01 em 0,67 na partida dos dois lados; como eles giram
 // em sentidos opostos, o sincronismo por encoder permanece desativado.
 constexpr double kTurn90CommandPower = 0.01;
 
@@ -188,7 +275,7 @@ constexpr double kDriveDistanceMinimumTargetCm = 1.0;
 constexpr double kDriveDistanceMaximumTargetCm = 300.0;
 
 // Comando lógico para andar em linha reta no teste de distância. O perfil parte
-// de 0,69 / 0,69 e o sincronismo reduz o lado mecanicamente mais rápido.
+// de 0,67 / 0,67 e o sincronismo reduz o lado mecanicamente mais rápido.
 constexpr double kDriveDistanceCommandPower = 0.01;
 
 // Horizonte, em segundos, somado à idade da telemetria para prever quantas
@@ -218,7 +305,7 @@ constexpr double kDriveDistanceMinimumProgressCounts = 10.0;
 constexpr int kDriveDistanceTimeoutMs = 60000;
 
 // Comando lógico de avanço reto durante o gap. O perfil operacional transforma
-// este valor no piso de 0,69 e mantém o sincronismo dos dois lados por encoder.
+// este valor no piso de partida de 0,67 e mantém o sincronismo dos dois lados por encoder.
 constexpr double kGapDriveCommandPower = 0.01;
 
 static_assert(kEncoderCountsPerCentimeter > 0.0,

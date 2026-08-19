@@ -210,11 +210,12 @@ def resolve_green_experiment_mode(
         return "B", True, False
     return "A", True, True
 
-# Limites iniciais deliberadamente amplos para o verde. Estes valores ainda
-# precisam de calibração física sob a iluminação da pista da competição.
+# A câmera da pista mostrou que o branco sob iluminação esverdeada chega a
+# saturação 136. Exigir 140 preserva o cartão verde saturado e bloqueia esse
+# falso positivo antes de qualquer geometria ou decisão autônoma.
 GREEN_HUE_MIN = 40
 GREEN_HUE_MAX = 90
-GREEN_SATURATION_MIN = 70
+GREEN_SATURATION_MIN = 140
 GREEN_VALUE_MIN = 60
 GREEN_OPEN_KERNEL_SIZE = 5
 GREEN_CLOSE_KERNEL_SIZE = 5
@@ -258,6 +259,10 @@ GREEN_ROI_MIN_BLACK_RATIO = 0.25
 GREEN_GUIDANCE_TARGET_OFFSET_RATIO = 30.0 / 320.0
 # Mantém a orientação durante meio segundo depois da última leitura válida.
 GREEN_DIRECTION_RETENTION_SECONDS = 0.5
+# Quando o marcador cobre a faixa preta, a última geometria visual válida pode
+# associar o verde por uma janela curta. Isso não reutiliza IPC antigo nem
+# libera movimento: a Missão Principal ainda para e confirma três frames.
+GREEN_OCCLUSION_AXIS_HOLD_SECONDS = 0.40
 # A aproximação limita 70 unidades de velocidade a 50 no código de referência.
 GREEN_APPROACH_SPEED_RATIO = 50.0 / 70.0
 
@@ -293,12 +298,21 @@ CAMERA_CONTRAST = 1.05
 CAMERA_SATURATION = 1.0
 CAMERA_EXPOSURE_VALUE = 0.4
 
+# Referência da geometria inferior validada em 640×480. Os kernels e limites
+# em pixels são redimensionados pela altura real do frame para não ficarem
+# presos a uma resolução específica.
+DOWNWARD_REFERENCE_FRAME_HEIGHT = 480
+
 # A prévia usa a mesma escala normalizada de potência dos motores.
 # A base coincide com o piso operacional necessário para iniciar o movimento.
-# Nenhum motor do robô gira de forma confiável abaixo de 0,69.
+# O fallback visual e os estados especiais preservam 0,69 como referência segura.
+# O Pure Pursuit pode reduzir a roda interna para 0,61 após a confirmação do encoder.
 # Zero continua reservado para parada real.
 MINIMUM_MOTOR_PREVIEW = 0.69
 BASE_SPEED_PREVIEW = MINIMUM_MOTOR_PREVIEW
+# O Pure Pursuit pode pedir 0,61 na roda interna já em movimento. A confirmação
+# do encoder e o piso de partida de 0,67 permanecem no MotorController.
+TRACKING_RUN_MINIMUM_MOTOR_PREVIEW = 0.61
 KP_PREVIEW = 0.30
 MAX_CORRECTION_PREVIEW = 0.25
 # O preview adaptativo permanece apenas no fallback FAR/NEAR e na telemetria
@@ -309,6 +323,9 @@ HEADING_STRAIGHT = 0.03
 HEADING_CURVE = 0.20
 # A deadband contínua remove ruído sem criar um salto na borda da faixa neutra.
 ERROR_DEADBAND = 0.03
+# A zona morta do Pure Pursuit é menor que a dos fallbacks de recuperação.
+# Isso permite iniciar correções suaves antes que o desvio visual fique grande.
+TRACKING_DEADBAND = 0.025
 K_CONTROL = 1.60
 # O derivativo usa segundos e atua somente sobre a medição NEAR filtrada.
 D_FILTER_ALPHA = 0.25
@@ -359,6 +376,56 @@ VISUAL_PURSUIT_MIN_LOOKAHEAD = 0.35
 VISUAL_PURSUIT_CURVATURE_GAIN = 1.0
 VISUAL_PURSUIT_CORRECTION_GAIN = 0.30
 
+# Limites de variação da correção de steering no tracking visual normal.
+# As unidades são correção normalizada por segundo; o limitador usa o tempo
+# monotônico real entre frames, nunca um incremento fixo por frame.
+STEER_RISE_RATE = 1.8
+STEER_RELEASE_RATE = 2.5
+# Uma pausa longa na captura não pode liberar uma variação grande de uma vez.
+# Nessa situação o limitador descarta o histórico e recomeça de zero.
+STEER_SLEW_RESET_DT_SECONDS = 0.25
+# O cotovelo é medido nos centros brutos da faixa, sem exigir que o fit
+# quadrático represente uma descontinuidade. Os ângulos usam zero para frente,
+# positivo para direita e negativo para esquerda.
+CORNER90_MIN_SAMPLES = 8
+CORNER90_SEGMENT_SAMPLES = 3
+CORNER90_MIN_SEGMENT_FORWARD_SPAN = 0.08
+CORNER90_MAX_NEAR_HEADING_DEGREES = 35.0
+CORNER90_MIN_FAR_HEADING_DEGREES = 55.0
+CORNER90_MIN_HEADING_CHANGE_DEGREES = 70.0
+# A margem de saída é deliberadamente mais ampla que a de entrada. Quando a
+# nova faixa já foi adquirida, o Pure Pursuit deve corrigir o restante sem o
+# pivô insistir em um alinhamento perfeito no próprio cotovelo.
+CORNER90_MAX_CENTER_ERROR = 0.20
+CORNER90_EXIT_MAX_CENTER_ERROR = 0.30
+CORNER90_EXIT_MAX_HEADING_DEGREES = 50.0
+# Após o cotovelo desaparecer, esta margem visual permite que o Pure Pursuit
+# corrija a nova faixa sem exigir FAR, fit ou alinhamento perfeito no pivô.
+CORNER90_PURE_PURSUIT_HANDOFF_MAX_CENTER_ERROR = 0.45
+CORNER90_CONFIRM_FRAMES = 3
+# Quatro imagens visuais evitam que a reta de chegada encerre o pivot cedo.
+CORNER90_EXIT_ALIGNMENT_FRAMES = 4
+# Depois do handoff, o candidato precisa sumir por três imagens antes de outro
+# cotovelo poder ser armado. Isso impede repetir o mesmo ramo já atravessado.
+CORNER90_REARM_CLEAR_FRAMES = 3
+# O detector dedicado procura uma barra transversal conectada à faixa próxima.
+# Três linhas confirmam geometria real sem reagir a um único ruído da máscara.
+CORNER90_MIN_HORIZONTAL_ROWS = 3
+CORNER90_MIN_HORIZONTAL_BRANCH_RATIO = 0.12
+CORNER90_MIN_APPROACH_RATIO = 0.12
+# Quando o cotovelo aparece distante, a junção pode ter uma pequena falha na
+# máscara. Neste caso, a banda FAR larga confirma o ramo transversal visível.
+CORNER90_MIN_FAR_BRANCH_WIDTH_RATIO = 0.20
+CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO = 1.50
+CORNER90_MIN_FAR_LATERAL_RATIO = 0.25
+CORNER90_MAX_NEAR_CENTER_RATIO = CORNER90_MAX_CENTER_ERROR
+# O ramo distante confirma que existe um cotovelo, mas não significa que o
+# centro do robô já alcançou o ponto de giro. O pivô só pode começar quando
+# Valor zero desativa a espera por proximidade: a geometria conectada forte
+# pode iniciar a confirmação assim que aparecer. Um ramo isolado na FAR ainda
+# não comanda pivot, pois não é candidato de atuação.
+CORNER90_MIN_ENTRY_PROGRESS_RATIO = 0.0
+
 # Cada papel define de forma independente a captura e os parâmetros visuais.
 # O perfil inferior não herda ROIs nem limites em pixels da câmera frontal.
 CAMERA_PROFILES = {
@@ -379,6 +446,7 @@ CAMERA_PROFILES = {
             "near_band_start_ratio": 0.65,
             "near_band_end_ratio": 0.85,
             "near_deadzone_ratio": 0.10,
+            "tracking_deadzone_ratio": 0.10,
             "pixel_ruler_step_ratio": 20.0 / 960.0,
             "overlay_line_thickness": 2,
             "overlay_thin_line_thickness": 1,
@@ -393,7 +461,7 @@ CAMERA_PROFILES = {
     },
     "down": {
         "role": "down",
-        "main_size": (640, 480),
+        "main_size": (480, 360),
         "sensor_size": (1640, 1232),
         "sensor_bit_depth": 10,
         "target_fps": 30,
@@ -402,8 +470,8 @@ CAMERA_PROFILES = {
             # A câmera inferior perdeu a iluminação dedicada. O fechamento
             # grande estima a claridade do piso ao redor da fita e evita que
             # papel branco sombreado seja classificado como linha preta.
-            # 201 px é maior que a espessura aparente esperada da fita em
-            # 640×480. Reduzir demais esse valor pode apagar o centro da linha.
+            # Valor de referência em 640×480. A criação da máscara escala para
+            # a altura recebida: em 480×360, 201 vira 151.
             "line_background_kernel_size": 201,
             # Um pixel precisa estar pelo menos 32% abaixo do fundo local.
             # Aumentar este valor aceita linhas com menos contraste, mas também
@@ -413,9 +481,8 @@ CAMERA_PROFILES = {
             # A unidade é o nível de cinza de 8 bits, entre 0 e 255. Aumentar o
             # limite aceita sombras; reduzir demais pode perder uma fita clara.
             "line_max_brightness": 110,
-            # A abertura elíptica 17×17 elimina frestas com menos de 17 px em
-            # qualquer direção. A fita válida deve ter pelo menos 20 px; elevar
-            # este valor pode apagar a linha real quando ela estiver distante.
+            # Valores de referência em 640×480; são sempre escalados para
+            # kernels ímpares antes da morfologia (17 vira 13 e 7 vira 5).
             "open_kernel_shape": "ellipse",
             "open_kernel_size": 17,
             # O fechamento 7×7 preenche pequenas falhas sem unir objetos
@@ -434,7 +501,7 @@ CAMERA_PROFILES = {
             "far_band_end_ratio": 0.20,
             "near_band_start_ratio": 0.65,
             "near_band_end_ratio": 0.85,
-            # As coordenadas usam o frame de referência 640x480 validado na Pi 4.
+            # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se
             # a altura real do frame for diferente durante um diagnóstico.
             "geometry_reference": {
@@ -450,6 +517,7 @@ CAMERA_PROFILES = {
                 "gap_endpoint_y": (19, 180),
             },
             "near_deadzone_ratio": 0.10,
+            "tracking_deadzone_ratio": TRACKING_DEADBAND,
             "gap_detection_enabled": True,
             # O alinhamento compara o quarto superior e o quarto inferior do
             # mesmo segmento. Quarenta pixels garantem distância longitudinal
@@ -470,6 +538,7 @@ CAMERA_PROFILES = {
             "base_speed_preview": 0.70,
             "balanced_differential_mixing": True,
             "minimum_tracking_power": MINIMUM_MOTOR_PREVIEW,
+            "visual_tracking_minimum_power": TRACKING_RUN_MINIMUM_MOTOR_PREVIEW,
             "green_detection_enabled": True,
             "pixel_ruler_step_ratio": 16.0 / 640.0,
             "overlay_line_thickness": 2,
@@ -494,7 +563,7 @@ display_mode_lock = threading.Lock()
 
 
 def normalize_display_mode(value):
-    """Mantém o modo visual dentro das três opções aceitas pelo dashboard."""
+    """Mantém o modo visual dentro das duas opções aceitas pelo dashboard."""
 
     normalized = str(value or "").strip().lower()
     return normalized if normalized in DISPLAY_MODES else DISPLAY_MODE_REAL
@@ -534,7 +603,8 @@ def create_display_frame(
     if normalized_mode == DISPLAY_MODE_LINE:
         line_roi = display_frame[roi_start_y:raw_frame.shape[0], :]
         line_roi[line_candidate_mask > 0] = (255, 255, 255)
-    else:
+        # A máscara HSV verde aparece junto da faixa preta para depuração sem
+        # exigir uma segunda aba nem reativar textos sobre o vídeo.
         useful_green_region = display_frame[:green_mask.shape[0], :]
         useful_green_region[green_mask > 0] = (0, 255, 0)
     return display_frame
@@ -576,34 +646,107 @@ def select_visible_green_candidates(
     ]
 
 
+def select_strong_green_candidates(candidates, line_axis, raw_interpretation):
+    """Retorna candidatos brutos válidos sem aguardar a confirmação temporal."""
+
+    if raw_interpretation not in VISIBLE_GREEN_INTERPRETATIONS:
+        return []
+    return [
+        candidate
+        for candidate in candidates
+        if classify_green_candidate_vote(candidate, line_axis)[0] == "VALIDO"
+    ]
+
+
+def draw_green_decision_symbol(display_frame, center, interpretation, accepted):
+    """Desenha símbolos geométricos leves, sem renderizar texto no vídeo."""
+
+    color = (64, 255, 96) if accepted else (0, 220, 255)
+    center_x, center_y = center
+    if interpretation == "RETORNO_180":
+        cv2.ellipse(
+            display_frame,
+            center,
+            (10, 10),
+            0,
+            25,
+            330,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.arrowedLine(
+            display_frame,
+            (center_x + 7, center_y - 7),
+            (center_x + 11, center_y - 2),
+            color,
+            1,
+            cv2.LINE_AA,
+            tipLength=0.45,
+        )
+    elif interpretation in ("ESQUERDA", "DIREITA"):
+        direction = -1 if interpretation == "ESQUERDA" else 1
+        cv2.arrowedLine(
+            display_frame,
+            (center_x, center_y + 10),
+            (center_x + direction * 14, center_y + 10),
+            color,
+            1,
+            cv2.LINE_AA,
+            tipLength=0.40,
+        )
+
+    if accepted:
+        cv2.line(
+            display_frame,
+            (center_x - 7, center_y - 7),
+            (center_x - 3, center_y - 3),
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            display_frame,
+            (center_x - 3, center_y - 3),
+            (center_x + 6, center_y - 12),
+            color,
+            2,
+            cv2.LINE_AA,
+        )
+    else:
+        diamond = np.asarray([
+            (center_x, center_y - 6),
+            (center_x + 6, center_y),
+            (center_x, center_y + 6),
+            (center_x - 6, center_y),
+        ], dtype=np.int32)
+        cv2.polylines(display_frame, [diamond], True, color, 1, cv2.LINE_AA)
+
+
 def draw_green_candidate_overlays(
     display_frame,
     candidates,
     interpretation,
+    accepted,
 ):
-    """Desenha somente candidatos verdes já validados e confirmados."""
+    """Desenha o candidato forte ou a decisão verde já aceita."""
 
-    accepted_color = (64, 255, 96)
-    for candidate_id, candidate in enumerate(candidates, start=1):
-        direction = green_candidate_direction(candidate, interpretation)
+    color = (64, 255, 96) if accepted else (0, 220, 255)
+    for candidate in candidates:
         center = tuple(int(round(value)) for value in candidate["centroid"])
         cv2.drawContours(
             display_frame,
             [candidate["contour"]],
             -1,
-            accepted_color,
+            color,
             1,
         )
-        cv2.circle(display_frame, center, 3, accepted_color, -1)
-        cv2.putText(
+        cv2.circle(display_frame, center, 3, color, -1)
+        draw_green_decision_symbol(
             display_frame,
-            f"C{candidate_id} VERDE {direction}",
-            (center[0] + 5, max(12, center[1] - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.38,
-            accepted_color,
-            1,
-            cv2.LINE_AA,
+            center,
+            interpretation,
+            accepted,
         )
 
 
@@ -611,32 +754,26 @@ def draw_line_mode_green_overlays(
     display_frame,
     candidates,
     interpretation,
+    accepted,
 ):
-    """Desenha na máscara de linha somente verdes válidos e confirmados."""
+    """Desenha na máscara de linha o candidato forte ou o verde aceito."""
 
     for candidate in candidates:
+        color = (0, 255, 0) if accepted else (0, 220, 255)
         cv2.drawContours(
             display_frame,
             [candidate["contour"]],
             -1,
-            (0, 255, 0),
+            color,
             2,
         )
         center = tuple(int(round(value)) for value in candidate["centroid"])
-        cv2.circle(display_frame, center, 3, (0, 255, 0), -1)
-        if interpretation == "RETORNO_180":
-            candidate_letter = "R"
-        else:
-            candidate_letter = "E" if candidate["side"] == "ESQUERDA" else "D"
-        cv2.putText(
+        cv2.circle(display_frame, center, 3, color, -1)
+        draw_green_decision_symbol(
             display_frame,
-            candidate_letter,
-            (center[0] + 5, max(12, center[1] - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (0, 255, 0),
-            1,
-            cv2.LINE_AA,
+            center,
+            interpretation,
+            accepted,
         )
 
 
@@ -665,12 +802,6 @@ def green_status_overlay(green_processing_enabled, green_status):
     ):
         return text, (64, 255, 96)
     return text, (220, 220, 220)
-
-
-def put_debug_text(enabled, *args, **kwargs):
-    """Desenha textos de diagnóstico somente quando o overlay está habilitado."""
-    if enabled:
-        cv2.putText(*args, **kwargs)
 
 
 def calculate_heading_error(near_error, far_error):
@@ -842,6 +973,290 @@ class NearDerivativeFilter:
         return self.filtered_derivative
 
 
+class SteeringSlewRateLimiter:
+    """Limita a variação temporal da correção sem alterar o controlador visual."""
+
+    def __init__(self, rise_rate=STEER_RISE_RATE, release_rate=STEER_RELEASE_RATE):
+        self.rise_rate = float(rise_rate)
+        self.release_rate = float(release_rate)
+        self.applied_correction = 0.0
+        self.previous_time = None
+
+    def reset(self):
+        """Descarta a correção anterior ao sair do tracking visual normal."""
+
+        self.applied_correction = 0.0
+        self.previous_time = None
+
+    def update(self, target_correction, timestamp_seconds):
+        """Aproxima a correção-alvo usando o dt real e evita cruzar o zero em salto."""
+
+        safe_target = max(
+            -MAX_CORRECTION_PREVIEW,
+            min(float(target_correction), MAX_CORRECTION_PREVIEW),
+        )
+        current_time = float(timestamp_seconds)
+        if not math.isfinite(current_time):
+            self.reset()
+            return 0.0, 0.0
+
+        if self.previous_time is None:
+            self.previous_time = current_time
+            rate = self.rise_rate if safe_target != 0.0 else self.release_rate
+            return self.applied_correction, rate
+
+        delta_time = current_time - self.previous_time
+        self.previous_time = current_time
+        if (
+            not math.isfinite(delta_time)
+            or delta_time <= 0.0
+            or delta_time > STEER_SLEW_RESET_DT_SECONDS
+        ):
+            self.applied_correction = 0.0
+            return 0.0, 0.0
+
+        current = self.applied_correction
+        changing_sign = current != 0.0 and safe_target * current < 0.0
+        magnitude_increasing = abs(safe_target) > abs(current)
+        rate = (
+            self.release_rate
+            if changing_sign or not magnitude_increasing
+            else self.rise_rate
+        )
+        maximum_delta = rate * delta_time
+
+        if changing_sign:
+            # Antes de aceitar o novo sentido, a correção deve chegar a zero.
+            next_correction = current - math.copysign(
+                min(abs(current), maximum_delta), current
+            )
+        elif safe_target > current:
+            next_correction = min(current + maximum_delta, safe_target)
+        else:
+            next_correction = max(current - maximum_delta, safe_target)
+
+        self.applied_correction = max(
+            -MAX_CORRECTION_PREVIEW,
+            min(next_correction, MAX_CORRECTION_PREVIEW),
+        )
+        return self.applied_correction, rate
+
+
+class Corner90ConfirmationTracker:
+    """Confirma o mesmo cotovelo em frames novos antes de liberar o pivot."""
+
+    def __init__(self):
+        self.direction = "NONE"
+        self.confirm_frames = 0
+        self.awaiting_exit_alignment = False
+        self.exit_alignment_frames = 0
+        self.exit_completed = False
+        self.rearm_active = False
+        self.rearm_clear_frames = 0
+
+    def reset(self):
+        """Descarta uma hipótese ao perder a geometria ou entrar em exceção."""
+
+        self.direction = "NONE"
+        self.confirm_frames = 0
+        self.awaiting_exit_alignment = False
+        self.exit_alignment_frames = 0
+        self.exit_completed = False
+        self.rearm_active = False
+        self.rearm_clear_frames = 0
+
+    def update(self, trajectory, detection_allowed):
+        """Atualiza a confirmação sem deixar gap ou verde acumularem frames."""
+
+        if self.exit_completed:
+            # A quarta imagem alinhada já foi publicada para a Missão
+            # Principal. No frame seguinte, uma nova hipótese começa do zero.
+            completed_direction = self.direction
+            self.reset()
+            self.direction = completed_direction
+            self.rearm_active = True
+
+        candidate = bool(trajectory.get("corner90_candidate", False))
+        direction = str(trajectory.get("corner90_direction", "NONE"))
+        if self.rearm_active:
+            if detection_allowed and not candidate:
+                self.rearm_clear_frames = min(
+                    CORNER90_REARM_CLEAR_FRAMES,
+                    self.rearm_clear_frames + 1,
+                )
+            else:
+                self.rearm_clear_frames = 0
+
+            if self.rearm_clear_frames >= CORNER90_REARM_CLEAR_FRAMES:
+                self.rearm_active = False
+
+            trajectory["corner90_candidate"] = False
+            trajectory["corner90_direction"] = self.direction
+            trajectory["corner90_confirm_frames"] = 0
+            trajectory["corner90_exit_alignment"] = False
+            trajectory["corner90_state"] = "rearming"
+            return
+
+        # Depois de confirmado, candidatos da geometria antiga não podem manter
+        # o pivô para sempre. Nesta fase só a nova linha alinhada pode encerrá-lo.
+        if self.awaiting_exit_alignment and detection_allowed:
+            candidate_still_visible = bool(
+                trajectory.get("corner90_candidate", False)
+            )
+            raw_exit_alignment = bool(
+                not candidate_still_visible
+                and trajectory.get("corner90_exit_alignment", False)
+            )
+            if raw_exit_alignment:
+                self.exit_alignment_frames = min(
+                    CORNER90_EXIT_ALIGNMENT_FRAMES,
+                    self.exit_alignment_frames + 1,
+                )
+            else:
+                self.exit_alignment_frames = 0
+            trajectory["corner90_candidate"] = False
+            trajectory["corner90_direction"] = self.direction
+            trajectory["corner90_confirm_frames"] = self.confirm_frames
+            trajectory["corner90_exit_alignment"] = raw_exit_alignment
+            trajectory["corner90_state"] = (
+                "exit_aligned" if raw_exit_alignment else "pivoting"
+            )
+            self.exit_completed = (
+                self.exit_alignment_frames >= CORNER90_EXIT_ALIGNMENT_FRAMES
+            )
+            return
+
+        if (
+            detection_allowed
+            and candidate
+            and direction in ("LEFT", "RIGHT")
+        ):
+            self.exit_alignment_frames = 0
+            if direction == self.direction:
+                self.confirm_frames = min(
+                    CORNER90_CONFIRM_FRAMES,
+                    self.confirm_frames + 1,
+                )
+            else:
+                self.direction = direction
+                self.confirm_frames = 1
+            trajectory["corner90_exit_alignment"] = False
+            trajectory["corner90_confirm_frames"] = self.confirm_frames
+            trajectory["corner90_state"] = (
+                "confirmed"
+                if self.confirm_frames >= CORNER90_CONFIRM_FRAMES
+                else "confirming"
+            )
+            return
+
+        if (
+            detection_allowed
+            and self.confirm_frames >= CORNER90_CONFIRM_FRAMES
+        ):
+            # A geometria antiga precisa desaparecer antes de procurar a saída.
+            # Assim, a reta de chegada ao cotovelo não encerra o pivô cedo.
+            self.awaiting_exit_alignment = True
+            raw_exit_alignment = bool(
+                trajectory.get("corner90_exit_alignment", False)
+            )
+            if raw_exit_alignment:
+                self.exit_alignment_frames = min(
+                    CORNER90_EXIT_ALIGNMENT_FRAMES,
+                    self.exit_alignment_frames + 1,
+                )
+            else:
+                self.exit_alignment_frames = 0
+            trajectory["corner90_candidate"] = False
+            trajectory["corner90_direction"] = self.direction
+            trajectory["corner90_confirm_frames"] = self.confirm_frames
+            trajectory["corner90_exit_alignment"] = raw_exit_alignment
+            trajectory["corner90_state"] = (
+                "exit_aligned" if raw_exit_alignment else "pivoting"
+            )
+            self.exit_completed = (
+                self.exit_alignment_frames >= CORNER90_EXIT_ALIGNMENT_FRAMES
+            )
+            return
+
+        self.reset()
+        trajectory["corner90_candidate"] = False
+        trajectory["corner90_direction"] = "NONE"
+        trajectory["corner90_confirm_frames"] = 0
+        trajectory["corner90_exit_alignment"] = False
+        trajectory["corner90_state"] = "idle"
+
+
+def mix_fallback_correction(vision_profile, correction):
+    """Converte a correção já limitada em prévias FAR/NEAR sem alterar seus ganhos."""
+
+    base_speed_preview = vision_profile.get(
+        "base_speed_preview", BASE_SPEED_PREVIEW
+    )
+    if vision_profile.get("balanced_differential_mixing", False):
+        minimum_tracking_power = vision_profile["minimum_tracking_power"]
+        maximum_balanced_delta = base_speed_preview - minimum_tracking_power
+        balanced_delta = max(
+            -maximum_balanced_delta,
+            min(correction / 2.0, maximum_balanced_delta),
+        )
+        left_preview = base_speed_preview + balanced_delta
+        right_preview = base_speed_preview - balanced_delta
+    elif correction > 0.0:
+        left_preview = base_speed_preview + correction
+        right_preview = base_speed_preview
+    elif correction < 0.0:
+        left_preview = base_speed_preview
+        right_preview = base_speed_preview + abs(correction)
+    else:
+        left_preview = base_speed_preview
+        right_preview = base_speed_preview
+
+    return (
+        min(left_preview, MAX_OPERATIONAL_PREVIEW),
+        min(right_preview, MAX_OPERATIONAL_PREVIEW),
+    )
+
+
+def mix_visual_pursuit_correction(vision_profile, correction):
+    """Converte a correção já limitada em diferencial contínuo do Pure Pursuit."""
+
+    base_speed = vision_profile.get("base_speed_preview", BASE_SPEED_PREVIEW)
+    if correction == 0.0:
+        return base_speed, base_speed
+
+    if vision_profile.get("balanced_differential_mixing", False):
+        # O diferencial fica centrado na velocidade base. Quando uma roda cairia
+        # abaixo do piso mecânico, ambas são elevadas igualmente; assim o arco
+        # pedido é preservado sem produzir comando incapaz de mover um motor.
+        left_preview = base_speed + correction * 0.5
+        right_preview = base_speed - correction * 0.5
+        minimum_power = vision_profile.get(
+            "visual_tracking_minimum_power",
+            vision_profile["minimum_tracking_power"],
+        )
+        minimum_preview = min(left_preview, right_preview)
+        if minimum_preview < minimum_power:
+            lift = minimum_power - minimum_preview
+            left_preview += lift
+            right_preview += lift
+        maximum_preview = max(left_preview, right_preview)
+        if maximum_preview > MAX_OPERATIONAL_PREVIEW:
+            reduction = maximum_preview - MAX_OPERATIONAL_PREVIEW
+            left_preview -= reduction
+            right_preview -= reduction
+    elif correction > 0.0:
+        left_preview = base_speed + correction
+        right_preview = base_speed
+    else:
+        left_preview = base_speed
+        right_preview = base_speed + abs(correction)
+
+    return (
+        max(0.0, min(left_preview, MAX_OPERATIONAL_PREVIEW)),
+        max(0.0, min(right_preview, MAX_OPERATIONAL_PREVIEW)),
+    )
+
+
 def calculate_control_preview(
     vision_profile,
     near_valid,
@@ -867,14 +1282,9 @@ def calculate_control_preview(
     guidance_error = control_terms["control_error"]
 
     deadzone_ratio = vision_profile["near_deadzone_ratio"]
-    base_speed_preview = vision_profile.get(
-        "base_speed_preview", BASE_SPEED_PREVIEW
-    )
     if abs(guidance_error) <= deadzone_ratio:
         control_error = 0.0
         correction = 0.0
-        left_preview = base_speed_preview
-        right_preview = base_speed_preview
     else:
         error_sign = 1.0 if guidance_error > 0.0 else -1.0
         control_error = error_sign * (
@@ -885,30 +1295,10 @@ def calculate_control_preview(
             -MAX_CORRECTION_PREVIEW,
             min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
         )
-        if vision_profile.get("balanced_differential_mixing", False):
-            minimum_tracking_power = vision_profile["minimum_tracking_power"]
-            maximum_balanced_delta = (
-                base_speed_preview - minimum_tracking_power
-            )
-            requested_delta = correction / 2.0
-            balanced_delta = max(
-                -maximum_balanced_delta,
-                min(requested_delta, maximum_balanced_delta),
-            )
-            left_preview = base_speed_preview + balanced_delta
-            right_preview = base_speed_preview - balanced_delta
-        elif correction > 0.0:
-            left_preview = base_speed_preview + correction
-            right_preview = base_speed_preview
-        elif correction < 0.0:
-            left_preview = base_speed_preview
-            right_preview = base_speed_preview + abs(correction)
-        else:
-            left_preview = base_speed_preview
-            right_preview = base_speed_preview
 
-    left_preview = min(left_preview, MAX_OPERATIONAL_PREVIEW)
-    right_preview = min(right_preview, MAX_OPERATIONAL_PREVIEW)
+    left_preview, right_preview = mix_fallback_correction(
+        vision_profile, correction
+    )
     return (
         guidance_error,
         control_error,
@@ -931,7 +1321,10 @@ def calculate_visual_pursuit_preview(vision_profile, curvature):
             1.0,
         ),
     )
-    deadzone_ratio = vision_profile["near_deadzone_ratio"]
+    deadzone_ratio = vision_profile.get(
+        "tracking_deadzone_ratio",
+        vision_profile["near_deadzone_ratio"],
+    )
     if abs(control_error) <= deadzone_ratio:
         steering_error = 0.0
     else:
@@ -947,36 +1340,9 @@ def calculate_visual_pursuit_preview(vision_profile, curvature):
         ),
     )
 
-    base_speed = vision_profile.get("base_speed_preview", BASE_SPEED_PREVIEW)
-    if correction == 0.0:
-        return control_error, steering_error, 0.0, base_speed, base_speed
-
-    if vision_profile.get("balanced_differential_mixing", False):
-        # O diferencial fica centrado na velocidade base. Quando uma roda cairia
-        # abaixo do piso mecânico, ambas são elevadas igualmente; assim o arco
-        # pedido é preservado sem produzir comando incapaz de mover um motor.
-        left_preview = base_speed + correction * 0.5
-        right_preview = base_speed - correction * 0.5
-        minimum_power = vision_profile["minimum_tracking_power"]
-        minimum_preview = min(left_preview, right_preview)
-        if minimum_preview < minimum_power:
-            lift = minimum_power - minimum_preview
-            left_preview += lift
-            right_preview += lift
-        maximum_preview = max(left_preview, right_preview)
-        if maximum_preview > MAX_OPERATIONAL_PREVIEW:
-            reduction = maximum_preview - MAX_OPERATIONAL_PREVIEW
-            left_preview -= reduction
-            right_preview -= reduction
-    elif correction > 0.0:
-        left_preview = base_speed + correction
-        right_preview = base_speed
-    else:
-        left_preview = base_speed
-        right_preview = base_speed + abs(correction)
-
-    left_preview = max(0.0, min(left_preview, MAX_OPERATIONAL_PREVIEW))
-    right_preview = max(0.0, min(right_preview, MAX_OPERATIONAL_PREVIEW))
+    left_preview, right_preview = mix_visual_pursuit_correction(
+        vision_profile, correction
+    )
     return (
         control_error,
         steering_error,
@@ -1234,9 +1600,7 @@ def tune_camera_image(picam2):
 def create_line_binary_mask(gray_roi, vision_profile):
     """Separa a fita preta usando o método configurado para cada câmera."""
 
-    background_kernel_size = vision_profile.get(
-        "line_background_kernel_size",
-    )
+    background_kernel_size = vision_profile.get("line_background_kernel_size")
     if background_kernel_size is None:
         _, binary_mask = cv2.threshold(
             gray_roi,
@@ -1269,6 +1633,26 @@ def create_line_binary_mask(gray_roi, vision_profile):
     return np.where(black_pixels, 255, 0).astype(np.uint8)
 
 
+def scaled_odd_kernel_size(reference_size, frame_height):
+    """Escala um kernel de referência e mantém o tamanho ímpar mínimo de 3."""
+
+    scaled = int(round(
+        float(reference_size) * float(frame_height) /
+        DOWNWARD_REFERENCE_FRAME_HEIGHT
+    ))
+    scaled = max(3, scaled)
+    return scaled if scaled % 2 == 1 else scaled + 1
+
+
+def scaled_reference_pixels(reference_value, frame_height, minimum=1.0):
+    """Escala uma distância de referência vertical para o frame processado."""
+
+    scaled = float(reference_value) * float(frame_height) / (
+        DOWNWARD_REFERENCE_FRAME_HEIGHT
+    )
+    return max(float(minimum), scaled)
+
+
 def create_filtered_line_mask(frame, vision_profile):
     """Segmenta a linha preta na parte inferior sem gerar decisões de controle."""
 
@@ -1277,20 +1661,33 @@ def create_filtered_line_mask(frame, vision_profile):
     line_roi = frame[roi_start_y:frame_height, :]
     gray_roi = cv2.cvtColor(line_roi, cv2.COLOR_BGR2GRAY)
 
-    binary_mask = create_line_binary_mask(gray_roi, vision_profile)
+    scaled_profile = dict(vision_profile)
+    if "geometry_reference" in vision_profile:
+        if "line_background_kernel_size" in scaled_profile:
+            scaled_profile["line_background_kernel_size"] = scaled_odd_kernel_size(
+                scaled_profile["line_background_kernel_size"],
+                frame_height,
+            )
+        scaled_profile["open_kernel_size"] = scaled_odd_kernel_size(
+            vision_profile["open_kernel_size"], frame_height
+        )
+        scaled_profile["close_kernel_size"] = scaled_odd_kernel_size(
+            vision_profile["close_kernel_size"], frame_height
+        )
+    binary_mask = create_line_binary_mask(gray_roi, scaled_profile)
 
     open_kernel_shape = (
         cv2.MORPH_ELLIPSE
-        if vision_profile.get("open_kernel_shape") == "ellipse"
+        if scaled_profile.get("open_kernel_shape") == "ellipse"
         else cv2.MORPH_RECT
     )
     open_kernel = cv2.getStructuringElement(
         open_kernel_shape,
-        (vision_profile["open_kernel_size"], vision_profile["open_kernel_size"]),
+        (scaled_profile["open_kernel_size"], scaled_profile["open_kernel_size"]),
     )
     close_kernel = cv2.getStructuringElement(
         cv2.MORPH_RECT,
-        (vision_profile["close_kernel_size"], vision_profile["close_kernel_size"]),
+        (scaled_profile["close_kernel_size"], scaled_profile["close_kernel_size"]),
     )
     filtered_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, open_kernel)
     filtered_mask = cv2.morphologyEx(filtered_mask, cv2.MORPH_CLOSE, close_kernel)
@@ -1344,6 +1741,7 @@ def resolve_vision_geometry(frame_height, vision_profile):
             "gap_anchor_end_y": near_band_end_y,
             "gap_endpoint_start_y": near_band_start_y,
             "gap_endpoint_end_y": near_band_end_y,
+            "pixel_scale": 1.0,
         }
 
     reference_height = geometry_reference["frame_height"]
@@ -1389,6 +1787,7 @@ def resolve_vision_geometry(frame_height, vision_profile):
         "gap_anchor_end_y": gap_anchor_end_y,
         "gap_endpoint_start_y": gap_endpoint_start_y,
         "gap_endpoint_end_y": gap_endpoint_end_y,
+        "pixel_scale": float(frame_height) / float(reference_height),
     }
 
 
@@ -1505,9 +1904,17 @@ def analyze_line_band(
         "valid": False,
         "x": None,
         "center": None,
+        "bounding_width_px": 0,
+        "bounding_height_px": 0,
     }
     if selected_contour is None:
         return observation
+
+    _bounding_x, _bounding_y, bounding_width, bounding_height = cv2.boundingRect(
+        selected_contour
+    )
+    observation["bounding_width_px"] = int(bounding_width)
+    observation["bounding_height_px"] = int(bounding_height)
 
     component_mask = np.zeros_like(band, dtype=np.uint8)
     cv2.drawContours(
@@ -1565,6 +1972,14 @@ def empty_trajectory_result():
         "curvature": 0.0,
         "sample_points": [],
         "fit_points": [],
+        "corner90_candidate": False,
+        "corner90_direction": "NONE",
+        "corner90_angle": 0.0,
+        "corner90_near_heading": 0.0,
+        "corner90_far_heading": 0.0,
+        "corner90_confirm_frames": 0,
+        "corner90_state": "idle",
+        "corner90_exit_alignment": False,
     }
 
 
@@ -1787,6 +2202,337 @@ def select_visual_pursuit_lookahead(maximum_observed_y):
     return min(VISUAL_PURSUIT_LOOKAHEAD, float(maximum_observed_y))
 
 
+def calculate_segment_heading_degrees(normalized_points):
+    """Estima o heading local de uma parte reta das amostras brutas."""
+
+    if len(normalized_points) < 2:
+        return None
+
+    point_array = np.asarray(normalized_points, dtype=np.float64)
+    x_values = point_array[:, 0]
+    forward_values = point_array[:, 1]
+    forward_span = float(forward_values.max() - forward_values.min())
+    if forward_span < CORNER90_MIN_SEGMENT_FORWARD_SPAN:
+        return None
+
+    slope, _intercept = np.polyfit(forward_values, x_values, 1)
+    if not math.isfinite(float(slope)):
+        return None
+    return math.degrees(math.atan(float(slope)))
+
+
+def normalize_heading_delta_degrees(angle_degrees):
+    """Normaliza uma diferença angular para o intervalo fechado de -180 a 180."""
+
+    return (float(angle_degrees) + 180.0) % 360.0 - 180.0
+
+
+def corner90_turn_is_close_enough(turn_progress_ratio):
+    """Impede pivot antecipado quando o cotovelo ainda está distante na imagem."""
+
+    return (
+        math.isfinite(float(turn_progress_ratio))
+        and CORNER90_MIN_ENTRY_PROGRESS_RATIO
+        <= float(turn_progress_ratio) <= 1.0
+    )
+
+
+def corner90_visual_handoff_ready(corner_candidate, near_valid, near_error):
+    """Libera o retorno visual quando a nova NEAR já substituiu o cotovelo."""
+
+    return bool(
+        not corner_candidate
+        and near_valid
+        and near_error is not None
+        and math.isfinite(float(near_error))
+        and abs(float(near_error))
+        <= CORNER90_PURE_PURSUIT_HANDOFF_MAX_CENTER_ERROR
+    )
+
+
+def analyze_corner90_geometry(normalized_points, near_error):
+    """Reconhece um cotovelo pelos headings das partes próxima e distante."""
+
+    result = {
+        "corner90_candidate": False,
+        "corner90_direction": "NONE",
+        "corner90_angle": 0.0,
+        "corner90_near_heading": 0.0,
+        "corner90_far_heading": 0.0,
+        "corner90_exit_alignment": False,
+    }
+    if (
+        len(normalized_points) < CORNER90_MIN_SAMPLES
+        or near_error is None
+        or not math.isfinite(float(near_error))
+    ):
+        return result
+
+    sorted_points = sorted(normalized_points, key=lambda point: point[1])
+    segment_size = min(
+        CORNER90_SEGMENT_SAMPLES,
+        len(sorted_points) // 2,
+    )
+    if segment_size < 2:
+        return result
+
+    near_heading = calculate_segment_heading_degrees(
+        sorted_points[:segment_size]
+    )
+    far_heading = calculate_segment_heading_degrees(
+        sorted_points[-segment_size:]
+    )
+    if near_heading is None or far_heading is None:
+        return result
+
+    heading_change = normalize_heading_delta_degrees(
+        far_heading - near_heading
+    )
+    result["corner90_angle"] = float(heading_change)
+    result["corner90_near_heading"] = float(near_heading)
+    result["corner90_far_heading"] = float(far_heading)
+    result["corner90_exit_alignment"] = bool(
+        abs(float(near_error)) <= CORNER90_EXIT_MAX_CENTER_ERROR
+        and abs(near_heading) <= CORNER90_EXIT_MAX_HEADING_DEGREES
+        and abs(far_heading) <= CORNER90_EXIT_MAX_HEADING_DEGREES
+    )
+
+    same_turn_direction = (
+        heading_change * far_heading > 0.0
+    )
+    near_reference_x = float(np.median([
+        point[0] for point in sorted_points[:segment_size]
+    ]))
+    # A fita tem largura bem menor que 12% da altura útil. Esse deslocamento
+    # identifica a primeira amostra já no ramo transversal, isto é, o
+    # cotovelo, sem reagir ao pequeno ruído normal da faixa reta.
+    lateral_branch_points = [
+        point for point in sorted_points
+        if abs(float(point[0]) - near_reference_x) >= 0.12
+    ]
+    turn_progress_ratio = 0.0
+    if lateral_branch_points:
+        turn_normalized_y = min(
+            float(point[1]) for point in lateral_branch_points
+        )
+        turn_progress_ratio = 1.0 - turn_normalized_y
+    if (
+        abs(float(near_error)) <= CORNER90_MAX_CENTER_ERROR
+        and abs(near_heading) <= CORNER90_MAX_NEAR_HEADING_DEGREES
+        and abs(far_heading) >= CORNER90_MIN_FAR_HEADING_DEGREES
+        and abs(heading_change) >= CORNER90_MIN_HEADING_CHANGE_DEGREES
+        and same_turn_direction
+        and corner90_turn_is_close_enough(turn_progress_ratio)
+    ):
+        result["corner90_candidate"] = True
+        result["corner90_direction"] = (
+            "RIGHT" if heading_change > 0.0 else "LEFT"
+        )
+    return result
+
+
+def analyze_corner90_component(
+    structural_mask,
+    roi_start_y,
+    near_center,
+    near_error,
+):
+    """Reconhece um cotovelo pela faixa horizontal conectada à NEAR."""
+
+    result = {
+        "corner90_candidate": False,
+        "corner90_direction": "NONE",
+        "corner90_angle": 0.0,
+        "corner90_near_heading": 0.0,
+        "corner90_far_heading": 0.0,
+        "corner90_exit_alignment": False,
+    }
+    if (
+        structural_mask is None
+        or structural_mask.ndim != 2
+        or structural_mask.size == 0
+        or near_center is None
+        or near_error is None
+        or not math.isfinite(float(near_error))
+        or abs(float(near_error)) > CORNER90_MAX_CENTER_ERROR
+    ):
+        return result
+
+    anchor_x = int(round(near_center[0]))
+    anchor_y = int(round(near_center[1] - roi_start_y))
+    mask_height, frame_width = structural_mask.shape
+    if not (0 <= anchor_x < frame_width and 0 <= anchor_y < mask_height):
+        return result
+
+    labels_count, labels, _stats, _centers = cv2.connectedComponentsWithStats(
+        (structural_mask > 0).astype(np.uint8),
+        connectivity=8,
+    )
+    if labels_count <= 1:
+        return result
+
+    # A componente correta é a que está mais próxima do centro NEAR já validado.
+    best_label = 0
+    best_distance_squared = None
+    for label in range(1, labels_count):
+        point_y, point_x = np.nonzero(labels == label)
+        if point_x.size == 0:
+            continue
+        distance_squared = np.min(
+            (point_x.astype(np.float64) - anchor_x) ** 2
+            + (point_y.astype(np.float64) - anchor_y) ** 2
+        )
+        if best_distance_squared is None or distance_squared < best_distance_squared:
+            best_distance_squared = float(distance_squared)
+            best_label = label
+    if best_label == 0:
+        return result
+
+    component = np.where(labels == best_label, 255, 0).astype(np.uint8)
+    approach_min_y = max(
+        0,
+        anchor_y - int(round(mask_height * CORNER90_MIN_APPROACH_RATIO)),
+    )
+    if approach_min_y >= anchor_y:
+        return result
+
+    # A largura local mede a fita sem depender de pixels fixos da resolução antiga.
+    approach_widths = []
+    for row_y in range(approach_min_y, anchor_y + 1):
+        runs = find_row_runs(component[row_y, :])
+        if not runs:
+            continue
+        nearest_run = min(
+            runs,
+            key=lambda run: abs(((run[0] + run[1]) * 0.5) - anchor_x),
+        )
+        approach_widths.append(nearest_run[1] - nearest_run[0] + 1)
+    if not approach_widths:
+        return result
+
+    line_width = max(1.0, float(np.median(approach_widths)))
+    minimum_branch_px = max(
+        3.0 * line_width,
+        frame_width * CORNER90_MIN_HORIZONTAL_BRANCH_RATIO,
+    )
+    left_rows = 0
+    right_rows = 0
+    left_branch_rows = []
+    right_branch_rows = []
+    # O ramo do cotovelo precisa estar à frente da NEAR; um alargamento junto ao
+    # robô é ruído ou cruzamento e não deve disparar pivô.
+    for row_y in range(0, approach_min_y):
+        for run_start, run_end in find_row_runs(component[row_y, :]):
+            left_branch = anchor_x - run_start
+            right_branch = run_end - anchor_x
+            if (
+                right_branch >= minimum_branch_px
+                and left_branch <= 1.5 * line_width
+            ):
+                right_rows += 1
+                right_branch_rows.append(row_y)
+            if (
+                left_branch >= minimum_branch_px
+                and right_branch <= 1.5 * line_width
+            ):
+                left_rows += 1
+                left_branch_rows.append(row_y)
+
+    right_turn_progress = (
+        max(right_branch_rows) / float(mask_height)
+        if right_branch_rows else 0.0
+    )
+    left_turn_progress = (
+        max(left_branch_rows) / float(mask_height)
+        if left_branch_rows else 0.0
+    )
+    if (
+        right_rows >= CORNER90_MIN_HORIZONTAL_ROWS
+        and right_rows > left_rows
+        and corner90_turn_is_close_enough(right_turn_progress)
+    ):
+        result.update({
+            "corner90_candidate": True,
+            "corner90_direction": "RIGHT",
+            "corner90_angle": 90.0,
+            "corner90_far_heading": 90.0,
+        })
+    elif (
+        left_rows >= CORNER90_MIN_HORIZONTAL_ROWS
+        and left_rows > right_rows
+        and corner90_turn_is_close_enough(left_turn_progress)
+    ):
+        result.update({
+            "corner90_candidate": True,
+            "corner90_direction": "LEFT",
+            "corner90_angle": -90.0,
+            "corner90_far_heading": -90.0,
+        })
+    return result
+
+
+def analyze_corner90_bands(near_observation, far_observation, frame_width):
+    """Reconhece o ramo distante largo quando a junção não ficou conectada."""
+
+    result = {
+        "corner90_candidate": False,
+        "corner90_direction": "NONE",
+        "corner90_angle": 0.0,
+        "corner90_near_heading": 0.0,
+        "corner90_far_heading": 0.0,
+        "corner90_exit_alignment": False,
+    }
+    if (
+        frame_width <= 0
+        or not near_observation.get("valid", False)
+        or not far_observation.get("valid", False)
+    ):
+        return result
+
+    near_x = near_observation.get("x")
+    far_x = far_observation.get("x")
+    if near_x is None or far_x is None:
+        return result
+    half_width = frame_width / 2.0
+    near_center_error = (float(near_x) - half_width) / half_width
+    far_offset = (float(far_x) - float(near_x)) / half_width
+    far_width = float(far_observation.get("bounding_width_px", 0))
+    far_height = float(far_observation.get("bounding_height_px", 0))
+    if far_height <= 0.0:
+        return result
+
+    far_aspect_ratio = far_width / far_height
+    # A saída só é consumida depois de um Corner90 confirmado. Ela exige a nova
+    # linha centrada e estreita, impedindo que o ramo antigo seja tratado como reta.
+    result["corner90_exit_alignment"] = bool(
+        abs(near_center_error) <= CORNER90_EXIT_MAX_CENTER_ERROR
+        and abs(far_offset) <= CORNER90_EXIT_MAX_CENTER_ERROR
+        and far_aspect_ratio < CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO
+    )
+
+    # Esta decisão antecipa o cotovelo: uma NEAR reta chega a uma FAR muito
+    # larga e lateral. Ela ainda passa pela confirmação de três frames da
+    # Missão Principal antes de qualquer pivot, evitando reagir a um ruído
+    # isolado sem esperar o ramo alcançar a banda NEAR.
+    if (
+        abs(near_center_error) > CORNER90_MAX_NEAR_CENTER_RATIO
+        or abs(far_offset) < CORNER90_MIN_FAR_LATERAL_RATIO
+        or far_width < frame_width * CORNER90_MIN_FAR_BRANCH_WIDTH_RATIO
+        or far_aspect_ratio < CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO
+    ):
+        return result
+
+    direction = "RIGHT" if far_offset > 0.0 else "LEFT"
+    angle = 90.0 if direction == "RIGHT" else -90.0
+    result.update({
+        "corner90_candidate": True,
+        "corner90_direction": direction,
+        "corner90_angle": angle,
+        "corner90_far_heading": angle,
+    })
+    return result
+
+
 def analyze_visual_trajectory(
     line_candidate_mask,
     roi_start_y,
@@ -1794,6 +2540,11 @@ def analyze_visual_trajectory(
     frame_center_x,
     near_valid,
     near_x,
+    near_error=0.0,
+    structural_mask=None,
+    near_center=None,
+    near_observation=None,
+    far_observation=None,
 ):
     """Calcula fit, lookahead e curvatura em coordenadas visuais normalizadas."""
 
@@ -1820,6 +2571,36 @@ def analyze_visual_trajectory(
         )
         for point_x, point_y in samples
     ]
+    result.update(analyze_corner90_geometry(normalized_points, near_error))
+    component_corner = analyze_corner90_component(
+        structural_mask,
+        roi_start_y,
+        near_center,
+        near_error,
+    )
+    if component_corner["corner90_candidate"]:
+        # O ramo transversal de um cotovelo não cabe no fit suave por definição.
+        # Quando ele existe, sua geometria bruta tem prioridade sobre as amostras.
+        result.update(component_corner)
+    band_corner = analyze_corner90_bands(
+        near_observation or {},
+        far_observation or {},
+        line_candidate_mask.shape[1],
+    )
+    if (
+        band_corner["corner90_candidate"]
+        or band_corner["corner90_exit_alignment"]
+    ):
+        result.update(band_corner)
+
+    # A saída do Corner90 é puramente visual: o ramo do cotovelo precisa ter
+    # desaparecido e a nova NEAR já precisa estar razoavelmente próxima do
+    # centro. FAR, heading e fit não bloqueiam a retomada do Pure Pursuit.
+    result["corner90_exit_alignment"] = corner90_visual_handoff_ready(
+        result["corner90_candidate"],
+        near_valid,
+        near_error,
+    )
     for degree, mode in ((2, "quadratic"), (1, "linear_fallback")):
         fit = fit_trajectory_polynomial(normalized_points, degree)
         if fit is None:
@@ -2110,7 +2891,10 @@ def analyze_gap_geometry(
     })
 
     corridor_px = frame_width * vision_profile["gap_return_corridor_ratio"]
-    minimum_separation = vision_profile["gap_return_min_separation_px"]
+    minimum_separation = scaled_reference_pixels(
+        vision_profile["gap_return_min_separation_px"],
+        DOWNWARD_REFERENCE_FRAME_HEIGHT * vision_geometry["pixel_scale"],
+    )
     best_return = None
     best_distance = float("inf")
     for label in range(1, component_count):
@@ -2182,13 +2966,16 @@ def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
     )
     if cv2.countNonZero(green_mask) == 0:
         return green_mask
+    green_kernel_size = scaled_odd_kernel_size(
+        GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
+    )
     open_kernel = cv2.getStructuringElement(
         cv2.MORPH_RECT,
-        (GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE),
+        (green_kernel_size, green_kernel_size),
     )
     close_kernel = cv2.getStructuringElement(
         cv2.MORPH_RECT,
-        (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
+        (green_kernel_size, green_kernel_size),
     )
     green_mask = cv2.morphologyEx(
         green_mask,
@@ -2227,13 +3014,16 @@ def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
     )
     final_mask = hsv_mask.copy()
     if cv2.countNonZero(hsv_mask) > 0:
+        green_kernel_size = scaled_odd_kernel_size(
+            GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
+        )
         open_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE),
+            (green_kernel_size, green_kernel_size),
         )
         close_kernel = cv2.getStructuringElement(
             cv2.MORPH_RECT,
-            (GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE),
+            (green_kernel_size, green_kernel_size),
         )
         final_mask = cv2.morphologyEx(
             final_mask,
@@ -2282,7 +3072,7 @@ def group_fragment_boxes(boxes, gap_px=GREEN_FRAGMENT_MERGE_GAP_PX):
     return groups
 
 
-def merge_green_fragments(contours):
+def merge_green_fragments(contours, frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT):
     """Une fragmentos próximos para que um quadrado não seja contado duas vezes."""
 
     valid_contours = [
@@ -2291,7 +3081,12 @@ def merge_green_fragments(contours):
         if contour is not None and len(contour) >= 3
     ]
     boxes = [cv2.boundingRect(contour) for contour in valid_contours]
-    groups = group_fragment_boxes(boxes)
+    groups = group_fragment_boxes(
+        boxes,
+        gap_px=scaled_reference_pixels(
+            GREEN_FRAGMENT_MERGE_GAP_PX, frame_height
+        ),
+    )
     return [
         cv2.convexHull(np.concatenate(
             [valid_contours[index] for index in group], axis=0
@@ -2306,11 +3101,15 @@ def green_geometry_is_valid(
     aspect_ratio,
     extent,
     partial,
+    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
 ):
     """Aplica filtros amplos de tamanho e formato ao marcador oficial."""
 
-    minimum_area = GREEN_MIN_AREA_PX
-    minimum_dimension = GREEN_MIN_DIMENSION_PX
+    dimension_scale = float(frame_height) / DOWNWARD_REFERENCE_FRAME_HEIGHT
+    minimum_area = GREEN_MIN_AREA_PX * dimension_scale * dimension_scale
+    minimum_dimension = scaled_reference_pixels(
+        GREEN_MIN_DIMENSION_PX, frame_height
+    )
     minimum_aspect = GREEN_ASPECT_RATIO_MIN
     minimum_extent = GREEN_MIN_EXTENT
     if partial:
@@ -2359,7 +3158,11 @@ def estimate_local_line_width(line_mask, point):
     return float(selected_run[1] - selected_run[0] + 1)
 
 
-def build_line_axis(robot_side_center, forward_center):
+def build_line_axis(
+    robot_side_center,
+    forward_center,
+    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
+):
     """Cria o eixo local da linha no sentido físico de avanço após o hvflip."""
 
     if robot_side_center is None or forward_center is None:
@@ -2369,7 +3172,9 @@ def build_line_axis(robot_side_center, forward_center):
     forward_x = float(forward_center[0]) - origin_x
     forward_y = float(forward_center[1]) - origin_y
     length = math.hypot(forward_x, forward_y)
-    if not math.isfinite(length) or length < GREEN_LINE_AXIS_MIN_LENGTH_PX:
+    if not math.isfinite(length) or length < scaled_reference_pixels(
+        GREEN_LINE_AXIS_MIN_LENGTH_PX, frame_height
+    ):
         return {"valid": False}
 
     forward_x /= length
@@ -2418,11 +3223,48 @@ def point_from_line_axis(line_axis, longitudinal, lateral=0.0):
     )
 
 
-def contour_touches_useful_border(box, frame_width, useful_height):
+def draw_dashed_line(frame, start, end, color, thickness=1):
+    """Desenha uma referência temporal sem confundí-la com a linha medida agora."""
+
+    start_x, start_y = (float(value) for value in start)
+    end_x, end_y = (float(value) for value in end)
+    delta_x = end_x - start_x
+    delta_y = end_y - start_y
+    length = math.hypot(delta_x, delta_y)
+    if length <= 0.0:
+        return
+
+    # Segmentos curtos indicam que este eixo veio do quadro imediatamente
+    # anterior, durante a oclusão física da fita pelo marcador verde.
+    segment_length = 8.0
+    gap_length = 5.0
+    distance = 0.0
+    while distance < length:
+        segment_end = min(length, distance + segment_length)
+        first = (
+            int(round(start_x + delta_x * distance / length)),
+            int(round(start_y + delta_y * distance / length)),
+        )
+        second = (
+            int(round(start_x + delta_x * segment_end / length)),
+            int(round(start_y + delta_y * segment_end / length)),
+        )
+        cv2.line(frame, first, second, color, thickness, cv2.LINE_AA)
+        distance = segment_end + gap_length
+
+
+def contour_touches_useful_border(
+    box,
+    frame_width,
+    useful_height,
+    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
+):
     """Marca candidatos parciais próximos de qualquer limite da área útil."""
 
     x, y, width, height = box
-    tolerance = GREEN_PARTIAL_BORDER_TOLERANCE_PX
+    tolerance = scaled_reference_pixels(
+        GREEN_PARTIAL_BORDER_TOLERANCE_PX, frame_height
+    )
     return (
         x <= tolerance
         or y <= tolerance
@@ -2438,6 +3280,7 @@ def describe_green_contour(
     line_mask,
     line_axis,
     sampled_line_points=None,
+    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
 ):
     """Calcula geometria, relação com a faixa e posição local do candidato."""
 
@@ -2459,7 +3302,7 @@ def describe_green_contour(
         center_y = float(box[1] + box[3] / 2.0)
     centroid = (center_x, center_y)
     partial = contour_touches_useful_border(
-        box, frame_width, useful_height
+        box, frame_width, useful_height, frame_height
     )
 
     geometry_valid = green_geometry_is_valid(
@@ -2468,6 +3311,7 @@ def describe_green_contour(
         aspect_ratio,
         extent,
         partial,
+        frame_height,
     )
 
     line_distance_px = 0.0
@@ -2501,7 +3345,9 @@ def describe_green_contour(
     associated_with_line = (
         line_axis.get("valid", False)
         and local_line_width_px > 0.0
-        and abs(lateral) >= GREEN_SIDE_MIN_DISTANCE_PX
+        and abs(lateral) >= scaled_reference_pixels(
+            GREEN_SIDE_MIN_DISTANCE_PX, frame_height
+        )
         and line_distance_px
         <= GREEN_LINE_DISTANCE_MAX_RATIO * local_line_width_px
         and scale_compatible
@@ -2520,6 +3366,7 @@ def describe_green_contour(
         "partial": partial,
         "geometry_valid": geometry_valid,
         "line_distance_px": line_distance_px,
+        "frameHeight": int(frame_height),
         "local_line_width_px": local_line_width_px,
         "marker_to_line_ratio": marker_to_line_ratio,
         "scale_compatible": scale_compatible,
@@ -2550,7 +3397,7 @@ def find_green_candidates(
     contours, _ = cv2.findContours(
         green_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
-    merged_contours = merge_green_fragments(contours)
+    merged_contours = merge_green_fragments(contours, frame.shape[0])
     sampled_line_points = np.empty((0, 2), dtype=np.float32)
     if merged_contours:
         sampled_y, sampled_x = np.nonzero(
@@ -2577,6 +3424,7 @@ def find_green_candidates(
             line_mask,
             line_axis,
             sampled_line_points,
+            frame.shape[0],
         )
         description["scaled_minimum_area"] = scaled_minimum_area
         description["scaled_area_valid"] = (
@@ -2648,8 +3496,14 @@ def green_geometry_rejection_reasons(candidate):
     """Detalha quais filtros geométricos vigentes rejeitaram um componente."""
 
     partial = bool(candidate["partial"])
-    minimum_area = GREEN_MIN_AREA_PX
-    minimum_dimension = GREEN_MIN_DIMENSION_PX
+    frame_height = candidate.get(
+        "frameHeight", DOWNWARD_REFERENCE_FRAME_HEIGHT
+    )
+    dimension_scale = float(frame_height) / DOWNWARD_REFERENCE_FRAME_HEIGHT
+    minimum_area = GREEN_MIN_AREA_PX * dimension_scale * dimension_scale
+    minimum_dimension = scaled_reference_pixels(
+        GREEN_MIN_DIMENSION_PX, frame_height
+    )
     minimum_aspect = GREEN_ASPECT_RATIO_MIN
     minimum_extent = GREEN_MIN_EXTENT
     if partial:
@@ -3163,13 +4017,18 @@ def classify_green_candidate_vote(candidate, line_axis):
             candidate.get("aspect_ratio", 0.0),
             candidate.get("extent", 0.0),
             False,
+            candidate.get("frameHeight", DOWNWARD_REFERENCE_FRAME_HEIGHT),
         )
         if not partial_geometry_is_strong:
             return "IRRESOLUVEL", "recorte parcial insuficiente"
 
     lateral = float(candidate.get("lateral", float("nan")))
     side = candidate.get("side", "UNKNOWN")
-    if not math.isfinite(lateral) or abs(lateral) < GREEN_SIDE_MIN_DISTANCE_PX:
+    minimum_lateral_distance = scaled_reference_pixels(
+        GREEN_SIDE_MIN_DISTANCE_PX,
+        candidate.get("frameHeight", DOWNWARD_REFERENCE_FRAME_HEIGHT),
+    )
+    if not math.isfinite(lateral) or abs(lateral) < minimum_lateral_distance:
         return "IRRESOLUVEL", "distância lateral insuficiente para definir o lado"
     expected_side = "DIREITA" if lateral > 0.0 else "ESQUERDA"
     if side not in ("ESQUERDA", "DIREITA") or side != expected_side:
@@ -3316,6 +4175,7 @@ def empty_green_status():
         "greenConfirmed": False,
         "greenNearSeen": False,
         "greenRawInterpretation": "SEM_DECISAO",
+        "greenDecisionState": "idle",
         "greenPathBlackValid": False,
         "greenCandidateCount": 0,
         "greenRejectedCount": 0,
@@ -3704,6 +4564,122 @@ def interpret_actionable_green_candidates(candidates):
     return result
 
 
+def apply_green_occlusion_axis(
+    candidates,
+    line_axis,
+    reference_line_width_px,
+):
+    """Associa verde à última faixa válida quando o marcador a encobre."""
+
+    if (
+        not line_axis.get("valid", False)
+        or reference_line_width_px <= 0.0
+    ):
+        return
+
+    for candidate in candidates:
+        longitudinal, lateral = project_point_on_line_axis(
+            candidate["centroid"],
+            line_axis,
+        )
+        line_distance_px = abs(float(lateral))
+        marker_to_line_ratio = (
+            float(candidate["long_side"]) / reference_line_width_px
+        )
+        scale_compatible = (
+            GREEN_MARKER_TO_LINE_MIN_RATIO
+            <= marker_to_line_ratio
+            <= GREEN_MARKER_TO_LINE_MAX_RATIO
+        )
+        minimum_lateral_distance = scaled_reference_pixels(
+            GREEN_SIDE_MIN_DISTANCE_PX,
+            candidate.get("frameHeight", DOWNWARD_REFERENCE_FRAME_HEIGHT),
+        )
+        candidate["longitudinal"] = longitudinal
+        candidate["lateral"] = lateral
+        candidate["side"] = "DIREITA" if lateral > 0.0 else "ESQUERDA"
+        candidate["line_distance_px"] = line_distance_px
+        candidate["local_line_width_px"] = reference_line_width_px
+        candidate["marker_to_line_ratio"] = marker_to_line_ratio
+        candidate["scale_compatible"] = scale_compatible
+        candidate["associated_with_line"] = (
+            candidate.get("geometry_valid", False)
+            and abs(lateral) >= minimum_lateral_distance
+            and line_distance_px
+            <= GREEN_LINE_DISTANCE_MAX_RATIO * reference_line_width_px
+            and scale_compatible
+        )
+
+
+def interpret_occluded_green_candidates(
+    candidates,
+    line_axis,
+    observation_start_y,
+    observation_end_y,
+):
+    """Resolve marcador próximo usando somente o eixo preto recém-observado."""
+
+    valid_candidates = actionable_green_candidates(
+        candidates,
+        observation_start_y,
+        observation_end_y,
+        line_axis,
+    )
+    result = {
+        "action": "SEGUIR_LINHA",
+        "interpretation": "SEM_DECISAO",
+        "observation_state": green_observation_state(len(valid_candidates)),
+        "left_seen": any(
+            candidate["side"] == "ESQUERDA"
+            for candidate in valid_candidates
+        ),
+        "right_seen": any(
+            candidate["side"] == "DIREITA"
+            for candidate in valid_candidates
+        ),
+        "pair_compatible": False,
+        # A faixa preta imediatamente anterior ao marcador foi validada antes
+        # de a oclusão. O C++ ainda exige três imagens verdes idênticas.
+        "path_black_valid": bool(valid_candidates),
+        "markers": [],
+    }
+    if len(valid_candidates) == 1:
+        direction = valid_candidates[0]["side"]
+        result["action"] = (
+            "VIRAR_ESQUERDA" if direction == "ESQUERDA"
+            else "VIRAR_DIREITA"
+        )
+        result["interpretation"] = direction
+        return result
+
+    left_candidates = [
+        candidate for candidate in valid_candidates
+        if candidate["side"] == "ESQUERDA"
+    ]
+    right_candidates = [
+        candidate for candidate in valid_candidates
+        if candidate["side"] == "DIREITA"
+    ]
+    compatible_pair = any(
+        abs(left["longitudinal"] - right["longitudinal"])
+        <= GREEN_PAIR_LONGITUDINAL_TOLERANCE_LINE_WIDTHS
+        * max(left["local_line_width_px"], right["local_line_width_px"])
+        for left in left_candidates
+        for right in right_candidates
+    )
+    if compatible_pair:
+        result.update({
+            "action": "FAZER_180",
+            "interpretation": "RETORNO_180",
+            "pair_compatible": True,
+        })
+    elif valid_candidates:
+        # Dois verdes próximos, mas desalinhados, não podem virar um retorno.
+        result["interpretation"] = "AMBIGUO"
+        result["path_black_valid"] = False
+    return result
+
+
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""
 
@@ -3887,6 +4863,7 @@ def trajectory_status_fields(trajectory):
             "lookaheadX": float(trajectory.get("lookahead_x", 0.0)),
             "lookaheadY": float(trajectory.get("lookahead_y", 0.0)),
             "curvature": float(trajectory.get("curvature", 0.0)),
+            "corner90Angle": float(trajectory.get("corner90_angle", 0.0)),
         }
         values_finite = all(
             math.isfinite(value) for value in numeric_values.values()
@@ -3898,6 +4875,7 @@ def trajectory_status_fields(trajectory):
         numeric_values = {}
         values_finite = False
 
+    corner_angle = numeric_values["corner90Angle"] if values_finite else 0.0
     trajectory_valid = bool(
         trajectory.get("trajectory_valid", False)
         and values_finite
@@ -3920,6 +4898,9 @@ def trajectory_status_fields(trajectory):
             "lookaheadX": 0.0,
             "lookaheadY": 0.0,
             "curvature": 0.0,
+            # O fit pode ser inválido justamente em um cotovelo. Preserve o
+            # ângulo bruto para permitir depurar a decisão dedicada de Corner90.
+            "corner90Angle": corner_angle,
         }
 
     mode = str(trajectory.get("trajectory_mode", "fallback_far_near"))
@@ -3928,6 +4909,36 @@ def trajectory_status_fields(trajectory):
     if not trajectory_valid:
         mode = "fallback_far_near"
 
+    corner_direction = str(trajectory.get("corner90_direction", "NONE"))
+    if corner_direction not in ("NONE", "LEFT", "RIGHT"):
+        corner_direction = "NONE"
+    try:
+        corner_confirm_frames = int(
+            trajectory.get("corner90_confirm_frames", 0)
+        )
+    except (TypeError, ValueError):
+        corner_confirm_frames = 0
+    corner_confirm_frames = max(
+        0,
+        min(CORNER90_CONFIRM_FRAMES, corner_confirm_frames),
+    )
+    corner_state = str(trajectory.get("corner90_state", "idle"))
+    if corner_state not in (
+        "idle",
+        "candidate",
+        "confirming",
+        "confirmed",
+        "pivoting",
+        "exit_aligned",
+    ):
+        corner_state = "idle"
+    if not -180.0 <= corner_angle <= 180.0:
+        corner_angle = 0.0
+    corner_candidate = bool(trajectory.get("corner90_candidate", False))
+    if not corner_candidate and corner_state == "idle":
+        corner_direction = "NONE"
+        corner_confirm_frames = 0
+
     return {
         "trajectoryValid": trajectory_valid,
         "trajectoryMode": mode,
@@ -3935,6 +4946,14 @@ def trajectory_status_fields(trajectory):
         **numeric_values,
         "fitSampleCount": fit_sample_count,
         "trajectorySampleCount": max(0, trajectory_sample_count),
+        "corner90Candidate": corner_candidate,
+        "corner90Direction": corner_direction,
+        "corner90Angle": corner_angle,
+        "corner90ConfirmFrames": corner_confirm_frames,
+        "corner90State": corner_state,
+        "corner90ExitAlignment": bool(
+            trajectory.get("corner90_exit_alignment", False)
+        ),
     }
 
 
@@ -3965,6 +4984,9 @@ def save_line_status(
     line_sequence,
     green_status=None,
     trajectory=None,
+    target_correction=None,
+    applied_correction=None,
+    steer_rate_used=0.0,
 ):
     """Publica em memória compartilhada o resultado visual já calculado."""
 
@@ -4010,6 +5032,13 @@ def save_line_status(
         d_term = float(d_term)
         control_error = float(control_error)
         correction = float(correction)
+        target_correction = (
+            correction if target_correction is None else float(target_correction)
+        )
+        applied_correction = (
+            correction if applied_correction is None else float(applied_correction)
+        )
+        steer_rate_used = float(steer_rate_used)
         left_preview = float(left_preview)
         right_preview = float(right_preview)
         control_values_valid = all(
@@ -4024,6 +5053,9 @@ def save_line_status(
                 d_term,
                 control_error,
                 correction,
+                target_correction,
+                applied_correction,
+                steer_rate_used,
                 left_preview,
                 right_preview,
             )
@@ -4040,6 +5072,9 @@ def save_line_status(
         d_term = 0.0
         control_error = 0.0
         correction = 0.0
+        target_correction = 0.0
+        applied_correction = 0.0
+        steer_rate_used = 0.0
         left_preview = 0.0
         right_preview = 0.0
     if not near_valid:
@@ -4099,11 +5134,16 @@ def save_line_status(
             "filteredDerivative": filtered_derivative,
             "dTerm": d_term,
             "controlError": control_error,
+            "rawControlError": control_error,
             "preview": adaptive_preview,
             "kControl": K_CONTROL,
             "kNear": K_CONTROL * (1.0 - adaptive_preview),
             "kFar": K_CONTROL * adaptive_preview,
             "correction": correction,
+            "finalCorrection": correction,
+            "targetCorrection": target_correction,
+            "appliedCorrection": applied_correction,
+            "steerRateUsed": steer_rate_used,
             "leftPreview": left_preview,
             "rightPreview": right_preview,
             "gapCandidate": gap_candidate,
@@ -4159,6 +5199,9 @@ def save_status(
     line_timestamp=0.0,
     line_sequence=0,
     trajectory=None,
+    target_correction=None,
+    applied_correction=None,
+    steer_rate_used=0.0,
 ):
     """Publica saúde da câmera e a telemetria visual já calculada."""
 
@@ -4200,6 +5243,13 @@ def save_status(
         d_term = float(d_term)
         control_error = float(control_error)
         correction = float(correction)
+        target_correction = (
+            correction if target_correction is None else float(target_correction)
+        )
+        applied_correction = (
+            correction if applied_correction is None else float(applied_correction)
+        )
+        steer_rate_used = float(steer_rate_used)
         left_preview = float(left_preview)
         right_preview = float(right_preview)
         control_values_finite = all(
@@ -4214,6 +5264,9 @@ def save_status(
                 d_term,
                 control_error,
                 correction,
+                target_correction,
+                applied_correction,
+                steer_rate_used,
                 left_preview,
                 right_preview,
             )
@@ -4283,6 +5336,9 @@ def save_status(
         d_term = 0.0
         control_error = 0.0
         correction = 0.0
+        target_correction = 0.0
+        applied_correction = 0.0
+        steer_rate_used = 0.0
         left_preview = 0.0
         right_preview = 0.0
     # A ausência da linha na NEAR faz parte do cenário normal de um gap.
@@ -4314,9 +5370,24 @@ def save_status(
         line_sequence = 0
 
     frame_width, frame_height = camera_profile["main_size"]
+    line_ipc_fresh = (
+        camera_profile["role"] != "down"
+        or (
+            line_timestamp_valid
+            and line_timestamp > 0.0
+            and time.time() - line_timestamp <= 0.5
+        )
+    )
     status = {
         "fps": round(fps, 2),
         "active": active,
+        # O processo da câmera inferior só existe enquanto o gerenciador recebe
+        # a solicitação ativa. Isso permite ao dashboard confirmar o IPC de controle.
+        "enabled": camera_profile["role"] == "down",
+        "state": "ONLINE" if active and line_ipc_fresh else (
+            "FALHA" if error_message else "INICIANDO"
+        ),
+        "lineIpcFresh": line_ipc_fresh,
         "cameraRole": camera_profile["role"],
         "width": frame_width,
         "height": frame_height,
@@ -4357,11 +5428,16 @@ def save_status(
         "filteredDerivative": filtered_derivative,
         "dTerm": d_term,
         "controlError": control_error,
+        "rawControlError": control_error,
         "preview": adaptive_preview,
         "kControl": K_CONTROL,
         "kNear": K_CONTROL * (1.0 - adaptive_preview),
         "kFar": K_CONTROL * adaptive_preview,
         "correction": correction,
+        "finalCorrection": correction,
+        "targetCorrection": target_correction,
+        "appliedCorrection": applied_correction,
+        "steerRateUsed": steer_rate_used,
         "leftPreview": left_preview,
         "rightPreview": right_preview,
         "gapCandidate": gap_candidate,
@@ -4565,7 +5641,12 @@ def main():
         smoothed_fps = 0.0
         line_sequence = 0
         green_tracker = GreenObservationTracker()
+        last_green_line_axis = {"valid": False}
+        last_green_axis_seen_at = 0.0
+        last_green_reference_line_width_px = 0.0
+        corner90_tracker = Corner90ConfirmationTracker()
         near_derivative_filter = NearDerivativeFilter()
+        steering_slew_limiter = SteeringSlewRateLimiter()
         vision_profiler = VisionRegressionProfiler()
         (
             green_experiment_mode,
@@ -4701,6 +5782,11 @@ def main():
                 frame_half_width,
                 near_valid,
                 near_x if near_valid else None,
+                lateral_error,
+                structural_mask,
+                near_center,
+                near_observation,
+                far_observation,
             )
 
             gap_observation = analyze_gap_geometry(
@@ -4709,7 +5795,11 @@ def main():
                 vision_profile,
             )
             if near_valid and far_valid:
-                line_axis = build_line_axis(near_center, far_center)
+                line_axis = build_line_axis(
+                    near_center,
+                    far_center,
+                    frame_height,
+                )
             elif near_valid:
                 line_axis = build_single_band_line_axis(
                     near_band.shape,
@@ -4722,9 +5812,28 @@ def main():
                     selected_far_contour,
                     far_band_start_y,
                 )
-            # O eixo local continua protegendo a associação geométrica entre o
-            # marcador e a faixa, mesmo que a decisão final use ROIs próprias.
             green_line_axis = line_axis
+            green_occlusion_axis_active = False
+            if line_axis.get("valid", False):
+                reference_center = near_center if near_center is not None else far_center
+                reference_line_width_px = estimate_local_line_width(
+                    line_candidate_mask,
+                    reference_center,
+                ) if reference_center is not None else 0.0
+                if reference_line_width_px > 0.0:
+                    # O eixo local protege a associação entre o marcador e a
+                    # faixa. Guardá-lo por 0,4 s cobre apenas a oclusão física
+                    # imediata do verde, sem tratar visão antiga como atual.
+                    last_green_line_axis = dict(line_axis)
+                    last_green_axis_seen_at = loop_started
+                    last_green_reference_line_width_px = reference_line_width_px
+            elif (
+                last_green_line_axis.get("valid", False)
+                and loop_started - last_green_axis_seen_at
+                <= GREEN_OCCLUSION_AXIS_HOLD_SECONDS
+            ):
+                green_line_axis = last_green_line_axis
+                green_occlusion_axis_active = True
             if trace_active:
                 timings["line_detection_ms"] = (
                     time.perf_counter() - line_detection_started
@@ -4754,6 +5863,12 @@ def main():
                     camera_format,
                     timings,
                 )
+                if green_occlusion_axis_active:
+                    apply_green_occlusion_axis(
+                        green_candidates,
+                        green_line_axis,
+                        last_green_reference_line_width_px,
+                    )
                 # A topologia é a parte mais cara e só roda quando a cor e a
                 # geometria já produziram pelo menos um candidato plausível.
                 if green_candidates:
@@ -4788,6 +5903,18 @@ def main():
                     [candidate["contour"] for candidate in green_candidates],
                     selected_black_mask,
                 )
+                if (
+                    green_occlusion_axis_active
+                    and not near_valid
+                    and not far_valid
+                    and not green_interpretation["path_black_valid"]
+                ):
+                    green_interpretation = interpret_occluded_green_candidates(
+                        green_candidates,
+                        green_line_axis,
+                        vision_geometry["green_observation_start_y"],
+                        near_band_end_y,
+                    )
             green_processing_ms = (
                 time.perf_counter() - green_processing_started
             ) * 1000.0
@@ -4835,6 +5962,9 @@ def main():
                     control_terms,
                 )
 
+            target_correction = correction
+            applied_correction = correction
+            steer_rate_used = 0.0
             line_timestamp = time.time()
             line_sequence += 1
             green_raw_interpretation = green_interpretation["interpretation"]
@@ -4878,6 +6008,52 @@ def main():
                         left_preview,
                         right_preview,
                     ) = green_guidance
+
+            corner90_tracker.update(
+                trajectory,
+                near_valid
+                and not gap_observation["candidate"]
+                and published_green_interpretation == "SEM_DECISAO",
+            )
+
+            normal_tracking = (
+                (trajectory["trajectory_valid"] or near_valid or far_valid)
+                and not gap_observation["candidate"]
+                and published_green_interpretation == "SEM_DECISAO"
+                and not trajectory["corner90_candidate"]
+            )
+            if normal_tracking:
+                if trajectory["corner90_state"] == "exit_aligned":
+                    # A Missão Principal acabou de confirmar a nova direção.
+                    # Não reutilizar correção acumulada antes do pivô evita
+                    # uma guinada residual ao devolver o controle contínuo.
+                    steering_slew_limiter.reset()
+                # O Pure Pursuit/FAR-NEAR calcula a correção-alvo acima. Este é
+                # o único ponto entre o clamp e o mixer dos motores: a imagem,
+                # o fit e os ganhos permanecem intocados.
+                target_correction = correction
+                applied_correction, steer_rate_used = steering_slew_limiter.update(
+                    target_correction,
+                    loop_started,
+                )
+                correction = applied_correction
+                if trajectory["trajectory_valid"]:
+                    left_preview, right_preview = mix_visual_pursuit_correction(
+                        vision_profile,
+                        applied_correction,
+                    )
+                else:
+                    left_preview, right_preview = mix_fallback_correction(
+                        vision_profile,
+                        applied_correction,
+                    )
+            else:
+                # Gap, verde, perda de linha e outros estados especiais não
+                # herdam uma correção atrasada do tracking normal.
+                steering_slew_limiter.reset()
+                target_correction = correction
+                applied_correction = correction
+                steer_rate_used = 0.0
 
             if not near_valid and not far_valid:
                 offset_px = None
@@ -4939,6 +6115,17 @@ def main():
             )
             green_status["greenRawInterpretation"] = green_raw_interpretation
             green_status["greenPathBlackValid"] = green_path_valid
+            if (
+                green_path_valid
+                and green_raw_interpretation in VISIBLE_GREEN_INTERPRETATIONS
+            ):
+                green_status["greenDecisionState"] = (
+                    "accepted"
+                    if green_status["greenConfirmed"] and
+                    green_status["greenInterpretation"] ==
+                    green_raw_interpretation
+                    else "candidate"
+                )
             ipc_started = time.perf_counter() if trace_active else 0.0
             if line_ipc_enabled:
                 # Somente a CAM0/downward publica dados usados pelo segue-faixa.
@@ -4970,6 +6157,9 @@ def main():
                     line_sequence,
                     green_status,
                     trajectory,
+                    target_correction=target_correction,
+                    applied_correction=applied_correction,
+                    steer_rate_used=steer_rate_used,
                 )
             if trace_active:
                 ipc_completed = time.perf_counter()
@@ -5073,11 +6263,6 @@ def main():
                 if display_mode == DISPLAY_MODE_GREEN
                 else display_frame
             )
-            debug_text_overlay_enabled = (
-                vision_profile["debug_text_overlay"]
-                and display_mode != DISPLAY_MODE_GREEN
-            )
-
             if (
                 display_mode != DISPLAY_MODE_GREEN
                 and gap_observation["candidate"]
@@ -5088,16 +6273,6 @@ def main():
                     frame,
                     gap_observation["endpoint"],
                     7,
-                    gap_color,
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.putText(
-                    frame,
-                    "GAP CANDIDATO",
-                    (12, 300),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
                     gap_color,
                     2,
                     cv2.LINE_AA,
@@ -5232,22 +6407,6 @@ def main():
                     (255, 255, 255),
                     vision_profile["overlay_thin_line_thickness"],
                 )
-                if labeled_tick:
-                    ruler_label = (
-                        f"+{ruler_offset}" if ruler_offset > 0 else str(ruler_offset)
-                    )
-                    put_debug_text(
-                        debug_text_overlay_enabled,
-                        frame,
-                        ruler_label,
-                        (max(0, ruler_x - 11), ruler_bottom_y - 14),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.30,
-                        (255, 255, 255),
-                        1,
-                        cv2.LINE_AA,
-                    )
-
             if near_center is not None:
                 cv2.circle(
                     frame,
@@ -5256,16 +6415,6 @@ def main():
                     (255, 0, 0),
                     -1,
                 )
-                cv2.putText(
-                    frame,
-                    f"nearX={near_x:.1f}",
-                    (near_center[0] + 7, max(15, near_center[1] - 7)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42,
-                    (255, 0, 0),
-                    1,
-                    cv2.LINE_AA,
-                )
             if far_center is not None:
                 cv2.circle(
                     frame,
@@ -5273,16 +6422,6 @@ def main():
                     vision_profile["overlay_center_radius"],
                     (0, 165, 255),
                     -1,
-                )
-                cv2.putText(
-                    frame,
-                    f"farX={far_x:.1f}",
-                    (far_center[0] + 7, max(15, far_center[1] - 7)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42,
-                    (0, 165, 255),
-                    1,
-                    cv2.LINE_AA,
                 )
             if near_center is not None and far_center is not None:
                 cv2.line(
@@ -5378,48 +6517,6 @@ def main():
                 )
                 cv2.circle(frame, lookahead_pixel, 7, (255, 0, 255), 2)
 
-            mandatory_control_lines = (
-                (
-                    f"trajectory={trajectory['trajectory_mode']} VALID"
-                    if trajectory["trajectory_valid"]
-                    else "trajectory=FALLBACK FAR/NEAR"
-                ),
-                (
-                    f"fitQuality={trajectory['fit_quality']:.3f} "
-                    f"rms={trajectory['fit_rms_error']:.3f} "
-                    f"n={trajectory['fit_sample_count']}"
-                ),
-                (
-                    f"fitA={trajectory['fit_a']:+.3f} "
-                    f"fitB={trajectory['fit_b']:+.3f} "
-                    f"fitC={trajectory['fit_c']:+.3f}"
-                ),
-                f"lookaheadX={trajectory['lookahead_x']:+.3f}",
-                f"lookaheadY={trajectory['lookahead_y']:+.3f}",
-                f"curvature={trajectory['curvature']:+.3f}",
-                f"controlError={control_error:+.3f}",
-                (
-                    f"nearError={near_error:+.3f}"
-                    if near_valid else "nearError=INVALID"
-                ),
-                (
-                    f"farError={far_error:+.3f}"
-                    if far_valid else "farError=INVALID"
-                ),
-                f"headingError={heading_error:+.3f}",
-                f"correction={correction:+.3f}",
-            )
-            for index, diagnostic_text in enumerate(mandatory_control_lines):
-                cv2.putText(
-                    frame,
-                    diagnostic_text,
-                    (12, 20 + index * 19),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.44,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
             if display_mode == DISPLAY_MODE_GREEN:
                 frame = display_frame
 
@@ -5432,36 +6529,61 @@ def main():
                     interpretation,
                     green_status["greenConfirmed"],
                 )
+                green_overlay_accepted = bool(visible_green_candidates)
+                green_overlay_interpretation = (
+                    interpretation
+                    if green_overlay_accepted
+                    else green_raw_interpretation
+                )
+                if not green_overlay_accepted:
+                    # Mostra qualquer componente que já passou pelos filtros
+                    # geométricos da máscara HSV. A direção continua ausente
+                    # até haver associação segura com a faixa preta.
+                    visible_green_candidates = green_candidates
                 if display_mode == DISPLAY_MODE_LINE:
                     draw_line_mode_green_overlays(
                         frame,
                         visible_green_candidates,
-                        interpretation,
+                        green_overlay_interpretation,
+                        green_overlay_accepted,
                     )
                 else:
                     draw_green_candidate_overlays(
                         frame,
                         visible_green_candidates,
-                        interpretation,
+                        green_overlay_interpretation,
+                        green_overlay_accepted,
                     )
 
                 if (
                     display_mode != DISPLAY_MODE_GREEN
-                    and line_axis.get("valid", False)
+                    and green_line_axis.get("valid", False)
                 ):
-                    axis_start = point_from_line_axis(line_axis, -30.0)
+                    axis_start = point_from_line_axis(green_line_axis, -30.0)
                     axis_end = point_from_line_axis(
                         green_line_axis,
                         float(vision_geometry["structural_end_y"]),
                     )
-                    cv2.line(
-                        frame,
-                        tuple(int(round(value)) for value in axis_start),
-                        tuple(int(round(value)) for value in axis_end),
-                        (255, 255, 0),
-                        1,
-                        cv2.LINE_AA,
+                    axis_start = tuple(
+                        int(round(value)) for value in axis_start
                     )
+                    axis_end = tuple(int(round(value)) for value in axis_end)
+                    if green_occlusion_axis_active:
+                        draw_dashed_line(
+                            frame,
+                            axis_start,
+                            axis_end,
+                            (255, 255, 0),
+                        )
+                    else:
+                        cv2.line(
+                            frame,
+                            axis_start,
+                            axis_end,
+                            (255, 255, 0),
+                            1,
+                            cv2.LINE_AA,
+                        )
 
                 if (
                     display_mode != DISPLAY_MODE_GREEN
@@ -5497,176 +6619,6 @@ def main():
                             cv2.LINE_AA,
                         )
 
-            active_pixel_count = cv2.countNonZero(filtered_mask)
-            if "line_background_kernel_size" in vision_profile:
-                calibration_text = (
-                    "CONTRASTE: "
-                    f"{vision_profile['line_max_background_ratio_percent']}% "
-                    f"/ MAX {vision_profile['line_max_brightness']}"
-                )
-            else:
-                calibration_text = (
-                    f"THRESHOLD: {vision_profile['line_threshold']}"
-                )
-            debug_lines = (
-                "MASCARA EXPERIMENTAL",
-                calibration_text,
-                f"PIXELS ATIVOS: {active_pixel_count}",
-            )
-            for index, debug_text in enumerate(debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (12, roi_start_y + 28 + index * 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-            offset_px_text = (
-                f"{offset_px:+.1f}" if offset_px is not None else "INVALIDO"
-            )
-            line_center_text = (
-                f"{line_center_x:.1f}" if line_center_x is not None else "INVALIDO"
-            )
-            control_debug_lines = (
-                f"LATERAL ERROR: {lateral_error:+.3f}",
-                f"HEADING ERROR: {heading_error:+.3f}",
-                f"CONTROL ERROR: {control_error:+.3f}",
-                f"OFFSET PX: {offset_px_text}",
-                f"SAFE ZONE: +/-{safe_half_width_px} PX",
-                f"CENTER X: {frame_center_x:.1f}",
-                f"LINE CENTER X: {line_center_text}",
-                f"ESTADO: {preview_state}",
-            )
-            control_debug_x = max(12, int(frame_width * 0.36))
-            for index, debug_text in enumerate(control_debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (control_debug_x, 30 + index * 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    (230, 230, 230),
-                    1,
-                    cv2.LINE_AA,
-                )
-
-            line_width_text = (
-                str(line_width_px) if line_width_px is not None else "INVALIDO"
-            )
-            px_per_cm_text = (
-                f"{px_per_cm_approx:.2f}"
-                if px_per_cm_approx is not None
-                else "INVALIDO"
-            )
-            offset_cm_text = (
-                f"{offset_cm_approx:+.2f}"
-                if offset_cm_approx is not None
-                else "INVALIDO"
-            )
-            measurement_debug_lines = (
-                f"LINE WIDTH PX: {line_width_text}",
-                f"PX/CM APROX: {px_per_cm_text}",
-                f"OFFSET CM APROX: {offset_cm_text}",
-                "APROX: VALIDA SO NESTA ALTURA",
-                "FITA APROX. LONGITUDINAL",
-            )
-            for index, debug_text in enumerate(measurement_debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (12, 30 + index * 25),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.48,
-                    (255, 0, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
-
-            near_debug_lines = (
-                (
-                    f"NEAR ERROR: {near_error:+.3f}"
-                    if near_error is not None
-                    else "NEAR ERROR: INVALIDO"
-                ),
-                f"NEAR VALID: {'SIM' if near_error is not None else 'NAO'}",
-                f"NEAR X: {near_x:.1f}" if near_valid else "NEAR X: INVALIDO",
-                f"NEAR AREA: {near_contour_area:.1f}",
-                f"NEAR HEIGHT PX: {near_band_height_px}",
-            )
-            near_debug_x = max(12, frame.shape[1] - 330)
-            for index, debug_text in enumerate(near_debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (near_debug_x, 30 + index * 26),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
-                    (255, 0, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-            far_debug_lines = (
-                (
-                    f"FAR ERROR: {far_error:+.3f}"
-                    if far_error is not None
-                    else "FAR ERROR: INVALIDO"
-                ),
-                f"FAR VALID: {'SIM' if far_valid else 'NAO'}",
-                f"FAR X: {far_x:.1f}" if far_valid else "FAR X: INVALIDO",
-                f"FAR AREA: {far_contour_area:.1f}",
-                f"FAR HEIGHT PX: {far_band_height_px}",
-            )
-            for index, debug_text in enumerate(far_debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (near_debug_x, 270 + index * 24),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.58,
-                    (0, 165, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-            preview_debug_lines = (
-                f"CORRECTION: {correction:+.3f}",
-                f"LEFT PREVIEW: {left_preview:.3f}",
-                f"RIGHT PREVIEW: {right_preview:.3f}",
-            )
-            for index, debug_text in enumerate(preview_debug_lines):
-                put_debug_text(
-                    debug_text_overlay_enabled,
-                    frame,
-                    debug_text,
-                    (near_debug_x, 136 + index * 28),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.65,
-                    (0, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-            put_debug_text(
-                debug_text_overlay_enabled,
-                frame,
-                preview_direction,
-                (near_debug_x, 225),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
             if display_mode != DISPLAY_MODE_GREEN and near_valid:
                 arrow_start = (
                     int(round(
@@ -5780,6 +6732,9 @@ def main():
                     line_timestamp=line_timestamp,
                     line_sequence=line_sequence,
                     trajectory=trajectory,
+                    target_correction=target_correction,
+                    applied_correction=applied_correction,
+                    steer_rate_used=steer_rate_used,
                 )
                 last_status_time = now
             if trace_active:

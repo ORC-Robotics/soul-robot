@@ -208,7 +208,15 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_lost" ||
                                        status.phase == "distance_encoder_stall" ||
                                        status.phase == "distance_correction_failed" ||
-                                       status.phase == "distance_invalid_target";
+                                       status.phase == "distance_invalid_target" ||
+                                       status.phase == "esp32_not_ready" ||
+                                       status.phase == "camera_not_ready" ||
+                                       status.phase == "line_ipc_stale" ||
+                                       status.phase == "gap_timeout" ||
+                                       status.phase == "line_lost_timeout" ||
+                                       status.phase == "corner90_stall" ||
+                                       status.phase == "corner90_line_lost" ||
+                                       status.phase == "corner90_overturn";
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;
