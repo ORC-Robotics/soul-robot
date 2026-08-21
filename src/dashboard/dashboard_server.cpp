@@ -677,7 +677,7 @@ std::string DashboardServer::buildTelemetryJson(
 
 std::string DashboardServer::dashboardHtml()
 {
-    return R"HTML(<!doctype html>
+  return R"HTML(<!doctype html>
 <html lang="pt-BR">
 <head>
   <meta charset="utf-8">
@@ -1479,8 +1479,6 @@ std::string DashboardServer::dashboardHtml()
     const connection = element("connection");
     const manualDrivePower = element("manualDrivePower");
     const manualTurnPower = element("manualTurnPower");
-    const leftValue = element("leftValue");
-    const rightValue = element("rightValue");
     const cameraFeeds = element("cameraFeeds");
     const cameraMetadata = element("cameraMetadata");
     const cameraTechnicalMetadata = element("cameraTechnicalMetadata");
@@ -2093,41 +2091,13 @@ std::string DashboardServer::dashboardHtml()
       // O modo manual é destinado a testes e deve preservar a potência escolhida.
       // O perfil START/RUN permanece exclusivo do controle autônomo.
       rawDiagnosticDrive = true;
-      leftValue.value = requestedLeft.toFixed(2);
-      rightValue.value = requestedRight.toFixed(2);
       sendCurrentDrive();
-    }
-
-    function updateDriveFromExactInputs() {
-      const parsedLeft = Number(leftValue.value);
-      const parsedRight = Number(rightValue.value);
-      if (!Number.isFinite(parsedLeft) || !Number.isFinite(parsedRight)) {
-        leftValue.value = requestedLeft.toFixed(2);
-        rightValue.value = requestedRight.toFixed(2);
-        return;
-      }
-      requestedLeft = clamp(parsedLeft);
-      requestedRight = clamp(parsedRight);
-      rawDiagnosticDrive = true;
-      leftValue.value = requestedLeft.toFixed(2);
-      rightValue.value = requestedRight.toFixed(2);
-      sendCurrentDrive();
-    }
-
-    function adjustExactSide(side, delta) {
-      const target = side === "left" ? leftValue : rightValue;
-      const currentValue = Number(target.value);
-      if (!Number.isFinite(currentValue)) return;
-      target.value = (Math.round(clamp(currentValue + delta) * 100) / 100).toFixed(2);
-      updateDriveFromExactInputs();
     }
 
     function resetDrive() {
       requestedLeft = 0;
       requestedRight = 0;
       rawDiagnosticDrive = false;
-      leftValue.value = "0.00";
-      rightValue.value = "0.00";
       sendCurrentDrive();
     }
 
@@ -2555,6 +2525,40 @@ std::string DashboardServer::dashboardHtml()
       );
     }
 
+    function updateOperationCameraDiagnostics(data) {
+  setTextIfChanged(
+    operationCameraDiagnosticFields.lineFollowerState,
+    data.lineFollowerImplemented === true ? "CONTROLE ATIVO" : "CONTROLE PENDENTE"
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.greenInterpretation,
+    String(data.greenInterpretation || "SEM_DECISAO").replaceAll("_", " ")
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.greenConfirmed,
+    data.greenConfirmed === true ? "CONFIRMADO" : "NÃO CONFIRMADO"
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.greenPathBlackValid,
+    data.greenPathBlackValid === true ? "SIM" : "NÃO"
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.lineSequence,
+    Number.isFinite(Number(data.lineSequence))
+      ? `SEQ ${Number(data.lineSequence).toFixed(0)}`
+      : "—"
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.specularRepair,
+    `${formatNumber(data.specularRepairPixels, 0)} px · ${formatNumber(data.specularRepairComponents, 0)} comp`
+  );
+}
+
     function renderCurrentCameraDiagnostics() {
       if (latestCameraDiagnosticData) {
         updateOperationCameraDiagnostics(latestCameraDiagnosticData);
@@ -2600,8 +2604,21 @@ std::string DashboardServer::dashboardHtml()
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
         let visualState = String(data.state || "FALHA").toUpperCase();
-        const statusAgeSeconds = Date.now() / 1000 - Number(data.timestamp);
-        const statusFresh = Number.isFinite(statusAgeSeconds) && statusAgeSeconds <= 0.75;
+        const statusTimestamp = Number(data.timestamp);
+        const nowMs = performance.now();
+
+        if (
+          Number.isFinite(statusTimestamp) &&
+          statusTimestamp !== lastCameraStatusTimestamp
+        ) {
+          lastCameraStatusTimestamp = statusTimestamp;
+          lastCameraStatusChangeAtMs = nowMs;
+        }
+
+        const statusFresh =
+          Number.isFinite(statusTimestamp) &&
+          lastCameraStatusChangeAtMs > 0 &&
+          nowMs - lastCameraStatusChangeAtMs <= 1000;
         if (!statusFresh) {
           // Um JSON antigo não confirma uma câmera em execução após parar o serviço.
           visualState = "FALHA";
@@ -2726,11 +2743,6 @@ std::string DashboardServer::dashboardHtml()
     });
     manualDrivePower.addEventListener("input", updateManualPowerSettings);
     manualTurnPower.addEventListener("input", updateManualPowerSettings);
-    leftValue.addEventListener("change", updateDriveFromExactInputs);
-    rightValue.addEventListener("change", updateDriveFromExactInputs);
-    document.querySelectorAll("[data-side][data-delta]").forEach(button => {
-      button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
-    });
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
