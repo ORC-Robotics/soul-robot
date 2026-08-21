@@ -230,23 +230,52 @@ bool isDirectionalGreenTurn(GreenTurnDecision decision)
            decision == GreenTurnDecision::GuideRight;
 }
 
-bool parseCorner90Direction(
+bool parseBlackLineGeometryDirection(
     const std::string& text,
-    Corner90Direction& direction)
+    BlackLineGeometryDirection& direction)
 {
     if (text == "NONE")
     {
-        direction = Corner90Direction::None;
+        direction = BlackLineGeometryDirection::None;
         return true;
     }
     if (text == "LEFT")
     {
-        direction = Corner90Direction::Left;
+        direction = BlackLineGeometryDirection::Left;
         return true;
     }
     if (text == "RIGHT")
     {
-        direction = Corner90Direction::Right;
+        direction = BlackLineGeometryDirection::Right;
+        return true;
+    }
+    return false;
+}
+
+bool isBlackLineGeometryState(const std::string& state)
+{
+    return state == "idle" || state == "candidate" ||
+           state == "pivoting" || state == "exit_aligned" ||
+           state == "rearming";
+}
+
+bool parseExtremeCurveDirection(
+    const std::string& text,
+    ExtremeCurveDirection& direction)
+{
+    if (text == "NONE")
+    {
+        direction = ExtremeCurveDirection::None;
+        return true;
+    }
+    if (text == "LEFT")
+    {
+        direction = ExtremeCurveDirection::Left;
+        return true;
+    }
+    if (text == "RIGHT")
+    {
+        direction = ExtremeCurveDirection::Right;
         return true;
     }
     return false;
@@ -318,11 +347,16 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lookaheadX = 0.0;
     snapshot.lookaheadY = 0.0;
     snapshot.curvature = 0.0;
-    snapshot.corner90Candidate = false;
-    snapshot.corner90Direction = Corner90Direction::None;
-    snapshot.corner90Angle = 0.0;
-    snapshot.corner90ConfirmFrames = 0;
-    snapshot.corner90ExitAlignment = false;
+    snapshot.extremeCurveCandidate = false;
+    snapshot.extremeCurveDirection = ExtremeCurveDirection::None;
+    snapshot.extremeCurveCurvature = 0.0;
+    snapshot.extremeCurveConfirmFrames = 0;
+    snapshot.blackLineGeometryCandidate = false;
+    snapshot.blackLineGeometryDirection = BlackLineGeometryDirection::None;
+    snapshot.blackLineGeometryAngleDegrees = 0.0;
+    snapshot.blackLineGeometryConfidence = 0.0;
+    snapshot.blackLineGeometryState = "idle";
+    snapshot.blackLineGeometryExitAlignment = false;
     snapshot.adaptivePreview = 0.0;
     snapshot.previewError = 0.0;
     snapshot.pTerm = 0.0;
@@ -404,7 +438,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         CameraLineSnapshot candidate;
         std::string greenInterpretation;
         std::string greenRawInterpretation;
-        std::string corner90Direction;
+        std::string blackLineGeometryDirection;
+        std::string extremeCurveDirection;
         if (!tryGetJsonBool(json, "nearValid", candidate.nearValid) ||
             !tryGetJsonNumber(json, "nearX", candidate.nearX) ||
             !tryGetJsonNumber(json, "nearError", candidate.nearError) ||
@@ -433,21 +468,48 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             !tryGetJsonNumber(
                 json, "curvature", candidate.curvature) ||
             !tryGetJsonBool(
-                json, "corner90Candidate", candidate.corner90Candidate) ||
+                json,
+                "extremeCurveCandidate",
+                candidate.extremeCurveCandidate) ||
             !tryGetJsonString(
-                json, "corner90Direction", corner90Direction) ||
-            !parseCorner90Direction(
-                corner90Direction, candidate.corner90Direction) ||
+                json, "extremeCurveDirection", extremeCurveDirection) ||
+            !parseExtremeCurveDirection(
+                extremeCurveDirection, candidate.extremeCurveDirection) ||
             !tryGetJsonNumber(
-                json, "corner90Angle", candidate.corner90Angle) ||
+                json,
+                "extremeCurveCurvature",
+                candidate.extremeCurveCurvature) ||
             !tryGetJsonUnsignedInteger(
                 json,
-                "corner90ConfirmFrames",
-                candidate.corner90ConfirmFrames) ||
+                "extremeCurveConfirmFrames",
+                candidate.extremeCurveConfirmFrames) ||
             !tryGetJsonBool(
                 json,
-                "corner90ExitAlignment",
-                candidate.corner90ExitAlignment) ||
+                "blackLineGeometryCandidate",
+                candidate.blackLineGeometryCandidate) ||
+            !tryGetJsonString(
+                json,
+                "blackLineGeometryDirection",
+                blackLineGeometryDirection) ||
+            !parseBlackLineGeometryDirection(
+                blackLineGeometryDirection,
+                candidate.blackLineGeometryDirection) ||
+            !tryGetJsonNumber(
+                json,
+                "blackLineGeometryAngleDegrees",
+                candidate.blackLineGeometryAngleDegrees) ||
+            !tryGetJsonNumber(
+                json,
+                "blackLineGeometryConfidence",
+                candidate.blackLineGeometryConfidence) ||
+            !tryGetJsonString(
+                json,
+                "blackLineGeometryState",
+                candidate.blackLineGeometryState) ||
+            !tryGetJsonBool(
+                json,
+                "blackLineGeometryExitAlignment",
+                candidate.blackLineGeometryExitAlignment) ||
             !tryGetJsonNumber(
                 json, "adaptivePreview", candidate.adaptivePreview) ||
             !tryGetJsonNumber(
@@ -528,12 +590,22 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lookaheadY >= 0.0 && candidate.lookaheadY <= 1.10 &&
             std::isfinite(candidate.curvature) &&
             candidate.curvature >= -10.0 && candidate.curvature <= 10.0 &&
-            std::isfinite(candidate.corner90Angle) &&
-            candidate.corner90Angle >= -180.0 &&
-            candidate.corner90Angle <= 180.0 &&
-            candidate.corner90ConfirmFrames <= 3 &&
-            (!candidate.corner90Candidate ||
-             candidate.corner90Direction != Corner90Direction::None) &&
+            std::isfinite(candidate.extremeCurveCurvature) &&
+            candidate.extremeCurveCurvature >= -10.0 &&
+            candidate.extremeCurveCurvature <= 10.0 &&
+            candidate.extremeCurveConfirmFrames <= 2 &&
+            (!candidate.extremeCurveCandidate ||
+             candidate.extremeCurveDirection != ExtremeCurveDirection::None) &&
+            std::isfinite(candidate.blackLineGeometryAngleDegrees) &&
+            candidate.blackLineGeometryAngleDegrees >= -180.0 &&
+            candidate.blackLineGeometryAngleDegrees <= 180.0 &&
+            std::isfinite(candidate.blackLineGeometryConfidence) &&
+            candidate.blackLineGeometryConfidence >= 0.0 &&
+            candidate.blackLineGeometryConfidence <= 1.0 &&
+            isBlackLineGeometryState(candidate.blackLineGeometryState) &&
+            (!candidate.blackLineGeometryCandidate ||
+             candidate.blackLineGeometryDirection !=
+                 BlackLineGeometryDirection::None) &&
             (!candidate.trajectoryValid ||
              (candidate.nearValid && candidate.fitSampleCount >= 4 &&
               candidate.lookaheadY > 0.0)) &&
@@ -605,11 +677,22 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lookaheadY = 0.0;
             candidate.curvature = 0.0;
         }
-        if (!candidate.corner90Candidate)
+        if (!candidate.extremeCurveCandidate)
         {
-            candidate.corner90Direction = Corner90Direction::None;
-            candidate.corner90Angle = 0.0;
-            candidate.corner90ConfirmFrames = 0;
+            candidate.extremeCurveDirection = ExtremeCurveDirection::None;
+            candidate.extremeCurveCurvature = 0.0;
+            candidate.extremeCurveConfirmFrames = 0;
+        }
+        if (!candidate.blackLineGeometryCandidate)
+        {
+            candidate.blackLineGeometryDirection =
+                BlackLineGeometryDirection::None;
+            candidate.blackLineGeometryAngleDegrees = 0.0;
+            candidate.blackLineGeometryConfidence = 0.0;
+            if (candidate.blackLineGeometryState == "candidate")
+            {
+                candidate.blackLineGeometryState = "idle";
+            }
         }
         if (!candidate.nearValid && !candidate.farValid)
         {
@@ -679,11 +762,13 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             snapshot.lookaheadX = 0.0;
             snapshot.lookaheadY = 0.0;
             snapshot.curvature = 0.0;
-            snapshot.corner90Candidate = false;
-            snapshot.corner90Direction = Corner90Direction::None;
-            snapshot.corner90Angle = 0.0;
-            snapshot.corner90ConfirmFrames = 0;
-            snapshot.corner90ExitAlignment = false;
+            snapshot.blackLineGeometryCandidate = false;
+            snapshot.blackLineGeometryDirection =
+                BlackLineGeometryDirection::None;
+            snapshot.blackLineGeometryAngleDegrees = 0.0;
+            snapshot.blackLineGeometryConfidence = 0.0;
+            snapshot.blackLineGeometryState = "idle";
+            snapshot.blackLineGeometryExitAlignment = false;
             snapshot.adaptivePreview = 0.0;
             snapshot.previewError = 0.0;
             snapshot.pTerm = 0.0;

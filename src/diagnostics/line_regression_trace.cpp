@@ -363,13 +363,9 @@ std::string LineRegressionTrace::missionStateName(const std::string& phase)
     {
         return "ReacquiringNear";
     }
-    if (phase == "searching_left")
+    if (phase == "line_recovery_memory")
     {
-        return "SearchingLeft";
-    }
-    if (phase == "searching_right")
-    {
-        return "SearchingRight";
+        return "LineRecoveryMemory";
     }
     return phase;
 }

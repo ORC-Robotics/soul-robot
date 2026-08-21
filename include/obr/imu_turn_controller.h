@@ -39,7 +39,8 @@ public:
     bool start(
         double targetDegrees,
         ImuTurnDirection direction,
-        const Esp32TelemetrySnapshot& telemetry);
+        const Esp32TelemetrySnapshot& telemetry,
+        double completionToleranceDegrees = 0.0);
     ImuTurnOutput update(const Esp32TelemetrySnapshot& telemetry);
     void reset();
     bool active() const;
@@ -55,6 +56,9 @@ private:
 
     Phase phase_ = Phase::Idle;
     double targetDegrees_ = 0.0;
+    // A margem de conclusão pode ser maior em manobras de orientação visual,
+    // mas o controlador padrão continua usando a tolerância precisa de 90°.
+    double completionToleranceDegrees_ = 0.0;
     double startYawDegrees_ = 0.0;
     double directionSign_ = 1.0;
     double correctionDirection_ = 1.0;

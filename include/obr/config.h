@@ -91,55 +91,80 @@ constexpr double kMotorStartMinimumPower = 0.67;
 // Ela permite desacelerar a roda interna nas curvas sem voltar ao piso de partida.
 constexpr double kMotorRunMinimumPower = 0.61;
 
-// Potência do pivô exclusivo para um cotovelo de 90° confirmado pela visão.
-// O primeiro comando usa o piso de partida; depois da confirmação pelos
-// encoders a missão pode pedir o piso de execução para reduzir o overshoot.
-// Potência inicial exclusiva do pivô para um cotovelo de 90° confirmado.
-// A potência de 0,69 vence a carga estática observada na manobra; depois da
-// confirmação pelos encoders a missão pede o piso RUN para reduzir o overshoot.
-// Não altera a velocidade do tracking normal nem do dashboard.
-constexpr double kCorner90PivotStartPower = 0.69;
-constexpr double kCorner90PivotRunPower = kMotorRunMinimumPower;
+// Potência fixa do pivot visual para uma curva geométrica da linha preta.
+// A câmera encerra o giro pela nova geometria; reduzir para o piso RUN faria
+// o robô perder reatividade justamente quando a curva ainda ocupa a imagem.
+constexpr double kCorner90PivotStartPower = 0.70;
 
-// O pivot precisa demonstrar giro físico logo após iniciar. A validação aceita
-// os dois encoders em movimento ou o MPU6050 indicando rotação, para não
-// confundir um encoder isoladamente defeituoso com uma roda parada.
+// O pivot precisa demonstrar giro físico pelos encoders logo após iniciar.
+// O IMU não participa da decisão visual; uma roda sem movimento não pode
+// manter contrarrotação indefinidamente.
 constexpr int kCorner90MotionConfirmationTimeoutMs = 600;
 constexpr double kCorner90MinimumEncoderRateCountsPerSecond = 20.0;
-constexpr double kCorner90MinimumYawRateDegPerSec = 8.0;
-constexpr double kCorner90MinimumYawChangeDegrees = 6.0;
 
-// Sem nova linha por este período, ou após exceder este giro relativo, o pivot
-// para os motores. Esses limites impedem que uma perda visual ou roda travada
-// deixe o robô contrarrotacionando indefinidamente.
+// Sem nova linha por este período, o pivot para os motores. O limite impede
+// que uma perda visual deixe o robô contrarrotacionando indefinidamente.
 constexpr int kCorner90LineLossTimeoutMs = 1200;
-constexpr double kCorner90MaximumYawDegrees = 135.0;
 
-// Um cotovelo precisa manter a mesma geometria em três imagens novas antes de
-// liberar o pivô. Durante essa confirmação os motores ficam parados, evitando
-// que uma reta deslocada seja confundida com um giro brusco.
-constexpr int kCorner90ConfirmationFrames = 3;
-// Quatro imagens novas com a nova faixa adquirida evitam devolver o controle
-// ao Pure Pursuit pela reta de chegada ainda visível. A confirmação continua
-// visual, sem usar uma duração fixa, FAR ou IMU como condição de saída.
-constexpr int kCorner90ExitAlignmentFrames = 4;
+// Uma geometria de linha preta com confiança espacial alta decide o pivot no
+// primeiro frame novo. A confiança agrega as leituras brutas da mesma imagem.
+constexpr int kCorner90ConfirmationFrames = 1;
+constexpr int kCorner90ConfirmationWindowFrames = 3;
+constexpr double kBlackLineGeometryMinimumConfidence = 0.2;
+// A saída do pivot exige uma trajetória longa e orientada para frente. Isto
+// impede que uma parte inclinada da curva, ainda visível na câmera, entregue
+// um comando reto ao Pure Pursuit antes de o robô apontar para a nova faixa.
+constexpr int kBlackLineGeometryExitMinimumFitSamples = 7;
+constexpr double kBlackLineGeometryExitMinimumLookahead = 0.60;
+constexpr double kBlackLineGeometryExitMaximumHeadingDegrees = 20.0;
+// Uma imagem nova da faixa substituindo o ramo antigo devolve imediatamente o
+// controle ao Pure Pursuit. Não há alinhamento angular nem confirmação extra.
+constexpr int kCorner90ExitAlignmentFrames = 1;
 
-// O retorno por marcador verde preserva três imagens de saída, pois o marcador
-// pode ocultar a faixa e exige uma confirmação visual mais conservadora.
-constexpr int kGreenTurnExitAlignmentFrames = 3;
-
-// Ângulo bruto mínimo, em graus, para considerar uma geometria como cotovelo.
-// Curvas contínuas abaixo deste limite permanecem sob o Pure Pursuit normal.
-constexpr double kCorner90MinimumStrongAngleDegrees = 70.0;
+// Janela, em graus, da mudança de heading bruta que pode pedir pivot. Curvas
+// abaixo de 30 graus permanecem no Pure Pursuit; acima de 140 graus exigem
+// outra recuperação visual, pois não há direção confiável para contrarrotação.
+constexpr double kCorner90MinimumStrongAngleDegrees = 30.0;
+constexpr double kCorner90MaximumStrongAngleDegrees = 140.0;
 
 // Erro lateral normalizado máximo aceito na decisão e na saída do cotovelo.
 // A margem evita exigir alinhamento perfeito; o Pure Pursuit corrige o restante.
 constexpr double kCorner90MaximumCenterError = 0.20;
 
+
+// Depois que a Missão Principal já parou para confirmar o cotovelo, a mesma
+// geometria pode deslocar até 30% do centro. Isso evita perder uma curva curta
+// enquanto o robô termina de frear, sem afrouxar a entrada inicial de 20%.
+constexpr double kCorner90ConfirmationMaximumCenterError = 0.30;
+
 // Frames visuais novos exigidos para aceitar um marcador verde direcional.
 // Durante a confirmação o robô permanece parado para não decidir um verde
 // ambíguo ou dois cotovelos muito próximos enquanto ainda está avançando.
-constexpr int kGreenTurnConfirmationFrames = 3;
+constexpr int kGreenTurnConfirmationFrames = 2;
+
+// Giro angular, em graus, executado para um marcador verde direcional.
+// O alvo limitado evita pivot sem fim sobre o marcador; a nova faixa é
+// confirmada pela câmera somente depois que o giro termina.
+constexpr double kGreenDirectionalTurnTargetDegrees = 45.0;
+
+// Depois do giro de 45°, a mesma observação verde não pode iniciar outra
+// manobra durante esta janela. Isso deixa a rota nova assumir o controle sem
+// repetir o pivot sobre o marcador ainda visível.
+constexpr int kGreenTurnVisualHandoffCooldownMs = 1500;
+
+// A rota nova precisa aparecer dentro deste tempo antes da sonda curta. Os
+// motores ficam parados enquanto a visão não publicou NEAR/FAR nem uma
+// trajetória forte; uma rota NEAR/FAR inicia a reaquisição limitada.
+constexpr int kGreenTurnAcquireTimeoutMs = 800;
+
+// Se não houver rota visual, a missão pode fazer uma única sonda curta e
+// somente para frente. O maior deslocamento dos encoders limita cada roda a
+// 20 mm; não há segunda tentativa, ré ou busca angular livre.
+constexpr double kGreenTurnForwardProbeDistanceMm = 20.0;
+constexpr double kGreenTurnForwardProbePower = 0.70;
+constexpr int kGreenTurnForwardProbeEncoderFreshnessMs = 300;
+constexpr int kGreenTurnForwardProbeEncoderStallTimeoutMs = 600;
+constexpr double kGreenTurnForwardProbeMinimumProgressCounts = 10.0;
 
 // Taxa mínima, em contagens por segundo, que confirma movimento durante a partida.
 // Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
@@ -167,9 +192,22 @@ static_assert(kCorner90PivotStartPower >= kMotorStartMinimumPower &&
                   kCorner90MotionConfirmationTimeoutMs > 0 &&
                   kCorner90LineLossTimeoutMs >
                       kCorner90MotionConfirmationTimeoutMs &&
-                  kCorner90MaximumYawDegrees > 90.0 &&
-                  kCorner90MaximumYawDegrees < 180.0,
+                  kCorner90ConfirmationFrames > 0 &&
+                  kCorner90ConfirmationFrames <=
+                      kCorner90ConfirmationWindowFrames &&
+                  kCorner90ExitAlignmentFrames > 0 &&
+                  kCorner90MaximumCenterError > 0.0 &&
+                  kCorner90MaximumCenterError <=
+                      kCorner90ConfirmationMaximumCenterError &&
+                  kCorner90ConfirmationMaximumCenterError < 1.0 &&
+                  kCorner90MinimumStrongAngleDegrees > 0.0 &&
+                  kCorner90MinimumStrongAngleDegrees <
+                      kCorner90MaximumStrongAngleDegrees &&
+                  kCorner90MaximumStrongAngleDegrees < 180.0,
               "Os limites de segurança do pivot devem ser coerentes.");
+static_assert(kBlackLineGeometryMinimumConfidence > 0.0 &&
+                  kBlackLineGeometryMinimumConfidence <= 1.0,
+              "A confiança mínima da geometria deve estar entre zero e um.");
 static_assert(kMotorRunConfirmationMinimumRateCountsPerSecond > 0.0 &&
                   kMotorRunConfirmationSamples > 0 && kMotorRunLossSamples > 0,
               "A confirmação de movimento pelos encoders deve ser positiva.");
@@ -218,10 +256,15 @@ constexpr double kGreenTurnAroundTargetDegrees = 180.0;
 // Ajuste após testar a inércia real das rodas no piso da competição.
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
-// Comando lógico usado durante os giros por IMU e nas correções.
-// O perfil operacional transforma 0,01 em 0,67 na partida dos dois lados; como eles giram
-// em sentidos opostos, o sincronismo por encoder permanece desativado.
-constexpr double kTurn90CommandPower = 0.01;
+// O giro direcional verde de 45 graus é apenas uma orientação inicial para a
+// nova faixa. Aceitar até 12 graus de erro evita pulsos de correção inúteis e
+// entrega cedo o controle ao Pure Pursuit, sem afrouxar 90 ou 180 graus.
+constexpr double kGreenDirectionalTurnCompletionToleranceDegrees = 12.0;
+
+// Potência simétrica aplicada aos dois motores durante os giros por IMU.
+// O valor 0,75 garante um pivot forte e previsível, sem depender dos pisos
+// START/RUN usados no seguimento normal. Afeta os giros verdes de 45° e 180°.
+constexpr double kTurn90CommandPower = 0.75;
 
 static_assert(kTurn90CommandPower > 0.0 && kTurn90CommandPower <= kMaxMotorOutput,
               "O comando do giro deve permanecer na faixa normalizada.");
@@ -268,15 +311,48 @@ constexpr double kEncoderCalibrationDistanceCm = 18.7;
 constexpr double kEncoderCountsPerCentimeter =
     kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
 
+// Último recurso do segue-faixa: após perder as duas bandas, o robô mantém
+// somente a direção visual já comprovada por no máximo 100 mm. Este valor não
+// é uma busca livre e deve continuar curto para não atravessar um gap às cegas.
+constexpr double kLineRecoveryMemoryMaximumDistanceMm = 100.0;
+
+// A memória deve vir de uma imagem imediatamente anterior à perda. Três
+// sequências acomodam o descompasso entre a câmera de 30 FPS e o loop de 20 ms.
+constexpr int kLineRecoveryMemoryMaximumSourceSamples = 3;
+
+// A maior roda durante a memória visual recebe no máximo esta potência. A
+// normalização mantém o diferencial anterior sem criar uma nova curva sem visão.
+constexpr double kLineRecoveryMemoryMaximumPower = 0.70;
+
+// Telemetria dos dois encoders deve estar recente durante a memória visual.
+// Este watchdog só detecta ausência total de progresso; não compara os lados,
+// pois curvas reais registram naturalmente quantidades diferentes de contagens.
+constexpr int kLineRecoveryMemoryEncoderFreshnessMs = 300;
+constexpr int kLineRecoveryMemoryEncoderStallTimeoutMs = 600;
+constexpr double kLineRecoveryMemoryMinimumProgressCounts = 10.0;
+
 // Distância inicial e faixa aceitas pelo modo de percurso por encoder.
 // O limite evita comandos acidentais excessivamente longos pelo dashboard.
 constexpr double kDriveDistanceDefaultTargetCm = 20.0;
 constexpr double kDriveDistanceMinimumTargetCm = 1.0;
 constexpr double kDriveDistanceMaximumTargetCm = 300.0;
 
-// Comando lógico para andar em linha reta no teste de distância. O perfil parte
-// de 0,67 / 0,67 e o sincronismo reduz o lado mecanicamente mais rápido.
-constexpr double kDriveDistanceCommandPower = 0.01;
+// Controle fechado exclusivo do teste autônomo de distância. Ele parte reto em
+// 0,70 / 0,70 e corrige pelo erro acumulado entre os encoders, reduzindo o lado
+// adiantado e aumentando o atrasado. Isso evita depender de uma compensação fixa
+// quando a resposta mecânica muda entre tentativas.
+constexpr double kDriveDistanceBaseCommandPower = 0.70;
+constexpr double kDriveDistanceMinimumCommandPower = kMotorRunMinimumPower;
+constexpr double kDriveDistanceMaximumCommandPower = 0.90;
+constexpr double kDriveDistanceBalanceDeadbandCm = 0.25;
+constexpr double kDriveDistanceBalanceGainPerCm = 0.06;
+constexpr double kDriveDistanceMaximumBalanceCorrection = 0.12;
+
+// Diferença máxima tolerada, em centímetros, entre os dois encoders durante o
+// teste de distância. Três amostras novas dão tempo ao controle fechado reagir,
+// mas ainda impedem que uma roda continue puxando o robô para um giro grande.
+constexpr double kDriveDistanceMaximumSideDifferenceCm = 3.0;
+constexpr int kDriveDistanceDifferenceConfirmationSamples = 3;
 
 // Horizonte, em segundos, somado à idade da telemetria para prever quantas
 // contagens ainda ocorrerão antes de o robô parar por inércia.
@@ -310,11 +386,44 @@ constexpr double kGapDriveCommandPower = 0.01;
 
 static_assert(kEncoderCountsPerCentimeter > 0.0,
               "A calibração do encoder deve produzir contagens por centímetro positivas.");
+static_assert(kLineRecoveryMemoryMaximumDistanceMm > 0.0 &&
+                  kLineRecoveryMemoryMaximumPower >= kMotorStartMinimumPower &&
+                  kLineRecoveryMemoryMaximumPower <= kMaxMotorOutput &&
+                  kLineRecoveryMemoryMaximumSourceSamples > 0 &&
+                  kLineRecoveryMemoryEncoderFreshnessMs > 0 &&
+                  kLineRecoveryMemoryEncoderStallTimeoutMs > 0 &&
+                  kLineRecoveryMemoryMinimumProgressCounts > 0.0,
+              "Os limites da memória visual devem permanecer seguros.");
 static_assert(kGreenTurnAroundTargetDegrees == 180.0,
               "O retorno verde duplo deve completar 180 graus.");
+static_assert(kGreenDirectionalTurnTargetDegrees > 0.0 &&
+                  kGreenDirectionalTurnTargetDegrees < kTurn90TargetDegrees &&
+                  kGreenTurnVisualHandoffCooldownMs > 0 &&
+                  kGreenTurnAcquireTimeoutMs > 0 &&
+                  kGreenTurnForwardProbeDistanceMm > 0.0 &&
+                  kGreenTurnForwardProbePower >= kMotorStartMinimumPower &&
+                  kGreenTurnForwardProbePower <= kMaxMotorOutput &&
+                  kGreenTurnForwardProbeEncoderFreshnessMs > 0 &&
+                  kGreenTurnForwardProbeEncoderStallTimeoutMs > 0 &&
+                  kGreenTurnForwardProbeMinimumProgressCounts > 0.0,
+              "Os limites da manobra direcional pelo verde devem permanecer seguros.");
 static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
                   kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
               "A faixa da missão de distância deve ser válida.");
+static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
+                  kDriveDistanceBaseCommandPower <= kMaxMotorOutput &&
+                  kDriveDistanceMinimumCommandPower >= kMotorRunMinimumPower &&
+                  kDriveDistanceMinimumCommandPower <=
+                      kDriveDistanceBaseCommandPower &&
+                  kDriveDistanceMaximumCommandPower >=
+                      kDriveDistanceBaseCommandPower &&
+                  kDriveDistanceMaximumCommandPower <= kMaxMotorOutput &&
+                  kDriveDistanceBalanceDeadbandCm >= 0.0 &&
+                  kDriveDistanceBalanceGainPerCm > 0.0 &&
+                  kDriveDistanceMaximumBalanceCorrection > 0.0 &&
+                  kDriveDistanceMaximumSideDifferenceCm > 0.0 &&
+                  kDriveDistanceDifferenceConfirmationSamples > 0,
+              "O controle fechado da missão de distância deve permanecer seguro.");
 static_assert(kGapDriveCommandPower > 0.0 &&
                   kGapDriveCommandPower <= kMaxMotorOutput,
               "O comando da travessia de gap deve permanecer na faixa normalizada.");

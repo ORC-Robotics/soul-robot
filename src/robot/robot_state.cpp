@@ -207,6 +207,7 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_timeout" ||
                                        status.phase == "distance_encoder_lost" ||
                                        status.phase == "distance_encoder_stall" ||
+                                       status.phase == "distance_encoder_mismatch" ||
                                        status.phase == "distance_correction_failed" ||
                                        status.phase == "distance_invalid_target" ||
                                        status.phase == "esp32_not_ready" ||
@@ -214,6 +215,14 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "line_ipc_stale" ||
                                        status.phase == "gap_timeout" ||
                                        status.phase == "line_lost_timeout" ||
+                                       status.phase == "line_recovery_unavailable" ||
+                                       status.phase == "line_recovery_encoder_unavailable" ||
+                                       status.phase == "line_recovery_encoder_stall" ||
+                                       status.phase == "line_recovery_distance_limit" ||
+                                       status.phase == "green_turn_imu_failed" ||
+                                       status.phase == "green_turn_line_not_found" ||
+                                       status.phase == "green_turn_encoder_unavailable" ||
+                                       status.phase == "green_turn_encoder_stall" ||
                                        status.phase == "corner90_stall" ||
                                        status.phase == "corner90_line_lost" ||
                                        status.phase == "corner90_overturn";

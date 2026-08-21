@@ -38,6 +38,56 @@ AutonomousStatus makeDistanceStatus(
     status.averageDistanceCm = (leftDistanceCm + rightDistanceCm) * 0.5;
     return status;
 }
+
+struct DriveDistanceCommand
+{
+    double left = config::kDriveDistanceBaseCommandPower;
+    double right = config::kDriveDistanceBaseCommandPower;
+};
+
+DriveDistanceCommand calculateDriveDistanceCommand(
+    double leftDistanceCm,
+    double rightDistanceCm)
+{
+    const double distanceDifferenceCm = leftDistanceCm - rightDistanceCm;
+    const double differenceMagnitude = std::abs(distanceDifferenceCm);
+    if (differenceMagnitude <= config::kDriveDistanceBalanceDeadbandCm)
+    {
+        return {};
+    }
+
+    const double correction = std::clamp(
+        (differenceMagnitude - config::kDriveDistanceBalanceDeadbandCm) *
+            config::kDriveDistanceBalanceGainPerCm,
+        0.0,
+        config::kDriveDistanceMaximumBalanceCorrection);
+    DriveDistanceCommand command;
+    if (distanceDifferenceCm > 0.0)
+    {
+        // O lado esquerdo avançou mais: desacelera-o e reforça o direito.
+        command.left = std::clamp(
+            config::kDriveDistanceBaseCommandPower - correction,
+            config::kDriveDistanceMinimumCommandPower,
+            config::kDriveDistanceMaximumCommandPower);
+        command.right = std::clamp(
+            config::kDriveDistanceBaseCommandPower + correction,
+            config::kDriveDistanceMinimumCommandPower,
+            config::kDriveDistanceMaximumCommandPower);
+    }
+    else
+    {
+        // O lado direito avançou mais: aplica a mesma correção no sentido oposto.
+        command.left = std::clamp(
+            config::kDriveDistanceBaseCommandPower + correction,
+            config::kDriveDistanceMinimumCommandPower,
+            config::kDriveDistanceMaximumCommandPower);
+        command.right = std::clamp(
+            config::kDriveDistanceBaseCommandPower - correction,
+            config::kDriveDistanceMinimumCommandPower,
+            config::kDriveDistanceMaximumCommandPower);
+    }
+    return command;
+}
 }
 
 void MissionController::update(
@@ -172,6 +222,8 @@ void MissionController::updateDriveDistance(
         distanceLastProgressAt_ = now;
         lastDistanceProgressCounts_ = 0.0;
         distanceCorrectionPulseCount_ = 0;
+        distanceDifferenceSamples_ = 0;
+        distanceLastDifferenceUptimeMs_ = 0;
     }
 
     const double leftCounts = std::abs(static_cast<double>(
@@ -188,6 +240,8 @@ void MissionController::updateDriveDistance(
         activeDistanceTargetCm_ * config::kEncoderCountsPerCentimeter;
     const double progressPercent = std::clamp(
         minimumDistanceCm / activeDistanceTargetCm_ * 100.0, 0.0, 100.0);
+    const DriveDistanceCommand driveCommand = calculateDriveDistanceCommand(
+        leftDistanceCm, rightDistanceCm);
 
     if (now - distanceStartedAt_ >
         std::chrono::milliseconds(config::kDriveDistanceTimeoutMs))
@@ -215,6 +269,37 @@ void MissionController::updateDriveDistance(
 
     const bool movementPhase = distancePhase_ == DistancePhase::Driving ||
                                distancePhase_ == DistancePhase::CorrectionPulse;
+    const bool newEncoderSample =
+        esp32Telemetry.esp32UptimeMs != distanceLastDifferenceUptimeMs_;
+    if (movementPhase && newEncoderSample)
+    {
+        distanceLastDifferenceUptimeMs_ = esp32Telemetry.esp32UptimeMs;
+        const double sideDifferenceCm =
+            std::abs(leftDistanceCm - rightDistanceCm);
+        if (sideDifferenceCm > config::kDriveDistanceMaximumSideDifferenceCm)
+        {
+            ++distanceDifferenceSamples_;
+        }
+        else
+        {
+            distanceDifferenceSamples_ = 0;
+        }
+    }
+    if (movementPhase && distanceDifferenceSamples_ >=
+                             config::kDriveDistanceDifferenceConfirmationSamples)
+    {
+        // Não tenta corrigir uma diferença grande como se fosse um ajuste fino.
+        // Parar cedo evita que um motor fraco, roda travada ou encoder incoerente
+        // transforme o teste reto em giro no próprio eixo.
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeDistanceStatus(
+            "distance_encoder_mismatch",
+            "Percurso interrompido: diferença excessiva entre os lados",
+            activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm,
+            progressPercent));
+        distancePhase_ = DistancePhase::Idle;
+        return;
+    }
     if (movementPhase &&
         minimumCounts >= lastDistanceProgressCounts_ +
                              config::kDriveDistanceMinimumProgressCounts)
@@ -260,8 +345,8 @@ void MissionController::updateDriveDistance(
         }
 
         robotState.driveAutonomous(
-            config::kDriveDistanceCommandPower,
-            config::kDriveDistanceCommandPower);
+            driveCommand.left,
+            driveCommand.right);
         robotState.updateAutonomousStatus(makeDistanceStatus(
             "driving_distance", "Avançando até a distância selecionada",
             activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm,
@@ -284,8 +369,8 @@ void MissionController::updateDriveDistance(
             std::chrono::milliseconds(config::kDriveDistanceCorrectionPulseMs))
         {
             robotState.driveAutonomous(
-                config::kDriveDistanceCommandPower,
-                config::kDriveDistanceCommandPower);
+                driveCommand.left,
+                driveCommand.right);
             robotState.updateAutonomousStatus(makeDistanceStatus(
                 "distance_correction",
                 "Aplicando correção curta de distância",
@@ -340,8 +425,8 @@ void MissionController::updateDriveDistance(
     distanceLastProgressAt_ = now;
     lastDistanceProgressCounts_ = minimumCounts;
     robotState.driveAutonomous(
-        config::kDriveDistanceCommandPower,
-        config::kDriveDistanceCommandPower);
+        driveCommand.left,
+        driveCommand.right);
     robotState.updateAutonomousStatus(makeDistanceStatus(
         "distance_correction", "Completando os centímetros restantes",
         activeDistanceTargetCm_, leftDistanceCm, rightDistanceCm,
@@ -356,4 +441,6 @@ void MissionController::resetMissionState()
     activeDistanceTargetCm_ = 0.0;
     lastDistanceProgressCounts_ = 0.0;
     distanceCorrectionPulseCount_ = 0;
+    distanceDifferenceSamples_ = 0;
+    distanceLastDifferenceUptimeMs_ = 0;
 }

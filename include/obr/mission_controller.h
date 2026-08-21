@@ -40,6 +40,8 @@ private:
     std::chrono::steady_clock::time_point distanceLastProgressAt_{};
     double lastDistanceProgressCounts_ = 0.0;
     int distanceCorrectionPulseCount_ = 0;
+    int distanceDifferenceSamples_ = 0;
+    unsigned long long distanceLastDifferenceUptimeMs_ = 0;
     unsigned long long activeAutonomousRunSequence_ = 0;
 
     void updateTurnRight90(

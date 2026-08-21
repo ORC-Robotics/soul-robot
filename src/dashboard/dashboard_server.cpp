@@ -1430,6 +1430,7 @@ std::string DashboardServer::dashboardHtml()
                   <h4>Fonte</h4>
                   <dl class="camera-diagnostic-list">
                     <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Reparo de reflexo</dt><dd id="cameraSpecularRepair">—</dd></div>
                   </dl>
                 </div>
               </div>
@@ -1443,6 +1444,7 @@ std::string DashboardServer::dashboardHtml()
                   <dl class="camera-diagnostic-list">
                     <div class="camera-diagnostic-item"><dt>Validade</dt><dd id="tuningTrajectoryValid">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Modo</dt><dd id="cameraTrajectoryMode">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Origem</dt><dd id="cameraTrajectorySource">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Amostras</dt><dd id="cameraFitSampleCount">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Qualidade</dt><dd id="cameraFitQuality">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>RMS</dt><dd id="cameraFitRmsError">—</dd></div>
@@ -1465,14 +1467,24 @@ std::string DashboardServer::dashboardHtml()
                   </dl>
                 </div>
                 <div class="tuning-metric-group">
-                  <h4>Cotovelo 90°</h4>
+                  <h4>Geometria da linha preta</h4>
                   <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraCorner90Candidate">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraCorner90Direction">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Ângulo</dt><dd id="cameraCorner90Angle">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Confirmação</dt><dd id="cameraCorner90ConfirmFrames">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraCorner90State">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Alinhamento de saída</dt><dd id="cameraCorner90ExitAlignment">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraBlackLineGeometryCandidate">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraBlackLineGeometryDirection">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Ângulo</dt><dd id="cameraBlackLineGeometryAngle">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Confiança</dt><dd id="cameraBlackLineGeometryConfidence">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraBlackLineGeometryState">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Alinhamento de saída</dt><dd id="cameraBlackLineGeometryExitAlignment">—</dd></div>
+                  </dl>
+                </div>
+                <div class="tuning-metric-group">
+                  <h4>Curva extrema</h4>
+                  <dl class="camera-diagnostic-list">
+                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraExtremeCurveCandidate">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraExtremeCurveDirection">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Curvatura</dt><dd id="cameraExtremeCurveCurvature">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Confirmação</dt><dd id="cameraExtremeCurveConfirmFrames">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraExtremeCurveState">—</dd></div>
                   </dl>
                 </div>
                 <div class="tuning-metric-group">
@@ -1480,8 +1492,14 @@ std::string DashboardServer::dashboardHtml()
                   <dl class="camera-diagnostic-list">
                     <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraGreenDecisionState">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Candidato bruto</dt><dd id="cameraGreenRawInterpretation">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Decisão confirmada</dt><dd id="cameraGreenInterpretation">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Aceito</dt><dd id="cameraGreenConfirmed">—</dd></div>
                     <div class="camera-diagnostic-item"><dt>Amostras</dt><dd id="cameraGreenConsecutiveSamples">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Faixa preta associada</dt><dd id="cameraGreenPathBlackValid">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>Marcadores / válidos</dt><dd id="cameraGreenMarkerCounts">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>ROI frontal · preto (≥25%)</dt><dd id="cameraGreenFrontRoi">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>ROI esquerda · preto (≥25%)</dt><dd id="cameraGreenLeftRoi">—</dd></div>
+                    <div class="camera-diagnostic-item"><dt>ROI direita · preto (≥25%)</dt><dd id="cameraGreenRightRoi">—</dd></div>
                   </dl>
                 </div>
               </div>
@@ -1794,26 +1812,39 @@ std::string DashboardServer::dashboardHtml()
         nearHeight: element("cameraNearHeight"),
         farValid: element("tuningFarValid"), farX: element("tuningFarX"),
         farError: element("cameraFarError"), farArea: element("cameraFarArea"),
-        farHeight: element("cameraFarHeight"), lineSequence: element("cameraLineSequence")
+        farHeight: element("cameraFarHeight"), lineSequence: element("cameraLineSequence"),
+        specularRepair: element("cameraSpecularRepair")
       },
       trajectory: {
         trajectoryValid: element("tuningTrajectoryValid"),
         trajectoryMode: element("cameraTrajectoryMode"),
+        trajectorySource: element("cameraTrajectorySource"),
         fitSampleCount: element("cameraFitSampleCount"),
         fitQuality: element("cameraFitQuality"), fitRmsError: element("cameraFitRmsError"),
         fitA: element("cameraFitA"), fitB: element("cameraFitB"), fitC: element("cameraFitC"),
         lookaheadX: element("cameraLookaheadX"), lookaheadY: element("cameraLookaheadY"),
         curvature: element("tuningCurvature"),
-        corner90Candidate: element("cameraCorner90Candidate"),
-        corner90Direction: element("cameraCorner90Direction"),
-        corner90Angle: element("cameraCorner90Angle"),
-        corner90ConfirmFrames: element("cameraCorner90ConfirmFrames"),
-        corner90State: element("cameraCorner90State"),
-        corner90ExitAlignment: element("cameraCorner90ExitAlignment"),
+        blackLineGeometryCandidate: element("cameraBlackLineGeometryCandidate"),
+        blackLineGeometryDirection: element("cameraBlackLineGeometryDirection"),
+        blackLineGeometryAngleDegrees: element("cameraBlackLineGeometryAngle"),
+        blackLineGeometryConfidence: element("cameraBlackLineGeometryConfidence"),
+        blackLineGeometryState: element("cameraBlackLineGeometryState"),
+        blackLineGeometryExitAlignment: element("cameraBlackLineGeometryExitAlignment"),
+        extremeCurveCandidate: element("cameraExtremeCurveCandidate"),
+        extremeCurveDirection: element("cameraExtremeCurveDirection"),
+        extremeCurveCurvature: element("cameraExtremeCurveCurvature"),
+        extremeCurveConfirmFrames: element("cameraExtremeCurveConfirmFrames"),
+        extremeCurveState: element("cameraExtremeCurveState"),
         greenDecisionState: element("cameraGreenDecisionState"),
         greenRawInterpretation: element("cameraGreenRawInterpretation"),
+        greenInterpretation: element("cameraGreenInterpretation"),
         greenConfirmed: element("cameraGreenConfirmed"),
-        greenConsecutiveSamples: element("cameraGreenConsecutiveSamples")
+        greenConsecutiveSamples: element("cameraGreenConsecutiveSamples"),
+        greenPathBlackValid: element("cameraGreenPathBlackValid"),
+        greenMarkerCounts: element("cameraGreenMarkerCounts"),
+        greenFrontRoi: element("cameraGreenFrontRoi"),
+        greenLeftRoi: element("cameraGreenLeftRoi"),
+        greenRightRoi: element("cameraGreenRightRoi")
       },
       control: {
         controlError: element("cameraControlError"),
@@ -2165,6 +2196,14 @@ std::string DashboardServer::dashboardHtml()
         green_confirming: ["VERDE: CONFIRMANDO", "warn", "machineStepPerception"],
         green_cancelled: ["VERDE: CANCELADO", "warn", "machineStepFeedback"],
         green_approach: ["VERDE: APROXIMAÇÃO", "active", "machineStepMotion"],
+        green_turn_45_left: ["VERDE: GIRO 45° ESQUERDA", "active", "machineStepMotion"],
+        green_turn_45_right: ["VERDE: GIRO 45° DIREITA", "active", "machineStepMotion"],
+        green_turn_visual_handoff: ["VERDE: PRIORIDADE VISUAL", "warn", "machineStepPerception"],
+        green_turn_forward_probe: ["VERDE: SONDA 20 MM", "active", "machineStepMotion"],
+        green_turn_line_not_found: ["VERDE: LINHA NÃO ENCONTRADA", "danger", "machineStepFeedback"],
+        green_turn_encoder_unavailable: ["VERDE: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        green_turn_encoder_stall: ["VERDE: SEM AVANÇO", "danger", "machineStepFeedback"],
+        green_turn_imu_failed: ["VERDE: IMU FALHOU", "danger", "machineStepFeedback"],
         green_turn_left: ["VERDE: PIVOT ESQUERDA", "active", "machineStepMotion"],
         green_turn_right: ["VERDE: PIVOT DIREITA", "active", "machineStepMotion"],
         green_guidance: ["VERDE: ALVO DESLOCADO", "active", "machineStepMotion"],
@@ -2185,6 +2224,7 @@ std::string DashboardServer::dashboardHtml()
         distance_timeout: ["TEMPO LIMITE", "danger", "machineStepFeedback"],
         distance_encoder_lost: ["ENCODERS OFFLINE", "danger", "machineStepFeedback"],
         distance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
+        distance_encoder_mismatch: ["LADOS DESBALANCEADOS", "danger", "machineStepFeedback"],
         distance_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
         distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"]
       };
@@ -3179,7 +3219,10 @@ std::string DashboardServer::dashboardHtml()
       setTextIfChanged(fields.nearX, `${formatCameraDiagnostic(data.nearX, 1)} px`);
       setTextIfChanged(fields.farValid, data.farValid ? "VALID" : "INVALID");
       setTextIfChanged(fields.farX, `${formatCameraDiagnostic(data.farX, 1)} px`);
-      setTextIfChanged(fields.trajectoryValid, data.trajectoryValid ? "LINE VALID" : "LINE INVALID");
+      setTextIfChanged(
+        fields.trajectoryValid,
+        data.trajectoryValid ? "TRAJETÓRIA VÁLIDA" : "TRAJETÓRIA INVÁLIDA"
+      );
       fields.trajectoryValid.className =
         `camera-hud-line ${data.trajectoryValid ? "valid" : "invalid"}`;
       setTextIfChanged(fields.curvature, formatCameraDiagnostic(data.curvature, 4));
@@ -3214,11 +3257,16 @@ std::string DashboardServer::dashboardHtml()
         setTextIfChanged(fields.farArea, formatCameraDiagnostic(data.farArea, 1));
         setTextIfChanged(fields.farHeight, `${Math.round(Number(data.farHeightPx))} px`);
         setTextIfChanged(fields.lineSequence, String(Math.trunc(Number(data.lineSequence))));
+        setTextIfChanged(
+          fields.specularRepair,
+          `${Math.trunc(Number(data.specularRepairComponents || 0))} comp. / ${Math.trunc(Number(data.specularRepairPixels || 0))} px`
+        );
         return;
       }
       if (panelName === "trajectory") {
         setTextIfChanged(fields.trajectoryValid, data.trajectoryValid ? "VALID" : "INVALID");
         setTextIfChanged(fields.trajectoryMode, String(data.trajectoryMode));
+        setTextIfChanged(fields.trajectorySource, String(data.trajectorySource || "candidate"));
         setTextIfChanged(fields.fitSampleCount, String(Math.trunc(Number(data.fitSampleCount))));
         setTextIfChanged(fields.fitQuality, formatCameraDiagnostic(data.fitQuality, 3));
         setTextIfChanged(fields.fitRmsError, formatCameraDiagnostic(data.fitRmsError, 4));
@@ -3228,16 +3276,43 @@ std::string DashboardServer::dashboardHtml()
         setTextIfChanged(fields.lookaheadX, formatCameraDiagnostic(data.lookaheadX, 4));
         setTextIfChanged(fields.lookaheadY, formatCameraDiagnostic(data.lookaheadY, 4));
         setTextIfChanged(fields.curvature, formatCameraDiagnostic(data.curvature, 4));
-        setTextIfChanged(fields.corner90Candidate, data.corner90Candidate ? "SIM" : "NÃO");
-        setTextIfChanged(fields.corner90Direction, String(data.corner90Direction));
-        setTextIfChanged(fields.corner90Angle, `${formatCameraDiagnostic(data.corner90Angle, 1)}°`);
-        setTextIfChanged(fields.corner90ConfirmFrames, `${Math.trunc(Number(data.corner90ConfirmFrames))}/3`);
-        setTextIfChanged(fields.corner90State, String(data.corner90State));
-        setTextIfChanged(fields.corner90ExitAlignment, data.corner90ExitAlignment ? "SIM" : "NÃO");
+        setTextIfChanged(fields.blackLineGeometryCandidate, data.blackLineGeometryCandidate ? "SIM" : "NÃO");
+        setTextIfChanged(fields.blackLineGeometryDirection, String(data.blackLineGeometryDirection));
+        setTextIfChanged(fields.blackLineGeometryAngleDegrees, `${formatCameraDiagnostic(data.blackLineGeometryAngleDegrees, 1)}°`);
+        setTextIfChanged(fields.blackLineGeometryConfidence, formatCameraDiagnostic(data.blackLineGeometryConfidence, 2));
+        setTextIfChanged(fields.blackLineGeometryState, String(data.blackLineGeometryState));
+        setTextIfChanged(fields.blackLineGeometryExitAlignment, data.blackLineGeometryExitAlignment ? "SIM" : "NÃO");
+        setTextIfChanged(fields.extremeCurveCandidate, data.extremeCurveCandidate ? "SIM" : "NÃO");
+        setTextIfChanged(fields.extremeCurveDirection, String(data.extremeCurveDirection || "NONE"));
+        setTextIfChanged(fields.extremeCurveCurvature, formatCameraDiagnostic(data.extremeCurveCurvature, 4));
+        setTextIfChanged(fields.extremeCurveConfirmFrames, `${Math.trunc(Number(data.extremeCurveConfirmFrames || 0))}/2`);
+        setTextIfChanged(fields.extremeCurveState, String(data.extremeCurveState || "idle"));
         setTextIfChanged(fields.greenDecisionState, String(data.greenDecisionState || "idle"));
         setTextIfChanged(fields.greenRawInterpretation, String(data.greenRawInterpretation || "SEM_DECISAO"));
+        setTextIfChanged(fields.greenInterpretation, String(data.greenInterpretation || "SEM_DECISAO"));
         setTextIfChanged(fields.greenConfirmed, data.greenConfirmed ? "SIM" : "NÃO");
         setTextIfChanged(fields.greenConsecutiveSamples, `${Math.trunc(Number(data.greenConsecutiveSamples || 0))}/3`);
+        setTextIfChanged(fields.greenPathBlackValid, data.greenPathBlackValid ? "SIM" : "NÃO");
+        setTextIfChanged(
+          fields.greenMarkerCounts,
+          `${Math.trunc(Number(data.greenMarkerCount || 0))} / ${Math.trunc(Number(data.greenValidatedMarkerCount || 0))}`
+        );
+        const formatGreenRoi = (measured, valid, ratio) => {
+          if (!measured) return "NÃO MEDIDA";
+          return `${valid ? "VÁLIDA" : "REJEITADA"} · ${formatCameraDiagnostic(Number(ratio) * 100.0, 1)}%`;
+        };
+        setTextIfChanged(
+          fields.greenFrontRoi,
+          formatGreenRoi(data.greenFrontRoiMeasured, data.greenFrontRoiValid, data.greenFrontBlackRatio)
+        );
+        setTextIfChanged(
+          fields.greenLeftRoi,
+          formatGreenRoi(data.greenLeftRoiMeasured, data.greenLeftRoiValid, data.greenLeftBlackRatio)
+        );
+        setTextIfChanged(
+          fields.greenRightRoi,
+          formatGreenRoi(data.greenRightRoiMeasured, data.greenRightRoiValid, data.greenRightBlackRatio)
+        );
         return;
       }
       if (panelName === "control") {
@@ -3292,7 +3367,8 @@ std::string DashboardServer::dashboardHtml()
         data.farX, data.farError, data.farArea, data.farHeightPx,
         data.fitA, data.fitB, data.fitC, data.fitQuality, data.fitRmsError,
         data.fitSampleCount, data.lookaheadX, data.lookaheadY, data.curvature,
-        data.corner90Angle, data.corner90ConfirmFrames,
+        data.blackLineGeometryAngleDegrees, data.blackLineGeometryConfidence,
+        data.extremeCurveCurvature, data.extremeCurveConfirmFrames,
         data.lateralError, data.headingError, data.adaptivePreview,
         data.previewError, data.pTerm, data.filteredDerivative, data.dTerm,
         data.preview, data.kControl,
@@ -3305,10 +3381,14 @@ std::string DashboardServer::dashboardHtml()
         typeof data.farValid === "boolean" &&
         typeof data.trajectoryValid === "boolean" &&
         typeof data.trajectoryMode === "string" &&
-        typeof data.corner90Candidate === "boolean" &&
-        typeof data.corner90Direction === "string" &&
-        typeof data.corner90State === "string" &&
-        typeof data.corner90ExitAlignment === "boolean" &&
+        typeof data.trajectorySource === "string" &&
+        typeof data.blackLineGeometryCandidate === "boolean" &&
+        typeof data.blackLineGeometryDirection === "string" &&
+        typeof data.blackLineGeometryState === "string" &&
+        typeof data.blackLineGeometryExitAlignment === "boolean" &&
+        typeof data.extremeCurveCandidate === "boolean" &&
+        typeof data.extremeCurveDirection === "string" &&
+        typeof data.extremeCurveState === "string" &&
         typeof data.gapCandidate === "boolean" &&
         typeof data.gapAlignmentValid === "boolean" &&
         typeof data.gapReturnValid === "boolean" &&

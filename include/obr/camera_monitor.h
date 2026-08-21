@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 enum class GreenTurnDecision
 {
@@ -12,7 +13,15 @@ enum class GreenTurnDecision
 };
 
 // Direção geométrica do cotovelo detectado pela câmera antes do pivô.
-enum class Corner90Direction
+enum class BlackLineGeometryDirection
+{
+    None,
+    Left,
+    Right
+};
+
+// Direção da curva contínua extrema detectada pelo fit visual da câmera.
+enum class ExtremeCurveDirection
 {
     None,
     Left,
@@ -44,13 +53,21 @@ struct CameraLineSnapshot
     double lookaheadX = 0.0;
     double lookaheadY = 0.0;
     double curvature = 0.0;
-    // O cotovelo usa as amostras brutas, pois um fit quadrático não descreve
-    // corretamente uma mudança abrupta de direção.
-    bool corner90Candidate = false;
-    Corner90Direction corner90Direction = Corner90Direction::None;
-    double corner90Angle = 0.0;
-    std::uint64_t corner90ConfirmFrames = 0;
-    bool corner90ExitAlignment = false;
+    // Um pivot extremo só pode nascer de um fit válido e de duas imagens novas.
+    // Estes campos preservam a geometria bruta para a Missão Principal validar.
+    bool extremeCurveCandidate = false;
+    ExtremeCurveDirection extremeCurveDirection = ExtremeCurveDirection::None;
+    double extremeCurveCurvature = 0.0;
+    std::uint64_t extremeCurveConfirmFrames = 0;
+    // A geometria bruta descreve curvas abruptas que um fit quadrático não
+    // representa. A confiança vem apenas da máscara atual da linha preta.
+    bool blackLineGeometryCandidate = false;
+    BlackLineGeometryDirection blackLineGeometryDirection =
+        BlackLineGeometryDirection::None;
+    double blackLineGeometryAngleDegrees = 0.0;
+    double blackLineGeometryConfidence = 0.0;
+    std::string blackLineGeometryState = "idle";
+    bool blackLineGeometryExitAlignment = false;
     double adaptivePreview = 0.0;
     double previewError = 0.0;
     double pTerm = 0.0;

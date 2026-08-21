@@ -34,10 +34,18 @@ bool ImuTurnController::imuReady(const Esp32TelemetrySnapshot& telemetry)
 bool ImuTurnController::start(
     double targetDegrees,
     ImuTurnDirection direction,
-    const Esp32TelemetrySnapshot& telemetry)
+    const Esp32TelemetrySnapshot& telemetry,
+    double completionToleranceDegrees)
 {
+    if (completionToleranceDegrees <= 0.0)
+    {
+        completionToleranceDegrees = config::kTurn90StopToleranceDegrees;
+    }
     if (!imuReady(telemetry) || !std::isfinite(targetDegrees) ||
-        targetDegrees <= 0.0 || targetDegrees > 180.0)
+        targetDegrees <= 0.0 || targetDegrees > 180.0 ||
+        !std::isfinite(completionToleranceDegrees) ||
+        completionToleranceDegrees <= 0.0 ||
+        completionToleranceDegrees >= targetDegrees)
     {
         reset();
         return false;
@@ -45,6 +53,7 @@ bool ImuTurnController::start(
 
     const auto now = std::chrono::steady_clock::now();
     targetDegrees_ = targetDegrees;
+    completionToleranceDegrees_ = completionToleranceDegrees;
     startYawDegrees_ = telemetry.yawZDeg;
     directionSign_ = direction == ImuTurnDirection::Right ? 1.0 : -1.0;
     correctionDirection_ = 1.0;
@@ -134,7 +143,7 @@ ImuTurnOutput ImuTurnController::update(
 
     if (phase_ == Phase::CorrectionPulse)
     {
-        if (std::abs(remainingDegrees) <= config::kTurn90StopToleranceDegrees ||
+        if (std::abs(remainingDegrees) <= completionToleranceDegrees_ ||
             remainingDegrees * correctionDirection_ <= 0.0)
         {
             phase_ = Phase::Settling;
@@ -173,7 +182,7 @@ ImuTurnOutput ImuTurnController::update(
             "Aguardando a leitura angular estabilizar",
             progressPercent);
     }
-    if (std::abs(remainingDegrees) <= config::kTurn90StopToleranceDegrees)
+    if (std::abs(remainingDegrees) <= completionToleranceDegrees_)
     {
         reset();
         return stoppedOutput(
@@ -203,6 +212,7 @@ void ImuTurnController::reset()
 {
     phase_ = Phase::Idle;
     targetDegrees_ = 0.0;
+    completionToleranceDegrees_ = 0.0;
     correctionPulseCount_ = 0;
 }
 

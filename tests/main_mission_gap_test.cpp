@@ -11,6 +11,8 @@
 
 namespace
 {
+using Corner90Direction = BlackLineGeometryDirection;
+
 void require(bool condition, const std::string& message)
 {
     if (!condition)
@@ -50,7 +52,7 @@ CameraLineSnapshot greenMarker(
     line.greenNearSeen = true;
     line.greenPathBlackValid = true;
     line.greenCandidateDecision = decision;
-    line.greenCandidateFrames = 3;
+    line.greenCandidateFrames = 2;
     line.greenConfirmed = true;
     line.greenTurnDecision = decision;
     return line;
@@ -104,22 +106,111 @@ CameraLineSnapshot strongCurve(std::uint64_t sequence, double error)
     return line;
 }
 
-CameraLineSnapshot corner90Line(
+CameraLineSnapshot acceptedGreenWithLineOccluded(
     std::uint64_t sequence,
-    Corner90Direction direction)
+    GreenTurnDecision decision)
+{
+    CameraLineSnapshot line;
+    line.sourceFresh = true;
+    line.lineSequence = sequence;
+    line.greenNearSeen = true;
+    line.greenPathBlackValid = true;
+    line.greenCandidateDecision = decision;
+    line.greenCandidateFrames = 2;
+    line.greenConfirmed = true;
+    line.greenTurnDecision = decision;
+    return line;
+}
+
+CameraLineSnapshot unconfirmedStrongGreen(
+    std::uint64_t sequence,
+    GreenTurnDecision decision)
 {
     CameraLineSnapshot line = trackedLine(sequence);
-    line.corner90Candidate = true;
-    line.corner90Direction = direction;
-    line.corner90Angle = direction == Corner90Direction::Left ? -90.0 : 90.0;
-    line.corner90ConfirmFrames = 3;
+    line.greenNearSeen = true;
+    line.greenPathBlackValid = true;
+    line.greenCandidateDecision = decision;
+    line.greenCandidateFrames = 1;
+    return line;
+}
+
+CameraLineSnapshot strongTrackedLine(
+    std::uint64_t sequence,
+    double error,
+    double leftPower,
+    double rightPower)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.nearError = error;
+    line.farValid = true;
+    line.farError = error;
+    line.trajectoryValid = true;
+    line.leftPreview = leftPower;
+    line.rightPreview = rightPower;
+    return line;
+}
+
+CameraLineSnapshot trajectoryOnlyTrackedLine(
+    std::uint64_t sequence,
+    double error,
+    double leftPower,
+    double rightPower)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.nearError = error;
+    line.trajectoryValid = true;
+    line.leftPreview = leftPower;
+    line.rightPreview = rightPower;
+    return line;
+}
+
+CameraLineSnapshot nearFarRecoveryLine(
+    std::uint64_t sequence,
+    double nearError,
+    double farError,
+    double correction)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.nearError = nearError;
+    line.farValid = true;
+    line.farError = farError;
+    line.targetCorrection = correction;
+    line.trajectoryValid = false;
+    return line;
+}
+
+CameraLineSnapshot corner90Line(
+    std::uint64_t sequence,
+    BlackLineGeometryDirection direction)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.blackLineGeometryCandidate = true;
+    line.blackLineGeometryDirection = direction;
+    line.blackLineGeometryAngleDegrees =
+        direction == BlackLineGeometryDirection::Left ? -90.0 : 90.0;
+    line.blackLineGeometryConfidence = 0.90;
+    line.blackLineGeometryState = "candidate";
     return line;
 }
 
 CameraLineSnapshot corner90ExitAlignedLine(std::uint64_t sequence)
 {
     CameraLineSnapshot line = trackedLine(sequence);
-    line.corner90ExitAlignment = true;
+    line.trajectoryValid = true;
+    line.fitSampleCount = 8;
+    line.lookaheadY = 0.65;
+    line.blackLineGeometryExitAlignment = true;
+    return line;
+}
+
+CameraLineSnapshot corner90PrematureExitLine(std::uint64_t sequence)
+{
+    CameraLineSnapshot line = trackedLine(sequence);
+    line.trajectoryValid = true;
+    line.fitSampleCount = 8;
+    line.fitB = 0.50;
+    line.lookaheadY = 0.65;
+    line.blackLineGeometryExitAlignment = true;
     return line;
 }
 
@@ -167,6 +258,28 @@ struct MissionFixture
     }
 
 };
+
+void completeGreenTurnToVisualHandoff(
+    MissionFixture& fixture,
+    GreenTurnDecision decision,
+    double completedDegrees = config::kGreenDirectionalTurnTargetDegrees)
+{
+    fixture.telemetry.mpuOk = true;
+    fixture.update(greenMarker(++fixture.sequence, decision));
+    fixture.update(lineLost(++fixture.sequence));
+    fixture.telemetry.yawZDeg =
+        decision == GreenTurnDecision::GuideLeft
+            ? -completedDegrees
+            : completedDegrees;
+    fixture.telemetry.gyroZDegPerSec = 0.0;
+    fixture.update(lineLost(++fixture.sequence));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kTurn90SettleMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "green_turn_visual_handoff",
+            "O giro verde concluído deve iniciar o handoff visual.");
+}
 
 void testGapStartsImmediatelyAndNeverRealigns()
 {
@@ -302,18 +415,179 @@ void testGapTimeoutStopsMotors()
             "Dois segundos sem linha devem zerar os motores no gap.");
 }
 
-void testTotalLineLossTimeoutReportsReason()
+void testLineLossWithoutStrongMemoryStopsImmediately()
 {
     MissionFixture fixture;
-    fixture.update(lineLost(++fixture.sequence));
-    std::this_thread::sleep_for(std::chrono::milliseconds(1320));
     fixture.update(lineLost(++fixture.sequence));
 
     const RobotSnapshot snapshot = fixture.robotState.snapshot();
     require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
                 snapshot.right == 0.0 &&
-                snapshot.autonomousStatus.phase == "line_lost_timeout",
-            "Perda total da linha deve informar o motivo terminal.");
+                snapshot.autonomousStatus.phase == "line_recovery_unavailable",
+            "Perda sem uma direção visual forte deve parar sem busca cega.");
+}
+
+void testLineRecoveryMemoryPreservesLeftStraightAndRightDirections()
+{
+    struct RecoveryCase
+    {
+        double error;
+        double leftPower;
+        double rightPower;
+        const char* direction;
+    };
+    const RecoveryCase cases[] = {
+        {-0.35, 0.61, 0.86, "esquerda"},
+        {0.00, 0.70, 0.70, "reta"},
+        {0.35, 0.86, 0.61, "direita"},
+    };
+
+    for (const RecoveryCase& recoveryCase : cases)
+    {
+        MissionFixture fixture;
+        fixture.telemetry.leftEncoderRate = 100.0;
+        fixture.telemetry.rightEncoderRate = 80.0;
+        fixture.update(strongTrackedLine(
+            ++fixture.sequence,
+            recoveryCase.error,
+            recoveryCase.leftPower,
+            recoveryCase.rightPower));
+        fixture.update(lineLost(++fixture.sequence));
+
+        const RobotSnapshot snapshot = fixture.robotState.snapshot();
+        require(snapshot.autonomousStatus.phase == "line_recovery_memory" &&
+                    snapshot.left > 0.0 && snapshot.right > 0.0 &&
+                    snapshot.left <= config::kLineRecoveryMemoryMaximumPower &&
+                    snapshot.right <= config::kLineRecoveryMemoryMaximumPower &&
+                    snapshot.autonomousStatus.action.find(recoveryCase.direction) !=
+                        std::string::npos,
+                "A memória visual deve manter direção e comandos somente à frente.");
+    }
+}
+
+void testLineRecoveryReacquiresFarAndNear()
+{
+    MissionFixture farFixture;
+    farFixture.telemetry.leftEncoderRate = 100.0;
+    farFixture.telemetry.rightEncoderRate = 80.0;
+    farFixture.update(strongTrackedLine(
+        ++farFixture.sequence, 0.20, 0.78, 0.62));
+    farFixture.update(lineLost(++farFixture.sequence));
+    farFixture.update(farOnlyLine(++farFixture.sequence, 0.25));
+    RobotSnapshot snapshot = farFixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "fallback_far" &&
+                snapshot.autonomousStatus.action.find("FAR reencontrada") !=
+                    std::string::npos,
+            "A FAR atual deve cancelar a memória visual antes do limite físico.");
+
+    MissionFixture nearFixture;
+    nearFixture.telemetry.leftEncoderRate = 100.0;
+    nearFixture.telemetry.rightEncoderRate = 80.0;
+    nearFixture.update(strongTrackedLine(
+        ++nearFixture.sequence, -0.20, 0.62, 0.78));
+    nearFixture.update(lineLost(++nearFixture.sequence));
+    nearFixture.update(trackedLine(++nearFixture.sequence));
+    snapshot = nearFixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "reacquiring_near",
+            "A NEAR atual deve retornar pela confirmação visual existente.");
+}
+
+void testLineRecoveryHonorsGapGreenCornerAndIpcPriorities()
+{
+    MissionFixture gapFixture;
+    gapFixture.telemetry.leftEncoderRate = 100.0;
+    gapFixture.telemetry.rightEncoderRate = 80.0;
+    gapFixture.update(strongTrackedLine(
+        ++gapFixture.sequence, 0.0, 0.70, 0.70));
+    gapFixture.update(lineLost(++gapFixture.sequence));
+    gapFixture.update(gapWithoutNear(++gapFixture.sequence));
+    require(gapFixture.robotState.snapshot().autonomousStatus.phase ==
+                "crossing_gap",
+            "Um gap atual deve cancelar a memória visual sem avanço cego.");
+
+    MissionFixture greenFixture;
+    greenFixture.telemetry.mpuOk = true;
+    greenFixture.telemetry.leftEncoderRate = 100.0;
+    greenFixture.telemetry.rightEncoderRate = 80.0;
+    greenFixture.update(strongTrackedLine(
+        ++greenFixture.sequence, 0.0, 0.70, 0.70));
+    greenFixture.update(lineLost(++greenFixture.sequence));
+    CameraLineSnapshot green = greenMarker(
+        ++greenFixture.sequence, GreenTurnDecision::GuideLeft);
+    greenFixture.update(green);
+    require(greenFixture.robotState.snapshot().autonomousStatus.phase ==
+                "green_turn_45_left",
+            "Um verde forte deve ter prioridade sobre a memória visual.");
+
+    MissionFixture cornerFixture;
+    cornerFixture.telemetry.leftEncoderRate = 100.0;
+    cornerFixture.telemetry.rightEncoderRate = 80.0;
+    cornerFixture.update(strongTrackedLine(
+        ++cornerFixture.sequence, 0.0, 0.70, 0.70));
+    cornerFixture.update(lineLost(++cornerFixture.sequence));
+    cornerFixture.update(corner90Line(
+        ++cornerFixture.sequence, Corner90Direction::Left));
+    cornerFixture.update(corner90Line(
+        ++cornerFixture.sequence, Corner90Direction::Left));
+    require(cornerFixture.robotState.snapshot().autonomousStatus.phase ==
+                "black_line_geometry_left",
+            "A geometria forte deve interromper a memória e iniciar o pivot imediato.");
+
+    MissionFixture ipcFixture;
+    ipcFixture.telemetry.leftEncoderRate = 100.0;
+    ipcFixture.telemetry.rightEncoderRate = 80.0;
+    ipcFixture.update(strongTrackedLine(
+        ++ipcFixture.sequence, 0.0, 0.70, 0.70));
+    ipcFixture.update(lineLost(++ipcFixture.sequence));
+    CameraLineSnapshot stale = lineLost(++ipcFixture.sequence);
+    stale.sourceFresh = false;
+    ipcFixture.update(stale);
+    require(ipcFixture.robotState.snapshot().autonomousStatus.phase ==
+                "line_ipc_stale",
+            "IPC visual antigo deve interromper a memória visual imediatamente.");
+}
+
+void testLineRecoveryStopsForEncoderAndDistanceLimits()
+{
+    MissionFixture unavailableFixture;
+    unavailableFixture.update(strongTrackedLine(
+        ++unavailableFixture.sequence, 0.0, 0.70, 0.70));
+    unavailableFixture.telemetry.leftEncoderRate = std::nan("");
+    unavailableFixture.update(lineLost(++unavailableFixture.sequence));
+    require(unavailableFixture.robotState.snapshot().autonomousStatus.phase ==
+                "line_recovery_encoder_unavailable",
+            "Encoder não finito deve bloquear o início da memória visual.");
+
+    MissionFixture distanceFixture;
+    distanceFixture.telemetry.leftEncoderRate = 100.0;
+    distanceFixture.telemetry.rightEncoderRate = 1.0;
+    distanceFixture.update(strongTrackedLine(
+        ++distanceFixture.sequence, 0.0, 0.70, 0.70));
+    distanceFixture.update(lineLost(++distanceFixture.sequence));
+    distanceFixture.telemetry.leftEncoderCount = static_cast<long long>(
+        std::ceil(config::kEncoderCountsPerCentimeter * 10.0));
+    distanceFixture.telemetry.rightEncoderCount = 1;
+    distanceFixture.update(lineLost(++distanceFixture.sequence));
+    require(distanceFixture.robotState.snapshot().autonomousStatus.phase ==
+                "line_recovery_distance_limit",
+            "A roda mais rápida deve limitar a memória visual a 100 mm.");
+}
+
+void testLineRecoveryStopsWithoutAnyEncoderProgress()
+{
+    MissionFixture fixture;
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
+    fixture.update(strongTrackedLine(
+        ++fixture.sequence, 0.0, 0.70, 0.70));
+    fixture.update(lineLost(++fixture.sequence));
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kLineRecoveryMemoryEncoderStallTimeoutMs + 30));
+    fixture.update(lineLost(++fixture.sequence));
+
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "line_recovery_encoder_stall",
+            "Sem progresso total dos encoders a memória visual deve parar.");
 }
 
 void testLargeControlErrorNeverUsesCounterRotation()
@@ -332,65 +606,67 @@ void testLargeControlErrorNeverUsesCounterRotation()
             "Erro alto sem geometria de cotovelo deve manter o diferencial contínuo.");
 }
 
-void testCorner90UsesGeometryAndExitsAfterTwoAlignedFrames()
+void testVisualTurnUsesOneFrameAndExitsOnCurrentLine()
 {
     MissionFixture fixture;
     fixture.update(corner90Line(
         ++fixture.sequence, Corner90Direction::Right));
     RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_confirming" &&
-                snapshot.left == 0.0 && snapshot.right == 0.0,
-            "O primeiro frame forte deve parar para confirmar o cotovelo.");
-
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-    snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_confirming" &&
-                snapshot.left == 0.0 && snapshot.right == 0.0,
-            "O segundo frame deve manter a parada curta de confirmação.");
-
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-    snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_right" &&
+    require(snapshot.autonomousStatus.phase == "black_line_geometry_right" &&
                 snapshot.left == config::kCorner90PivotStartPower &&
                 snapshot.right == -config::kCorner90PivotStartPower,
-            "Três frames geométricos devem iniciar o pivô à direita.");
+            "Uma geometria forte deve iniciar o pivot imediato à direita.");
 
-    fixture.update(corner90ExitAlignedLine(++fixture.sequence));
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
+    fixture.update(corner90Line(
+        ++fixture.sequence, Corner90Direction::Right));
     snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_right" &&
-                snapshot.left == config::kCorner90PivotRunPower &&
-                snapshot.right == -config::kCorner90PivotRunPower,
-            "O pivô deve reduzir para o piso RUN na primeira leitura de saída.");
-
-    fixture.update(corner90ExitAlignedLine(++fixture.sequence));
-    snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_right",
-            "A segunda leitura visual ainda deve manter o pivô.");
-
-    fixture.update(corner90ExitAlignedLine(++fixture.sequence));
-    snapshot = fixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "corner90_right",
-            "A terceira leitura visual ainda deve manter o pivô.");
+    require(snapshot.left == 0.70 && snapshot.right == -0.70,
+            "Encoder em movimento não pode reduzir o pivot geométrico para 0,61.");
 
     fixture.update(corner90ExitAlignedLine(++fixture.sequence));
     snapshot = fixture.robotState.snapshot();
     require(snapshot.autonomousStatus.phase == "tracking_near" &&
                 snapshot.left > 0.0 && snapshot.right > 0.0,
-            "Quatro leituras visuais devem devolver o controle ao tracking.");
+            "Uma linha nova deve devolver imediatamente ao tracking proporcional.");
 }
 
-void testCorner90ConfirmationCancelsWeakOrInconsistentGeometry()
+void testVisualTurnRejectsTiltedExit()
+{
+    MissionFixture fixture;
+    fixture.update(corner90Line(
+        ++fixture.sequence, Corner90Direction::Left));
+
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
+    fixture.update(corner90PrematureExitLine(++fixture.sequence));
+
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "black_line_geometry_left" &&
+                snapshot.left == -config::kCorner90PivotStartPower &&
+                snapshot.right == config::kCorner90PivotStartPower,
+            "Uma trajetória ainda inclinada não pode devolver o robô em reto.");
+}
+
+void testCorner90RejectsWeakOrOffCenterGeometry()
 {
     MissionFixture weakFixture;
     CameraLineSnapshot weak = corner90Line(
         ++weakFixture.sequence, Corner90Direction::Left);
-    weak.corner90Angle = -65.0;
+    weak.blackLineGeometryAngleDegrees = -29.0;
     weakFixture.update(weak);
     require(weakFixture.robotState.snapshot().autonomousStatus.phase ==
                 "tracking_near",
-            "Ângulo abaixo de 70 graus não pode parar nem iniciar o cotovelo.");
+            "Ângulo abaixo de 30 graus não pode iniciar o giro visual.");
+
+    CameraLineSnapshot tooWide = corner90Line(
+        ++weakFixture.sequence, Corner90Direction::Left);
+    tooWide.blackLineGeometryAngleDegrees = -141.0;
+    weakFixture.update(tooWide);
+    require(weakFixture.robotState.snapshot().autonomousStatus.phase ==
+                "tracking_near",
+            "Ângulo acima de 140 graus não pode iniciar o giro visual.");
 
     MissionFixture offsetFixture;
     CameraLineSnapshot offset = corner90Line(
@@ -399,16 +675,25 @@ void testCorner90ConfirmationCancelsWeakOrInconsistentGeometry()
     offsetFixture.update(offset);
     require(offsetFixture.robotState.snapshot().autonomousStatus.phase ==
                 "tracking_near",
-            "Linha acima da margem lateral não pode entrar na confirmação.");
+            "Linha acima da margem lateral não pode iniciar o pivot.");
 
-    MissionFixture cancelFixture;
-    cancelFixture.update(corner90Line(
-        ++cancelFixture.sequence, Corner90Direction::Left));
-    cancelFixture.update(trackedLine(++cancelFixture.sequence));
-    const RobotSnapshot cancelled = cancelFixture.robotState.snapshot();
-    require(cancelled.autonomousStatus.phase == "corner90_cancelled" &&
-                cancelled.left > 0.0 && cancelled.right > 0.0,
-            "Amostra incompatível deve cancelar o cotovelo e retomar o tracking.");
+    MissionFixture strongFixture;
+    strongFixture.update(corner90Line(
+        ++strongFixture.sequence, Corner90Direction::Left));
+    RobotSnapshot strong = strongFixture.robotState.snapshot();
+    require(strong.autonomousStatus.phase == "black_line_geometry_left" &&
+                strong.left == -config::kCorner90PivotStartPower &&
+                strong.right == config::kCorner90PivotStartPower,
+            "Geometria forte e centralizada deve iniciar o pivot imediato.");
+
+    MissionFixture lowConfidenceFixture;
+    CameraLineSnapshot lowConfidence = corner90Line(
+        ++lowConfidenceFixture.sequence, Corner90Direction::Right);
+    lowConfidence.blackLineGeometryConfidence = 0.74;
+    lowConfidenceFixture.update(lowConfidence);
+    require(lowConfidenceFixture.robotState.snapshot().autonomousStatus.phase ==
+                "tracking_near",
+            "Confiança abaixo do limite não pode iniciar o pivot.");
 }
 
 void testCorner90StopsWhenPivotDoesNotMove()
@@ -436,8 +721,10 @@ void testCorner90StopsWhenPivotDoesNotMove()
 void testCorner90StopsWhenVisionDoesNotReturn()
 {
     MissionFixture fixture;
-    fixture.telemetry.mpuOk = true;
-    fixture.telemetry.gyroZDegPerSec = 20.0;
+    // Os encoders simulam um pivot que está acontecendo. Assim o teste valida
+    // especificamente o timeout visual, e não o watchdog de roda parada.
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
     fixture.update(corner90Line(
         ++fixture.sequence, Corner90Direction::Right));
     fixture.update(corner90Line(
@@ -454,30 +741,6 @@ void testCorner90StopsWhenVisionDoesNotReturn()
                 snapshot.autonomousStatus.phase == "corner90_line_lost" &&
                 snapshot.left == 0.0 && snapshot.right == 0.0,
             "Pivot sem nova linha deve parar antes de girar indefinidamente.");
-}
-
-void testCorner90StopsAfterMaximumYaw()
-{
-    MissionFixture fixture;
-    fixture.telemetry.mpuOk = true;
-    fixture.telemetry.gyroZDegPerSec = 20.0;
-    fixture.telemetry.yawZDeg = 0.0;
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-
-    fixture.telemetry.yawZDeg = config::kCorner90MaximumYawDegrees + 1.0;
-    fixture.update(corner90Line(
-        ++fixture.sequence, Corner90Direction::Right));
-
-    const RobotSnapshot snapshot = fixture.robotState.snapshot();
-    require(snapshot.mode == "stopped" &&
-                snapshot.autonomousStatus.phase == "corner90_overturn" &&
-                snapshot.left == 0.0 && snapshot.right == 0.0,
-            "Pivot acima do limite angular deve parar os motores.");
 }
 
 void testValidVisualTrajectoryNeverUsesCounterRotation()
@@ -542,55 +805,59 @@ void testInvalidOrUnconfirmedGreenDoesNotStopTracking()
             "Verde sem ação válida deveria permanecer no tracking.");
 }
 
-void testSingleGreenMarkersUseDirectedPivotAndAlignedExit()
+void testSingleGreenMarkersUseImu45AndVisualAcquire()
 {
     MissionFixture leftFixture;
-    leftFixture.update(greenMarker(
+    leftFixture.telemetry.mpuOk = true;
+    leftFixture.update(acceptedGreenWithLineOccluded(
         ++leftFixture.sequence, GreenTurnDecision::GuideLeft));
     RobotSnapshot snapshot = leftFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_confirming" &&
+    require(snapshot.autonomousStatus.phase == "green_turn_45_left" &&
                 snapshot.left == 0.0 && snapshot.right == 0.0,
             "O primeiro verde forte deve parar para confirmar a direção.");
-    leftFixture.update(greenMarker(
-        ++leftFixture.sequence, GreenTurnDecision::GuideLeft));
+    leftFixture.update(lineLost(++leftFixture.sequence));
     snapshot = leftFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_confirming" &&
+    require(snapshot.autonomousStatus.phase == "green_turn_45_left" &&
                 snapshot.left == 0.0 && snapshot.right == 0.0,
-            "O segundo verde forte deve manter os motores parados.");
-    leftFixture.update(greenMarker(
-        ++leftFixture.sequence, GreenTurnDecision::GuideLeft));
-    snapshot = leftFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_turn_left" &&
-                snapshot.left == -config::kCorner90PivotStartPower &&
-                snapshot.right == config::kCorner90PivotStartPower,
-            "Verde à esquerda confirmado deve iniciar o pivô à esquerda.");
+            "O segundo verde forte deve preparar o giro IMU de 45 graus.");
 
-    leftFixture.update(corner90ExitAlignedLine(++leftFixture.sequence));
-    leftFixture.update(corner90ExitAlignedLine(++leftFixture.sequence));
+    leftFixture.update(lineLost(++leftFixture.sequence));
     snapshot = leftFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_turn_left" &&
-                snapshot.left == -config::kCorner90PivotRunPower &&
-                snapshot.right == config::kCorner90PivotRunPower,
-            "Após o verde sair, o pivô deve reduzir ao piso RUN antes da saída.");
+    require(snapshot.left == -config::kTurn90CommandPower &&
+                snapshot.right == config::kTurn90CommandPower,
+            "O giro verde esquerdo deve aplicar pivot simétrico na potência configurada.");
 
-    leftFixture.update(corner90ExitAlignedLine(++leftFixture.sequence));
+    leftFixture.telemetry.yawZDeg = -config::kGreenDirectionalTurnTargetDegrees;
+    leftFixture.telemetry.gyroZDegPerSec = 0.0;
+    leftFixture.update(trackedLine(++leftFixture.sequence));
+    snapshot = leftFixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "green_turn_45_left" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "O giro verde deve frear antes de concluir o alvo angular.");
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kTurn90SettleMs + 20));
+    leftFixture.update(trackedLine(++leftFixture.sequence));
+    snapshot = leftFixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "green_turn_visual_handoff" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Após 45 graus, a missão deve priorizar o handoff visual parada.");
+
+    leftFixture.update(trajectoryOnlyTrackedLine(
+        ++leftFixture.sequence, 0.15, 0.68, 0.72));
     snapshot = leftFixture.robotState.snapshot();
     require(snapshot.autonomousStatus.phase == "tracking_near" &&
-                snapshot.left > 0.0 && snapshot.right > 0.0,
-            "Três imagens novas alinhadas devem devolver o verde ao tracking.");
+                snapshot.left == 0.68 && snapshot.right == 0.72,
+            "Uma trajetória nova válida sem FAR deve devolver direto ao Pure Pursuit.");
 
     MissionFixture rightFixture;
-    rightFixture.update(greenMarker(
-        ++rightFixture.sequence, GreenTurnDecision::GuideRight));
-    rightFixture.update(greenMarker(
-        ++rightFixture.sequence, GreenTurnDecision::GuideRight));
+    rightFixture.telemetry.mpuOk = true;
     rightFixture.update(greenMarker(
         ++rightFixture.sequence, GreenTurnDecision::GuideRight));
     snapshot = rightFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_turn_right" &&
-                snapshot.left == config::kCorner90PivotStartPower &&
-                snapshot.right == -config::kCorner90PivotStartPower,
-            "Verde à direita confirmado deve iniciar o pivô à direita.");
+    require(snapshot.autonomousStatus.phase == "green_turn_45_right" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Verde à direita confirmado deve preparar o giro IMU de 45 graus.");
 
     MissionFixture approachFixture;
     CameraLineSnapshot approach = greenMarker(
@@ -606,24 +873,169 @@ void testSingleGreenMarkersUseDirectedPivotAndAlignedExit()
             "A aproximação ao verde deve preservar a prévia reduzida da visão.");
 }
 
-void testGreenConfirmationCancelsInconsistentCandidateAndPreemptsCorner90()
+void testGreen45AcceptsOrientationToleranceWithoutCorrectionPulses()
 {
+    MissionFixture fixture;
+    const double acceptedDegrees =
+        config::kGreenDirectionalTurnTargetDegrees -
+        config::kGreenDirectionalTurnCompletionToleranceDegrees + 1.0;
+    fixture.telemetry.mpuOk = true;
+    fixture.update(greenMarker(
+        ++fixture.sequence, GreenTurnDecision::GuideLeft));
+    fixture.update(lineLost(++fixture.sequence));
+    fixture.telemetry.yawZDeg = -acceptedDegrees;
+    // A projeção de frenagem pede parada antes dos 45 graus; depois a leitura
+    // estacionária confirma que a margem visual basta para encerrar o giro.
+    fixture.telemetry.gyroZDegPerSec = 80.0;
+    fixture.update(lineLost(++fixture.sequence));
+    fixture.telemetry.gyroZDegPerSec = 0.0;
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kTurn90SettleMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "green_turn_visual_handoff",
+            "O giro verde de orientação deve aceitar a margem visual sem "
+            "pulsos de correção.");
+}
+
+void testGreenTurnUsesOneForwardProbeThenStops()
+{
+    MissionFixture fixture;
+    fixture.telemetry.mpuOk = true;
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
+    fixture.update(greenMarker(++fixture.sequence, GreenTurnDecision::GuideLeft));
+    fixture.update(lineLost(++fixture.sequence));
+
+    fixture.telemetry.yawZDeg = -config::kGreenDirectionalTurnTargetDegrees;
+    fixture.telemetry.gyroZDegPerSec = 0.0;
+    fixture.update(lineLost(++fixture.sequence));
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kTurn90SettleMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "green_turn_visual_handoff",
+            "O giro verde concluído deve iniciar o handoff visual.");
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kGreenTurnAcquireTimeoutMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+    RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "green_turn_forward_probe" &&
+                snapshot.left == config::kGreenTurnForwardProbePower &&
+                snapshot.right == config::kGreenTurnForwardProbePower,
+            "Sem rota em 800 ms, o verde deve iniciar uma única sonda reta.");
+
+    fixture.telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
+        config::kGreenTurnForwardProbeDistanceMm / 10.0 *
+        config::kEncoderCountsPerCentimeter));
+    fixture.update(lineLost(++fixture.sequence));
+    snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "stopped" &&
+                snapshot.autonomousStatus.phase == "green_turn_line_not_found" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "A sonda verde deve parar ao atingir 20 mm sem rota nova.");
+}
+
+void testGreenTurnNearFarRouteCancelsForwardProbe()
+{
+    MissionFixture fixture;
+    fixture.telemetry.leftEncoderRate = 100.0;
+    fixture.telemetry.rightEncoderRate = 100.0;
+    completeGreenTurnToVisualHandoff(fixture, GreenTurnDecision::GuideLeft);
+
+    std::this_thread::sleep_for(
+        std::chrono::milliseconds(config::kGreenTurnAcquireTimeoutMs + 20));
+    fixture.update(lineLost(++fixture.sequence));
+    require(fixture.robotState.snapshot().autonomousStatus.phase ==
+                "green_turn_forward_probe",
+            "Sem rota visual, o teste deve iniciar a sonda pós-verde.");
+
+    // Reproduz a situação da pista: NEAR e FAR enxergam a faixa inclinada,
+    // enquanto o fit ainda não tem amostras suficientes para ser válido.
+    fixture.update(nearFarRecoveryLine(
+        ++fixture.sequence, 0.21, -0.54, -0.12));
+    const RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.mode == "autonomous" &&
+                snapshot.autonomousStatus.phase == "reacquiring_near" &&
+                snapshot.left > 0.0 && snapshot.right > snapshot.left,
+            "NEAR/FAR atuais devem cancelar a sonda e corrigir a rota, mesmo sem fit.");
+}
+
+void testGreenTurnVisualHandoffIgnoresGreenAndCorner90()
+{
+    MissionFixture fixture;
+    completeGreenTurnToVisualHandoff(fixture, GreenTurnDecision::GuideLeft);
+
+    fixture.update(corner90Line(++fixture.sequence, Corner90Direction::Right));
+    RobotSnapshot snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "green_turn_visual_handoff" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Um cotovelo residual não pode interromper o handoff pós-verde.");
+
+    fixture.update(greenMarker(++fixture.sequence, GreenTurnDecision::GuideRight));
+    snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "green_turn_visual_handoff" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Um verde confirmado no cooldown não pode iniciar nova manobra.");
+
+    fixture.update(trajectoryOnlyTrackedLine(
+        ++fixture.sequence, -0.10, 0.64, 0.73));
+    snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "tracking_near" &&
+                snapshot.left == 0.64 && snapshot.right == 0.73,
+            "A rota forte deve ter prioridade sobre verde e Corner90 no cooldown.");
+
+    fixture.update(greenMarker(++fixture.sequence, GreenTurnDecision::GuideRight));
+    snapshot = fixture.robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "tracking_near" &&
+                snapshot.left == 0.66 && snapshot.right == 0.66,
+            "O cooldown deve ignorar novo verde mesmo após voltar ao tracking.");
+
+    MissionFixture gapFixture;
+    completeGreenTurnToVisualHandoff(gapFixture, GreenTurnDecision::GuideRight);
+    gapFixture.update(gapLine(++gapFixture.sequence, 0.0));
+    snapshot = gapFixture.robotState.snapshot();
+    require(snapshot.mode == "stopped" &&
+                snapshot.autonomousStatus.phase == "green_turn_line_not_found",
+            "Um gap deve manter prioridade de segurança no handoff pós-verde.");
+}
+
+void testAcceptedGreenPreemptsCorner90WithoutRawCancellation()
+{
+    MissionFixture memoryFixture;
+    memoryFixture.telemetry.leftEncoderRate = 100.0;
+    memoryFixture.telemetry.rightEncoderRate = 100.0;
+    memoryFixture.update(strongTrackedLine(
+        ++memoryFixture.sequence, 0.0, 0.70, 0.70));
+    memoryFixture.update(lineLost(++memoryFixture.sequence));
+    CameraLineSnapshot rawGreen = lineLost(++memoryFixture.sequence);
+    rawGreen.greenNearSeen = true;
+    rawGreen.greenPathBlackValid = true;
+    rawGreen.greenCandidateDecision = GreenTurnDecision::GuideLeft;
+    rawGreen.greenCandidateFrames = 1;
+    memoryFixture.update(rawGreen);
+    require(memoryFixture.robotState.snapshot().autonomousStatus.phase ==
+                "line_recovery_memory",
+            "Candidato verde bruto não pode apagar a memória visual.");
+
     MissionFixture cancelFixture;
-    cancelFixture.update(greenMarker(
+    cancelFixture.update(unconfirmedStrongGreen(
         ++cancelFixture.sequence, GreenTurnDecision::GuideLeft));
     cancelFixture.update(trackedLine(++cancelFixture.sequence));
     RobotSnapshot snapshot = cancelFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_cancelled" &&
+    require(snapshot.autonomousStatus.phase == "tracking_near" &&
                 snapshot.left > 0.0 && snapshot.right > 0.0,
             "Verde inconsistente deve cancelar antes de iniciar o pivot.");
 
     MissionFixture priorityFixture;
+    priorityFixture.telemetry.mpuOk = true;
     priorityFixture.update(corner90Line(
         ++priorityFixture.sequence, Corner90Direction::Right));
     priorityFixture.update(greenMarker(
         ++priorityFixture.sequence, GreenTurnDecision::GuideLeft));
     snapshot = priorityFixture.robotState.snapshot();
-    require(snapshot.autonomousStatus.phase == "green_confirming" &&
+    require(snapshot.autonomousStatus.phase == "green_turn_45_left" &&
                 snapshot.left == 0.0 && snapshot.right == 0.0,
             "Candidato verde forte deve interromper a confirmação do Corner90.");
 }
@@ -699,24 +1111,33 @@ int main()
         testGapStartsWithNearInvalid();
         testGapUsesDisconnectedContinuationImmediately();
         testGapTimeoutStopsMotors();
-        testTotalLineLossTimeoutReportsReason();
+        testLineLossWithoutStrongMemoryStopsImmediately();
+        testLineRecoveryMemoryPreservesLeftStraightAndRightDirections();
+        testLineRecoveryReacquiresFarAndNear();
+        testLineRecoveryHonorsGapGreenCornerAndIpcPriorities();
+        testLineRecoveryStopsForEncoderAndDistanceLimits();
+        testLineRecoveryStopsWithoutAnyEncoderProgress();
         testGapStopsWhenCameraBecomesUnavailable();
         testMainMissionStopsWhenLineIpcIsNotFresh();
         testMainMissionStopsWhenEsp32BecomesUnavailable();
         testEmergencyStopWinsDuringCrossing();
         testLargeControlErrorNeverUsesCounterRotation();
-        testCorner90UsesGeometryAndExitsAfterTwoAlignedFrames();
-        testCorner90ConfirmationCancelsWeakOrInconsistentGeometry();
+        testVisualTurnUsesOneFrameAndExitsOnCurrentLine();
+        testVisualTurnRejectsTiltedExit();
+        testCorner90RejectsWeakOrOffCenterGeometry();
         testCorner90StopsWhenPivotDoesNotMove();
         testCorner90StopsWhenVisionDoesNotReturn();
-        testCorner90StopsAfterMaximumYaw();
         testValidVisualTrajectoryNeverUsesCounterRotation();
         testFarOnlyUsesConservativeFallbackUntilNearReturns();
-        testSingleGreenMarkersUseDirectedPivotAndAlignedExit();
-        testGreenConfirmationCancelsInconsistentCandidateAndPreemptsCorner90();
+        testSingleGreenMarkersUseImu45AndVisualAcquire();
+        testGreen45AcceptsOrientationToleranceWithoutCorrectionPulses();
+        testGreenTurnUsesOneForwardProbeThenStops();
+        testGreenTurnNearFarRouteCancelsForwardProbe();
+        testGreenTurnVisualHandoffIgnoresGreenAndCorner90();
+        testAcceptedGreenPreemptsCorner90WithoutRawCancellation();
         testInvalidOrUnconfirmedGreenDoesNotStopTracking();
         testDoubleGreenUsesImuAndEntersRecovery();
-        std::cout << "23 testes da missão principal concluídos com sucesso."
+        std::cout << "29 testes da missão principal concluídos com sucesso."
                   << std::endl;
         return 0;
     }
