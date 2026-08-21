@@ -528,27 +528,29 @@ def draw_line_mode_green_overlays(
 
 
 def draw_green_roi_overlays(display_frame, roi_interpretation):
-    """Desenha as três ROIs locais que sustentam a classificação."""
+    """Desenha as duas ROIs perpendiculares usadas na classificação."""
 
     for marker in roi_interpretation.get("markers", []):
         geometry = marker.get("geometry", {})
         upper = marker.get("upper", {})
-        left = marker.get("left", {})
-        right = marker.get("right", {})
-        # A ROI frontal verifica a associação com a faixa preta; as laterais
-        # distinguem esquerda, direita e casos inconclusivos. Verde indica preto
-        # suficiente e amarelo permite diagnosticar uma validação rejeitada.
+        horizontal = marker.get("horizontal", {})
+        # A ROI superior confirma a associação com a faixa. A horizontal
+        # atravessa os dois lados do marcador e localiza a faixa preta.
         roi_entries = (
-            (geometry.get("upper_roi"), upper.get("valid", False)),
-            (geometry.get("left_roi"), left.get("valid", False)),
-            (geometry.get("right_roi"), right.get("valid", False)),
+            (geometry.get("upper_roi"), upper),
+            (geometry.get("horizontal_roi"), horizontal),
         )
 
-        for roi, valid in roi_entries:
+        for roi, measurement in roi_entries:
             if roi is None:
                 continue
             x1, y1, x2, y2 = (int(value) for value in roi)
-            color = (64, 255, 96) if valid else (0, 220, 255)
+            if not measurement.get("measured", False):
+                color = (160, 160, 160)
+            elif measurement.get("valid", False):
+                color = (64, 255, 96)
+            else:
+                color = (0, 220, 255)
             cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)
 
 
@@ -1790,57 +1792,42 @@ def empty_green_status():
 
 
 def green_marker_roi_geometry(contour, frame_width):
-    """Calcula os pontos médios e as três ROIs do retângulo verde rotacionado."""
+    """Calcula as ROIs horizontal e superior ao redor do marcador verde."""
 
     box = cv2.boxPoints(cv2.minAreaRect(contour))
-    points = [tuple(float(value) for value in point) for point in box]
-    top_points = sorted(points, key=lambda point: point[1])[:2]
-    left_points = sorted(points, key=lambda point: point[0])[:2]
-    right_points = sorted(points, key=lambda point: point[0])[-2:]
-
-    def midpoint(pair):
-        return (
-            int(round(sum(point[0] for point in pair) / 2.0)),
-            int(round(sum(point[1] for point in pair) / 2.0)),
-        )
-
-    top_x, top_y = midpoint(top_points)
-    left_x, left_y = midpoint(left_points)
-    right_x, right_y = midpoint(right_points)
+    minimum_x = float(np.min(box[:, 0]))
+    maximum_x = float(np.max(box[:, 0]))
+    minimum_y = float(np.min(box[:, 1]))
+    maximum_y = float(np.max(box[:, 1]))
+    center_x = int(round((minimum_x + maximum_x) / 2.0))
+    center_y = int(round((minimum_y + maximum_y) / 2.0))
     half_size = max(1, int(frame_width) // GREEN_ROI_HALF_SIZE_DIVISOR)
 
-    # A ROI superior tem x centralizado em top_x. Em y, ela termina exatamente
-    # em top_y e sobe 2 * half_size pixels, sem criar distância até o marcador.
+    # A ROI horizontal cruza o marcador e mede separadamente somente as partes
+    # externas à esquerda e à direita. Assim existe uma única ROI lateral.
+    horizontal_roi = (
+        int(round(minimum_x)) - 2 * half_size,
+        center_y - half_size,
+        int(round(maximum_x)) + 2 * half_size,
+        center_y + half_size,
+    )
+    # A ROI superior é perpendicular à horizontal. Ela deve ter amostra
+    # visível antes que o marcador possa ser chamado de verdadeiro ou falso.
     upper_roi = (
-        top_x - half_size,
-        top_y - 2 * half_size,
-        top_x + half_size,
-        top_y,
-    )
-    # A ROI esquerda termina em left_x e usa left_y como centro vertical.
-    # Preto nessa região significa que o verde está à direita da linha.
-    left_roi = (
-        left_x - 2 * half_size,
-        left_y - half_size,
-        left_x,
-        left_y + half_size,
-    )
-    # A ROI direita começa em right_x e usa right_y como centro vertical.
-    # Preto nessa região significa que o verde está à esquerda da linha.
-    right_roi = (
-        right_x,
-        right_y - half_size,
-        right_x + 2 * half_size,
-        right_y + half_size,
+        center_x - half_size,
+        int(round(minimum_y)) - 3 * half_size,
+        center_x + half_size,
+        int(round(minimum_y)),
     )
     return {
         "box": box,
-        "top_midpoint": (top_x, top_y),
-        "left_midpoint": (left_x, left_y),
-        "right_midpoint": (right_x, right_y),
+        "center": (center_x, center_y),
+        "marker_horizontal_bounds": (
+            int(round(minimum_x)),
+            int(round(maximum_x)),
+        ),
+        "horizontal_roi": horizontal_roi,
         "upper_roi": upper_roi,
-        "left_roi": left_roi,
-        "right_roi": right_roi,
     }
 
 
@@ -1852,7 +1839,12 @@ def measure_black_roi(black_mask, roi):
     nominal_height = max(0, y2 - y1)
     nominal_area = nominal_width * nominal_height
     if black_mask is None or black_mask.size == 0 or nominal_area <= 0:
-        return {"valid": False, "black_ratio": 0.0, "visible_ratio": 0.0}
+        return {
+            "measured": False,
+            "valid": False,
+            "black_ratio": 0.0,
+            "visible_ratio": 0.0,
+        }
 
     clipped_x1 = max(0, min(black_mask.shape[1], x1))
     clipped_y1 = max(0, min(black_mask.shape[0], y1))
@@ -1864,6 +1856,7 @@ def measure_black_roi(black_mask, roi):
     visible_ratio = visible_area / nominal_area
     if visible_area <= 0 or visible_ratio < GREEN_ROI_MIN_VISIBLE_RATIO:
         return {
+            "measured": False,
             "valid": False,
             "black_ratio": 0.0,
             "visible_ratio": visible_ratio,
@@ -1872,14 +1865,40 @@ def measure_black_roi(black_mask, roi):
     region = black_mask[clipped_y1:clipped_y2, clipped_x1:clipped_x2]
     black_ratio = float(np.count_nonzero(region > 0)) / visible_area
     return {
+        "measured": True,
         "valid": black_ratio >= GREEN_ROI_MIN_BLACK_RATIO,
         "black_ratio": black_ratio,
         "visible_ratio": visible_ratio,
     }
 
 
+def measure_horizontal_black_roi(black_mask, geometry):
+    """Mede os dois lados dentro da única ROI horizontal."""
+
+    x1, y1, x2, y2 = geometry["horizontal_roi"]
+    marker_left_x, marker_right_x = geometry["marker_horizontal_bounds"]
+    left = measure_black_roi(
+        black_mask,
+        (x1, y1, marker_left_x, y2),
+    )
+    right = measure_black_roi(
+        black_mask,
+        (marker_right_x, y1, x2, y2),
+    )
+    return {
+        "measured": left["measured"] and right["measured"],
+        "valid": left["valid"] or right["valid"],
+        "left_measured": left["measured"],
+        "left_valid": left["valid"],
+        "left_black_ratio": left["black_ratio"],
+        "right_measured": right["measured"],
+        "right_valid": right["valid"],
+        "right_black_ratio": right["black_ratio"],
+    }
+
+
 def analyze_green_marker_contours(green_contours, selected_black_mask):
-    """Classifica o verde somente pela faixa preta nas três ROIs locais."""
+    """Classifica o verde pelas ROIs horizontal e superior."""
 
     result = {
         "interpretation": "SEM_DECISAO",
@@ -1894,6 +1913,7 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         return result
 
     upper_valid_markers = []
+    upper_measurement_missing = False
     for contour in green_contours:
         geometry = green_marker_roi_geometry(
             contour,
@@ -1907,33 +1927,37 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
             "contour": contour,
             "geometry": geometry,
             "upper": upper_measurement,
-            "left": measure_black_roi(
+            "horizontal": measure_horizontal_black_roi(
                 selected_black_mask,
-                geometry["left_roi"],
-            ),
-            "right": measure_black_roi(
-                selected_black_mask,
-                geometry["right_roi"],
+                geometry,
             ),
         }
         result["markers"].append(marker)
         if upper_measurement["valid"]:
             upper_valid_markers.append(marker)
+        elif not upper_measurement["measured"]:
+            upper_measurement_missing = True
 
     result["observation_state"] = green_observation_state(len(green_contours))
+    if green_contours and upper_measurement_missing:
+        # Nenhuma classificação verdadeira ou falsa é publicada enquanto
+        # uma ROI superior ainda não possui área visível suficiente.
+        result["interpretation"] = "AMBIGUO"
+        return result
     if not upper_valid_markers:
         if green_contours:
             result["interpretation"] = "VERDE_FALSO"
         return result
 
     for marker in upper_valid_markers:
-        left_valid = marker["left"]["valid"]
-        right_valid = marker["right"]["valid"]
+        horizontal = marker["horizontal"]
+        left_valid = horizontal["left_valid"]
+        right_valid = horizontal["right_valid"]
         marker["interpretation"] = (
+            "AMBIGUO" if not horizontal["measured"] else
             "DIREITA" if left_valid and not right_valid else
             "ESQUERDA" if right_valid and not left_valid else
-            "AMBIGUO" if left_valid and right_valid else
-            "VERDE_FALSO"
+            "AMBIGUO"
         )
 
     if len(upper_valid_markers) > 2:
@@ -2114,8 +2138,8 @@ def build_green_status(
         "greenProcessingMs": float(processing_ms),
     })
 
-    # Estas métricas reproduzem as três ROIs do algoritmo de referência: uma
-    # acima do verde valida a faixa de chegada e duas laterais escolhem o lado.
+    # A ROI superior valida a associação com a faixa. Os campos laterais
+    # preservam o IPC, mas agora descrevem as metades da única ROI horizontal.
     markers = interpretation_result.get("markers", [])
     upper_valid_markers = [
         marker for marker in markers
@@ -2129,21 +2153,23 @@ def build_green_status(
     )
     if diagnostic_marker is not None:
         upper = diagnostic_marker.get("upper", {})
-        status["greenFrontRoiMeasured"] = True
+        status["greenFrontRoiMeasured"] = bool(
+            upper.get("measured", False)
+        )
         status["greenFrontBlackRatio"] = float(
             upper.get("black_ratio", 0.0)
         )
         status["greenFrontRoiValid"] = bool(upper.get("valid", False))
-        for prefix, key in (("greenLeft", "left"), ("greenRight", "right")):
-            measurement = diagnostic_marker.get(key)
-            if measurement is None:
-                continue
-            status[f"{prefix}RoiMeasured"] = True
+        horizontal = diagnostic_marker.get("horizontal", {})
+        for prefix, side in (("greenLeft", "left"), ("greenRight", "right")):
+            status[f"{prefix}RoiMeasured"] = bool(
+                horizontal.get(f"{side}_measured", False)
+            )
             status[f"{prefix}BlackRatio"] = float(
-                measurement.get("black_ratio", 0.0)
+                horizontal.get(f"{side}_black_ratio", 0.0)
             )
             status[f"{prefix}RoiValid"] = bool(
-                measurement.get("valid", False)
+                horizontal.get(f"{side}_valid", False)
             )
     for prefix, candidate in zip(("greenPrimary", "greenSecondary"), candidates):
         status[f"{prefix}X"] = float(candidate["centroid"][0])

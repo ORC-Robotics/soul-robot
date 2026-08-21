@@ -27,13 +27,34 @@ def paint_roi(mask, roi):
 
 def marker_mask(shape, marker_settings):
     mask = np.zeros(shape, dtype=np.uint8)
-    for contour, enabled_rois in marker_settings:
+    for contour, enabled_sections in marker_settings:
         geometry = camera_line_frame.green_marker_roi_geometry(
             contour,
             shape[1],
         )
-        for roi_name in enabled_rois:
-            paint_roi(mask, geometry[roi_name])
+        horizontal_x1, horizontal_y1, horizontal_x2, horizontal_y2 = (
+            geometry["horizontal_roi"]
+        )
+        marker_left_x, marker_right_x = geometry[
+            "marker_horizontal_bounds"
+        ]
+        sections = {
+            "upper": geometry["upper_roi"],
+            "horizontal_left": (
+                horizontal_x1,
+                horizontal_y1,
+                marker_left_x,
+                horizontal_y2,
+            ),
+            "horizontal_right": (
+                marker_right_x,
+                horizontal_y1,
+                horizontal_x2,
+                horizontal_y2,
+            ),
+        }
+        for section_name in enabled_sections:
+            paint_roi(mask, sections[section_name])
     return mask
 
 
@@ -168,6 +189,21 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertTrue(description["partial"])
         self.assertTrue(description["geometry_valid"])
 
+    def test_green_geometry_exposes_only_two_perpendicular_rois(self):
+        contour = rectangle_contour(200, 180, 250, 230)
+        geometry = camera_line_frame.green_marker_roi_geometry(contour, 480)
+        self.assertIn("horizontal_roi", geometry)
+        self.assertIn("upper_roi", geometry)
+        self.assertNotIn("left_roi", geometry)
+        self.assertNotIn("right_roi", geometry)
+        horizontal = geometry["horizontal_roi"]
+        upper = geometry["upper_roi"]
+        self.assertGreater(
+            horizontal[2] - horizontal[0],
+            horizontal[3] - horizontal[1],
+        )
+        self.assertGreater(upper[3] - upper[1], upper[2] - upper[0])
+
     def test_green_without_local_black_is_false(self):
         contour = rectangle_contour(200, 180, 250, 230)
         result = camera_line_frame.analyze_green_marker_contours(
@@ -177,11 +213,48 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(result["interpretation"], "VERDE_FALSO")
         self.assertFalse(result["path_black_valid"])
 
-    def test_left_black_roi_classifies_right_marker(self):
+    def test_horizontal_black_does_not_bypass_white_upper_roi(self):
         contour = rectangle_contour(200, 180, 250, 230)
         mask = marker_mask(
             (319, 480),
-            [(contour, ("upper_roi", "left_roi"))],
+            [(contour, ("horizontal_left",))],
+        )
+        result = camera_line_frame.analyze_green_marker_contours(
+            [contour],
+            mask,
+        )
+        self.assertEqual(result["interpretation"], "VERDE_FALSO")
+        self.assertTrue(result["markers"][0]["upper"]["measured"])
+        self.assertFalse(result["markers"][0]["upper"]["valid"])
+
+    def test_green_without_upper_measurement_is_ambiguous(self):
+        contour = rectangle_contour(200, 0, 250, 30)
+        result = camera_line_frame.analyze_green_marker_contours(
+            [contour],
+            np.zeros((319, 480), dtype=np.uint8),
+        )
+        self.assertEqual(result["interpretation"], "AMBIGUO")
+        self.assertFalse(result["markers"][0]["upper"]["measured"])
+
+    def test_missing_upper_measurement_blocks_other_marker_decision(self):
+        unmeasured = rectangle_contour(80, 0, 130, 30)
+        measured = rectangle_contour(300, 180, 350, 230)
+        mask = marker_mask(
+            (319, 480),
+            [(measured, ("upper", "horizontal_left"))],
+        )
+        result = camera_line_frame.analyze_green_marker_contours(
+            [unmeasured, measured],
+            mask,
+        )
+        self.assertEqual(result["interpretation"], "AMBIGUO")
+        self.assertFalse(result["path_black_valid"])
+
+    def test_horizontal_left_black_classifies_right_marker(self):
+        contour = rectangle_contour(200, 180, 250, 230)
+        mask = marker_mask(
+            (319, 480),
+            [(contour, ("upper", "horizontal_left"))],
         )
         result = camera_line_frame.analyze_green_marker_contours(
             [contour],
@@ -190,11 +263,11 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(result["interpretation"], "DIREITA")
         self.assertTrue(result["path_black_valid"])
 
-    def test_right_black_roi_classifies_left_marker(self):
+    def test_horizontal_right_black_classifies_left_marker(self):
         contour = rectangle_contour(200, 180, 250, 230)
         mask = marker_mask(
             (319, 480),
-            [(contour, ("upper_roi", "right_roi"))],
+            [(contour, ("upper", "horizontal_right"))],
         )
         result = camera_line_frame.analyze_green_marker_contours(
             [contour],
@@ -203,11 +276,14 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(result["interpretation"], "ESQUERDA")
         self.assertTrue(result["path_black_valid"])
 
-    def test_both_lateral_rois_are_ambiguous(self):
+    def test_black_on_both_horizontal_sides_is_ambiguous(self):
         contour = rectangle_contour(200, 180, 250, 230)
         mask = marker_mask(
             (319, 480),
-            [(contour, ("upper_roi", "left_roi", "right_roi"))],
+            [(
+                contour,
+                ("upper", "horizontal_left", "horizontal_right"),
+            )],
         )
         result = camera_line_frame.analyze_green_marker_contours(
             [contour],
@@ -222,8 +298,8 @@ class CameraProfilesTest(unittest.TestCase):
         mask = marker_mask(
             (319, 480),
             [
-                (left, ("upper_roi", "right_roi")),
-                (right, ("upper_roi", "left_roi")),
+                (left, ("upper", "horizontal_right")),
+                (right, ("upper", "horizontal_left")),
             ],
         )
         result = camera_line_frame.analyze_green_marker_contours(
@@ -240,8 +316,8 @@ class CameraProfilesTest(unittest.TestCase):
         mask = marker_mask(
             (319, 480),
             [
-                (left, ("upper_roi", "right_roi")),
-                (right, ("upper_roi", "left_roi")),
+                (left, ("upper", "horizontal_right")),
+                (right, ("upper", "horizontal_left")),
             ],
         )
         result = camera_line_frame.analyze_green_marker_contours(
