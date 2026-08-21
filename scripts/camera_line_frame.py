@@ -10,8 +10,10 @@ import os
 import signal
 import threading
 import time
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
+
 
 import cv2  # type: ignore
 import numpy as np
@@ -336,7 +338,7 @@ CAMERA_PROFILES = {
             # a altura real do frame for diferente durante um diagnóstico.
             "geometry_reference": {
                 "frame_height": 480,
-                "structural_end_y": 425,
+                "structural_end_y": 400,
             },
             "green_detection_enabled": True,
             "overlay_line_thickness": 2,
@@ -2009,15 +2011,256 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
     )
     return result
 
+VIRTUAL_FAR_Y0 = 0.00
+VIRTUAL_FAR_Y1 = 0.54
 
-def calculate_line_follower_command(processed_line_mask, green_detection_result):
-    """Ponto de extensão do seguidor normal; zero mantém o robô parado."""
+"""rois virtuais para o seguidor de linha, em coordenadas normalizadas"""
+VIRTUAL_NEAR_Y0 = 0.54
+VIRTUAL_NEAR_Y1 = 0.83
+# Divisão horizontal dos três sensores.
+#
+# Existe uma pequena sobreposição entre L/C e C/R.
+#
+# 0.00                                      1.00
+# ├──────── L ────────┤
+#              ├──────── C ────────┤
+#                           ├──────── R ────────┤ - isx art
 
-    # TODO: implementar os sensores virtuais e o controle.
-    _ = processed_line_mask, green_detection_result
+VIRTUAL_LEFT_X0 = 0.155
+VIRTUAL_LEFT_X1 = 0.385
+
+VIRTUAL_CENTER_X0 = 0.385
+VIRTUAL_CENTER_X1 = 0.615
+
+VIRTUAL_RIGHT_X0 = 0.615
+VIRTUAL_RIGHT_X1 = 0.845
+def resolve_virtual_sensor_geometry(frame_shape):
+    """
+    Converte a geometria normalizada dos seis sensores
+    para coordenadas reais em pixels.
+    """
+
+    height, width = frame_shape[:2]
+
+    far_y0 = int(round(height * VIRTUAL_FAR_Y0))
+    far_y1 = int(round(height * VIRTUAL_FAR_Y1))
+
+    near_y0 = int(round(height * VIRTUAL_NEAR_Y0))
+    near_y1 = int(round(height * VIRTUAL_NEAR_Y1))
+
+    left_x0 = int(round(width * VIRTUAL_LEFT_X0))
+    left_x1 = int(round(width * VIRTUAL_LEFT_X1))
+
+    center_x0 = int(round(width * VIRTUAL_CENTER_X0))
+    center_x1 = int(round(width * VIRTUAL_CENTER_X1))
+
+    right_x0 = int(round(width * VIRTUAL_RIGHT_X0))
+    right_x1 = int(round(width * VIRTUAL_RIGHT_X1))
+
+    return {
+        "far": {
+            "left": {
+                "x0": left_x0,
+                "y0": far_y0,
+                "x1": left_x1,
+                "y1": far_y1,
+            },
+            "center": {
+                "x0": center_x0,
+                "y0": far_y0,
+                "x1": center_x1,
+                "y1": far_y1,
+            },
+            "right": {
+                "x0": right_x0,
+                "y0": far_y0,
+                "x1": right_x1,
+                "y1": far_y1,
+            },
+        },
+
+        "near": {
+            "left": {
+                "x0": left_x0,
+                "y0": near_y0,
+                "x1": left_x1,
+                "y1": near_y1,
+            },
+            "center": {
+                "x0": center_x0,
+                "y0": near_y0,
+                "x1": center_x1,
+                "y1": near_y1,
+            },
+            "right": {
+                "x0": right_x0,
+                "y0": near_y0,
+                "x1": right_x1,
+                "y1": near_y1,
+            },
+        },
+    }
+
+def draw_virtual_sensor_geometry(
+    frame,
+    line_follower_command,
+):
+    """
+    Desenha os seis sensores e suas leituras analógicas.
+    """
+
+    geometry = resolve_virtual_sensor_geometry(
+        frame.shape
+    )
+
+    sensors = (
+        (
+            "FAR-L",
+            geometry["far"]["left"],
+            line_follower_command["farLeft"],
+        ),
+        (
+            "FAR-C",
+            geometry["far"]["center"],
+            line_follower_command["farCenter"],
+        ),
+        (
+            "FAR-R",
+            geometry["far"]["right"],
+            line_follower_command["farRight"],
+        ),
+        (
+            "NEAR-L",
+            geometry["near"]["left"],
+            line_follower_command["nearLeft"],
+        ),
+        (
+            "NEAR-C",
+            geometry["near"]["center"],
+            line_follower_command["nearCenter"],
+        ),
+        (
+            "NEAR-R",
+            geometry["near"]["right"],
+            line_follower_command["nearRight"],
+        ),
+    )
+
+    for name, sensor, value in sensors:
+        cv2.rectangle(
+            frame,
+            (sensor["x0"], sensor["y0"]),
+            (sensor["x1"], sensor["y1"]),
+            (255, 0, 255),
+            2,
+        )
+
+        cv2.putText(
+            frame,
+            f"{name} {value:.2f}",
+            (
+                sensor["x0"] + 8,
+                sensor["y0"] + 24,
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+def read_virtual_sensor(processed_line_mask, sensor_geometry):
+    """
+    Mede quanto da área de um sensor virtual está ocupada
+    pela máscara final da linha preta.
+
+    Retorno:
+        0.0 = nenhuma linha no sensor
+        1.0 = sensor completamente ocupado pela linha
+    """
+
+    x0 = sensor_geometry["x0"]
+    y0 = sensor_geometry["y0"]
+    x1 = sensor_geometry["x1"]
+    y1 = sensor_geometry["y1"]
+
+    sensor_roi = processed_line_mask[
+        y0:y1,
+        x0:x1,
+    ]
+
+    if sensor_roi.size == 0:
+        return 0.0
+
+    active_pixels = cv2.countNonZero(sensor_roi)
+
+    return float(active_pixels) / float(sensor_roi.size)
+
+def read_virtual_line_sensors(processed_line_mask):
+    """
+    Lê os seis sensores virtuais da máscara final da linha.
+    """
+
+    geometry = resolve_virtual_sensor_geometry(
+        processed_line_mask.shape
+    )
+
+    return {
+        "farLeft": read_virtual_sensor(
+            processed_line_mask,
+            geometry["far"]["left"],
+        ),
+        "farCenter": read_virtual_sensor(
+            processed_line_mask,
+            geometry["far"]["center"],
+        ),
+        "farRight": read_virtual_sensor(
+            processed_line_mask,
+            geometry["far"]["right"],
+        ),
+
+        "nearLeft": read_virtual_sensor(
+            processed_line_mask,
+            geometry["near"]["left"],
+        ),
+        "nearCenter": read_virtual_sensor(
+            processed_line_mask,
+            geometry["near"]["center"],
+        ),
+        "nearRight": read_virtual_sensor(
+            processed_line_mask,
+            geometry["near"]["right"],
+        ),
+    }
+
+
+def calculate_line_follower_command(
+    processed_line_mask,
+    green_detection_result,
+):
+    """
+    Etapa atual:
+    lê os seis sensores virtuais.
+
+    Nenhum controle de motor ainda.
+    """
+
+    _ = green_detection_result
+
+    sensors = read_virtual_line_sensors(
+        processed_line_mask
+    )
+
     return {
         "left_power": 0.0,
         "right_power": 0.0,
+
+        "farLeft": sensors["farLeft"],
+        "farCenter": sensors["farCenter"],
+        "farRight": sensors["farRight"],
+
+        "nearLeft": sensors["nearLeft"],
+        "nearCenter": sensors["nearCenter"],
+        "nearRight": sensors["nearRight"],
     }
 
 
@@ -2598,6 +2841,10 @@ def main():
                 display_mode,
                 structural_mask,
             )
+
+            if camera_profile["role"] == "down":
+                 draw_virtual_sensor_geometry(frame, line_follower_command)
+
             cv2.line(
                 frame,
                 (0, roi_start_y),
