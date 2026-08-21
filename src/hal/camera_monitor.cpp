@@ -190,35 +190,38 @@ bool getJsonBool(
     return tryGetJsonBool(json, key, value) ? value : fallback;
 }
 
-bool parseGreenTurnDecision(
+bool parseGreenInterpretation(
     const std::string& interpretation,
-    GreenTurnDecision& decision)
+    GreenInterpretation& result)
 {
-    if (interpretation == "SEM_DECISAO" ||
-        interpretation == "AMBIGUO" ||
-        interpretation == "VERDE_FALSO_NO_SENTIDO_ATUAL")
+    if (interpretation == "SEM_DECISAO")
     {
-        decision = GreenTurnDecision::None;
+        result = GreenInterpretation::None;
         return true;
     }
-    if (interpretation == "APROXIMACAO")
+    if (interpretation == "VERDE_FALSO")
     {
-        decision = GreenTurnDecision::Approach;
+        result = GreenInterpretation::FalseMarker;
+        return true;
+    }
+    if (interpretation == "AMBIGUO")
+    {
+        result = GreenInterpretation::Ambiguous;
         return true;
     }
     if (interpretation == "ESQUERDA")
     {
-        decision = GreenTurnDecision::GuideLeft;
+        result = GreenInterpretation::Left;
         return true;
     }
     if (interpretation == "DIREITA")
     {
-        decision = GreenTurnDecision::GuideRight;
+        result = GreenInterpretation::Right;
         return true;
     }
     if (interpretation == "RETORNO_180")
     {
-        decision = GreenTurnDecision::TurnAround180;
+        result = GreenInterpretation::TurnAround180;
         return true;
     }
     return false;
@@ -238,21 +241,10 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.sourceFresh = false;
     snapshot.lineFollowerLeftPower = 0.0;
     snapshot.lineFollowerRightPower = 0.0;
-    snapshot.greenManeuverNearValid = false;
-    snapshot.greenManeuverFarValid = false;
-    snapshot.greenManeuverTrajectoryValid = false;
-    snapshot.greenManeuverGapCandidate = false;
-    snapshot.greenManeuverNearError = 0.0;
-    snapshot.greenManeuverFarError = 0.0;
-    snapshot.greenManeuverCorrection = 0.0;
-    snapshot.greenManeuverLeftPower = 0.0;
-    snapshot.greenManeuverRightPower = 0.0;
-    snapshot.greenNearSeen = false;
     snapshot.greenPathBlackValid = false;
-    snapshot.greenCandidateDecision = GreenTurnDecision::None;
-    snapshot.greenCandidateFrames = 0;
+    snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
-    snapshot.greenTurnDecision = GreenTurnDecision::None;
+    snapshot.greenInterpretation = GreenInterpretation::None;
     if (hasCachedSnapshot)
     {
         snapshot.ageMs =
@@ -304,7 +296,6 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         const std::string json = content.str();
 
         CameraLineSnapshot candidate;
-        std::string greenRawInterpretation;
         std::string greenInterpretation;
         if (!tryGetJsonNumber(
                 json,
@@ -316,62 +307,19 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 candidate.lineFollowerRightPower) ||
             !tryGetJsonBool(
                 json,
-                "greenManeuverNearValid",
-                candidate.greenManeuverNearValid) ||
-            !tryGetJsonBool(
-                json,
-                "greenManeuverFarValid",
-                candidate.greenManeuverFarValid) ||
-            !tryGetJsonBool(
-                json,
-                "greenManeuverTrajectoryValid",
-                candidate.greenManeuverTrajectoryValid) ||
-            !tryGetJsonBool(
-                json,
-                "greenManeuverGapCandidate",
-                candidate.greenManeuverGapCandidate) ||
-            !tryGetJsonNumber(
-                json,
-                "greenManeuverNearError",
-                candidate.greenManeuverNearError) ||
-            !tryGetJsonNumber(
-                json,
-                "greenManeuverFarError",
-                candidate.greenManeuverFarError) ||
-            !tryGetJsonNumber(
-                json,
-                "greenManeuverCorrection",
-                candidate.greenManeuverCorrection) ||
-            !tryGetJsonNumber(
-                json,
-                "greenManeuverLeftPower",
-                candidate.greenManeuverLeftPower) ||
-            !tryGetJsonNumber(
-                json,
-                "greenManeuverRightPower",
-                candidate.greenManeuverRightPower) ||
-            !tryGetJsonBool(
-                json, "greenNearSeen", candidate.greenNearSeen) ||
-            !tryGetJsonBool(
-                json,
                 "greenPathBlackValid",
                 candidate.greenPathBlackValid) ||
-            !tryGetJsonString(
-                json, "greenRawInterpretation", greenRawInterpretation) ||
-            !parseGreenTurnDecision(
-                greenRawInterpretation,
-                candidate.greenCandidateDecision) ||
             !tryGetJsonUnsignedInteger(
                 json,
-                "greenConsecutiveSamples",
-                candidate.greenCandidateFrames) ||
+                "greenCandidateCount",
+                candidate.greenCandidateCount) ||
             !tryGetJsonBool(
                 json, "greenConfirmed", candidate.greenConfirmed) ||
             !tryGetJsonString(
                 json, "greenInterpretation", greenInterpretation) ||
-            !parseGreenTurnDecision(
+            !parseGreenInterpretation(
                 greenInterpretation,
-                candidate.greenTurnDecision) ||
+                candidate.greenInterpretation) ||
             !tryGetJsonNumber(
                 json, "lineTimestamp", candidate.lineTimestamp) ||
             !tryGetJsonUnsignedInteger(
@@ -384,30 +332,12 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         const bool valuesValid =
             isNormalizedValue(candidate.lineFollowerLeftPower) &&
             isNormalizedValue(candidate.lineFollowerRightPower) &&
-            isNormalizedValue(candidate.greenManeuverNearError) &&
-            isNormalizedValue(candidate.greenManeuverFarError) &&
-            isNormalizedValue(candidate.greenManeuverCorrection) &&
-            isNormalizedValue(candidate.greenManeuverLeftPower) &&
-            isNormalizedValue(candidate.greenManeuverRightPower) &&
-            (!candidate.greenManeuverTrajectoryValid ||
-             candidate.greenManeuverNearValid) &&
-            (!candidate.greenConfirmed ||
-             candidate.greenTurnDecision != GreenTurnDecision::None) &&
-            candidate.greenCandidateFrames <= 1000 &&
+            candidate.greenCandidateCount <= 1000 &&
             std::isfinite(candidate.lineTimestamp);
         if (!valuesValid)
         {
             return unavailableLineSnapshot(
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
-        }
-
-        if (!candidate.greenManeuverNearValid)
-        {
-            candidate.greenManeuverNearError = 0.0;
-        }
-        if (!candidate.greenManeuverFarValid)
-        {
-            candidate.greenManeuverFarError = 0.0;
         }
 
         candidate.ageMs =

@@ -212,11 +212,7 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_invalid_target" ||
                                        status.phase == "esp32_not_ready" ||
                                        status.phase == "camera_not_ready" ||
-                                       status.phase == "line_ipc_stale" ||
-                                       status.phase == "green_turn_imu_failed" ||
-                                       status.phase == "green_turn_line_not_found" ||
-                                       status.phase == "green_turn_encoder_unavailable" ||
-                                       status.phase == "green_turn_encoder_stall";
+                                       status.phase == "line_ipc_stale";
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;

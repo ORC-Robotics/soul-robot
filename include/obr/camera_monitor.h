@@ -2,39 +2,28 @@
 
 #include <cstdint>
 
-enum class GreenTurnDecision
+enum class GreenInterpretation
 {
     None,
-    Approach,
-    GuideLeft,
-    GuideRight,
+    FalseMarker,
+    Ambiguous,
+    Left,
+    Right,
     TurnAround180
 };
 
-// Resultado tipado do IPC visual. Os campos de apoio à manobra verde ficam
-// separados do comando normal para que o novo seguidor não os reutilize.
+// Resultado tipado do IPC visual. A classificação verde é somente percepção
+// e não oferece nenhum campo que possa ser convertido em comando de motor.
 struct CameraLineSnapshot
 {
     bool sourceFresh = false;
     double lineFollowerLeftPower = 0.0;
     double lineFollowerRightPower = 0.0;
 
-    bool greenManeuverNearValid = false;
-    bool greenManeuverFarValid = false;
-    bool greenManeuverTrajectoryValid = false;
-    bool greenManeuverGapCandidate = false;
-    double greenManeuverNearError = 0.0;
-    double greenManeuverFarError = 0.0;
-    double greenManeuverCorrection = 0.0;
-    double greenManeuverLeftPower = 0.0;
-    double greenManeuverRightPower = 0.0;
-
-    bool greenNearSeen = false;
     bool greenPathBlackValid = false;
-    GreenTurnDecision greenCandidateDecision = GreenTurnDecision::None;
-    std::uint64_t greenCandidateFrames = 0;
+    std::uint64_t greenCandidateCount = 0;
     bool greenConfirmed = false;
-    GreenTurnDecision greenTurnDecision = GreenTurnDecision::None;
+    GreenInterpretation greenInterpretation = GreenInterpretation::None;
 
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;

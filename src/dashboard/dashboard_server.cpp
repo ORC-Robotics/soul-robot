@@ -930,8 +930,8 @@ std::string DashboardServer::dashboardHtml()
     .camera-hud-value > span { color: var(--text-muted); font-size: .5rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
     .camera-hud-value strong { color: var(--text); font-size: .76rem; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .camera-hud-value small { color: var(--muted); font-size: .5rem; }
-    .camera-hud-value.near strong, .camera-hud-value.far strong,
-    .camera-hud-value.correction strong { color: var(--text-primary); }
+    .camera-hud-value.green-status strong,
+    .camera-hud-value.path-status strong { color: var(--text-primary); }
     .camera-hud-value.speed strong { color: var(--text-primary); font-size: .67rem; }
     .camera-message { align-content: center; justify-items: center; gap: 6px; }
     .camera-message strong { color: var(--text); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
@@ -1205,8 +1205,8 @@ std::string DashboardServer::dashboardHtml()
               <span id="cameraHudFps">-- FPS</span>
             </div>
             <div class="camera-hud-values">
-              <div class="camera-hud-value near"><span>Verde</span><strong id="operationGreenInterpretation">SEM DECISÃO</strong><small id="operationGreenConfirmed">NÃO CONFIRMADO</small></div>
-              <div class="camera-hud-value far"><span>Faixa associada</span><strong id="operationGreenPathBlackValid">NÃO</strong><small id="operationLineSequence">—</small></div>
+              <div class="camera-hud-value green-status"><span>Verde</span><strong id="operationGreenInterpretation">SEM DECISÃO</strong><small id="operationGreenConfirmed">NÃO CONFIRMADO</small></div>
+              <div class="camera-hud-value path-status"><span>Faixa associada</span><strong id="operationGreenPathBlackValid">NÃO</strong><small id="operationLineSequence">—</small></div>
               <div class="camera-hud-value"><span>Reparo da máscara</span><strong id="operationSpecularRepair">—</strong></div>
               <div class="camera-hud-value speed"><span>Speed</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
             </div>
@@ -1635,22 +1635,6 @@ std::string DashboardServer::dashboardHtml()
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
-        green_turn_waiting_imu: ["VERDE: AGUARDANDO IMU", "warn", "machineStepPerception"],
-        green_confirming: ["VERDE: CONFIRMANDO", "warn", "machineStepPerception"],
-        green_cancelled: ["VERDE: CANCELADO", "warn", "machineStepFeedback"],
-        green_approach: ["VERDE: APROXIMAÇÃO", "active", "machineStepMotion"],
-        green_turn_45_left: ["VERDE: GIRO 45° ESQUERDA", "active", "machineStepMotion"],
-        green_turn_45_right: ["VERDE: GIRO 45° DIREITA", "active", "machineStepMotion"],
-        green_turn_visual_handoff: ["VERDE: PRIORIDADE VISUAL", "warn", "machineStepPerception"],
-        green_turn_handoff_completed: ["VERDE: NOVA ROTA", "active", "machineStepFeedback"],
-        green_turn_reacquiring_line: ["VERDE: REAQUISIÇÃO", "active", "machineStepMotion"],
-        green_turn_forward_probe: ["VERDE: SONDA 20 MM", "active", "machineStepMotion"],
-        green_turn_line_not_found: ["VERDE: LINHA NÃO ENCONTRADA", "danger", "machineStepFeedback"],
-        green_turn_encoder_unavailable: ["VERDE: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
-        green_turn_encoder_stall: ["VERDE: SEM AVANÇO", "danger", "machineStepFeedback"],
-        green_turn_imu_failed: ["VERDE: IMU FALHOU", "danger", "machineStepFeedback"],
-        green_turning: ["RETORNO VERDE", "active", "machineStepMotion"],
-        green_turn_completed: ["RETORNO VERDE CONCLUÍDO", "active", "machineStepFeedback"],
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],

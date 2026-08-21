@@ -119,8 +119,8 @@ int main()
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))
         {
-            // Este log apenas mostra a medição; as decisões de movimento são
-            // aplicadas separadamente pela Missão Principal.
+            // Este log apenas mostra a percepção. A classificação verde não
+            // participa de nenhuma decisão de movimento nesta etapa.
             std::cout << std::boolalpha
                       << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
                       << " lineSequence=" << cameraLineSnapshot.lineSequence

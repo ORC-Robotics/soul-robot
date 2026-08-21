@@ -703,12 +703,13 @@ prova para `MainMission`.
 `MainMission` mantém a composição dos comportamentos da prova, mas o segue-faixa
 normal está deliberadamente vazio. `calculate_line_follower_command` recebe a
 máscara binária processada e o resultado verde e retorna os dois motores zerados.
-A parada é aplicada apenas no estado normal, depois que os estados verdes tiveram
-a oportunidade de executar e retornar seus comandos.
+A classificação verde termina no overlay e na telemetria: ela não altera os
+comandos do seguidor nem inicia qualquer comportamento de movimento.
 
-A lógica visual ainda usada para aproximação, handoff e reaquisição pertence
-exclusivamente à máquina de estados verde e conserva os resultados anteriores.
-Ela não é publicada como controlador normal nem aparece como ajuste no dashboard.
+A classificação verde usa somente ROIs locais ao redor dos marcadores para medir
+a presença da faixa preta à frente, à esquerda e à direita. Essa percepção
+distingue esquerda, direita, retorno, falso e ambíguo sem manter geometrias ou
+estados do controlador visual removido.
 
 Cada comportamento novo deve ser integrado de forma deliberada pelo
 `MainMission`, com critérios claros de entrada, término e falha.

@@ -82,35 +82,6 @@ constexpr double kMotorStartMinimumPower = 0.67;
 // Ela permite desacelerar a roda interna nas curvas sem voltar ao piso de partida.
 constexpr double kMotorRunMinimumPower = 0.61;
 
-// Frames visuais novos exigidos para aceitar um marcador verde direcional.
-// Durante a confirmação o robô permanece parado para não decidir um verde
-// ambíguo ou dois cotovelos muito próximos enquanto ainda está avançando.
-constexpr int kGreenTurnConfirmationFrames = 2;
-
-// Giro angular, em graus, executado para um marcador verde direcional.
-// O alvo limitado evita pivot sem fim sobre o marcador; a nova faixa é
-// confirmada pela câmera somente depois que o giro termina.
-constexpr double kGreenDirectionalTurnTargetDegrees = 45.0;
-
-// Depois do giro de 45°, a mesma observação verde não pode iniciar outra
-// manobra durante esta janela. Isso deixa a rota nova assumir o controle sem
-// repetir o pivot sobre o marcador ainda visível.
-constexpr int kGreenTurnVisualHandoffCooldownMs = 1500;
-
-// A rota nova precisa aparecer dentro deste tempo antes da sonda curta. Os
-// motores ficam parados enquanto a visão não publicou uma referência válida
-// para a reaquisição exclusiva da manobra verde.
-constexpr int kGreenTurnAcquireTimeoutMs = 800;
-
-// Se não houver rota visual, a missão pode fazer uma única sonda curta e
-// somente para frente. O maior deslocamento dos encoders limita cada roda a
-// 20 mm; não há segunda tentativa, ré ou busca angular livre.
-constexpr double kGreenTurnForwardProbeDistanceMm = 20.0;
-constexpr double kGreenTurnForwardProbePower = 0.70;
-constexpr int kGreenTurnForwardProbeEncoderFreshnessMs = 300;
-constexpr int kGreenTurnForwardProbeEncoderStallTimeoutMs = 600;
-constexpr double kGreenTurnForwardProbeMinimumProgressCounts = 10.0;
-
 // Taxa mínima, em contagens por segundo, que confirma movimento durante a partida.
 // Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
@@ -172,22 +143,13 @@ constexpr int kCameraStatusTimeoutMs = 400;
 // Ângulo-alvo, em graus, da missão de teste que gira o robô para a direita.
 constexpr double kTurn90TargetDegrees = 90.0;
 
-// Ângulo, em graus, do retorno comandado por dois marcadores verdes.
-// O IMU encerra o giro; nenhum tempo fixo pode manter os motores ligados.
-constexpr double kGreenTurnAroundTargetDegrees = 180.0;
-
 // Margem, em graus, usada para parar antes de ultrapassar demais o alvo.
 // Ajuste após testar a inércia real das rodas no piso da competição.
 constexpr double kTurn90StopToleranceDegrees = 2.0;
 
-// O giro direcional verde de 45 graus é apenas uma orientação inicial para a
-// nova faixa. Aceitar até 12 graus de erro evita pulsos de correção inúteis e
-// entrega cedo o controle à referência visual verde, sem afrouxar 90 ou 180 graus.
-constexpr double kGreenDirectionalTurnCompletionToleranceDegrees = 12.0;
-
 // Potência simétrica aplicada aos dois motores durante os giros por IMU.
 // O valor 0,75 garante um pivot forte e previsível, sem depender dos pisos
-// START/RUN usados no seguimento normal. Afeta os giros verdes de 45° e 180°.
+// START/RUN usados no seguimento normal. Afeta a missão de teste de 90°.
 constexpr double kTurn90CommandPower = 0.75;
 
 static_assert(kTurn90CommandPower > 0.0 && kTurn90CommandPower <= kMaxMotorOutput,
@@ -286,19 +248,6 @@ constexpr int kDriveDistanceTimeoutMs = 60000;
 
 static_assert(kEncoderCountsPerCentimeter > 0.0,
               "A calibração do encoder deve produzir contagens por centímetro positivas.");
-static_assert(kGreenTurnAroundTargetDegrees == 180.0,
-              "O retorno verde duplo deve completar 180 graus.");
-static_assert(kGreenDirectionalTurnTargetDegrees > 0.0 &&
-                  kGreenDirectionalTurnTargetDegrees < kTurn90TargetDegrees &&
-                  kGreenTurnVisualHandoffCooldownMs > 0 &&
-                  kGreenTurnAcquireTimeoutMs > 0 &&
-                  kGreenTurnForwardProbeDistanceMm > 0.0 &&
-                  kGreenTurnForwardProbePower >= kMotorStartMinimumPower &&
-                  kGreenTurnForwardProbePower <= kMaxMotorOutput &&
-                  kGreenTurnForwardProbeEncoderFreshnessMs > 0 &&
-                  kGreenTurnForwardProbeEncoderStallTimeoutMs > 0 &&
-                  kGreenTurnForwardProbeMinimumProgressCounts > 0.0,
-              "Os limites da manobra direcional pelo verde devem permanecer seguros.");
 static_assert(kDriveDistanceMinimumTargetCm > 0.0 &&
                   kDriveDistanceMinimumTargetCm < kDriveDistanceMaximumTargetCm,
               "A faixa da missão de distância deve ser válida.");

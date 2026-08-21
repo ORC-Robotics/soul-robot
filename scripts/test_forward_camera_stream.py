@@ -93,7 +93,6 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["sensorMode"]["width"], 1920)
         self.assertEqual(status["sensorMode"]["height"], 1080)
         self.assertNotIn("lineSequence", status)
-        self.assertNotIn("nearError", status)
 
 
 if __name__ == "__main__":
