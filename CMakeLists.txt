@@ -10,7 +10,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(robot_test
     src/main.cpp
     src/dashboard/dashboard_server.cpp
-    src/diagnostics/line_regression_trace.cpp
     src/hal/camera_monitor.cpp
     src/hal/esp32_bridge.cpp
     src/hal/gpio.cpp
@@ -34,16 +33,16 @@ else()
 endif()
 
 if(BUILD_TESTING)
-    add_executable(main_mission_gap_test
-        tests/main_mission_gap_test.cpp
+    add_executable(main_mission_test
+        tests/main_mission_test.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/main_mission.cpp
         src/robot/robot_state.cpp
     )
-    target_include_directories(main_mission_gap_test PRIVATE include)
+    target_include_directories(main_mission_test PRIVATE include)
     if(NOT WIN32)
-        target_link_libraries(main_mission_gap_test pthread)
+        target_link_libraries(main_mission_test pthread)
     endif()
-    add_test(NAME main_mission_gap_test COMMAND main_mission_gap_test)
+    add_test(NAME main_mission_test COMMAND main_mission_test)
 
 endif()

@@ -105,14 +105,25 @@ Substituição atual:
 - Seleção e ciclo da missão: `include/obr/mission_controller.h` e
   `src/robot/mission_controller.cpp`.
 
+## Ferramentas antigas removidas no reset do segue-faixa
+
+Uma auditoria posterior removeu também estas implementações e diagnósticos do
+controlador normal, depois que todos os consumidores foram eliminados:
+
+- `scripts/analyze_line_regression_trace.py`;
+- `scripts/simple_line_vision.py` e seu teste;
+- `scripts/vision_path.py` e seu teste;
+- `include/obr/line_regression_trace.h` e
+  `src/diagnostics/line_regression_trace.cpp`.
+
+As evidências históricas continuam disponíveis em `artifacts/`, mas não descrevem
+o ponto de extensão atual, que publica potência zero.
+
 ## Arquivos avaliados e mantidos
 
 Os itens abaixo não entram diretamente no executável principal, mas possuem uma
 função válida e, portanto, não foram classificados como código morto:
 
-- `scripts/analyze_line_regression_trace.py`: análise manual de regressões.
-- `scripts/simple_line_vision.py`: detector simples exercitado por testes.
-- `scripts/vision_path.py`: geometria offline exercitada por testes sintéticos.
 - `camera_fov_test/direct_picamera2_mode_test.py`: diagnóstico direto de modos
   da câmera.
 - `scripts/deploy_panel.py`: interface local opcional para o deploy documentado.
@@ -177,8 +188,6 @@ Em 17 de agosto de 2026, foram executadas estas verificações:
 - `python -m unittest discover -s scripts -p "test_*.py"`: 72 testes
   concluídos, com resultado `OK`; dez testes foram ignorados porque o OpenCV
   não está instalado no ambiente Windows usado na auditoria;
-- `python scripts/test_vision_path.py`: 16 testes de visão concluídos com
-  sucesso;
 - `git diff --check`: nenhuma falha de espaços ou formatação no diff;
 - busca pós-remoção: os nomes BNO055 e `LineFollower` aparecem somente neste
   documento histórico.
@@ -190,7 +199,6 @@ foram executados nesta auditoria local. Para repetir as verificações de softwa
 cmake -S . -B build
 cmake --build build
 python3 -m unittest discover -s scripts -p "test_*.py"
-python3 scripts/test_vision_path.py
 ```
 
 Na Raspberry Pi, valide o fluxo completo com:

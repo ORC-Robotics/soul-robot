@@ -44,8 +44,8 @@ Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
 - CAM0 e CAM1 foram registradas separadamente nas evidências
   [cam0.jpg](../artifacts/pi5-camera-validation-20260817/cam0.jpg) e
   [cam1.jpg](../artifacts/pi5-camera-validation-20260817/cam1.jpg).
-- A proposta de aplicar um boost ao sair de `TurningNear` foi descartada. Ela
-  adicionaria outra transição de potência sem resolver a causa da instabilidade.
+- O controlador normal registrado nas evidências históricas foi removido; esses
+  números não descrevem o ponto de extensão atual, que mantém os motores parados.
 
 ## Validação ainda obrigatória antes de novos testes no chão
 
@@ -54,8 +54,8 @@ Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
    serviço `obr-robot`.
 3. Confirmar que somente CAM0 atualiza `obr_line_status.json` durante a execução.
 4. Calibrar o HSV com imagens reais da pista e repetir os casos de verde.
-5. Validar que trajetória visual válida nunca entra em `TurningNear` e que o
-   diferencial do Pure Pursuit permanece contínuo.
+5. Confirmar que o estado normal permanece parado e que uma manobra verde ativa
+   mantém seu próprio comando sem ser sobrescrita pela parada normal.
 6. Com `obr-line-camera` parado, confirmar que o IPC de linha foi removido e que
    a Missão Principal não pode ser iniciada; após iniciar o serviço, aceitar
    somente uma publicação nova e fresca.

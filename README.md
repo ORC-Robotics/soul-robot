@@ -438,27 +438,15 @@ lógico `0.01`, inicialmente convertido em aproximadamente `0.67 / -0.67`.
 
 ### Segue-faixa autônomo
 
-A Missão Principal usa a câmera inferior (`down`) para publicar uma trajetória
-visual. Quando esse fit é válido, o Pure Pursuit calcula curvatura, aplica zona
-morta de `0.025`, limita a correção a `±0.25` e mistura continuamente os lados
-em torno da base `0.70`. Assim, a curva reduz a roda interna e aumenta a externa
-sem contrarrotação automática; no limite, a prévia visual é `0.86 / 0.61`.
+O controlador normal foi removido intencionalmente. A função
+`calculate_line_follower_command` recebe a máscara binária de linha já processada
+e o resultado da detecção verde, mas publica potência zero até uma nova estratégia
+ser implementada. A Missão Principal aplica essa parada somente no estado normal;
+as manobras já confirmadas pela máquina de estados verde mantêm prioridade.
 
-Antes dessa mistura, o tracking normal passa a correção-alvo por um slew limiter
-baseado no `dt` monotônico real: sobe até `1.5` unidades/s e volta em direção a
-zero até `2.5` unidades/s. Uma inversão de sinal atravessa zero sem salto. Gap,
-verde, recuperação, pivôs, perda de linha e paradas de segurança não recebem esse
-atraso e reiniciam o histórico do limitador.
-
-Enquanto a trajetória for válida, o estado `TurningNear` não pode ser acionado.
-Ele é um fallback para NEAR válida sem trajetória visual confiável. Perda de
-linha, recuperação, gap, marcadores verdes, E-Stop, timeout e falha de câmera
-mantêm seus comportamentos próprios e conservadores.
-
-O dashboard mostra `rawControlError`, `targetCorrection`, `appliedCorrection`,
-`steerRateUsed`, prévias esquerda/direita,
-comando solicitado pela Raspberry, comando final, PWM aplicado pela ESP32,
-STARTING/RUNNING de cada lado e as taxas dos encoders.
+O dashboard identifica o segue-faixa como `CONTROLE PENDENTE` e continua mostrando
+a saúde da câmera, FPS, resolução, sequência da visão, reparo especular e resultado
+verde, além da telemetria geral do robô.
 
 O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
 é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
@@ -556,8 +544,8 @@ O perfil `forward` preserva a saída `960x540` e seleciona explicitamente o modo
 físico `1920x1080`. O gerenciador frontal reutiliza somente essa configuração de
 captura, sem chamar a visão de linha. O perfil `down` usa saída `480x360 @ 30 FPS`
 e seleciona explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver
-como full-FOV. A geometria de FAR/NEAR, gap, verde, Corner90 e os kernels da
-máscara são derivados da resolução atual; os valores de referência de `640x480`
+  como full-FOV. A geometria e os kernels preservados da máscara e do detector
+  verde são derivados da resolução atual; os valores de referência de `640x480`
 não ficam aplicados como pixels fixos. Sem argumento nem variável de ambiente, o
 perfil `forward` continua sendo usado por compatibilidade.
 
@@ -571,9 +559,8 @@ Se estiver em outra pasta, use o caminho completo:
 python3 /home/raspberry/OBR2026K/scripts/camera_line_frame.py
 ```
 
-O script publica a máscara e os diagnósticos da linha usados pelo restante do
-projeto, incluindo `rawControlError`, `finalCorrection`, `leftPreview` e
-`rightPreview`. A configuração padrão `forward` usa `960x540`, JPEG `82` e stream alvo
+O script publica o comando seguro do ponto de extensão e os resultados necessários
+à máquina de estados verde. A configuração padrão `forward` usa `960x540`, JPEG `82` e stream alvo
 de `30 FPS`. Como a câmera está montada de cabeça para baixo, o Picamera2 aplica
 rotação de 180°. Se o script não estiver rodando ou a câmera falhar, o painel
 continua disponível e mostra a câmera como indisponível.

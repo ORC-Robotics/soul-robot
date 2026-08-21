@@ -770,7 +770,7 @@ std::string DashboardServer::dashboardHtml()
     .mode-heading h2 { margin: 0; font-size: 1.25rem; }
     .mode-heading p { max-width: 620px; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; text-align: right; }
     .hero-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.45fr) minmax(0, 1.15fr) minmax(0, 1.35fr); gap: var(--layout-gap); margin: 0; }
-    .hero-grid > *, .main-grid > *, .telemetry-grid > *, .operation-cockpit > *, .tuning-top-grid > *, .diagnostic-tools > * { min-width: 0; }
+    .hero-grid > *, .main-grid > *, .telemetry-grid > *, .operation-cockpit > *, .diagnostic-tools > * { min-width: 0; }
     .card { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 16px; background: var(--bg-card); box-shadow: none; overflow: hidden; }
     .hero-card { min-height: 140px; padding: var(--card-padding); }
     .hero-card::after { display: none; }
@@ -850,45 +850,10 @@ std::string DashboardServer::dashboardHtml()
     .camera-placeholder .planned-use { margin-top: var(--space-2); color: var(--text-secondary); font-size: .62rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
     .camera-telemetry-label { margin: var(--space-3) 0 0; color: var(--text-secondary); font-size: .61rem; font-weight: 850; letter-spacing: .1em; text-transform: uppercase; }
     .camera-diagnostics { min-width: 0; display: grid; gap: var(--layout-gap); }
-    .tuning-summary { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); margin: 0; border: 1px solid var(--line); border-radius: 11px; background: var(--bg-primary); overflow: hidden; }
-    .tuning-summary-value { min-width: 0; padding: var(--space-2) var(--space-3); border-right: 1px solid var(--line-soft); }
-    .tuning-summary-value:last-child { border-right: 0; }
-    .tuning-summary-value span { display: block; color: var(--muted); font-size: .54rem; font-weight: 850; letter-spacing: .09em; text-transform: uppercase; }
-    .tuning-summary-value strong { display: block; margin-top: 4px; color: var(--text); font-size: .83rem; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .tuning-summary-value small { display: block; min-height: .7rem; margin-top: 2px; color: var(--muted); font-size: .5rem; font-weight: 800; text-transform: uppercase; }
-    .tuning-summary-value.near strong, .tuning-summary-value.far strong,
-    .tuning-summary-value.correction strong, .tuning-summary-value.output strong { color: var(--text-primary); }
-    .tuning-tabs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-1); margin: 0; padding: var(--space-1); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
-    .tuning-tab { min-height: 36px; padding: 0 8px; border: 0; border-radius: 7px; color: var(--muted); background: transparent; font-size: .65rem; letter-spacing: .075em; text-transform: uppercase; box-shadow: none; }
-    .tuning-tab:hover { transform: none; border-color: transparent; background: var(--bg-card-hover); }
-    .tuning-tab.active { color: var(--text-primary); background: var(--interactive-active); box-shadow: none; }
-    .tuning-panel[hidden] { display: none; }
-    .tuning-panel { padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 11px; background: var(--bg-primary); }
-    .tuning-panel-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-3); }
-    .tuning-panel-header h3 { margin: 0; color: var(--text-primary); font-size: .73rem; letter-spacing: .11em; text-transform: uppercase; }
-    .tuning-panel-header p { margin: 0; color: var(--muted); font-size: .62rem; text-align: right; }
-    .tuning-panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--space-4); }
-    .tuning-metric-group { min-width: 0; }
-    .tuning-metric-group h4 { margin: 0 0 var(--space-2); color: var(--text-secondary); font-size: .59rem; letter-spacing: .08em; text-transform: uppercase; }
     .camera-diagnostic-list { display: grid; gap: var(--space-1); margin: 0; }
     .camera-diagnostic-item { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); min-width: 0; }
     .camera-diagnostic-item dt { color: var(--muted); font-size: .62rem; }
     .camera-diagnostic-item dd { margin: 0; color: var(--text); font-size: .69rem; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-    .tuning-top-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(320px, 1fr); gap: var(--layout-gap); align-items: stretch; }
-    .tuning-vision-card { display: flex; flex-direction: column; }
-    .tuning-vision-card .camera-diagnostics { flex: 1; grid-template-rows: auto auto minmax(0, 1fr); }
-    .tuning-top-grid > .command-card { gap: var(--space-2); }
-    .tuning-top-grid > .command-card .section-header { margin-bottom: 0; }
-    .tuning-charts { display: grid; gap: var(--layout-gap); margin: 0; }
-    #tuningMode:has(#downwardCameraTuning[hidden]) .tuning-charts { display: none; }
-    .tuning-chart { width: 100%; padding: var(--card-padding); }
-    .tuning-chart-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
-    .tuning-chart-header h3 { margin: 0; color: var(--text-secondary); font-size: .72rem; letter-spacing: .06em; text-transform: uppercase; }
-    .tuning-chart-legend { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-1) var(--space-2); color: var(--muted); font-size: .58rem; }
-    .tuning-chart-legend span { display: inline-flex; align-items: center; gap: var(--space-1); }
-    .tuning-chart-legend i { width: 12px; height: 2px; background: var(--series-color); }
-    .tuning-chart canvas { display: block; width: 100%; height: 180px; margin: var(--space-2) 0 0; border: 1px solid var(--border-subtle); background: var(--bg-primary); }
-    .tuning-chart-status { margin: 0; color: var(--text-muted); font-size: .56rem; text-align: right; }
     .diagnostic-tools { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--layout-gap); margin: 0; align-items: start; }
     .diagnostic-oled-card { padding: 0; }
     .diagnostic-oled-card .oled-editor { border: 0; border-radius: 0; background: transparent; }
@@ -1081,20 +1046,6 @@ std::string DashboardServer::dashboardHtml()
     .request-value input { width: 100%; min-width: 0; padding: 5px 4px; border: 1px solid var(--border-primary); border-radius: 7px; outline: none; color: var(--text); background: var(--bg-control); font: inherit; font-size: 1.12rem; font-weight: 900; text-align: center; font-variant-numeric: tabular-nums; }
     .request-value input:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--focus-ring); }
     .trim-button { min-height: 34px; padding: 0; border-radius: 7px; font-size: .74rem; }
-    .encoder-balance { padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 12px; background: var(--bg-primary); }
-    .encoder-balance-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin: 0 0 var(--space-3); }
-    .encoder-balance-header strong { font-size: .73rem; letter-spacing: .07em; text-transform: uppercase; }
-    .balance-status { padding: 4px 7px; border: 1px solid var(--line); border-radius: 99px; font-size: .59rem; font-weight: 900; letter-spacing: .06em; text-transform: uppercase; }
-    .balance-readings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
-    .balance-reading { padding: var(--space-2); border: 1px solid var(--line-soft); border-radius: 9px; background: var(--bg-primary); }
-    .balance-reading span { display: block; color: var(--muted); font-size: .59rem; text-transform: uppercase; }
-    .balance-reading strong { display: block; margin-top: 4px; font-size: 1rem; font-variant-numeric: tabular-nums; }
-    .balance-track { height: 4px; margin-top: var(--space-2); border-radius: 99px; background: var(--bg-control); overflow: hidden; }
-    .balance-track div { width: 0; height: 100%; border-radius: inherit; background: var(--text-secondary); transition: width .2s ease; }
-    .balance-detail { display: flex; justify-content: space-between; gap: var(--space-2); margin-top: var(--space-2); color: var(--muted); font-size: .65rem; }
-    .balance-detail strong { color: var(--text); font-variant-numeric: tabular-nums; }
-    .balance-recommendation { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--line-soft); }
-    .balance-recommendation span { color: var(--muted); font-size: .65rem; line-height: 1.35; }
     .keyboard-panel { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 12px; background: var(--bg-primary); }
     .keyboard-copy strong { display: block; font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; }
     .keyboard-copy span { display: block; max-width: 190px; margin-top: 4px; color: var(--muted); font-size: .7rem; line-height: 1.35; }
@@ -1140,11 +1091,7 @@ std::string DashboardServer::dashboardHtml()
       .operation-cockpit { grid-template-columns: 1fr; align-items: start; }
       .operation-control-panel { align-self: auto; contain: none; overflow: visible; }
       .operation-accordions { flex: 0 0 auto; margin-top: 0; overflow: visible; }
-      .tuning-top-grid, .diagnostic-tools { grid-template-columns: 1fr; }
-      .tuning-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .tuning-summary-value { border-bottom: 1px solid var(--line-soft); }
-      .tuning-summary-value:nth-child(4) { border-right: 0; }
-      .tuning-summary-value:nth-child(n + 5) { border-bottom: 0; }
+      .diagnostic-tools { grid-template-columns: 1fr; }
       .telemetry-card, .telemetry-card.wide,
       .diagnostic-third { grid-column: span 12; }
     }
@@ -1171,17 +1118,6 @@ std::string DashboardServer::dashboardHtml()
       .camera-hud-value:nth-child(-n + 3) { border-bottom: 1px solid var(--border-subtle); }
       .operation-mission-summary, .operation-drive-summary { gap: var(--space-2); }
       .operation-mode-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .tuning-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .tuning-summary-value:nth-child(4) { border-right: 1px solid var(--line-soft); }
-      .tuning-summary-value:nth-child(even) { border-right: 0; }
-      .tuning-summary-value:nth-child(n + 5) { border-bottom: 1px solid var(--line-soft); }
-      .tuning-summary-value:last-child { grid-column: 1 / -1; border-right: 0; border-bottom: 0; }
-      .tuning-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .tuning-panel-header { align-items: flex-start; flex-direction: column; }
-      .tuning-panel-header p { text-align: left; }
-      .tuning-panel-grid { grid-template-columns: 1fr; }
-      .tuning-chart-header { align-items: flex-start; flex-direction: column; }
-      .tuning-chart-legend { justify-content: flex-start; }
       .diagnostic-communication-alert { grid-template-columns: 1fr; gap: var(--space-2); }
       .section-header, .telemetry-heading { align-items: flex-start; flex-direction: column; }
       .camera-meta { justify-content: flex-start; }
@@ -1211,7 +1147,6 @@ std::string DashboardServer::dashboardHtml()
 
     <nav class="mode-navigation" role="tablist" aria-label="Áreas do dashboard">
       <button id="operationModeButton" type="button" class="mode-tab active" role="tab" data-dashboard-mode="operation" aria-controls="operationMode" aria-selected="true">Operação</button>
-      <button id="tuningModeButton" type="button" class="mode-tab" role="tab" data-dashboard-mode="tuning" aria-controls="tuningMode" aria-selected="false">Tuning</button>
       <button id="diagnosticsModeButton" type="button" class="mode-tab" role="tab" data-dashboard-mode="diagnostics" aria-controls="diagnosticsMode" aria-selected="false">Diagnóstico</button>
     </nav>
 
@@ -1264,17 +1199,15 @@ std::string DashboardServer::dashboardHtml()
             <div id="cameraTechnicalMetadata" class="camera-technical-metadata"></div>
           </details>
           <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
-          <div id="downwardCameraTelemetry" class="camera-hud" aria-label="HUD do seguidor de linha" hidden>
+          <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
             <div class="camera-hud-header">
-              <strong id="cameraTrajectoryValid" class="camera-hud-line">LINE --</strong>
+              <strong id="cameraLineFollowerState" class="camera-hud-line">CONTROLE PENDENTE</strong>
               <span id="cameraHudFps">-- FPS</span>
             </div>
             <div class="camera-hud-values">
-              <div class="camera-hud-value near"><span>Near</span><strong id="cameraNearX">—</strong><small id="cameraNearValid">—</small></div>
-              <div class="camera-hud-value far"><span>Far</span><strong id="cameraFarX">—</strong><small id="cameraFarValid">—</small></div>
-              <div class="camera-hud-value"><span>Curvature</span><strong id="cameraCurvature">—</strong></div>
-              <div class="camera-hud-value"><span>Heading error</span><strong id="cameraHeadingError">—</strong></div>
-              <div class="camera-hud-value correction"><span>Correction</span><strong id="cameraCorrection">—</strong></div>
+              <div class="camera-hud-value near"><span>Verde</span><strong id="operationGreenInterpretation">SEM DECISÃO</strong><small id="operationGreenConfirmed">NÃO CONFIRMADO</small></div>
+              <div class="camera-hud-value far"><span>Faixa associada</span><strong id="operationGreenPathBlackValid">NÃO</strong><small id="operationLineSequence">—</small></div>
+              <div class="camera-hud-value"><span>Reparo da máscara</span><strong id="operationSpecularRepair">—</strong></div>
               <div class="camera-hud-value speed"><span>Speed</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
             </div>
           </div>
@@ -1373,238 +1306,6 @@ std::string DashboardServer::dashboardHtml()
             </details>
           </div>
         </aside>
-      </section>
-    </section>
-
-    <section id="tuningMode" class="dashboard-mode" role="tabpanel" aria-labelledby="tuningModeButton" data-dashboard-panel="tuning" hidden>
-      <div class="mode-heading">
-        <div><span class="eyebrow">Ajuste fino</span><h2>Visão e controle</h2></div>
-        <p>Parâmetros e telemetria detalhada usados para analisar o segue-faixa e a correção dos motores.</p>
-      </div>
-
-      <section class="tuning-top-grid">
-        <article class="card section-card tuning-vision-card">
-          <div class="section-header"><h3 class="section-title">Telemetria de tuning</h3></div>
-          <div id="downwardCameraTuning" class="camera-diagnostics" aria-label="Telemetria detalhada da visão">
-            <div class="tuning-summary" aria-label="Resumo do tuning">
-              <div class="tuning-summary-value near"><span>Near</span><strong id="tuningSummaryNear">—</strong><small id="tuningSummaryNearState">—</small></div>
-              <div class="tuning-summary-value far"><span>Far</span><strong id="tuningSummaryFar">—</strong><small id="tuningSummaryFarState">—</small></div>
-              <div class="tuning-summary-value"><span>Curvature</span><strong id="tuningSummaryCurvature">—</strong><small>&nbsp;</small></div>
-              <div class="tuning-summary-value"><span>Heading</span><strong id="tuningSummaryHeading">—</strong><small>&nbsp;</small></div>
-              <div class="tuning-summary-value correction"><span>Correction</span><strong id="tuningSummaryCorrection">—</strong><small>&nbsp;</small></div>
-              <div class="tuning-summary-value output"><span>Left</span><strong id="tuningSummaryLeft">—</strong><small>preview</small></div>
-              <div class="tuning-summary-value output"><span>Right</span><strong id="tuningSummaryRight">—</strong><small>preview</small></div>
-            </div>
-
-            <div class="tuning-tabs" role="tablist" aria-label="Grupos da telemetria de tuning">
-              <button id="tuningPerceptionTab" type="button" class="tuning-tab active" role="tab" aria-selected="true" aria-controls="tuningPerceptionPanel" data-tuning-tab="perception">Percepção</button>
-              <button id="tuningTrajectoryTab" type="button" class="tuning-tab" role="tab" aria-selected="false" aria-controls="tuningTrajectoryPanel" data-tuning-tab="trajectory" tabindex="-1">Trajetória</button>
-              <button id="tuningControlTab" type="button" class="tuning-tab" role="tab" aria-selected="false" aria-controls="tuningControlPanel" data-tuning-tab="control" tabindex="-1">Controle</button>
-              <button id="tuningGapTab" type="button" class="tuning-tab" role="tab" aria-selected="false" aria-controls="tuningGapPanel" data-tuning-tab="gap" tabindex="-1">Gap</button>
-            </div>
-
-            <section id="tuningPerceptionPanel" class="tuning-panel" role="tabpanel" aria-labelledby="tuningPerceptionTab" data-tuning-panel="perception">
-              <div class="tuning-panel-header"><h3>Percepção</h3><p>Medições prontas das bandas Near e Far.</p></div>
-              <div class="tuning-panel-grid">
-                <div class="tuning-metric-group">
-                  <h4>Near</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Validade</dt><dd id="tuningNearValid">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Posição X</dt><dd id="tuningNearX">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraNearError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraNearArea">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraNearHeight">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Far</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Validade</dt><dd id="tuningFarValid">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Posição X</dt><dd id="tuningFarX">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Erro</dt><dd id="cameraFarError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Área</dt><dd id="cameraFarArea">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Altura</dt><dd id="cameraFarHeight">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Fonte</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Line sequence</dt><dd id="cameraLineSequence">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Reparo de reflexo</dt><dd id="cameraSpecularRepair">—</dd></div>
-                  </dl>
-                </div>
-              </div>
-            </section>
-
-            <section id="tuningTrajectoryPanel" class="tuning-panel" role="tabpanel" aria-labelledby="tuningTrajectoryTab" data-tuning-panel="trajectory" hidden>
-              <div class="tuning-panel-header"><h3>Trajetória</h3><p>Qualidade do ajuste e lookahead calculado.</p></div>
-              <div class="tuning-panel-grid">
-                <div class="tuning-metric-group">
-                  <h4>Ajuste</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Validade</dt><dd id="tuningTrajectoryValid">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Modo</dt><dd id="cameraTrajectoryMode">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Origem</dt><dd id="cameraTrajectorySource">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Amostras</dt><dd id="cameraFitSampleCount">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Qualidade</dt><dd id="cameraFitQuality">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>RMS</dt><dd id="cameraFitRmsError">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Coeficientes</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>fitA</dt><dd id="cameraFitA">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>fitB</dt><dd id="cameraFitB">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>fitC</dt><dd id="cameraFitC">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Lookahead</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>lookaheadX</dt><dd id="cameraLookaheadX">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>lookaheadY</dt><dd id="cameraLookaheadY">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Curvature</dt><dd id="tuningCurvature">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Geometria da linha preta</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraBlackLineGeometryCandidate">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraBlackLineGeometryDirection">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Ângulo</dt><dd id="cameraBlackLineGeometryAngle">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Confiança</dt><dd id="cameraBlackLineGeometryConfidence">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraBlackLineGeometryState">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Alinhamento de saída</dt><dd id="cameraBlackLineGeometryExitAlignment">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Curva extrema</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraExtremeCurveCandidate">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Direção</dt><dd id="cameraExtremeCurveDirection">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Curvatura</dt><dd id="cameraExtremeCurveCurvature">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Confirmação</dt><dd id="cameraExtremeCurveConfirmFrames">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraExtremeCurveState">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Marcador verde</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Estado visual</dt><dd id="cameraGreenDecisionState">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Candidato bruto</dt><dd id="cameraGreenRawInterpretation">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Decisão confirmada</dt><dd id="cameraGreenInterpretation">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Aceito</dt><dd id="cameraGreenConfirmed">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Amostras</dt><dd id="cameraGreenConsecutiveSamples">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Faixa preta associada</dt><dd id="cameraGreenPathBlackValid">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Marcadores / válidos</dt><dd id="cameraGreenMarkerCounts">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>ROI frontal · preto (≥25%)</dt><dd id="cameraGreenFrontRoi">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>ROI esquerda · preto (≥25%)</dt><dd id="cameraGreenLeftRoi">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>ROI direita · preto (≥25%)</dt><dd id="cameraGreenRightRoi">—</dd></div>
-                  </dl>
-                </div>
-              </div>
-            </section>
-
-            <section id="tuningControlPanel" class="tuning-panel" role="tabpanel" aria-labelledby="tuningControlTab" data-tuning-panel="control" hidden>
-              <div class="tuning-panel-header"><h3>Controle</h3><p>Termos já calculados pelo pipeline de controle.</p></div>
-              <div class="tuning-panel-grid">
-                <div class="tuning-metric-group">
-                  <h4>Erros</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Control error</dt><dd id="cameraControlError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Lateral error</dt><dd id="cameraLateralError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Heading error</dt><dd id="tuningHeadingError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Preview error</dt><dd id="cameraPreviewError">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Termos</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Adaptive preview</dt><dd id="cameraAdaptivePreview">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>P</dt><dd id="cameraPTerm">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Derivativo filtrado</dt><dd id="cameraFilteredDerivative">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>D</dt><dd id="cameraDTerm">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>K_CONTROL</dt><dd id="cameraKControl">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Saída</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Target correction</dt><dd id="tuningTargetCorrection">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Applied correction</dt><dd id="tuningAppliedCorrection">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Steer rate used</dt><dd id="tuningSteerRateUsed">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Left preview</dt><dd id="cameraLeftPreview">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Right preview</dt><dd id="cameraRightPreview">—</dd></div>
-                  </dl>
-                </div>
-              </div>
-            </section>
-
-            <section id="tuningGapPanel" class="tuning-panel" role="tabpanel" aria-labelledby="tuningGapTab" data-tuning-panel="gap" hidden>
-              <div class="tuning-panel-header"><h3>Gap</h3><p>Detecção, alinhamento e continuação da faixa.</p></div>
-              <div class="tuning-panel-grid">
-                <div class="tuning-metric-group">
-                  <h4>Estado</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Candidato</dt><dd id="cameraGapCandidate">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Alinhamento válido</dt><dd id="cameraGapAlignmentValid">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Continuação válida</dt><dd id="cameraGapReturnValid">—</dd></div>
-                  </dl>
-                </div>
-                <div class="tuning-metric-group">
-                  <h4>Erros</h4>
-                  <dl class="camera-diagnostic-list">
-                    <div class="camera-diagnostic-item"><dt>Erro de alinhamento</dt><dd id="cameraGapAlignmentError">—</dd></div>
-                    <div class="camera-diagnostic-item"><dt>Erro da continuação</dt><dd id="cameraGapReturnError">—</dd></div>
-                  </dl>
-                </div>
-              </div>
-            </section>
-
-          </div>
-        </article>
-
-        <aside class="card section-card command-card">
-          <div class="section-header"><h3 class="section-title">Ajuste dos motores</h3></div>
-          <div class="requested-drive">
-            <div class="request-value"><span>Lado esquerdo · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="left" data-delta="-0.01" aria-label="Reduzir lado esquerdo em 0,01">−.01</button><input id="leftValue" aria-label="Potência exata do lado esquerdo" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="left" data-delta="0.01" aria-label="Aumentar lado esquerdo em 0,01">+.01</button></div></div>
-            <div class="request-value"><span>Lado direito · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="right" data-delta="-0.01" aria-label="Reduzir lado direito em 0,01">−.01</button><input id="rightValue" aria-label="Potência exata do lado direito" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="right" data-delta="0.01" aria-label="Aumentar lado direito em 0,01">+.01</button></div></div>
-          </div>
-          <div class="encoder-balance">
-            <div class="encoder-balance-header"><strong>Sincronização automática pelos encoders</strong><span id="balanceStatus" class="balance-status state-warn">AGUARDANDO</span></div>
-            <div class="balance-readings">
-              <div class="balance-reading"><span>Esquerda</span><strong id="balanceLeftRate">-- cont/s</strong><div class="balance-track"><div id="balanceLeftBar"></div></div></div>
-              <div class="balance-reading"><span>Direita</span><strong id="balanceRightRate">-- cont/s</strong><div class="balance-track"><div id="balanceRightBar"></div></div></div>
-            </div>
-            <div class="balance-detail"><span>Diferença entre os lados</span><strong id="balanceDifference">--%</strong></div>
-            <div class="balance-recommendation"><span id="balanceRecommendation">O ajuste automático será ativado quando os dois lados avançarem ou recuarem juntos.</span></div>
-          </div>
-        </aside>
-      </section>
-
-      <section class="tuning-charts" aria-label="Histórico recente do tuning">
-        <article class="card tuning-chart">
-          <div class="tuning-chart-header">
-            <h3>Near error + Far error</h3>
-            <div class="tuning-chart-legend" aria-hidden="true">
-              <span style="--series-color:var(--chart-primary)"><i></i>Near error</span>
-              <span style="--series-color:var(--chart-secondary)"><i></i>Far error</span>
-            </div>
-          </div>
-          <canvas id="perceptionErrorChart" width="720" height="180" role="img" aria-label="Gráfico dos erros Near e Far nos últimos dez segundos">Seu navegador não suporta canvas.</canvas>
-        </article>
-        <article class="card tuning-chart">
-          <div class="tuning-chart-header">
-            <h3>Correction + Heading / Control error</h3>
-            <div class="tuning-chart-legend" aria-hidden="true">
-              <span style="--series-color:var(--chart-primary)"><i></i>Correction</span>
-              <span style="--series-color:var(--chart-secondary)"><i></i>Heading error</span>
-              <span style="--series-color:var(--chart-tertiary)"><i></i>Control error</span>
-            </div>
-          </div>
-          <canvas id="controlErrorChart" width="720" height="180" role="img" aria-label="Gráfico da correção e dos erros Heading e Control nos últimos dez segundos">Seu navegador não suporta canvas.</canvas>
-        </article>
-        <p id="tuningChartStatus" class="tuning-chart-status">Aguardando amostras · janela de 10 s</p>
       </section>
     </section>
 
@@ -1787,98 +1488,14 @@ std::string DashboardServer::dashboardHtml()
     const operationCameraFps = element("operationCameraFps");
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
-    const downwardCameraTuning = element("downwardCameraTuning");
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const operationCameraDiagnosticFields = {
-      nearValid: element("cameraNearValid"), nearX: element("cameraNearX"),
-      farValid: element("cameraFarValid"), farX: element("cameraFarX"),
-      trajectoryValid: element("cameraTrajectoryValid"),
-      curvature: element("cameraCurvature"),
-      headingError: element("cameraHeadingError"),
-      correction: element("cameraCorrection")
-    };
-    const tuningSummaryFields = {
-      near: element("tuningSummaryNear"), nearState: element("tuningSummaryNearState"),
-      far: element("tuningSummaryFar"), farState: element("tuningSummaryFarState"),
-      curvature: element("tuningSummaryCurvature"),
-      heading: element("tuningSummaryHeading"),
-      correction: element("tuningSummaryCorrection"),
-      left: element("tuningSummaryLeft"), right: element("tuningSummaryRight")
-    };
-    const tuningDiagnosticFields = {
-      perception: {
-        nearValid: element("tuningNearValid"), nearX: element("tuningNearX"),
-        nearError: element("cameraNearError"), nearArea: element("cameraNearArea"),
-        nearHeight: element("cameraNearHeight"),
-        farValid: element("tuningFarValid"), farX: element("tuningFarX"),
-        farError: element("cameraFarError"), farArea: element("cameraFarArea"),
-        farHeight: element("cameraFarHeight"), lineSequence: element("cameraLineSequence"),
-        specularRepair: element("cameraSpecularRepair")
-      },
-      trajectory: {
-        trajectoryValid: element("tuningTrajectoryValid"),
-        trajectoryMode: element("cameraTrajectoryMode"),
-        trajectorySource: element("cameraTrajectorySource"),
-        fitSampleCount: element("cameraFitSampleCount"),
-        fitQuality: element("cameraFitQuality"), fitRmsError: element("cameraFitRmsError"),
-        fitA: element("cameraFitA"), fitB: element("cameraFitB"), fitC: element("cameraFitC"),
-        lookaheadX: element("cameraLookaheadX"), lookaheadY: element("cameraLookaheadY"),
-        curvature: element("tuningCurvature"),
-        blackLineGeometryCandidate: element("cameraBlackLineGeometryCandidate"),
-        blackLineGeometryDirection: element("cameraBlackLineGeometryDirection"),
-        blackLineGeometryAngleDegrees: element("cameraBlackLineGeometryAngle"),
-        blackLineGeometryConfidence: element("cameraBlackLineGeometryConfidence"),
-        blackLineGeometryState: element("cameraBlackLineGeometryState"),
-        blackLineGeometryExitAlignment: element("cameraBlackLineGeometryExitAlignment"),
-        extremeCurveCandidate: element("cameraExtremeCurveCandidate"),
-        extremeCurveDirection: element("cameraExtremeCurveDirection"),
-        extremeCurveCurvature: element("cameraExtremeCurveCurvature"),
-        extremeCurveConfirmFrames: element("cameraExtremeCurveConfirmFrames"),
-        extremeCurveState: element("cameraExtremeCurveState"),
-        greenDecisionState: element("cameraGreenDecisionState"),
-        greenRawInterpretation: element("cameraGreenRawInterpretation"),
-        greenInterpretation: element("cameraGreenInterpretation"),
-        greenConfirmed: element("cameraGreenConfirmed"),
-        greenConsecutiveSamples: element("cameraGreenConsecutiveSamples"),
-        greenPathBlackValid: element("cameraGreenPathBlackValid"),
-        greenMarkerCounts: element("cameraGreenMarkerCounts"),
-        greenFrontRoi: element("cameraGreenFrontRoi"),
-        greenLeftRoi: element("cameraGreenLeftRoi"),
-        greenRightRoi: element("cameraGreenRightRoi")
-      },
-      control: {
-        controlError: element("cameraControlError"),
-        lateralError: element("cameraLateralError"),
-        headingError: element("tuningHeadingError"),
-        adaptivePreview: element("cameraAdaptivePreview"),
-        previewError: element("cameraPreviewError"), pTerm: element("cameraPTerm"),
-        filteredDerivative: element("cameraFilteredDerivative"), dTerm: element("cameraDTerm"),
-        kControl: element("cameraKControl"), targetCorrection: element("tuningTargetCorrection"),
-        appliedCorrection: element("tuningAppliedCorrection"), steerRateUsed: element("tuningSteerRateUsed"),
-        leftPreview: element("cameraLeftPreview"), rightPreview: element("cameraRightPreview")
-      },
-      gap: {
-        gapCandidate: element("cameraGapCandidate"),
-        gapAlignmentValid: element("cameraGapAlignmentValid"),
-        gapAlignmentError: element("cameraGapAlignmentError"),
-        gapReturnValid: element("cameraGapReturnValid"),
-        gapReturnError: element("cameraGapReturnError")
-      }
-    };
-    const tuningTabButtons = Array.from(document.querySelectorAll("[data-tuning-tab]"));
-    const tuningPanels = Array.from(document.querySelectorAll("[data-tuning-panel]"));
-    const perceptionErrorChart = element("perceptionErrorChart");
-    const controlErrorChart = element("controlErrorChart");
-    const tuningChartStatus = element("tuningChartStatus");
-    const dashboardTheme = getComputedStyle(document.documentElement);
-    const tuningChartColors = {
-      primary: dashboardTheme.getPropertyValue("--chart-primary").trim(),
-      secondary: dashboardTheme.getPropertyValue("--chart-secondary").trim(),
-      tertiary: dashboardTheme.getPropertyValue("--chart-tertiary").trim(),
-      background: dashboardTheme.getPropertyValue("--bg-primary").trim(),
-      grid: dashboardTheme.getPropertyValue("--border-subtle").trim(),
-      zeroLine: dashboardTheme.getPropertyValue("--text-disabled").trim(),
-      label: dashboardTheme.getPropertyValue("--text-muted").trim()
+      lineFollowerState: element("cameraLineFollowerState"),
+      greenInterpretation: element("operationGreenInterpretation"),
+      greenConfirmed: element("operationGreenConfirmed"),
+      greenPathBlackValid: element("operationGreenPathBlackValid"),
+      lineSequence: element("operationLineSequence"),
+      specularRepair: element("operationSpecularRepair")
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
@@ -1889,15 +1506,11 @@ std::string DashboardServer::dashboardHtml()
     let requestedLeft = 0;
     let requestedRight = 0;
     let rawDiagnosticDrive = false;
-    let filteredLeftEncoderRate = null;
-    let filteredRightEncoderRate = null;
     const manualTestMinimumPower = 0.05;
     let manualMaximumPower = 1.0;
     let activeCameraView = "downward";
     let activeDashboardMode = "operation";
-    let activeTuningPanel = "perception";
     let latestCameraDiagnosticData = null;
-    let latestRobotTelemetry = null;
     let cameraRenderGeneration = 0;
     const mountedCameraImages = new Map();
     const mountedCameraStatuses = new Map();
@@ -1908,14 +1521,6 @@ std::string DashboardServer::dashboardHtml()
     let lastCameraMetadataSignature = "";
     // O histórico cobre dez segundos e nunca ultrapassa cem amostras.
     // O intervalo mínimo impede que uma fonte futura mais rápida aumente o custo visual.
-    const TUNING_CHART_WINDOW_MS = 10000;
-    const TUNING_CHART_MIN_SAMPLE_INTERVAL_MS = 100;
-    const TUNING_CHART_MAX_POINTS = 100;
-    const tuningChartSamples = new Array(TUNING_CHART_MAX_POINTS);
-    let tuningChartStart = 0;
-    let tuningChartCount = 0;
-    let lastTuningChartSampleAtMs = -Infinity;
-    let lastTuningChartSequence = null;
 
     function selectDashboardMode(mode) {
       activeDashboardMode = mode;
@@ -1929,25 +1534,6 @@ std::string DashboardServer::dashboardHtml()
         button.tabIndex = selected ? 0 : -1;
       });
       renderCurrentCameraDiagnostics();
-      if (mode === "tuning" && latestRobotTelemetry) {
-        updateMotorBalance(latestRobotTelemetry, latestRobotTelemetry.esp32SensorFresh === true);
-      }
-      if (mode === "tuning") renderTuningCharts();
-    }
-
-    function selectTuningPanel(panelName) {
-      if (!Object.prototype.hasOwnProperty.call(tuningDiagnosticFields, panelName)) return;
-      activeTuningPanel = panelName;
-      tuningTabButtons.forEach(button => {
-        const selected = button.dataset.tuningTab === panelName;
-        button.classList.toggle("active", selected);
-        button.setAttribute("aria-selected", selected ? "true" : "false");
-        button.tabIndex = selected ? 0 : -1;
-      });
-      tuningPanels.forEach(panel => {
-        panel.hidden = panel.dataset.tuningPanel !== panelName;
-      });
-      if (activeDashboardMode === "tuning") renderCurrentCameraDiagnostics();
     }
 
     function setPill(target, text, state) {
@@ -1999,147 +1585,6 @@ std::string DashboardServer::dashboardHtml()
       const minutes = Math.floor((totalSeconds % 3600) / 60);
       const seconds = totalSeconds % 60;
       return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
-    }
-
-    function tuningChartsAreActive() {
-      return activeDashboardMode === "tuning" && !document.hidden && !downwardCameraTuning.hidden;
-    }
-
-    function tuningChartSampleAt(index) {
-      return tuningChartSamples[(tuningChartStart + index) % TUNING_CHART_MAX_POINTS];
-    }
-
-    function pruneTuningChartSamples(nowMs) {
-      while (tuningChartCount > 0 &&
-          nowMs - tuningChartSampleAt(0).timestampMs > TUNING_CHART_WINDOW_MS) {
-        tuningChartStart = (tuningChartStart + 1) % TUNING_CHART_MAX_POINTS;
-        tuningChartCount -= 1;
-      }
-    }
-
-    function storeTuningChartSample(sample) {
-      const writeIndex = (tuningChartStart + tuningChartCount) % TUNING_CHART_MAX_POINTS;
-      tuningChartSamples[writeIndex] = sample;
-      if (tuningChartCount < TUNING_CHART_MAX_POINTS) {
-        tuningChartCount += 1;
-      } else {
-        tuningChartStart = (tuningChartStart + 1) % TUNING_CHART_MAX_POINTS;
-      }
-    }
-
-    function collectTuningChartSample(data, nowMs = performance.now()) {
-      if (!tuningChartsAreActive()) return;
-      const sequence = Number(data.lineSequence);
-      if (sequence === lastTuningChartSequence ||
-          nowMs - lastTuningChartSampleAtMs < TUNING_CHART_MIN_SAMPLE_INTERVAL_MS) return;
-      lastTuningChartSequence = sequence;
-      lastTuningChartSampleAtMs = nowMs;
-      pruneTuningChartSamples(nowMs);
-      storeTuningChartSample({
-        timestampMs: nowMs,
-        nearError: data.nearValid ? Number(data.nearError) : null,
-        farError: data.farValid ? Number(data.farError) : null,
-        correction: Number(data.correction),
-        headingError: Number(data.headingError),
-        controlError: Number(data.controlError)
-      });
-      renderTuningCharts(nowMs);
-    }
-
-    function markTuningChartGap(nowMs = performance.now()) {
-      if (!tuningChartsAreActive()) return;
-      const newest = tuningChartCount > 0 ? tuningChartSampleAt(tuningChartCount - 1) : null;
-      if ((newest && newest.gap === true) ||
-          nowMs - lastTuningChartSampleAtMs < TUNING_CHART_MIN_SAMPLE_INTERVAL_MS) return;
-      pruneTuningChartSamples(nowMs);
-      storeTuningChartSample({ timestampMs: nowMs, gap: true });
-      lastTuningChartSampleAtMs = nowMs;
-      lastTuningChartSequence = null;
-      renderTuningCharts(nowMs);
-    }
-
-    function drawTuningChart(canvas, samples, series, nowMs) {
-      const context = canvas.getContext("2d", { alpha: false });
-      if (!context) return;
-      const width = canvas.width;
-      const height = canvas.height;
-      const left = 35;
-      const right = 8;
-      const top = 9;
-      const bottom = 22;
-      const plotWidth = width - left - right;
-      const plotHeight = height - top - bottom;
-      const windowStartMs = nowMs - TUNING_CHART_WINDOW_MS;
-      context.imageSmoothingEnabled = false;
-      context.fillStyle = tuningChartColors.background;
-      context.fillRect(0, 0, width, height);
-      context.font = "10px sans-serif";
-      context.textBaseline = "middle";
-
-      [-1, -0.5, 0, 0.5, 1].forEach(value => {
-        const y = Math.round(top + (1 - (value + 1) / 2) * plotHeight) + 0.5;
-        context.beginPath();
-        context.strokeStyle = value === 0 ? tuningChartColors.zeroLine : tuningChartColors.grid;
-        context.lineWidth = 1;
-        context.moveTo(left, y);
-        context.lineTo(width - right, y);
-        context.stroke();
-        if (value === -1 || value === 0 || value === 1) {
-          context.fillStyle = tuningChartColors.label;
-          context.textAlign = "right";
-          context.fillText(value.toFixed(1), left - 5, y);
-        }
-      });
-
-      context.fillStyle = tuningChartColors.label;
-      context.textBaseline = "alphabetic";
-      context.textAlign = "left";
-      context.fillText("-10 s", left, height - 5);
-      context.textAlign = "center";
-      context.fillText("-5 s", left + plotWidth / 2, height - 5);
-      context.textAlign = "right";
-      context.fillText("agora", width - right, height - 5);
-
-      series.forEach(item => {
-        let segmentOpen = false;
-        context.beginPath();
-        samples.forEach(sample => {
-          const value = sample[item.field];
-          if (!Number.isFinite(value) || sample.timestampMs < windowStartMs) {
-            segmentOpen = false;
-            return;
-          }
-          const x = left + ((sample.timestampMs - windowStartMs) / TUNING_CHART_WINDOW_MS) * plotWidth;
-          const y = top + (1 - (Math.max(-1, Math.min(1, value)) + 1) / 2) * plotHeight;
-          if (segmentOpen) context.lineTo(x, y);
-          else context.moveTo(x, y);
-          segmentOpen = true;
-        });
-        context.strokeStyle = item.color;
-        context.lineWidth = 1.5;
-        context.stroke();
-      });
-    }
-
-    function renderTuningCharts(nowMs = performance.now()) {
-      if (!tuningChartsAreActive()) return;
-      pruneTuningChartSamples(nowMs);
-      const samples = [];
-      for (let index = 0; index < tuningChartCount; index += 1) {
-        samples.push(tuningChartSampleAt(index));
-      }
-      drawTuningChart(perceptionErrorChart, samples, [
-        { field: "nearError", color: tuningChartColors.primary },
-        { field: "farError", color: tuningChartColors.secondary }
-      ], nowMs);
-      drawTuningChart(controlErrorChart, samples, [
-        { field: "correction", color: tuningChartColors.primary },
-        { field: "headingError", color: tuningChartColors.secondary },
-        { field: "controlError", color: tuningChartColors.tertiary }
-      ], nowMs);
-      setTextIfChanged(tuningChartStatus, tuningChartCount > 0
-        ? `${tuningChartCount} / ${TUNING_CHART_MAX_POINTS} amostras · janela de 10 s · escala fixa -1,0 a 1,0`
-        : "Aguardando amostras · janela de 10 s");
     }
 
     function updateMode(data) {
@@ -2199,16 +1644,16 @@ std::string DashboardServer::dashboardHtml()
         green_turn_45_left: ["VERDE: GIRO 45° ESQUERDA", "active", "machineStepMotion"],
         green_turn_45_right: ["VERDE: GIRO 45° DIREITA", "active", "machineStepMotion"],
         green_turn_visual_handoff: ["VERDE: PRIORIDADE VISUAL", "warn", "machineStepPerception"],
+        green_turn_handoff_completed: ["VERDE: NOVA ROTA", "active", "machineStepFeedback"],
+        green_turn_reacquiring_line: ["VERDE: REAQUISIÇÃO", "active", "machineStepMotion"],
         green_turn_forward_probe: ["VERDE: SONDA 20 MM", "active", "machineStepMotion"],
         green_turn_line_not_found: ["VERDE: LINHA NÃO ENCONTRADA", "danger", "machineStepFeedback"],
         green_turn_encoder_unavailable: ["VERDE: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
         green_turn_encoder_stall: ["VERDE: SEM AVANÇO", "danger", "machineStepFeedback"],
         green_turn_imu_failed: ["VERDE: IMU FALHOU", "danger", "machineStepFeedback"],
-        green_turn_left: ["VERDE: PIVOT ESQUERDA", "active", "machineStepMotion"],
-        green_turn_right: ["VERDE: PIVOT DIREITA", "active", "machineStepMotion"],
-        green_guidance: ["VERDE: ALVO DESLOCADO", "active", "machineStepMotion"],
         green_turning: ["RETORNO VERDE", "active", "machineStepMotion"],
         green_turn_completed: ["RETORNO VERDE CONCLUÍDO", "active", "machineStepFeedback"],
+        line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
         turn_correction: ["CORRIGINDO GIRO", "active", "machineStepMotion"],
@@ -2287,93 +1732,6 @@ std::string DashboardServer::dashboardHtml()
       const metric = element(metricId);
       metric.dataset.level = safeValue >= dangerValue ? "danger" : (safeValue >= warningValue ? "warn" : "normal");
       element(fillId).style.width = `${Math.max(0, Math.min(100, safeValue))}%`;
-    }
-
-    function updateMotorBalance(data, fresh) {
-      const appliedLeft = Math.abs(Number(data.esp32AppliedLeftPower));
-      const appliedRight = Math.abs(Number(data.esp32AppliedRightPower));
-      const rawLeftRate = Math.abs(Number(data.leftEncoderRate));
-      const rawRightRate = Math.abs(Number(data.rightEncoderRate));
-      const movingCommand = appliedLeft > 0.01 && appliedRight > 0.01;
-      const valuesValid = fresh && Number.isFinite(rawLeftRate) && Number.isFinite(rawRightRate);
-      const status = element("balanceStatus");
-
-      if (!valuesValid || !movingCommand) {
-        filteredLeftEncoderRate = null;
-        filteredRightEncoderRate = null;
-        element("balanceLeftRate").textContent = "-- cont/s";
-        element("balanceRightRate").textContent = "-- cont/s";
-        element("balanceLeftBar").style.width = "0%";
-        element("balanceRightBar").style.width = "0%";
-        element("balanceDifference").textContent = "--%";
-        element("balanceRecommendation").textContent = "Mantenha os dois lados acionados para acompanhar o sincronismo.";
-        status.textContent = fresh ? "ACIONE OS DOIS LADOS" : "SEM TELEMETRIA";
-        status.className = "balance-status state-warn";
-        return;
-      }
-
-      const smoothing = 0.25;
-      filteredLeftEncoderRate = filteredLeftEncoderRate === null
-        ? rawLeftRate
-        : filteredLeftEncoderRate + smoothing * (rawLeftRate - filteredLeftEncoderRate);
-      filteredRightEncoderRate = filteredRightEncoderRate === null
-        ? rawRightRate
-        : filteredRightEncoderRate + smoothing * (rawRightRate - filteredRightEncoderRate);
-
-      const fasterRate = Math.max(filteredLeftEncoderRate, filteredRightEncoderRate);
-      const differencePercent = fasterRate > 1
-        ? Math.abs(filteredLeftEncoderRate - filteredRightEncoderRate) / fasterRate * 100
-        : 0;
-      element("balanceLeftRate").textContent = `${filteredLeftEncoderRate.toFixed(0)} cont/s`;
-      element("balanceRightRate").textContent = `${filteredRightEncoderRate.toFixed(0)} cont/s`;
-      element("balanceLeftBar").style.width = `${fasterRate > 0 ? filteredLeftEncoderRate / fasterRate * 100 : 0}%`;
-      element("balanceRightBar").style.width = `${fasterRate > 0 ? filteredRightEncoderRate / fasterRate * 100 : 0}%`;
-      element("balanceDifference").textContent = `${differencePercent.toFixed(1)}%`;
-
-      const syncEligible = data.motorSyncEligible === true;
-      const syncActive = data.motorSyncActive === true;
-      const syncEncoderValid = data.motorSyncEncoderDataValid === true;
-      const leftScale = Number(data.motorSyncLeftScale);
-      const rightScale = Number(data.motorSyncRightScale);
-      const correctedLeft = Number(data.motorSyncCorrectedLeftPower);
-      const correctedRight = Number(data.motorSyncCorrectedRightPower);
-      const scaleText = Number.isFinite(leftScale) && Number.isFinite(rightScale)
-        ? `${leftScale.toFixed(3)} / ${rightScale.toFixed(3)}`
-        : "-- / --";
-      const correctedText = Number.isFinite(correctedLeft) && Number.isFinite(correctedRight)
-        ? `${correctedLeft.toFixed(2)} / ${correctedRight.toFixed(2)}`
-        : "-- / --";
-      element("balanceRecommendation").textContent = data.rawMotorCommand === true
-        ? "Ajuste individual: sincronismo automático desativado; duty direto preservado."
-        : syncEligible
-          ? `Escala automática E/D: ${scaleText} · PWM corrigido: ${correctedText}.`
-          : "Sincronismo pausado: os lados não estão se movendo juntos no mesmo sentido.";
-
-      if (data.rawMotorCommand === true) {
-        status.textContent = "AJUSTE INDIVIDUAL";
-        status.className = "balance-status state-warn";
-      } else if (!syncEligible) {
-        status.textContent = "PAUSADO EM GIRO";
-        status.className = "balance-status state-warn";
-      } else if (!syncEncoderValid) {
-        status.textContent = "AGUARDANDO ENCODERS";
-        status.className = "balance-status state-warn";
-      } else if (!syncActive) {
-        status.textContent = `APRENDENDO ${Number(data.motorSyncValidSamples) || 0}/${Number(data.encoderSyncWarmupSamples) || 3}`;
-        status.className = "balance-status state-warn";
-      } else if (fasterRate <= 1) {
-        status.textContent = "SEM MOVIMENTO";
-        status.className = "balance-status state-bad";
-      } else if (differencePercent <= 2) {
-        status.textContent = "SINCRONIZADO";
-        status.className = "balance-status state-good";
-      } else if (data.motorSyncCorrectionApplied === true) {
-        status.textContent = "CORRIGINDO AUTOMATICAMENTE";
-        status.className = "balance-status state-warn";
-      } else {
-        status.textContent = "MEDINDO DIFERENÇA";
-        status.className = "balance-status state-warn";
-      }
     }
 
     function updateDiagnosticCommunicationState(data, fresh, serialOpen, calibrating, mpuOk, localEmergency, age) {
@@ -2588,7 +1946,6 @@ std::string DashboardServer::dashboardHtml()
         : !oledBootReady ? "bloqueada durante o boot" : remoteOledActive ? "ativa · temporária" : "inativa · tela local";
       element("oledRemoteTelemetry").className = !fresh
         ? "state-neutral" : !oledAvailable ? "state-warn" : remoteOledActive ? "state-good" : "";
-      if (activeDashboardMode === "tuning") updateMotorBalance(data, fresh);
     }
 
     function connect() {
@@ -2597,7 +1954,6 @@ std::string DashboardServer::dashboardHtml()
       ws.onclose = () => { manualEnabled = false; resetKeyboardState(); resetDrive(); setPill(connection, "PAINEL OFFLINE", "danger"); window.setTimeout(connect, 1000); };
       ws.onmessage = event => {
         const data = JSON.parse(event.data);
-        latestRobotTelemetry = data;
         updateMode(data);
         updateAutonomousMission(data);
         updateStateMachine(data);
@@ -3180,218 +2536,43 @@ std::string DashboardServer::dashboardHtml()
         cameraFeeds.appendChild(buildCameraFeed(cameraId, generation));
       });
       downwardCameraTelemetry.hidden = view === "forward";
-      downwardCameraTuning.hidden = view === "forward";
       renderCameraMetadata();
       if (cameraIsVisible("downward")) refreshCameraStatus();
       if (cameraIsVisible("forward")) refreshForwardCameraStatus();
     }
 
     function clearCameraDiagnostics() {
-      markTuningChartGap();
       latestCameraDiagnosticData = null;
       renderCurrentCameraDiagnostics();
-    }
-
-    function formatCameraDiagnostic(value, decimals) {
-      const number = Number(value);
-      return Number.isFinite(number) ? number.toFixed(decimals) : "—";
     }
 
     function clearOperationCameraDiagnostics() {
       Object.values(operationCameraDiagnosticFields)
         .forEach(field => setTextIfChanged(field, "—"));
-      setTextIfChanged(operationCameraDiagnosticFields.trajectoryValid, "LINE --");
-      operationCameraDiagnosticFields.trajectoryValid.className = "camera-hud-line";
-    }
-
-    function clearTuningSummary() {
-      Object.values(tuningSummaryFields).forEach(field => setTextIfChanged(field, "—"));
-    }
-
-    function clearTuningPanel(panelName) {
-      Object.values(tuningDiagnosticFields[panelName] || {})
-        .forEach(field => setTextIfChanged(field, "—"));
-    }
-
-    function updateOperationCameraDiagnostics(data) {
-      const fields = operationCameraDiagnosticFields;
-      setTextIfChanged(fields.nearValid, data.nearValid ? "VALID" : "INVALID");
-      setTextIfChanged(fields.nearX, `${formatCameraDiagnostic(data.nearX, 1)} px`);
-      setTextIfChanged(fields.farValid, data.farValid ? "VALID" : "INVALID");
-      setTextIfChanged(fields.farX, `${formatCameraDiagnostic(data.farX, 1)} px`);
       setTextIfChanged(
-        fields.trajectoryValid,
-        data.trajectoryValid ? "TRAJETÓRIA VÁLIDA" : "TRAJETÓRIA INVÁLIDA"
-      );
-      fields.trajectoryValid.className =
-        `camera-hud-line ${data.trajectoryValid ? "valid" : "invalid"}`;
-      setTextIfChanged(fields.curvature, formatCameraDiagnostic(data.curvature, 4));
-      setTextIfChanged(fields.headingError, formatCameraDiagnostic(data.headingError, 3));
-      setTextIfChanged(fields.correction, formatCameraDiagnostic(data.correction, 3));
-    }
-
-    function updateTuningSummary(data) {
-      setTextIfChanged(tuningSummaryFields.near, `${formatCameraDiagnostic(data.nearX, 1)} px`);
-      setTextIfChanged(tuningSummaryFields.nearState, data.nearValid ? "VALID" : "INVALID");
-      setTextIfChanged(tuningSummaryFields.far, `${formatCameraDiagnostic(data.farX, 1)} px`);
-      setTextIfChanged(tuningSummaryFields.farState, data.farValid ? "VALID" : "INVALID");
-      setTextIfChanged(tuningSummaryFields.curvature, formatCameraDiagnostic(data.curvature, 4));
-      setTextIfChanged(tuningSummaryFields.heading, formatCameraDiagnostic(data.headingError, 3));
-      setTextIfChanged(tuningSummaryFields.correction, formatCameraDiagnostic(data.correction, 3));
-      setTextIfChanged(tuningSummaryFields.left, formatCameraDiagnostic(data.leftPreview, 3));
-      setTextIfChanged(tuningSummaryFields.right, formatCameraDiagnostic(data.rightPreview, 3));
-    }
-
-    function updateTuningPanel(panelName, data) {
-      const fields = tuningDiagnosticFields[panelName];
-      if (!fields) return;
-      if (panelName === "perception") {
-        setTextIfChanged(fields.nearValid, data.nearValid ? "VALID" : "INVALID");
-        setTextIfChanged(fields.nearX, `${formatCameraDiagnostic(data.nearX, 1)} px`);
-        setTextIfChanged(fields.nearError, formatCameraDiagnostic(data.nearError, 3));
-        setTextIfChanged(fields.nearArea, formatCameraDiagnostic(data.nearArea, 1));
-        setTextIfChanged(fields.nearHeight, `${Math.round(Number(data.nearHeightPx))} px`);
-        setTextIfChanged(fields.farValid, data.farValid ? "VALID" : "INVALID");
-        setTextIfChanged(fields.farX, `${formatCameraDiagnostic(data.farX, 1)} px`);
-        setTextIfChanged(fields.farError, formatCameraDiagnostic(data.farError, 3));
-        setTextIfChanged(fields.farArea, formatCameraDiagnostic(data.farArea, 1));
-        setTextIfChanged(fields.farHeight, `${Math.round(Number(data.farHeightPx))} px`);
-        setTextIfChanged(fields.lineSequence, String(Math.trunc(Number(data.lineSequence))));
-        setTextIfChanged(
-          fields.specularRepair,
-          `${Math.trunc(Number(data.specularRepairComponents || 0))} comp. / ${Math.trunc(Number(data.specularRepairPixels || 0))} px`
-        );
-        return;
-      }
-      if (panelName === "trajectory") {
-        setTextIfChanged(fields.trajectoryValid, data.trajectoryValid ? "VALID" : "INVALID");
-        setTextIfChanged(fields.trajectoryMode, String(data.trajectoryMode));
-        setTextIfChanged(fields.trajectorySource, String(data.trajectorySource || "candidate"));
-        setTextIfChanged(fields.fitSampleCount, String(Math.trunc(Number(data.fitSampleCount))));
-        setTextIfChanged(fields.fitQuality, formatCameraDiagnostic(data.fitQuality, 3));
-        setTextIfChanged(fields.fitRmsError, formatCameraDiagnostic(data.fitRmsError, 4));
-        setTextIfChanged(fields.fitA, formatCameraDiagnostic(data.fitA, 4));
-        setTextIfChanged(fields.fitB, formatCameraDiagnostic(data.fitB, 4));
-        setTextIfChanged(fields.fitC, formatCameraDiagnostic(data.fitC, 4));
-        setTextIfChanged(fields.lookaheadX, formatCameraDiagnostic(data.lookaheadX, 4));
-        setTextIfChanged(fields.lookaheadY, formatCameraDiagnostic(data.lookaheadY, 4));
-        setTextIfChanged(fields.curvature, formatCameraDiagnostic(data.curvature, 4));
-        setTextIfChanged(fields.blackLineGeometryCandidate, data.blackLineGeometryCandidate ? "SIM" : "NÃO");
-        setTextIfChanged(fields.blackLineGeometryDirection, String(data.blackLineGeometryDirection));
-        setTextIfChanged(fields.blackLineGeometryAngleDegrees, `${formatCameraDiagnostic(data.blackLineGeometryAngleDegrees, 1)}°`);
-        setTextIfChanged(fields.blackLineGeometryConfidence, formatCameraDiagnostic(data.blackLineGeometryConfidence, 2));
-        setTextIfChanged(fields.blackLineGeometryState, String(data.blackLineGeometryState));
-        setTextIfChanged(fields.blackLineGeometryExitAlignment, data.blackLineGeometryExitAlignment ? "SIM" : "NÃO");
-        setTextIfChanged(fields.extremeCurveCandidate, data.extremeCurveCandidate ? "SIM" : "NÃO");
-        setTextIfChanged(fields.extremeCurveDirection, String(data.extremeCurveDirection || "NONE"));
-        setTextIfChanged(fields.extremeCurveCurvature, formatCameraDiagnostic(data.extremeCurveCurvature, 4));
-        setTextIfChanged(fields.extremeCurveConfirmFrames, `${Math.trunc(Number(data.extremeCurveConfirmFrames || 0))}/2`);
-        setTextIfChanged(fields.extremeCurveState, String(data.extremeCurveState || "idle"));
-        setTextIfChanged(fields.greenDecisionState, String(data.greenDecisionState || "idle"));
-        setTextIfChanged(fields.greenRawInterpretation, String(data.greenRawInterpretation || "SEM_DECISAO"));
-        setTextIfChanged(fields.greenInterpretation, String(data.greenInterpretation || "SEM_DECISAO"));
-        setTextIfChanged(fields.greenConfirmed, data.greenConfirmed ? "SIM" : "NÃO");
-        setTextIfChanged(fields.greenConsecutiveSamples, `${Math.trunc(Number(data.greenConsecutiveSamples || 0))}/3`);
-        setTextIfChanged(fields.greenPathBlackValid, data.greenPathBlackValid ? "SIM" : "NÃO");
-        setTextIfChanged(
-          fields.greenMarkerCounts,
-          `${Math.trunc(Number(data.greenMarkerCount || 0))} / ${Math.trunc(Number(data.greenValidatedMarkerCount || 0))}`
-        );
-        const formatGreenRoi = (measured, valid, ratio) => {
-          if (!measured) return "NÃO MEDIDA";
-          return `${valid ? "VÁLIDA" : "REJEITADA"} · ${formatCameraDiagnostic(Number(ratio) * 100.0, 1)}%`;
-        };
-        setTextIfChanged(
-          fields.greenFrontRoi,
-          formatGreenRoi(data.greenFrontRoiMeasured, data.greenFrontRoiValid, data.greenFrontBlackRatio)
-        );
-        setTextIfChanged(
-          fields.greenLeftRoi,
-          formatGreenRoi(data.greenLeftRoiMeasured, data.greenLeftRoiValid, data.greenLeftBlackRatio)
-        );
-        setTextIfChanged(
-          fields.greenRightRoi,
-          formatGreenRoi(data.greenRightRoiMeasured, data.greenRightRoiValid, data.greenRightBlackRatio)
-        );
-        return;
-      }
-      if (panelName === "control") {
-        setTextIfChanged(fields.controlError, formatCameraDiagnostic(data.controlError, 3));
-        setTextIfChanged(fields.lateralError, formatCameraDiagnostic(data.lateralError, 3));
-        setTextIfChanged(fields.headingError, formatCameraDiagnostic(data.headingError, 3));
-        setTextIfChanged(fields.adaptivePreview, formatCameraDiagnostic(data.adaptivePreview, 3));
-        setTextIfChanged(fields.previewError, formatCameraDiagnostic(data.previewError, 3));
-        setTextIfChanged(fields.pTerm, formatCameraDiagnostic(data.pTerm, 3));
-        setTextIfChanged(fields.filteredDerivative, formatCameraDiagnostic(data.filteredDerivative, 3));
-        setTextIfChanged(fields.dTerm, formatCameraDiagnostic(data.dTerm, 3));
-        setTextIfChanged(fields.kControl, formatCameraDiagnostic(data.kControl, 2));
-        setTextIfChanged(fields.targetCorrection, formatCameraDiagnostic(data.targetCorrection, 3));
-        setTextIfChanged(fields.appliedCorrection, formatCameraDiagnostic(data.appliedCorrection, 3));
-        setTextIfChanged(fields.steerRateUsed, formatCameraDiagnostic(data.steerRateUsed, 2));
-        setTextIfChanged(fields.leftPreview, formatCameraDiagnostic(data.leftPreview, 3));
-        setTextIfChanged(fields.rightPreview, formatCameraDiagnostic(data.rightPreview, 3));
-        return;
-      }
-      setTextIfChanged(fields.gapCandidate, data.gapCandidate ? "SIM" : "NÃO");
-      setTextIfChanged(fields.gapAlignmentValid, data.gapAlignmentValid ? "SIM" : "NÃO");
-      setTextIfChanged(
-        fields.gapAlignmentError,
-        data.gapAlignmentValid ? formatCameraDiagnostic(data.gapAlignmentError, 3) : "INVÁLIDO"
-      );
-      setTextIfChanged(fields.gapReturnValid, data.gapReturnValid ? "SIM" : "NÃO");
-      setTextIfChanged(
-        fields.gapReturnError,
-        data.gapReturnValid ? formatCameraDiagnostic(data.gapReturnError, 3) : "INVÁLIDO"
+        operationCameraDiagnosticFields.lineFollowerState,
+        "CONTROLE PENDENTE"
       );
     }
 
     function renderCurrentCameraDiagnostics() {
-      if (activeDashboardMode === "operation") {
-        if (latestCameraDiagnosticData) updateOperationCameraDiagnostics(latestCameraDiagnosticData);
-        else clearOperationCameraDiagnostics();
-        return;
-      }
-      if (activeDashboardMode !== "tuning") return;
       if (latestCameraDiagnosticData) {
-        updateTuningSummary(latestCameraDiagnosticData);
-        updateTuningPanel(activeTuningPanel, latestCameraDiagnosticData);
+        updateOperationCameraDiagnostics(latestCameraDiagnosticData);
       } else {
-        clearTuningSummary();
-        clearTuningPanel(activeTuningPanel);
+        clearOperationCameraDiagnostics();
       }
     }
 
     function updateCameraDiagnostics(data) {
       const numericFields = [
-        data.nearX, data.nearError, data.nearArea, data.nearHeightPx,
-        data.farX, data.farError, data.farArea, data.farHeightPx,
-        data.fitA, data.fitB, data.fitC, data.fitQuality, data.fitRmsError,
-        data.fitSampleCount, data.lookaheadX, data.lookaheadY, data.curvature,
-        data.blackLineGeometryAngleDegrees, data.blackLineGeometryConfidence,
-        data.extremeCurveCurvature, data.extremeCurveConfirmFrames,
-        data.lateralError, data.headingError, data.adaptivePreview,
-        data.previewError, data.pTerm, data.filteredDerivative, data.dTerm,
-        data.preview, data.kControl,
-        data.controlError, data.targetCorrection, data.appliedCorrection,
-        data.steerRateUsed, data.correction, data.leftPreview, data.rightPreview,
-        data.gapAlignmentError, data.gapReturnError,
+        data.greenConsecutiveSamples,
+        data.specularRepairPixels, data.specularRepairComponents,
         data.lineTimestamp, data.lineSequence, data.timestamp
       ];
-      const fieldsPresent = typeof data.nearValid === "boolean" &&
-        typeof data.farValid === "boolean" &&
-        typeof data.trajectoryValid === "boolean" &&
-        typeof data.trajectoryMode === "string" &&
-        typeof data.trajectorySource === "string" &&
-        typeof data.blackLineGeometryCandidate === "boolean" &&
-        typeof data.blackLineGeometryDirection === "string" &&
-        typeof data.blackLineGeometryState === "string" &&
-        typeof data.blackLineGeometryExitAlignment === "boolean" &&
-        typeof data.extremeCurveCandidate === "boolean" &&
-        typeof data.extremeCurveDirection === "string" &&
-        typeof data.extremeCurveState === "string" &&
-        typeof data.gapCandidate === "boolean" &&
-        typeof data.gapAlignmentValid === "boolean" &&
-        typeof data.gapReturnValid === "boolean" &&
+      const fieldsPresent = typeof data.lineFollowerImplemented === "boolean" &&
+        typeof data.greenConfirmed === "boolean" &&
+        typeof data.greenPathBlackValid === "boolean" &&
+        typeof data.greenInterpretation === "string" &&
         numericFields.every(value => Number.isFinite(Number(value)));
       const statusTimestamp = Number(data.timestamp);
       const lineTimestamp = Number(data.lineTimestamp);
@@ -3408,7 +2589,6 @@ std::string DashboardServer::dashboardHtml()
         return;
       }
       latestCameraDiagnosticData = data;
-      collectTuningChartSample(data, nowMs);
       renderCurrentCameraDiagnostics();
     }
 
@@ -3541,9 +2721,6 @@ std::string DashboardServer::dashboardHtml()
     dashboardModeButtons.forEach(button => {
       button.addEventListener("click", () => selectDashboardMode(button.dataset.dashboardMode));
     });
-    tuningTabButtons.forEach(button => {
-      button.addEventListener("click", () => selectTuningPanel(button.dataset.tuningTab));
-    });
     cameraViewButtons.forEach(button => {
       button.addEventListener("click", () => renderCameraView(button.dataset.cameraView));
     });
@@ -3577,12 +2754,10 @@ std::string DashboardServer::dashboardHtml()
     window.addEventListener("blur", stopDriveOnFocusLoss);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopDriveOnFocusLoss();
-      else if (activeDashboardMode === "tuning") renderTuningCharts();
     });
     window.setInterval(sendCurrentDrive, 100);
     window.setInterval(refreshCameraStatus, 500);
     window.setInterval(refreshForwardCameraStatus, 500);
-    selectTuningPanel("perception");
     selectDashboardMode("operation");
     renderCameraView("downward");
     restoreManualPowerSettings();
@@ -3860,110 +3035,6 @@ bool DashboardServer::sendCameraStatus(SocketHandle client, const char* statusPa
     return sendAll(client, header.c_str(), header.size()) && sendAll(client, status.c_str(), status.size());
 }
 
-#if 0
-void DashboardServer::sendLineCameraStatus(SocketHandle client)
-{
-    // O systemd indica a vida do processo, mas somente o IPC recente prova que
-    // a visão inferior voltou a produzir dados que a Missão Principal pode usar.
-    const FixedCommandResult serviceResult = runLineCameraSystemctl(
-        "is-active", false);
-    const std::string reportedServiceState = trimCopy(serviceResult.output);
-    const std::string serviceState =
-        reportedServiceState == "active" || reportedServiceState == "inactive" ||
-                reportedServiceState == "activating" ||
-                reportedServiceState == "deactivating" ||
-                reportedServiceState == "failed"
-            ? reportedServiceState
-            : "unknown";
-    const std::string cameraStatus = readTextFile(config::kCameraStatusPath);
-    const std::string cameraState = lowerCopy(
-        getJsonString(cameraStatus, "state", ""));
-    bool cameraReportedActive = false;
-    const bool cameraActive = getJsonBool(
-                                  cameraStatus, "active", cameraReportedActive) &&
-                              cameraReportedActive &&
-                              getJsonNumber(cameraStatus, "fps", 0.0) > 0.0 &&
-                              cameraState != "falha";
-    // Reutiliza a validação completa do IPC usada pela Missão Principal, em vez
-    // de considerar fresco um JSON que possua apenas um timestamp válido.
-    CameraMonitor cameraMonitor;
-    const bool lineIpcFresh = cameraMonitor.lineSnapshot().sourceFresh;
-
-    std::string visualState = "FALHA";
-    if (serviceState == "inactive" || serviceState == "deactivating")
-    {
-        visualState = "PARADA";
-    }
-    else if (serviceState == "activating" || cameraState == "iniciando")
-    {
-        visualState = "INICIANDO";
-    }
-    else if (serviceState == "active")
-    {
-        if (cameraState == "falha")
-        {
-            visualState = "FALHA";
-        }
-        else if (cameraActive && lineIpcFresh)
-        {
-            visualState = "ONLINE";
-        }
-        else if (cameraStatus.empty())
-        {
-            // O wrapper ainda não teve tempo de publicar INICIANDO.
-            visualState = "INICIANDO";
-        }
-    }
-    std::ostringstream json;
-    json << "{\"state\":\"" << visualState
-         << "\",\"serviceState\":\""
-         << serviceState
-         << "\",\"ipcFresh\":" << (lineIpcFresh ? "true" : "false")
-         << "}";
-    sendHttpResponse(client, json.str(), "application/json; charset=utf-8");
-}
-
-void DashboardServer::handleLineCameraAction(
-    SocketHandle client,
-    const char* action)
-{
-    // A rota escolhe uma das três ações literais. Esta verificação impede que
-    // uma chamada futura transforme este ponto em executor de comandos livres.
-    const std::string requestedAction = action == nullptr ? "" : action;
-    if (requestedAction != "start" && requestedAction != "stop" &&
-        requestedAction != "restart")
-    {
-        sendHttpResponse(
-            client,
-            "{\"ok\":false,\"error\":\"invalid_action\"}",
-            "application/json; charset=utf-8");
-        return;
-    }
-
-    // Serializa os três botões para não intercalar start/stop de dois clientes.
-    std::lock_guard<std::mutex> lock(lineCameraActionMutex);
-    const FixedCommandResult result = runLineCameraSystemctl(
-        requestedAction.c_str(), true);
-    if (result.exitCode != 0)
-    {
-        std::cerr << "Line camera " << requestedAction
-                  << " failed with exit code " << result.exitCode
-                  << ": " << trimCopy(result.output) << "\n";
-        sendHttpResponse(
-            client,
-            "{\"ok\":false,\"error\":\"systemctl_failed\"}",
-            "application/json; charset=utf-8");
-        return;
-    }
-
-    const char* serviceState = requestedAction == "stop" ? "stopping" : "starting";
-    std::ostringstream json;
-    json << "{\"ok\":true,\"action\":\"" << requestedAction
-         << "\",\"serviceState\":\"" << serviceState << "\"}";
-    sendHttpResponse(client, json.str(), "application/json; charset=utf-8");
-}
-
-#endif
 
 bool DashboardServer::setForwardCameraEnabled(bool enabled)
 {

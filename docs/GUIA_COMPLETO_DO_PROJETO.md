@@ -673,18 +673,17 @@ O dashboard principal faz proxy do MJPEG pela porta 8080, evitando que o usuári
 precise acessar diretamente a porta 8090. O vídeo é exibido sem máscaras,
 marcações ou decisões de navegação.
 
-`CameraMonitor` valida a saúde da captura e a telemetria rápida publicada pela
-visão. Ele rejeita trajetória, prévias ou campos de controle inválidos antes que
-`MainMission` use qualquer comando. A interpretação de pixels permanece isolada
-no processo Python; a decisão de movimento permanece em C++ e passa por
+`CameraMonitor` valida a saúde da captura, o comando seguro do ponto de extensão
+e os resultados necessários à máquina de estados verde. A interpretação de pixels
+permanece isolada no processo Python; toda aplicação de movimento passa por
 `RobotState` e `MotorController`.
 
 A câmera inferior pertence ao serviço `obr-line-camera`, separado de
 `obr-robot`. Ao parar ou reiniciar esse serviço, o supervisor remove
 `/dev/shm/obr_line_status.json`; por isso uma Missão Principal em curso não pode
-reaproveitar uma trajetória velha e fica parada até uma publicação nova e fresca.
-FAR/NEAR, gap, verde, Corner90 e kernels usam a resolução recebida como base: a
-referência validada de 640×480 é escalada para 480×360 sem manter cortes fixos.
+reaproveitar dados visuais antigos e fica parada até uma publicação nova e fresca.
+Máscaras, filtros e detecção verde usam a resolução recebida como base: a referência
+validada de 640×480 é escalada para 480×360 sem manter cortes fixos.
 
 O dashboard controla a câmera inferior pelo mesmo IPC simples usado pela câmera
 frontal. O botão alterna apenas `{"command":"set_line_camera","enabled":true}`
@@ -701,29 +700,15 @@ reiniciar seu estado quando uma nova execução começar. Ele preserva duas miss
 isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
 prova para `MainMission`.
 
-`MainMission` executa o segue-faixa pela câmera inferior e continua sendo o ponto
-de composição dos demais comportamentos da prova. O processo Python ajusta a
-imagem, estima uma trajetória e publica uma prévia normalizada para cada lado.
+`MainMission` mantém a composição dos comportamentos da prova, mas o segue-faixa
+normal está deliberadamente vazio. `calculate_line_follower_command` recebe a
+máscara binária processada e o resultado verde e retorna os dois motores zerados.
+A parada é aplicada apenas no estado normal, depois que os estados verdes tiveram
+a oportunidade de executar e retornar seus comandos.
 
-Quando `trajectoryValid=true`, o Pure Pursuit usa a curvatura como erro de
-controle, remove ruído com zona morta de `0.025`, limita a correção a `±0.25` e
-aplica mistura diferencial centrada na base `0.70`. O resultado é contínuo: a
-roda interna diminui e a externa aumenta; no limite, a prévia pode chegar a
-`0.86 / 0.61`. Antes da aplicação física, a camada START/RUN ainda protege cada
-roda parada com `0.67`.
-
-Depois do clamp de `±0.25` e antes da mistura diferencial, o tracking normal usa
-um slew limiter com `dt` monotônico real: `1.5` unidades de correção/s para
-entrada e `2.5` unidades/s para retorno a zero. Na inversão de sinal, a saída
-chega primeiro a zero. Estados especiais não usam essa saída atrasada e resetam
-seu histórico.
-
-`TurningNear` não é a estratégia de curva normal. Ele é um fallback de
-contrarrotação usado apenas quando NEAR é válida, mas não há trajetória visual
-confiável. Se uma trajetória válida reaparece, a missão abandona esse fallback no
-mesmo ciclo e retorna ao diferencial contínuo. Gap, recuperação de linha,
-marcadores verdes, timeout, E-Stop e falha de câmera permanecem estados separados
-e têm prioridade de segurança.
+A lógica visual ainda usada para aproximação, handoff e reaquisição pertence
+exclusivamente à máquina de estados verde e conserva os resultados anteriores.
+Ela não é publicada como controlador normal nem aparece como ajuste no dashboard.
 
 Cada comportamento novo deve ser integrado de forma deliberada pelo
 `MainMission`, com critérios claros de entrada, término e falha.
@@ -801,9 +786,7 @@ ativos.
 - potência solicitada pela Raspberry, comando final e PWM aplicado pela ESP32;
 - estado STARTING/RUNNING e amostras de confirmação de cada lado;
 - contagens e taxas dos encoders;
-- diagnósticos do segue-faixa: `rawControlError`, `finalCorrection`,
-  `targetCorrection`, `appliedCorrection`, `steerRateUsed` e prévias
-  esquerda/direita;
+- estado pendente do segue-faixa, sequência da visão, reparo especular e decisão verde;
 - ultrassônico;
 - MPU6050, yaw, rampa, gyro, aceleração e temperatura;
 - PCA9685 e OLED;

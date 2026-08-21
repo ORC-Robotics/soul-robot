@@ -4,7 +4,6 @@ Somente o papel ``down`` publica os comandos visuais usados pela missão.
 """
 
 import argparse
-import csv
 import json
 import math
 import os
@@ -42,9 +41,6 @@ GREEN_CAPTURE_HSV_MASK_PATH = "/dev/shm/obr_green_hsv_mask.png"
 GREEN_CAPTURE_FINAL_MASK_PATH = "/dev/shm/obr_green_final_mask.png"
 GREEN_CAPTURE_CANDIDATES_PATH = "/dev/shm/obr_green_candidates.png"
 GREEN_CAPTURE_STATS_PATH = "/dev/shm/obr_green_stats.json"
-LINE_TRACE_REQUEST_PATH = "/dev/shm/obr_line_trace_request"
-VISION_TRACE_SAMPLE_PATH = "/dev/shm/obr_line_trace_vision_sample.csv"
-TEMP_VISION_TRACE_SAMPLE_PATH = "/dev/shm/obr_line_trace_vision_sample.tmp.csv"
 
 LIGHT_PIN_BOARD = 40
 MJPEG_STREAM_PORT = 8090
@@ -256,7 +252,6 @@ GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
 # Fração mínima de pixels ativos do componente preto em cada ROI.
 GREEN_ROI_MIN_BLACK_RATIO = 0.25
 # O alvo lateral usa 30 pixels em 320 de largura no detector de referência.
-GREEN_GUIDANCE_TARGET_OFFSET_RATIO = 30.0 / 320.0
 # Mantém a orientação durante meio segundo depois da última leitura válida.
 GREEN_DIRECTION_RETENTION_SECONDS = 0.5
 # Quando o marcador cobre a faixa preta, a última geometria visual válida pode
@@ -311,28 +306,22 @@ CAMERA_EXPOSURE_VALUE = 0.4
 # presos a uma resolução específica.
 DOWNWARD_REFERENCE_FRAME_HEIGHT = 480
 
-# A prévia usa a mesma escala normalizada de potência dos motores.
-# A base coincide com o piso operacional necessário para iniciar o movimento.
-# O fallback visual e os estados especiais preservam 0,69 como referência segura.
-# O Pure Pursuit pode reduzir a roda interna para 0,61 após a confirmação do encoder.
-# Zero continua reservado para parada real.
+# A máquina de estados verde conserva os mesmos comandos visuais validados para
+# aproximação, handoff e reaquisição. Eles não alimentam o seguidor normal.
 MINIMUM_MOTOR_PREVIEW = 0.69
 BASE_SPEED_PREVIEW = MINIMUM_MOTOR_PREVIEW
-# O Pure Pursuit pode pedir 0,61 na roda interna já em movimento. A confirmação
-# do encoder e o piso de partida de 0,67 permanecem no MotorController.
+# O handoff verde pode pedir 0,61 na roda interna já em movimento.
 TRACKING_RUN_MINIMUM_MOTOR_PREVIEW = 0.61
 KP_PREVIEW = 0.30
 MAX_CORRECTION_PREVIEW = 0.25
-# O preview adaptativo permanece apenas no fallback FAR/NEAR e na telemetria
-# comparativa. Uma trajetória válida nunca usa estes pesos no controle.
+# O fallback FAR/NEAR abaixo existe somente para as manobras verdes preservadas.
 PREVIEW_MIN = 0.20
 PREVIEW_MAX = 0.70
 HEADING_STRAIGHT = 0.03
 HEADING_CURVE = 0.20
 # A deadband contínua remove ruído sem criar um salto na borda da faixa neutra.
 ERROR_DEADBAND = 0.03
-# A zona morta do Pure Pursuit é menor que a dos fallbacks de recuperação.
-# Isso permite iniciar correções suaves antes que o desvio visual fique grande.
+# O handoff verde inicia correções suaves antes que o desvio fique grande.
 TRACKING_DEADBAND = 0.025
 K_CONTROL = 1.60
 # O derivativo usa segundos e atua somente sobre a medição NEAR filtrada.
@@ -344,8 +333,6 @@ DERIVATIVE_RESET_DT_SECONDS = 0.25
 MAX_FILTERED_DERIVATIVE = 5.0
 # Limite superior da prévia na escala normalizada do protocolo de motores.
 MAX_OPERATIONAL_PREVIEW = 1.00
-# A conversão aproximada considera a fita física de 2 cm apenas para debug.
-REFERENCE_LINE_WIDTH_CM = 2.0
 
 # A trajetória reutiliza a máscara pronta e mede poucos cortes horizontais.
 # Aumentar muito esta quantidade eleva o custo por frame sem criar informação
@@ -384,7 +371,7 @@ VISUAL_PURSUIT_MIN_LOOKAHEAD = 0.35
 VISUAL_PURSUIT_CURVATURE_GAIN = 1.0
 VISUAL_PURSUIT_CORRECTION_GAIN = 0.30
 
-# Limites de variação da correção de steering no tracking visual normal.
+# Limites de variação usados somente pelo suporte visual das manobras verdes.
 # As unidades são correção normalizada por segundo; o limitador usa o tempo
 # monotônico real entre frames, nunca um incremento fixo por frame.
 STEER_RISE_RATE = 1.8
@@ -392,64 +379,6 @@ STEER_RELEASE_RATE = 2.5
 # Uma pausa longa na captura não pode liberar uma variação grande de uma vez.
 # Nessa situação o limitador descarta o histórico e recomeça de zero.
 STEER_SLEW_RESET_DT_SECONDS = 0.25
-# O cotovelo é medido nos centros brutos da faixa, sem exigir que o fit
-# quadrático represente uma descontinuidade. Os ângulos usam zero para frente,
-# positivo para direita e negativo para esquerda.
-CORNER90_MIN_SAMPLES = 8
-CORNER90_SEGMENT_SAMPLES = 3
-CORNER90_MIN_SEGMENT_FORWARD_SPAN = 0.08
-# O heading próximo pode já estar inclinado em uma curva fechada. Aceitar até
-# 55 graus permite medir uma mudança bruta de até 140 graus, mas a entrada
-# ainda exige NEAR centralizada, ramo lateral e duas imagens consecutivas.
-CORNER90_MAX_NEAR_HEADING_DEGREES = 55.0
-CORNER90_MIN_FAR_HEADING_DEGREES = 30.0
-CORNER90_MIN_HEADING_CHANGE_DEGREES = 30.0
-CORNER90_MAX_HEADING_CHANGE_DEGREES = 140.0
-# A margem de saída é deliberadamente mais ampla que a de entrada. Quando a
-# nova faixa já foi adquirida, o Pure Pursuit deve corrigir o restante sem o
-# pivô insistir em um alinhamento perfeito no próprio cotovelo.
-CORNER90_MAX_CENTER_ERROR = 0.20
-# A entrada no estado de confirmação continua limitada a 20% no C++. Esta
-# margem maior apenas mantém a geometria visível enquanto o robô já está parado.
-CORNER90_CONFIRM_MAX_CENTER_ERROR = 0.30
-CORNER90_EXIT_MAX_CENTER_ERROR = 0.30
-CORNER90_EXIT_MAX_HEADING_DEGREES = 50.0
-# Após o cotovelo desaparecer, esta margem visual permite que o Pure Pursuit
-# corrija a nova faixa sem exigir FAR, fit ou alinhamento perfeito no pivô.
-CORNER90_PURE_PURSUIT_HANDOFF_MAX_CENTER_ERROR = 0.45
-CORNER90_CONFIRM_FRAMES = 1
-# Confiança mínima para a geometria atual da linha preta comandar um pivot.
-# O valor combina evidências espaciais do mesmo frame, sem esperar outro ciclo.
-BLACK_LINE_GEOMETRY_MIN_CONFIDENCE = 0.2
-# A saída do pivot usa a orientação do fit inteiro, nunca apenas a presença
-# de FAR ou o comando atual. Assim a curva não entrega um trecho inclinado ao
-# Pure Pursuit como se já estivesse apontando para frente.
-BLACK_LINE_GEOMETRY_EXIT_MIN_FIT_SAMPLES = 7
-BLACK_LINE_GEOMETRY_EXIT_MIN_LOOKAHEAD = 0.60
-BLACK_LINE_GEOMETRY_EXIT_MAX_HEADING_DEGREES = 20.0
-# Uma nova faixa visual devolve o comando ao Pure Pursuit sem esperar
-# alinhamento perfeito. O detector já bloqueia o ramo residual separadamente.
-CORNER90_EXIT_ALIGNMENT_FRAMES = 1
-# Depois do handoff, o mesmo ramo precisa sumir em duas imagens antes de
-# rearmar. Um candidato novo para o lado oposto continua liberado de imediato.
-CORNER90_REARM_CLEAR_FRAMES = 2
-# O detector dedicado procura uma barra transversal conectada à faixa próxima.
-# Três linhas confirmam geometria real sem reagir a um único ruído da máscara.
-CORNER90_MIN_HORIZONTAL_ROWS = 3
-CORNER90_MIN_HORIZONTAL_BRANCH_RATIO = 0.12
-CORNER90_MIN_APPROACH_RATIO = 0.12
-# Quando o cotovelo aparece distante, a junção pode ter uma pequena falha na
-# máscara. Neste caso, a banda FAR larga confirma o ramo transversal visível.
-CORNER90_MIN_FAR_BRANCH_WIDTH_RATIO = 0.20
-CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO = 1.50
-CORNER90_MIN_FAR_LATERAL_RATIO = 0.25
-CORNER90_MAX_NEAR_CENTER_RATIO = CORNER90_MAX_CENTER_ERROR
-# O ramo distante confirma que existe um cotovelo, mas não significa que o
-# centro do robô já alcançou o ponto de giro. Exigir 15% de aproximação mantém
-# a decisão reativa e dá tempo para a câmera coletar a parte útil da curva.
-# Um ramo isolado na FAR ainda não comanda pivot, pois não é candidato de atuação.
-CORNER90_MIN_ENTRY_PROGRESS_RATIO = 0.15
-
 # Cada papel define de forma independente a captura e os parâmetros visuais.
 # O perfil inferior não herda ROIs nem limites em pixels da câmera frontal.
 CAMERA_PROFILES = {
@@ -476,10 +405,6 @@ CAMERA_PROFILES = {
             "overlay_thin_line_thickness": 1,
             "overlay_measurement_radius": 4,
             "overlay_center_radius": 6,
-            "overlay_arrow_start_ratio": (0.9167, 0.4537),
-            "overlay_arrow_horizontal_ratio": 0.0625,
-            "overlay_arrow_vertical_ratio": 0.0926,
-            "overlay_arrow_thickness": 3,
             "debug_text_overlay": False,
         },
     },
@@ -579,10 +504,6 @@ CAMERA_PROFILES = {
             "overlay_thin_line_thickness": 1,
             "overlay_measurement_radius": 3,
             "overlay_center_radius": 4,
-            "overlay_arrow_start_ratio": (0.9167, 0.4537),
-            "overlay_arrow_horizontal_ratio": 0.0625,
-            "overlay_arrow_vertical_ratio": 0.0926,
-            "overlay_arrow_thickness": 3,
             "debug_text_overlay": False,
         },
     },
@@ -882,14 +803,14 @@ def green_status_overlay(green_processing_enabled, green_status):
     return text, (220, 220, 220)
 
 
-def calculate_heading_error(near_error, far_error):
-    """Calcula a direção visual limitada usada somente no diagnóstico."""
+def calculate_green_maneuver_heading_error(near_error, far_error):
+    """Calcula a referência visual preservada para manobras verdes."""
 
     return max(-1.0, min(float(far_error) - float(near_error), 1.0))
 
 
-def calculate_adaptive_preview(heading_error):
-    """Mapeia suavemente a intensidade da curva para o peso da FAR."""
+def calculate_green_maneuver_adaptive_preview(heading_error):
+    """Mapeia a curva para o peso da FAR usado nas manobras verdes."""
 
     heading_magnitude = abs(float(heading_error))
     interpolation = (
@@ -905,7 +826,7 @@ def calculate_adaptive_preview(heading_error):
     ) * smooth_interpolation
 
 
-def apply_error_deadband(error):
+def apply_green_maneuver_deadband(error):
     """Remove microerros e preserva continuidade depois da faixa neutra."""
 
     safe_error = max(-1.0, min(float(error), 1.0))
@@ -918,88 +839,68 @@ def apply_error_deadband(error):
     return math.copysign(adjusted_magnitude, safe_error)
 
 
-def calculate_preview_error(near_error, far_error, adaptive_preview=None):
+def calculate_green_maneuver_preview_error(near_error, far_error, adaptive_preview=None):
     """Interpola NEAR/FAR usando o preview adaptativo do frame atual."""
 
     safe_near_error = max(-1.0, min(float(near_error), 1.0))
     safe_far_error = max(-1.0, min(float(far_error), 1.0))
     if adaptive_preview is None:
-        heading_error = calculate_heading_error(
+        heading_error = calculate_green_maneuver_heading_error(
             safe_near_error,
             safe_far_error,
         )
-        adaptive_preview = calculate_adaptive_preview(heading_error)
+        adaptive_preview = calculate_green_maneuver_adaptive_preview(heading_error)
     return (
         (1.0 - adaptive_preview) * safe_near_error
         + adaptive_preview * safe_far_error
     )
 
 
-def calculate_control_terms(
+def calculate_green_maneuver_reference_error(
     near_valid,
     near_error,
     far_valid=False,
     far_error=0.0,
     filtered_near_derivative=0.0,
 ):
-    """Calcula os termos antigos para fallback e comparação de telemetria."""
+    """Conserva a referência exigida pelas manobras verdes já validadas."""
 
     safe_near_error = max(-1.0, min(float(near_error), 1.0))
     safe_far_error = max(-1.0, min(float(far_error), 1.0))
     if near_valid and far_valid:
-        heading_error = calculate_heading_error(
+        heading_error = calculate_green_maneuver_heading_error(
             safe_near_error,
             safe_far_error,
         )
-        adaptive_preview = calculate_adaptive_preview(heading_error)
-        preview_error = calculate_preview_error(
+        adaptive_preview = calculate_green_maneuver_adaptive_preview(
+            heading_error
+        )
+        preview_error = calculate_green_maneuver_preview_error(
             safe_near_error,
             safe_far_error,
             adaptive_preview,
         )
-        p_term = K_CONTROL * apply_error_deadband(preview_error)
+        proportional_component = (
+            K_CONTROL * apply_green_maneuver_deadband(preview_error)
+        )
         safe_derivative = max(
             -MAX_FILTERED_DERIVATIVE,
             min(float(filtered_near_derivative), MAX_FILTERED_DERIVATIVE),
         )
-        d_term = K_D * safe_derivative
-        control_error = max(-1.0, min(p_term + d_term, 1.0))
-    elif near_valid:
-        # A NEAR isolada conserva exatamente o fallback anterior.
-        adaptive_preview = PREVIEW_MIN
-        preview_error = safe_near_error
-        p_term = safe_near_error
-        safe_derivative = 0.0
-        d_term = 0.0
-        control_error = safe_near_error
-    elif far_valid:
-        # A FAR isolada continua sendo tratada como referência conservadora.
-        adaptive_preview = PREVIEW_MAX
-        preview_error = safe_far_error
-        p_term = safe_far_error
-        safe_derivative = 0.0
-        d_term = 0.0
-        control_error = safe_far_error
-    else:
-        adaptive_preview = PREVIEW_MIN
-        preview_error = 0.0
-        p_term = 0.0
-        safe_derivative = 0.0
-        d_term = 0.0
-        control_error = 0.0
-
-    return {
-        "adaptive_preview": adaptive_preview,
-        "preview_error": preview_error,
-        "p_term": p_term,
-        "filtered_derivative": safe_derivative,
-        "d_term": d_term,
-        "control_error": control_error,
-    }
+        derivative_component = K_D * safe_derivative
+        return max(
+            -1.0,
+            min(proportional_component + derivative_component, 1.0),
+        )
+    if near_valid:
+        return safe_near_error
+    if far_valid:
+        return safe_far_error
+    return 0.0
 
 
-class NearDerivativeFilter:
-    """Calcula e filtra a variação temporal da linha medida na NEAR."""
+class GreenManeuverDerivativeFilter:
+    """Filtra a variação NEAR usada somente pelas manobras verdes."""
 
     def __init__(self):
         self.previous_error = None
@@ -1051,8 +952,8 @@ class NearDerivativeFilter:
         return self.filtered_derivative
 
 
-class SteeringSlewRateLimiter:
-    """Limita a variação temporal da correção sem alterar o controlador visual."""
+class GreenManeuverSlewRateLimiter:
+    """Limita a correção visual preservada das manobras verdes."""
 
     def __init__(self, rise_rate=STEER_RISE_RATE, release_rate=STEER_RELEASE_RATE):
         self.rise_rate = float(rise_rate)
@@ -1061,7 +962,7 @@ class SteeringSlewRateLimiter:
         self.previous_time = None
 
     def reset(self):
-        """Descarta a correção anterior ao sair do tracking visual normal."""
+        """Descarta a correção anterior ao sair do suporte visual verde."""
 
         self.applied_correction = 0.0
         self.previous_time = None
@@ -1120,174 +1021,18 @@ class SteeringSlewRateLimiter:
         return self.applied_correction, rate
 
 
-class Corner90ConfirmationTracker:
-    """Confirma o mesmo cotovelo em frames novos antes de liberar o pivot."""
-
-    def __init__(self):
-        self.direction = "NONE"
-        self.confirm_frames = 0
-        self.awaiting_exit_alignment = False
-        self.exit_alignment_frames = 0
-        self.exit_completed = False
-        self.rearm_active = False
-        self.rearm_clear_frames = 0
-
-    def reset(self):
-        """Descarta uma hipótese ao perder a geometria ou entrar em exceção."""
-
-        self.direction = "NONE"
-        self.confirm_frames = 0
-        self.awaiting_exit_alignment = False
-        self.exit_alignment_frames = 0
-        self.exit_completed = False
-        self.rearm_active = False
-        self.rearm_clear_frames = 0
-
-    def update(self, trajectory, detection_allowed):
-        """Atualiza a confirmação sem deixar gap ou verde acumularem frames."""
-
-        if self.exit_completed:
-            # A quarta imagem alinhada já foi publicada para a Missão
-            # Principal. No frame seguinte, uma nova hipótese começa do zero.
-            completed_direction = self.direction
-            self.reset()
-            self.direction = completed_direction
-            self.rearm_active = True
-
-        candidate = bool(trajectory.get("corner90_candidate", False))
-        direction = str(trajectory.get("corner90_direction", "NONE"))
-        if self.rearm_active:
-            opposite_new_corner = (
-                detection_allowed
-                and candidate
-                and direction in ("LEFT", "RIGHT")
-                and direction != self.direction
-            )
-            if opposite_new_corner:
-                # Um cotovelo oposto é uma nova manobra, não o ramo anterior.
-                # Zig-zags curtos não devem esperar o rearm da curva concluída.
-                self.rearm_active = False
-                self.rearm_clear_frames = 0
-            elif detection_allowed and not candidate:
-                self.rearm_clear_frames = min(
-                    CORNER90_REARM_CLEAR_FRAMES,
-                    self.rearm_clear_frames + 1,
-                )
-            else:
-                self.rearm_clear_frames = 0
-
-            if self.rearm_clear_frames >= CORNER90_REARM_CLEAR_FRAMES:
-                self.rearm_active = False
-
-            if self.rearm_active:
-                trajectory["corner90_candidate"] = False
-                trajectory["corner90_direction"] = self.direction
-                trajectory["corner90_confirm_frames"] = 0
-                trajectory["corner90_exit_alignment"] = False
-                trajectory["corner90_state"] = "rearming"
-                return
-
-        # Depois de confirmado, candidatos da geometria antiga não podem manter
-        # o pivô para sempre. Nesta fase só a nova linha alinhada pode encerrá-lo.
-        if self.awaiting_exit_alignment and detection_allowed:
-            candidate_still_visible = bool(
-                trajectory.get("corner90_candidate", False)
-            )
-            raw_exit_alignment = bool(
-                not candidate_still_visible
-                and trajectory.get("corner90_exit_alignment", False)
-            )
-            if raw_exit_alignment:
-                self.exit_alignment_frames = min(
-                    CORNER90_EXIT_ALIGNMENT_FRAMES,
-                    self.exit_alignment_frames + 1,
-                )
-            else:
-                self.exit_alignment_frames = 0
-            trajectory["corner90_candidate"] = False
-            trajectory["corner90_direction"] = self.direction
-            trajectory["corner90_confirm_frames"] = self.confirm_frames
-            trajectory["corner90_exit_alignment"] = raw_exit_alignment
-            trajectory["corner90_state"] = (
-                "exit_aligned" if raw_exit_alignment else "pivoting"
-            )
-            self.exit_completed = (
-                self.exit_alignment_frames >= CORNER90_EXIT_ALIGNMENT_FRAMES
-            )
-            return
-
-        if (
-            detection_allowed
-            and candidate
-            and direction in ("LEFT", "RIGHT")
-        ):
-            self.exit_alignment_frames = 0
-            if direction == self.direction:
-                self.confirm_frames = min(
-                    CORNER90_CONFIRM_FRAMES,
-                    self.confirm_frames + 1,
-                )
-            else:
-                self.direction = direction
-                self.confirm_frames = 1
-            trajectory["corner90_exit_alignment"] = False
-            trajectory["corner90_confirm_frames"] = self.confirm_frames
-            trajectory["corner90_state"] = (
-                "confirmed"
-                if self.confirm_frames >= CORNER90_CONFIRM_FRAMES
-                else "confirming"
-            )
-            return
-
-        if (
-            detection_allowed
-            and self.confirm_frames >= CORNER90_CONFIRM_FRAMES
-        ):
-            # A geometria antiga precisa desaparecer antes de procurar a saída.
-            # Assim, a reta de chegada ao cotovelo não encerra o pivô cedo.
-            self.awaiting_exit_alignment = True
-            raw_exit_alignment = bool(
-                trajectory.get("corner90_exit_alignment", False)
-            )
-            if raw_exit_alignment:
-                self.exit_alignment_frames = min(
-                    CORNER90_EXIT_ALIGNMENT_FRAMES,
-                    self.exit_alignment_frames + 1,
-                )
-            else:
-                self.exit_alignment_frames = 0
-            trajectory["corner90_candidate"] = False
-            trajectory["corner90_direction"] = self.direction
-            trajectory["corner90_confirm_frames"] = self.confirm_frames
-            trajectory["corner90_exit_alignment"] = raw_exit_alignment
-            trajectory["corner90_state"] = (
-                "exit_aligned" if raw_exit_alignment else "pivoting"
-            )
-            self.exit_completed = (
-                self.exit_alignment_frames >= CORNER90_EXIT_ALIGNMENT_FRAMES
-            )
-            return
-
-        self.reset()
-        trajectory["corner90_candidate"] = False
-        trajectory["corner90_direction"] = "NONE"
-        trajectory["corner90_confirm_frames"] = 0
-        trajectory["corner90_exit_alignment"] = False
-        trajectory["corner90_state"] = "idle"
-
-
-def mix_fallback_correction(vision_profile, correction):
-    """Converte a correção FAR/NEAR em diferencial contínuo seguro."""
+def mix_green_reference_correction(vision_profile, correction):
+    """Converte a referência FAR/NEAR usada pelas manobras verdes."""
 
     base_speed_preview = vision_profile.get(
         "base_speed_preview", BASE_SPEED_PREVIEW
     )
     if vision_profile.get("balanced_differential_mixing", False):
-        # O fallback também precisa conservar autoridade lateral quando o fit
-        # ainda não está disponível após uma curva. O MotorController aplica
+        # A reaquisição verde conserva autoridade lateral quando o fit ainda
+        # não está disponível após uma curva. O MotorController aplica
         # 0,67 a uma roda parada e só permite o piso RUN de 0,61 após o encoder
         # confirmar movimento; portanto a prévia pode usar o mesmo piso do
-        # Pure Pursuit sem enviar uma partida fraca ao motor.
+        # o mesmo piso sem enviar uma partida fraca ao motor.
         minimum_tracking_power = vision_profile.get(
             "visual_tracking_minimum_power",
             vision_profile["minimum_tracking_power"],
@@ -1315,8 +1060,8 @@ def mix_fallback_correction(vision_profile, correction):
     )
 
 
-def mix_visual_pursuit_correction(vision_profile, correction):
-    """Converte a correção já limitada em diferencial contínuo do Pure Pursuit."""
+def mix_green_handoff_correction(vision_profile, correction):
+    """Converte a correção limitada no diferencial do handoff verde."""
 
     base_speed = vision_profile.get("base_speed_preview", BASE_SPEED_PREVIEW)
     if correction == 0.0:
@@ -1355,38 +1100,37 @@ def mix_visual_pursuit_correction(vision_profile, correction):
     )
 
 
-def calculate_control_preview(
+def calculate_green_reference_preview(
     vision_profile,
     near_valid,
     near_error,
     far_valid=False,
     far_error=0.0,
     filtered_near_derivative=0.0,
-    control_terms=None,
+    green_reference_error=None,
 ):
-    """Preserva o controlador FAR/NEAR usado quando o fit não é confiável."""
+    """Preserva a referência FAR/NEAR exigida pelas manobras verdes."""
 
     if not near_valid and not far_valid:
         return 0.0, 0.0, 0.0, 0.0, 0.0
 
-    if control_terms is None:
-        control_terms = calculate_control_terms(
+    if green_reference_error is None:
+        green_reference_error = calculate_green_maneuver_reference_error(
             near_valid,
             near_error,
             far_valid,
             far_error,
             filtered_near_derivative,
         )
-    guidance_error = control_terms["control_error"]
 
     deadzone_ratio = vision_profile["near_deadzone_ratio"]
-    if abs(guidance_error) <= deadzone_ratio:
+    if abs(green_reference_error) <= deadzone_ratio:
         control_error = 0.0
         correction = 0.0
     else:
-        error_sign = 1.0 if guidance_error > 0.0 else -1.0
+        error_sign = 1.0 if green_reference_error > 0.0 else -1.0
         control_error = error_sign * (
-            (abs(guidance_error) - deadzone_ratio)
+            (abs(green_reference_error) - deadzone_ratio)
             / (1.0 - deadzone_ratio)
         )
         correction = max(
@@ -1394,11 +1138,11 @@ def calculate_control_preview(
             min(KP_PREVIEW * control_error, MAX_CORRECTION_PREVIEW),
         )
 
-    left_preview, right_preview = mix_fallback_correction(
+    left_preview, right_preview = mix_green_reference_correction(
         vision_profile, correction
     )
     return (
-        guidance_error,
+        green_reference_error,
         control_error,
         correction,
         left_preview,
@@ -1406,8 +1150,8 @@ def calculate_control_preview(
     )
 
 
-def calculate_visual_pursuit_preview(vision_profile, curvature):
-    """Converte a curvatura visual em diferencial contínuo entre as rodas."""
+def calculate_green_handoff_preview(vision_profile, curvature):
+    """Converte a curvatura no diferencial do handoff verde."""
 
     if not math.isfinite(float(curvature)):
         return 0.0, 0.0, 0.0, 0.0, 0.0
@@ -1438,7 +1182,7 @@ def calculate_visual_pursuit_preview(vision_profile, curvature):
         ),
     )
 
-    left_preview, right_preview = mix_visual_pursuit_correction(
+    left_preview, right_preview = mix_green_handoff_correction(
         vision_profile, correction
     )
     return (
@@ -1447,20 +1191,6 @@ def calculate_visual_pursuit_preview(vision_profile, curvature):
         correction,
         left_preview,
         right_preview,
-    )
-
-
-def resolve_horizontal_deadzone(frame_width, vision_profile):
-    """Converte a zona morta normalizada nos mesmos limites usados no vídeo."""
-
-    frame_center_x = frame_width / 2.0
-    half_width_px = round(
-        vision_profile["near_deadzone_ratio"] * frame_width / 2.0
-    )
-    return (
-        half_width_px,
-        int(round(frame_center_x - half_width_px)),
-        int(round(frame_center_x + half_width_px)),
     )
 
 
@@ -2219,7 +1949,7 @@ def empty_trajectory_result():
 
     return {
         "trajectory_valid": False,
-        "trajectory_mode": "fallback_far_near",
+        "trajectory_mode": "green_handoff_unavailable",
         "trajectory_source": "candidate",
         "fit_degree": 0,
         "fit_a": 0.0,
@@ -2235,24 +1965,6 @@ def empty_trajectory_result():
         "curvature": 0.0,
         "sample_points": [],
         "fit_points": [],
-        "corner90_candidate": False,
-        "corner90_direction": "NONE",
-        "corner90_angle": 0.0,
-        "black_line_geometry_confidence": 0.0,
-        "black_line_geometry_state": "idle",
-        "corner90_confirmation_candidate": False,
-        "corner90_confirmation_direction": "NONE",
-        "corner90_confirmation_angle": 0.0,
-        "corner90_near_heading": 0.0,
-        "corner90_far_heading": 0.0,
-        "corner90_confirm_frames": 0,
-        "corner90_state": "idle",
-        "corner90_exit_alignment": False,
-        "extreme_curve_candidate": False,
-        "extreme_curve_direction": "NONE",
-        "extreme_curve_curvature": 0.0,
-        "extreme_curve_confirm_frames": 0,
-        "extreme_curve_state": "idle",
     }
 
 
@@ -2475,465 +2187,23 @@ def select_visual_pursuit_lookahead(maximum_observed_y):
     return min(VISUAL_PURSUIT_LOOKAHEAD, float(maximum_observed_y))
 
 
-def calculate_segment_heading_degrees(normalized_points):
-    """Estima o heading local de uma parte reta das amostras brutas."""
-
-    if len(normalized_points) < 2:
-        return None
-
-    point_array = np.asarray(normalized_points, dtype=np.float64)
-    x_values = point_array[:, 0]
-    forward_values = point_array[:, 1]
-    forward_span = float(forward_values.max() - forward_values.min())
-    if forward_span < CORNER90_MIN_SEGMENT_FORWARD_SPAN:
-        return None
-
-    slope, _intercept = np.polyfit(forward_values, x_values, 1)
-    if not math.isfinite(float(slope)):
-        return None
-    return math.degrees(math.atan(float(slope)))
-
-
-def normalize_heading_delta_degrees(angle_degrees):
-    """Normaliza uma diferença angular para o intervalo fechado de -180 a 180."""
-
-    return (float(angle_degrees) + 180.0) % 360.0 - 180.0
-
-
-def corner90_turn_is_close_enough(turn_progress_ratio):
-    """Impede pivot antecipado quando o cotovelo ainda está distante na imagem."""
-
-    return (
-        math.isfinite(float(turn_progress_ratio))
-        and CORNER90_MIN_ENTRY_PROGRESS_RATIO
-        <= float(turn_progress_ratio) <= 1.0
-    )
-
-
-def corner90_visual_handoff_ready(
-    corner_candidate,
-    near_valid,
-    near_error,
-    trajectory,
-):
-    """Libera o retorno apenas quando o fit inteiro aponta para a nova rota."""
-
-    try:
-        fit_a = float(trajectory.get("fit_a", 0.0))
-        fit_b = float(trajectory.get("fit_b", 0.0))
-        lookahead_y = float(trajectory.get("lookahead_y", 0.0))
-        fit_sample_count = int(trajectory.get("fit_sample_count", 0))
-    except (TypeError, ValueError):
-        return False
-
-    if not (
-        trajectory.get("trajectory_valid", False)
-        and math.isfinite(fit_a)
-        and math.isfinite(fit_b)
-        and math.isfinite(lookahead_y)
-        and fit_sample_count >= BLACK_LINE_GEOMETRY_EXIT_MIN_FIT_SAMPLES
-        and lookahead_y >= BLACK_LINE_GEOMETRY_EXIT_MIN_LOOKAHEAD
-    ):
-        return False
-
-    # A derivada do fit representa o heading da faixa. Verificar a parte
-    # próxima e o lookahead evita aceitar uma curva que ainda aponta de lado.
-    near_heading = math.degrees(math.atan(fit_b))
-    lookahead_heading = math.degrees(
-        math.atan(2.0 * fit_a * lookahead_y + fit_b)
-    )
-
-    return bool(
-        not corner_candidate
-        and near_valid
-        and near_error is not None
-        and math.isfinite(float(near_error))
-        and abs(float(near_error))
-        <= CORNER90_PURE_PURSUIT_HANDOFF_MAX_CENTER_ERROR
-        and abs(near_heading) <= BLACK_LINE_GEOMETRY_EXIT_MAX_HEADING_DEGREES
-        and abs(lookahead_heading)
-        <= BLACK_LINE_GEOMETRY_EXIT_MAX_HEADING_DEGREES
-    )
-
-
-def analyze_corner90_geometry(normalized_points, near_error):
-    """Reconhece um cotovelo pelos headings das partes próxima e distante."""
-
-    result = {
-        "corner90_candidate": False,
-        "corner90_direction": "NONE",
-        "corner90_angle": 0.0,
-        "black_line_geometry_source_strength": 0.0,
-        "corner90_near_heading": 0.0,
-        "corner90_far_heading": 0.0,
-        "corner90_exit_alignment": False,
-    }
-    if (
-        len(normalized_points) < CORNER90_MIN_SAMPLES
-        or near_error is None
-        or not math.isfinite(float(near_error))
-    ):
-        return result
-
-    sorted_points = sorted(normalized_points, key=lambda point: point[1])
-    segment_size = min(
-        CORNER90_SEGMENT_SAMPLES,
-        len(sorted_points) // 2,
-    )
-    if segment_size < 2:
-        return result
-
-    near_heading = calculate_segment_heading_degrees(
-        sorted_points[:segment_size]
-    )
-    far_heading = calculate_segment_heading_degrees(
-        sorted_points[-segment_size:]
-    )
-    if near_heading is None or far_heading is None:
-        return result
-
-    heading_change = normalize_heading_delta_degrees(
-        far_heading - near_heading
-    )
-    result["corner90_angle"] = float(heading_change)
-    result["corner90_near_heading"] = float(near_heading)
-    result["corner90_far_heading"] = float(far_heading)
-    result["corner90_exit_alignment"] = bool(
-        abs(float(near_error)) <= CORNER90_EXIT_MAX_CENTER_ERROR
-        and abs(near_heading) <= CORNER90_EXIT_MAX_HEADING_DEGREES
-        and abs(far_heading) <= CORNER90_EXIT_MAX_HEADING_DEGREES
-    )
-
-    same_turn_direction = (
-        heading_change * far_heading > 0.0
-    )
-    near_reference_x = float(np.median([
-        point[0] for point in sorted_points[:segment_size]
-    ]))
-    # A fita tem largura bem menor que 12% da altura útil. Esse deslocamento
-    # identifica a primeira amostra já no ramo transversal, isto é, o
-    # cotovelo, sem reagir ao pequeno ruído normal da faixa reta.
-    lateral_branch_points = [
-        point for point in sorted_points
-        if abs(float(point[0]) - near_reference_x) >= 0.12
-    ]
-    turn_progress_ratio = 0.0
-    if lateral_branch_points:
-        turn_normalized_y = min(
-            float(point[1]) for point in lateral_branch_points
-        )
-        turn_progress_ratio = 1.0 - turn_normalized_y
-    if (
-        abs(float(near_error)) <= CORNER90_CONFIRM_MAX_CENTER_ERROR
-        and abs(near_heading) <= CORNER90_MAX_NEAR_HEADING_DEGREES
-        and abs(far_heading) >= CORNER90_MIN_FAR_HEADING_DEGREES
-        and abs(heading_change) >= CORNER90_MIN_HEADING_CHANGE_DEGREES
-        and abs(heading_change) <= CORNER90_MAX_HEADING_CHANGE_DEGREES
-        and same_turn_direction
-        and corner90_turn_is_close_enough(turn_progress_ratio)
-    ):
-        result["corner90_candidate"] = True
-        result["corner90_direction"] = (
-            "RIGHT" if heading_change > 0.0 else "LEFT"
-        )
-        result["black_line_geometry_source_strength"] = (
-            0.82
-            if (len(normalized_points) >= 10 and
-                    abs(heading_change) >= 45.0 and
-                    len(lateral_branch_points) >= 3)
-            else 0.55
-        )
-    return result
-
-
-def analyze_corner90_component(
-    structural_mask,
-    roi_start_y,
-    near_center,
-    near_error,
-):
-    """Reconhece um cotovelo pela faixa horizontal conectada à NEAR."""
-
-    result = {
-        "corner90_candidate": False,
-        "corner90_direction": "NONE",
-        "corner90_angle": 0.0,
-        "black_line_geometry_source_strength": 0.0,
-        "corner90_near_heading": 0.0,
-        "corner90_far_heading": 0.0,
-        "corner90_exit_alignment": False,
-    }
-    if (
-        structural_mask is None
-        or structural_mask.ndim != 2
-        or structural_mask.size == 0
-        or near_center is None
-        or near_error is None
-        or not math.isfinite(float(near_error))
-        or abs(float(near_error)) > CORNER90_CONFIRM_MAX_CENTER_ERROR
-    ):
-        return result
-
-    anchor_x = int(round(near_center[0]))
-    anchor_y = int(round(near_center[1] - roi_start_y))
-    mask_height, frame_width = structural_mask.shape
-    if not (0 <= anchor_x < frame_width and 0 <= anchor_y < mask_height):
-        return result
-
-    labels_count, labels, _stats, _centers = cv2.connectedComponentsWithStats(
-        (structural_mask > 0).astype(np.uint8),
-        connectivity=8,
-    )
-    if labels_count <= 1:
-        return result
-
-    # A componente correta é a que está mais próxima do centro NEAR já validado.
-    best_label = 0
-    best_distance_squared = None
-    for label in range(1, labels_count):
-        point_y, point_x = np.nonzero(labels == label)
-        if point_x.size == 0:
-            continue
-        distance_squared = np.min(
-            (point_x.astype(np.float64) - anchor_x) ** 2
-            + (point_y.astype(np.float64) - anchor_y) ** 2
-        )
-        if best_distance_squared is None or distance_squared < best_distance_squared:
-            best_distance_squared = float(distance_squared)
-            best_label = label
-    if best_label == 0:
-        return result
-
-    component = np.where(labels == best_label, 255, 0).astype(np.uint8)
-    approach_min_y = max(
-        0,
-        anchor_y - int(round(mask_height * CORNER90_MIN_APPROACH_RATIO)),
-    )
-    if approach_min_y >= anchor_y:
-        return result
-
-    # A largura local mede a fita sem depender de pixels fixos da resolução antiga.
-    approach_widths = []
-    for row_y in range(approach_min_y, anchor_y + 1):
-        runs = find_row_runs(component[row_y, :])
-        if not runs:
-            continue
-        nearest_run = min(
-            runs,
-            key=lambda run: abs(((run[0] + run[1]) * 0.5) - anchor_x),
-        )
-        approach_widths.append(nearest_run[1] - nearest_run[0] + 1)
-    if not approach_widths:
-        return result
-
-    line_width = max(1.0, float(np.median(approach_widths)))
-    minimum_branch_px = max(
-        3.0 * line_width,
-        frame_width * CORNER90_MIN_HORIZONTAL_BRANCH_RATIO,
-    )
-    left_rows = 0
-    right_rows = 0
-    left_branch_rows = []
-    right_branch_rows = []
-    # O ramo do cotovelo precisa estar à frente da NEAR; um alargamento junto ao
-    # robô é ruído ou cruzamento e não deve disparar pivô.
-    for row_y in range(0, approach_min_y):
-        for run_start, run_end in find_row_runs(component[row_y, :]):
-            left_branch = anchor_x - run_start
-            right_branch = run_end - anchor_x
-            if (
-                right_branch >= minimum_branch_px
-                and left_branch <= 1.5 * line_width
-            ):
-                right_rows += 1
-                right_branch_rows.append(row_y)
-            if (
-                left_branch >= minimum_branch_px
-                and right_branch <= 1.5 * line_width
-            ):
-                left_rows += 1
-                left_branch_rows.append(row_y)
-
-    right_turn_progress = (
-        max(right_branch_rows) / float(mask_height)
-        if right_branch_rows else 0.0
-    )
-    left_turn_progress = (
-        max(left_branch_rows) / float(mask_height)
-        if left_branch_rows else 0.0
-    )
-    if (
-        right_rows >= CORNER90_MIN_HORIZONTAL_ROWS
-        and right_rows > left_rows
-        and corner90_turn_is_close_enough(right_turn_progress)
-    ):
-        result.update({
-            "corner90_candidate": True,
-            "corner90_direction": "RIGHT",
-            "corner90_angle": 90.0,
-            "corner90_far_heading": 90.0,
-            "black_line_geometry_source_strength": (
-                0.80 if right_rows >= 4 else 0.55
-            ),
-        })
-    elif (
-        left_rows >= CORNER90_MIN_HORIZONTAL_ROWS
-        and left_rows > right_rows
-        and corner90_turn_is_close_enough(left_turn_progress)
-    ):
-        result.update({
-            "corner90_candidate": True,
-            "corner90_direction": "LEFT",
-            "corner90_angle": -90.0,
-            "corner90_far_heading": -90.0,
-            "black_line_geometry_source_strength": (
-                0.80 if left_rows >= 4 else 0.55
-            ),
-        })
-    return result
-
-
-def analyze_corner90_bands(near_observation, far_observation, frame_width):
-    """Reconhece o ramo distante largo quando a junção não ficou conectada."""
-
-    result = {
-        "corner90_candidate": False,
-        "corner90_direction": "NONE",
-        "corner90_angle": 0.0,
-        "black_line_geometry_source_strength": 0.0,
-        "corner90_near_heading": 0.0,
-        "corner90_far_heading": 0.0,
-        "corner90_exit_alignment": False,
-    }
-    if (
-        frame_width <= 0
-        or not near_observation.get("valid", False)
-        or not far_observation.get("valid", False)
-    ):
-        return result
-
-    near_x = near_observation.get("x")
-    far_x = far_observation.get("x")
-    if near_x is None or far_x is None:
-        return result
-    half_width = frame_width / 2.0
-    near_center_error = (float(near_x) - half_width) / half_width
-    far_offset = (float(far_x) - float(near_x)) / half_width
-    far_width = float(far_observation.get("bounding_width_px", 0))
-    far_height = float(far_observation.get("bounding_height_px", 0))
-    if far_height <= 0.0:
-        return result
-
-    far_aspect_ratio = far_width / far_height
-    # A saída só é consumida depois de um Corner90 confirmado. Ela exige a nova
-    # linha centrada e estreita, impedindo que o ramo antigo seja tratado como reta.
-    result["corner90_exit_alignment"] = bool(
-        abs(near_center_error) <= CORNER90_EXIT_MAX_CENTER_ERROR
-        and abs(far_offset) <= CORNER90_EXIT_MAX_CENTER_ERROR
-        and far_aspect_ratio < CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO
-    )
-
-    # Esta decisão antecipa o cotovelo: uma NEAR reta chega a uma FAR muito
-    # larga e lateral. Ela ainda passa por duas confirmações em uma janela de
-    # três frames da Missão Principal antes de qualquer pivot, evitando reagir
-    # a um ruído isolado sem esperar o ramo alcançar a banda NEAR.
-    if (
-        abs(near_center_error) > CORNER90_CONFIRM_MAX_CENTER_ERROR
-        or abs(far_offset) < CORNER90_MIN_FAR_LATERAL_RATIO
-        or far_width < frame_width * CORNER90_MIN_FAR_BRANCH_WIDTH_RATIO
-        or far_aspect_ratio < CORNER90_MIN_FAR_BRANCH_ASPECT_RATIO
-    ):
-        return result
-
-    direction = "RIGHT" if far_offset > 0.0 else "LEFT"
-    angle = 90.0 if direction == "RIGHT" else -90.0
-    result.update({
-        "corner90_candidate": True,
-        "corner90_direction": direction,
-        "corner90_angle": angle,
-        "corner90_far_heading": angle,
-        "black_line_geometry_source_strength": (
-            0.80
-            if (abs(far_offset) >= 0.35 and
-                    far_width >= frame_width * 0.30 and
-                    far_aspect_ratio >= 2.0 and
-                    abs(near_center_error) <= 0.15)
-            else 0.55
-        ),
-    })
-    return result
-
-
-def combine_black_line_geometry(*observations):
-    """Consolida a confiança de curva usando apenas a máscara preta atual."""
-
-    candidates = [
-        observation for observation in observations
-        if observation.get("corner90_candidate", False)
-        and observation.get("corner90_direction") in ("LEFT", "RIGHT")
-    ]
-    result = {
-        "candidate": False,
-        "direction": "NONE",
-        "angle_degrees": 0.0,
-        "confidence": 0.0,
-        "state": "idle",
-    }
-    if not candidates:
-        return result
-
-    directions = {observation["corner90_direction"] for observation in candidates}
-    # Leituras espaciais que discordam no mesmo frame são ambíguas. A missão
-    # continua no Pure Pursuit, pois não existe lado seguro para o pivot.
-    if len(directions) != 1:
-        return result
-
-    direction = candidates[0]["corner90_direction"]
-    strongest = max(
-        float(observation.get("black_line_geometry_source_strength", 0.0))
-        for observation in candidates
-    )
-    confidence = 0.90 if len(candidates) >= 2 else strongest
-    best_angle = max(
-        candidates,
-        key=lambda observation: abs(float(observation.get("corner90_angle", 0.0))),
-    )
-    angle_degrees = float(best_angle.get("corner90_angle", 0.0))
-    candidate = confidence >= BLACK_LINE_GEOMETRY_MIN_CONFIDENCE
-    return {
-        "candidate": candidate,
-        "direction": direction if candidate else "NONE",
-        "angle_degrees": angle_degrees if candidate else 0.0,
-        "confidence": confidence,
-        "state": "candidate" if candidate else "idle",
-    }
-
-
-def analyze_visual_trajectory(
+def analyze_green_handoff_trajectory(
     line_candidate_mask,
     roi_start_y,
     structural_end_y,
     frame_center_x,
     near_valid,
     near_x,
-    near_error=0.0,
-    structural_mask=None,
-    near_center=None,
-    near_observation=None,
-    far_observation=None,
     fit_source_mask=None,
     trajectory_source="candidate",
 ):
-    """Calcula fit, lookahead e curvatura em coordenadas visuais normalizadas."""
+    """Mantém o fit usado exclusivamente no handoff da manobra verde."""
 
     result = empty_trajectory_result()
     result["trajectory_source"] = trajectory_source
     if not near_valid:
         return result
 
-    # A recuperação estrutural foi aceita localmente na NEAR. Ela pode alimentar
-    # somente o fit: a geometria de Corner90 continua baseada na máscara de
-    # candidatos original para não mudar seus critérios de detecção.
     if fit_source_mask is None:
         fit_source_mask = line_candidate_mask
     samples = extract_trajectory_samples(
@@ -2955,32 +2225,6 @@ def analyze_visual_trajectory(
         )
         for point_x, point_y in samples
     ]
-    if trajectory_source == "candidate":
-        geometry_corner = analyze_corner90_geometry(normalized_points, near_error)
-        component_corner = analyze_corner90_component(
-            structural_mask,
-            roi_start_y,
-            near_center,
-            near_error,
-        )
-        band_corner = analyze_corner90_bands(
-            near_observation or {},
-            far_observation or {},
-            line_candidate_mask.shape[1],
-        )
-        black_line_geometry = combine_black_line_geometry(
-            geometry_corner,
-            component_corner,
-            band_corner,
-        )
-        result.update({
-            "corner90_candidate": black_line_geometry["candidate"],
-            "corner90_direction": black_line_geometry["direction"],
-            "corner90_angle": black_line_geometry["angle_degrees"],
-            "black_line_geometry_confidence": black_line_geometry["confidence"],
-            "black_line_geometry_state": black_line_geometry["state"],
-        })
-
     for degree, mode in ((2, "quadratic"), (1, "linear_fallback")):
         fit = fit_trajectory_polynomial(normalized_points, degree)
         if fit is None:
@@ -3057,12 +2301,6 @@ def analyze_visual_trajectory(
             "curvature": float(curvature),
             "fit_points": inlier_points,
         })
-        result["corner90_exit_alignment"] = corner90_visual_handoff_ready(
-            result["corner90_candidate"],
-            near_valid,
-            near_error,
-            result,
-        )
         return result
 
     return result
@@ -4861,50 +4099,10 @@ def detect_green_marker_action(green_contours, selected_black_mask):
     )["action"]
 
 
-def calculate_green_guidance_preview(
-    selected_black_mask,
-    interpretation,
-    vision_profile,
-):
-    """Desloca o alvo lateral e reutiliza o controlador normal do segue-linha."""
-
-    if interpretation not in ("ESQUERDA", "DIREITA"):
-        return None
-    upper_half = selected_black_mask[: selected_black_mask.shape[0] // 2, :]
-    _active_y, active_x = np.nonzero(upper_half)
-    if active_x.size == 0:
-        return None
-
-    frame_width = selected_black_mask.shape[1]
-    frame_center_x = frame_width / 2.0
-    offset_px = frame_width * GREEN_GUIDANCE_TARGET_OFFSET_RATIO
-    # A câmera entrega a geometria corretamente orientada para a detecção, mas
-    # o teste físico mostrou que a polaridade aplicada aos motores ficou
-    # invertida somente nas ações verdes. Mantemos a classificação do código-
-    # modelo e espelhamos aqui apenas o alvo usado pela orientação especial.
-    if interpretation == "ESQUERDA":
-        model_target_x = min(
-            float(np.min(active_x)) + offset_px,
-            frame_center_x,
-        )
-    else:
-        model_target_x = max(
-            float(np.max(active_x)) - offset_px,
-            frame_center_x,
-        )
-    target_x = 2.0 * frame_center_x - model_target_x
-    target_error = (target_x - frame_center_x) / frame_center_x
-    return calculate_control_preview(
-        vision_profile,
-        True,
-        target_error,
-    )
-
-
 def scale_green_approach_preview(control_preview):
     """Reduz a aproximação sem publicar potência abaixo do piso mecânico."""
 
-    guidance_error, control_error, correction, left_preview, right_preview = (
+    reference_error, control_error, correction, left_preview, right_preview = (
         control_preview
     )
     scaled_left = left_preview * GREEN_APPROACH_SPEED_RATIO
@@ -4926,12 +4124,23 @@ def scale_green_approach_preview(control_preview):
         ) if scaled_right != 0.0 else 0.0
 
     return (
-        guidance_error,
+        reference_error,
         control_error,
         correction * GREEN_APPROACH_SPEED_RATIO,
         scaled_left,
         scaled_right,
     )
+
+
+def calculate_line_follower_command(processed_line_mask, green_detection_result):
+    """Ponto de extensão do seguidor normal; zero mantém o robô parado."""
+
+    # TODO: implement virtual sensors and control
+    _ = processed_line_mask, green_detection_result
+    return {
+        "left_power": 0.0,
+        "right_power": 0.0,
+    }
 
 
 def interpret_actionable_green_candidates(candidates):
@@ -5323,325 +4532,15 @@ def save_frame(jpeg):
     os.replace(TEMP_FRAME_PATH, FRAME_PATH)
 
 
-def trajectory_status_fields(trajectory):
-    """Valida a telemetria do visual pursuit antes de escrever qualquer JSON."""
-
-    trajectory = trajectory or empty_trajectory_result()
-    try:
-        fit_degree = int(trajectory.get("fit_degree", 0))
-        fit_sample_count = int(trajectory.get("fit_sample_count", 0))
-        trajectory_sample_count = int(
-            trajectory.get("trajectory_sample_count", 0)
-        )
-        numeric_values = {
-            "fitA": float(trajectory.get("fit_a", 0.0)),
-            "fitB": float(trajectory.get("fit_b", 0.0)),
-            "fitC": float(trajectory.get("fit_c", 0.0)),
-            "fitQuality": float(trajectory.get("fit_quality", 0.0)),
-            "fitRmsError": float(trajectory.get("fit_rms_error", 0.0)),
-            "lookaheadX": float(trajectory.get("lookahead_x", 0.0)),
-            "lookaheadY": float(trajectory.get("lookahead_y", 0.0)),
-            "curvature": float(trajectory.get("curvature", 0.0)),
-            "corner90Angle": float(trajectory.get("corner90_angle", 0.0)),
-        }
-        values_finite = all(
-            math.isfinite(value) for value in numeric_values.values()
-        )
-    except (TypeError, ValueError):
-        fit_degree = 0
-        fit_sample_count = 0
-        trajectory_sample_count = 0
-        numeric_values = {}
-        values_finite = False
-
-    corner_angle = numeric_values["corner90Angle"] if values_finite else 0.0
-    trajectory_valid = bool(
-        trajectory.get("trajectory_valid", False)
-        and values_finite
-        and fit_degree in (1, 2)
-        and fit_sample_count >= LINEAR_FIT_MIN_SAMPLES
-        and trajectory_sample_count >= fit_sample_count
-        and 0.0 <= numeric_values["fitQuality"] <= 1.0
-        and 0.0 <= numeric_values["fitRmsError"] <= TRAJECTORY_MAX_RMS_ERROR
-        and numeric_values["lookaheadY"] >= VISUAL_PURSUIT_MIN_LOOKAHEAD
-    )
-    if not trajectory_valid:
-        fit_degree = 0
-        fit_sample_count = 0
-        numeric_values = {
-            "fitA": 0.0,
-            "fitB": 0.0,
-            "fitC": 0.0,
-            "fitQuality": 0.0,
-            "fitRmsError": 0.0,
-            "lookaheadX": 0.0,
-            "lookaheadY": 0.0,
-            "curvature": 0.0,
-            # O fit pode ser inválido justamente em um cotovelo. Preserve o
-            # ângulo bruto para permitir depurar a decisão dedicada de Corner90.
-            "corner90Angle": corner_angle,
-        }
-
-    mode = str(trajectory.get("trajectory_mode", "fallback_far_near"))
-    if mode not in ("quadratic", "linear_fallback", "fallback_far_near"):
-        mode = "fallback_far_near"
-    if not trajectory_valid:
-        mode = "fallback_far_near"
-
-    corner_direction = str(trajectory.get("corner90_direction", "NONE"))
-    if corner_direction not in ("NONE", "LEFT", "RIGHT"):
-        corner_direction = "NONE"
-    try:
-        corner_confirm_frames = int(
-            trajectory.get("corner90_confirm_frames", 0)
-        )
-    except (TypeError, ValueError):
-        corner_confirm_frames = 0
-    corner_confirm_frames = max(
-        0,
-        min(CORNER90_CONFIRM_FRAMES, corner_confirm_frames),
-    )
-    corner_state = str(trajectory.get("corner90_state", "idle"))
-    if corner_state not in (
-        "idle",
-        "candidate",
-        "confirming",
-        "confirmed",
-        "pivoting",
-        "exit_aligned",
-        "rearming",
-    ):
-        corner_state = "idle"
-    if not -180.0 <= corner_angle <= 180.0:
-        corner_angle = 0.0
-    corner_candidate = bool(trajectory.get("corner90_candidate", False))
-    if not corner_candidate and corner_state == "idle":
-        corner_direction = "NONE"
-        corner_confirm_frames = 0
-
-    try:
-        black_line_geometry_confidence = float(
-            trajectory.get("black_line_geometry_confidence", 0.0)
-        )
-    except (TypeError, ValueError):
-        black_line_geometry_confidence = 0.0
-    if not math.isfinite(black_line_geometry_confidence):
-        black_line_geometry_confidence = 0.0
-    black_line_geometry_confidence = max(
-        0.0,
-        min(1.0, black_line_geometry_confidence),
-    )
-    black_line_geometry_state = {
-        "confirming": "candidate",
-        "confirmed": "candidate",
-    }.get(corner_state, corner_state)
-
-    corner_confirmation_direction = str(
-        trajectory.get("corner90_confirmation_direction", "NONE")
-    )
-    if corner_confirmation_direction not in ("NONE", "LEFT", "RIGHT"):
-        corner_confirmation_direction = "NONE"
-    try:
-        corner_confirmation_angle = float(
-            trajectory.get("corner90_confirmation_angle", 0.0)
-        )
-    except (TypeError, ValueError):
-        corner_confirmation_angle = 0.0
-    if not -180.0 <= corner_confirmation_angle <= 180.0:
-        corner_confirmation_angle = 0.0
-    corner_confirmation_candidate = bool(
-        trajectory.get("corner90_confirmation_candidate", False)
-    )
-    if not corner_confirmation_candidate:
-        corner_confirmation_direction = "NONE"
-        corner_confirmation_angle = 0.0
-
-    trajectory_source = str(trajectory.get("trajectory_source", "candidate"))
-    if trajectory_source not in ("candidate", "structural_fallback"):
-        trajectory_source = "candidate"
-    # Os campos antigos permanecem no IPC para não quebrar o dashboard, mas a
-    # Missão Principal não usa mais um segundo pivot de curva extrema.
-    extreme_candidate = False
-    extreme_direction = "NONE"
-    extreme_curvature = 0.0
-    extreme_confirm_frames = 0
-    extreme_state = "idle"
-
-    return {
-        "trajectoryValid": trajectory_valid,
-        "trajectoryMode": mode,
-        "trajectorySource": trajectory_source,
-        "fitDegree": fit_degree,
-        **numeric_values,
-        "fitSampleCount": fit_sample_count,
-        "trajectorySampleCount": max(0, trajectory_sample_count),
-        "blackLineGeometryCandidate": corner_candidate,
-        "blackLineGeometryDirection": corner_direction,
-        "blackLineGeometryAngleDegrees": corner_angle,
-        "blackLineGeometryConfidence": black_line_geometry_confidence,
-        "blackLineGeometryState": black_line_geometry_state,
-        "blackLineGeometryExitAlignment": bool(
-            trajectory.get("corner90_exit_alignment", False)
-        ),
-        "extremeCurveCandidate": extreme_candidate,
-        "extremeCurveDirection": extreme_direction,
-        "extremeCurveCurvature": extreme_curvature,
-        "extremeCurveConfirmFrames": extreme_confirm_frames,
-        "extremeCurveState": extreme_state,
-    }
-
-
 def save_line_status(
-    near_valid,
-    near_x,
-    near_error,
-    far_valid,
-    far_x,
-    far_error,
-    lateral_error,
-    heading_error,
-    adaptive_preview,
-    preview_error,
-    p_term,
-    filtered_derivative,
-    d_term,
-    control_error,
-    correction,
-    left_preview,
-    right_preview,
-    gap_candidate,
-    gap_alignment_valid,
-    gap_alignment_error,
-    gap_return_valid,
-    gap_return_error,
+    line_follower_command,
+    green_maneuver,
     line_timestamp,
     line_sequence,
-    green_status=None,
-    trajectory=None,
-    target_correction=None,
-    applied_correction=None,
-    steer_rate_used=0.0,
+    green_status,
     specular_repair_status=None,
 ):
-    """Publica em memória compartilhada o resultado visual já calculado."""
-
-    try:
-        near_x = float(near_x) if near_valid else 0.0
-        near_error = float(near_error) if near_valid else 0.0
-        far_x = float(far_x) if far_valid else 0.0
-        far_error = float(far_error) if far_valid else 0.0
-    except (TypeError, ValueError):
-        near_valid = False
-        far_valid = False
-        near_x = 0.0
-        near_error = 0.0
-        far_x = 0.0
-        far_error = 0.0
-
-    near_valid = bool(
-        near_valid
-        and math.isfinite(near_x)
-        and math.isfinite(near_error)
-        and -1.0 <= near_error <= 1.0
-    )
-    far_valid = bool(
-        far_valid
-        and math.isfinite(far_x)
-        and math.isfinite(far_error)
-        and -1.0 <= far_error <= 1.0
-    )
-    if not near_valid:
-        near_x = 0.0
-        near_error = 0.0
-    if not far_valid:
-        far_x = 0.0
-        far_error = 0.0
-
-    try:
-        lateral_error = float(lateral_error)
-        heading_error = float(heading_error)
-        adaptive_preview = float(adaptive_preview)
-        preview_error = float(preview_error)
-        p_term = float(p_term)
-        filtered_derivative = float(filtered_derivative)
-        d_term = float(d_term)
-        control_error = float(control_error)
-        correction = float(correction)
-        target_correction = (
-            correction if target_correction is None else float(target_correction)
-        )
-        applied_correction = (
-            correction if applied_correction is None else float(applied_correction)
-        )
-        steer_rate_used = float(steer_rate_used)
-        left_preview = float(left_preview)
-        right_preview = float(right_preview)
-        control_values_valid = all(
-            math.isfinite(value)
-            for value in (
-                lateral_error,
-                heading_error,
-                adaptive_preview,
-                preview_error,
-                p_term,
-                filtered_derivative,
-                d_term,
-                control_error,
-                correction,
-                target_correction,
-                applied_correction,
-                steer_rate_used,
-                left_preview,
-                right_preview,
-            )
-        )
-    except (TypeError, ValueError):
-        control_values_valid = False
-    if not (control_values_valid and (near_valid or far_valid)):
-        lateral_error = 0.0
-        heading_error = 0.0
-        adaptive_preview = PREVIEW_MIN
-        preview_error = 0.0
-        p_term = 0.0
-        filtered_derivative = 0.0
-        d_term = 0.0
-        control_error = 0.0
-        correction = 0.0
-        target_correction = 0.0
-        applied_correction = 0.0
-        steer_rate_used = 0.0
-        left_preview = 0.0
-        right_preview = 0.0
-    if not near_valid:
-        lateral_error = 0.0
-    if not (near_valid and far_valid):
-        heading_error = 0.0
-        preview_error = 0.0
-
-    # O gap nasce do componente conectado à base da imagem e continua válido
-    # mesmo quando a banda NEAR não contém linha.
-    gap_candidate = bool(gap_candidate)
-    try:
-        gap_alignment_error = float(gap_alignment_error)
-        gap_alignment_finite = math.isfinite(gap_alignment_error)
-    except (TypeError, ValueError):
-        gap_alignment_finite = False
-    gap_alignment_valid = bool(
-        gap_candidate and gap_alignment_valid and gap_alignment_finite
-    )
-    if not gap_alignment_valid:
-        gap_alignment_error = 0.0
-
-    try:
-        gap_return_error = float(gap_return_error)
-        gap_return_finite = math.isfinite(gap_return_error)
-    except (TypeError, ValueError):
-        gap_return_finite = False
-    gap_return_valid = bool(
-        gap_candidate and gap_return_valid and gap_return_finite
-    )
-    if not gap_return_valid:
-        gap_return_error = 0.0
+    """Publica somente a interface normal e os dados exigidos pelo verde."""
 
     try:
         line_timestamp = float(line_timestamp)
@@ -5654,55 +4553,63 @@ def save_line_status(
         ):
             raise ValueError("lineSequence inválido")
 
+        normal_left = float(line_follower_command["left_power"])
+        normal_right = float(line_follower_command["right_power"])
+        green_near_error = float(green_maneuver["near_error"])
+        green_far_error = float(green_maneuver["far_error"])
+        green_correction = float(green_maneuver["correction"])
+        green_left = float(green_maneuver["left_power"])
+        green_right = float(green_maneuver["right_power"])
+        numeric_values = (
+            normal_left,
+            normal_right,
+            green_near_error,
+            green_far_error,
+            green_correction,
+            green_left,
+            green_right,
+        )
+        if not all(
+            math.isfinite(value) and -1.0 <= value <= 1.0
+            for value in numeric_values
+        ):
+            raise ValueError("Comando visual fora da faixa normalizada")
+
         repair_status = specular_repair_status or {}
-        repaired_pixels = max(0, int(repair_status.get(
-            "specularRepairPixels", 0)))
-        repaired_components = max(0, int(repair_status.get(
-            "specularRepairComponents", 0)))
         line_status = {
-            "nearValid": near_valid,
-            "nearX": near_x,
-            "nearError": near_error,
-            "farValid": far_valid,
-            "farX": far_x,
-            "farError": far_error,
-            "lateralError": lateral_error,
-            "headingError": heading_error,
-            "adaptivePreview": adaptive_preview,
-            "previewError": preview_error,
-            "pTerm": p_term,
-            "filteredDerivative": filtered_derivative,
-            "dTerm": d_term,
-            "controlError": control_error,
-            "rawControlError": control_error,
-            "preview": adaptive_preview,
-            "kControl": K_CONTROL,
-            "kNear": K_CONTROL * (1.0 - adaptive_preview),
-            "kFar": K_CONTROL * adaptive_preview,
-            "correction": correction,
-            "finalCorrection": correction,
-            "targetCorrection": target_correction,
-            "appliedCorrection": applied_correction,
-            "steerRateUsed": steer_rate_used,
-            "leftPreview": left_preview,
-            "rightPreview": right_preview,
-            "gapCandidate": gap_candidate,
-            "gapAlignmentValid": gap_alignment_valid,
-            "gapAlignmentError": gap_alignment_error,
-            "gapReturnValid": gap_return_valid,
-            "gapReturnError": gap_return_error,
+            "lineFollowerLeftPower": normal_left,
+            "lineFollowerRightPower": normal_right,
+            "greenManeuverNearValid": bool(green_maneuver["near_valid"]),
+            "greenManeuverFarValid": bool(green_maneuver["far_valid"]),
+            "greenManeuverTrajectoryValid": bool(
+                green_maneuver["trajectory_valid"]
+            ),
+            "greenManeuverGapCandidate": bool(
+                green_maneuver["gap_candidate"]
+            ),
+            "greenManeuverNearError": green_near_error,
+            "greenManeuverFarError": green_far_error,
+            "greenManeuverCorrection": green_correction,
+            "greenManeuverLeftPower": green_left,
+            "greenManeuverRightPower": green_right,
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
-            "specularRepairPixels": repaired_pixels,
-            "specularRepairComponents": repaired_components,
+            "specularRepairPixels": max(
+                0, int(repair_status.get("specularRepairPixels", 0))
+            ),
+            "specularRepairComponents": max(
+                0, int(repair_status.get("specularRepairComponents", 0))
+            ),
         }
-        line_status.update(trajectory_status_fields(trajectory))
-        line_status.update(green_status or empty_green_status())
+        line_status.update(green_status)
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
         os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
-    except (OSError, TypeError, ValueError) as error:
-        print(f"Falha ao publicar telemetria rápida da linha: {error}", flush=True)
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        print(
+            f"Falha ao publicar telemetria rápida da linha: {error}",
+            flush=True,
+        )
 
 
 def save_status(
@@ -5712,125 +4619,12 @@ def save_status(
     camera_format="",
     active=True,
     error_message="",
-    near_valid=False,
-    near_x=0.0,
-    near_error=0.0,
-    near_area=0.0,
-    near_height_px=0,
-    far_valid=False,
-    far_x=0.0,
-    far_error=0.0,
-    far_area=0.0,
-    far_height_px=0,
-    lateral_error=0.0,
-    heading_error=0.0,
-    adaptive_preview=PREVIEW_MIN,
-    preview_error=0.0,
-    p_term=0.0,
-    filtered_derivative=0.0,
-    d_term=0.0,
-    control_error=0.0,
-    correction=0.0,
-    left_preview=0.0,
-    right_preview=0.0,
-    gap_candidate=False,
-    gap_alignment_valid=False,
-    gap_alignment_error=0.0,
-    gap_return_valid=False,
-    gap_return_error=0.0,
     line_timestamp=0.0,
     line_sequence=0,
-    trajectory=None,
-    target_correction=None,
-    applied_correction=None,
-    steer_rate_used=0.0,
     specular_repair_status=None,
+    green_status=None,
 ):
-    """Publica saúde da câmera e a telemetria visual já calculada."""
-
-    requested_near_valid = bool(near_valid)
-    requested_far_valid = bool(far_valid)
-    try:
-        near_x = float(near_x)
-        near_error = float(near_error)
-        near_area = float(near_area)
-        near_measurement_valid = (
-            math.isfinite(near_x)
-            and math.isfinite(near_error)
-            and -1.0 <= near_error <= 1.0
-            and math.isfinite(near_area)
-            and near_area >= 0.0
-        )
-    except (TypeError, ValueError):
-        near_measurement_valid = False
-    try:
-        far_x = float(far_x)
-        far_error = float(far_error)
-        far_area = float(far_area)
-        far_measurement_valid = (
-            math.isfinite(far_x)
-            and math.isfinite(far_error)
-            and -1.0 <= far_error <= 1.0
-            and math.isfinite(far_area)
-            and far_area >= 0.0
-        )
-    except (TypeError, ValueError):
-        far_measurement_valid = False
-    try:
-        lateral_error = float(lateral_error)
-        heading_error = float(heading_error)
-        adaptive_preview = float(adaptive_preview)
-        preview_error = float(preview_error)
-        p_term = float(p_term)
-        filtered_derivative = float(filtered_derivative)
-        d_term = float(d_term)
-        control_error = float(control_error)
-        correction = float(correction)
-        target_correction = (
-            correction if target_correction is None else float(target_correction)
-        )
-        applied_correction = (
-            correction if applied_correction is None else float(applied_correction)
-        )
-        steer_rate_used = float(steer_rate_used)
-        left_preview = float(left_preview)
-        right_preview = float(right_preview)
-        control_values_finite = all(
-            math.isfinite(value)
-            for value in (
-                lateral_error,
-                heading_error,
-                adaptive_preview,
-                preview_error,
-                p_term,
-                filtered_derivative,
-                d_term,
-                control_error,
-                correction,
-                target_correction,
-                applied_correction,
-                steer_rate_used,
-                left_preview,
-                right_preview,
-            )
-        )
-    except (TypeError, ValueError):
-        control_values_finite = False
-
-    near_height_valid = (
-        isinstance(near_height_px, int)
-        and not isinstance(near_height_px, bool)
-        and near_height_px >= 0
-    )
-    if not near_height_valid:
-        near_height_px = 0
-    far_height_valid = (
-        isinstance(far_height_px, int)
-        and not isinstance(far_height_px, bool)
-        and far_height_px >= 0
-    )
-    if not far_height_valid:
-        far_height_px = 0
+    """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
     try:
         line_timestamp = float(line_timestamp)
@@ -5839,76 +4633,13 @@ def save_status(
         )
     except (TypeError, ValueError):
         line_timestamp_valid = False
+        line_timestamp = 0.0
 
     line_sequence_valid = (
         isinstance(line_sequence, int)
         and not isinstance(line_sequence, bool)
         and line_sequence >= 0
     )
-    near_valid = (
-        requested_near_valid
-        and near_measurement_valid
-        and line_timestamp_valid
-        and line_sequence_valid
-    )
-    far_valid = (
-        requested_far_valid
-        and far_measurement_valid
-        and line_timestamp_valid
-        and line_sequence_valid
-    )
-    if not near_valid:
-        near_x = 0.0
-        near_error = 0.0
-        near_area = 0.0
-        lateral_error = 0.0
-    if not far_valid:
-        far_x = 0.0
-        far_error = 0.0
-        far_area = 0.0
-    if not (near_valid and far_valid):
-        heading_error = 0.0
-        preview_error = 0.0
-    if not (control_values_finite and (near_valid or far_valid)):
-        lateral_error = 0.0
-        heading_error = 0.0
-        adaptive_preview = PREVIEW_MIN
-        preview_error = 0.0
-        p_term = 0.0
-        filtered_derivative = 0.0
-        d_term = 0.0
-        control_error = 0.0
-        correction = 0.0
-        target_correction = 0.0
-        applied_correction = 0.0
-        steer_rate_used = 0.0
-        left_preview = 0.0
-        right_preview = 0.0
-    # A ausência da linha na NEAR faz parte do cenário normal de um gap.
-    gap_candidate = bool(gap_candidate)
-    try:
-        gap_alignment_error = float(gap_alignment_error)
-        gap_alignment_finite = math.isfinite(gap_alignment_error)
-    except (TypeError, ValueError):
-        gap_alignment_finite = False
-    gap_alignment_valid = bool(
-        gap_candidate and gap_alignment_valid and gap_alignment_finite
-    )
-    if not gap_alignment_valid:
-        gap_alignment_error = 0.0
-
-    try:
-        gap_return_error = float(gap_return_error)
-        gap_return_finite = math.isfinite(gap_return_error)
-    except (TypeError, ValueError):
-        gap_return_finite = False
-    gap_return_valid = bool(
-        gap_candidate and gap_return_valid and gap_return_finite
-    )
-    if not gap_return_valid:
-        gap_return_error = 0.0
-    if not line_timestamp_valid:
-        line_timestamp = 0.0
     if not line_sequence_valid:
         line_sequence = 0
 
@@ -5922,15 +4653,16 @@ def save_status(
         )
     )
     repair_status = specular_repair_status or {}
-    repaired_pixels = max(0, int(repair_status.get(
-        "specularRepairPixels", 0)))
-    repaired_components = max(0, int(repair_status.get(
-        "specularRepairComponents", 0)))
+    repaired_pixels = max(
+        0, int(repair_status.get("specularRepairPixels", 0))
+    )
+    repaired_components = max(
+        0, int(repair_status.get("specularRepairComponents", 0))
+    )
     status = {
         "fps": round(fps, 2),
         "active": active,
-        # O processo da câmera inferior só existe enquanto o gerenciador recebe
-        # a solicitação ativa. Isso permite ao dashboard confirmar o IPC de controle.
+        # O processo inferior só existe enquanto seu gerenciador está ativo.
         "enabled": camera_profile["role"] == "down",
         "state": "ONLINE" if active and line_ipc_fresh else (
             "FALHA" if error_message else "INICIANDO"
@@ -5958,163 +4690,16 @@ def save_status(
         "streamFps": MJPEG_STREAM_FPS,
         "error": error_message,
         "timestamp": time.time(),
-        "nearValid": near_valid,
-        "nearX": near_x,
-        "nearError": near_error,
-        "nearArea": near_area,
-        "nearHeightPx": near_height_px,
-        "farValid": far_valid,
-        "farX": far_x,
-        "farError": far_error,
-        "farArea": far_area,
-        "farHeightPx": far_height_px,
-        "lateralError": lateral_error,
-        "headingError": heading_error,
-        "adaptivePreview": adaptive_preview,
-        "previewError": preview_error,
-        "pTerm": p_term,
-        "filteredDerivative": filtered_derivative,
-        "dTerm": d_term,
-        "controlError": control_error,
-        "rawControlError": control_error,
-        "preview": adaptive_preview,
-        "kControl": K_CONTROL,
-        "kNear": K_CONTROL * (1.0 - adaptive_preview),
-        "kFar": K_CONTROL * adaptive_preview,
-        "correction": correction,
-        "finalCorrection": correction,
-        "targetCorrection": target_correction,
-        "appliedCorrection": applied_correction,
-        "steerRateUsed": steer_rate_used,
-        "leftPreview": left_preview,
-        "rightPreview": right_preview,
-        "gapCandidate": gap_candidate,
-        "gapAlignmentValid": gap_alignment_valid,
-        "gapAlignmentError": gap_alignment_error,
-        "gapReturnValid": gap_return_valid,
-        "gapReturnError": gap_return_error,
+        "lineFollowerImplemented": False,
         "lineTimestamp": line_timestamp,
         "lineSequence": line_sequence,
         "specularRepairPixels": repaired_pixels,
         "specularRepairComponents": repaired_components,
     }
-    status.update(trajectory_status_fields(trajectory))
+    status.update(green_status or empty_green_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
-
-
-class VisionRegressionProfiler:
-    """Publica uma amostra temporária somente durante o trace solicitado."""
-
-    # O processo C++ remove o gatilho quando grava 300 amostras correlacionadas.
-    # Este tempo é apenas uma proteção caso o consumidor deixe de responder.
-    MAX_DURATION_SECONDS = 60.0
-
-    def __init__(self):
-        self.active = False
-        self.started_at = 0.0
-        self.sample_count = 0
-        self.last_capture_time = None
-        self.last_processing_time = None
-        self.last_ipc_time = None
-        self.last_mjpeg_time = None
-        self.capture_hz = 0.0
-        self.processing_hz = 0.0
-        self.ipc_hz = 0.0
-        self.mjpeg_hz = 0.0
-
-    @staticmethod
-    def rate(previous_time, current_time):
-        """Calcula uma frequência instantânea somente entre eventos novos."""
-
-        if previous_time is None or current_time <= previous_time:
-            return 0.0
-        return 1.0 / (current_time - previous_time)
-
-    def begin_frame(self, current_time):
-        """Ativa o perfil somente enquanto o trigger existir."""
-
-        if not os.path.isfile(LINE_TRACE_REQUEST_PATH):
-            self.active = False
-            return False
-        if not self.active:
-            self.active = True
-            self.started_at = current_time
-            self.sample_count = 0
-            self.last_capture_time = None
-            self.last_processing_time = None
-            self.last_ipc_time = None
-            self.last_mjpeg_time = None
-            self.capture_hz = 0.0
-            self.processing_hz = 0.0
-            self.ipc_hz = 0.0
-            self.mjpeg_hz = 0.0
-        return True
-
-    def note_capture(self, current_time):
-        self.capture_hz = self.rate(self.last_capture_time, current_time)
-        self.last_capture_time = current_time
-
-    def note_ipc(self, current_time):
-        self.ipc_hz = self.rate(self.last_ipc_time, current_time)
-        self.last_ipc_time = current_time
-
-    def note_mjpeg(self, current_time):
-        self.mjpeg_hz = self.rate(self.last_mjpeg_time, current_time)
-        self.last_mjpeg_time = current_time
-
-    def publish_sample(
-        self,
-        line_sequence,
-        frame_timestamp,
-        timings,
-        green_raw,
-        green_confirmed,
-        completed_at,
-    ):
-        """Entrega ao processo C++ uma linha temporária do mesmo frame."""
-
-        self.processing_hz = self.rate(
-            self.last_processing_time, completed_at
-        )
-        self.last_processing_time = completed_at
-        row = (
-            int(line_sequence),
-            float(frame_timestamp),
-            self.capture_hz,
-            self.processing_hz,
-            self.ipc_hz,
-            self.mjpeg_hz,
-            timings.get("capture_ms", 0.0),
-            timings.get("line_detection_ms", 0.0),
-            timings.get("green_mask_ms", 0.0),
-            timings.get("green_contours_ms", 0.0),
-            timings.get("topology_ms", 0.0),
-            timings.get("green_processing_ms", 0.0),
-            timings.get("overlay_ms", 0.0),
-            timings.get("mjpeg_ms", 0.0),
-            timings.get("ipc_ms", 0.0),
-            timings.get("total_vision_ms", 0.0),
-            str(green_raw),
-            bool(green_confirmed),
-        )
-        with open(
-            TEMP_VISION_TRACE_SAMPLE_PATH,
-            "w",
-            encoding="utf-8",
-            newline="",
-        ) as sample_file:
-            csv.writer(sample_file).writerow(row)
-        os.replace(TEMP_VISION_TRACE_SAMPLE_PATH, VISION_TRACE_SAMPLE_PATH)
-
-        self.sample_count += 1
-        duration = completed_at - self.started_at
-        if duration >= self.MAX_DURATION_SECONDS:
-            try:
-                os.unlink(LINE_TRACE_REQUEST_PATH)
-            except FileNotFoundError:
-                pass
 
 
 def main():
@@ -6194,10 +4779,8 @@ def main():
         last_green_line_axis = {"valid": False}
         last_green_axis_seen_at = 0.0
         last_green_reference_line_width_px = 0.0
-        corner90_tracker = Corner90ConfirmationTracker()
-        near_derivative_filter = NearDerivativeFilter()
-        steering_slew_limiter = SteeringSlewRateLimiter()
-        vision_profiler = VisionRegressionProfiler()
+        near_derivative_filter = GreenManeuverDerivativeFilter()
+        steering_slew_limiter = GreenManeuverSlewRateLimiter()
         (
             green_experiment_mode,
             green_processing_enabled,
@@ -6216,9 +4799,7 @@ def main():
 
         while running:
             loop_started = time.perf_counter()
-            trace_active = vision_profiler.begin_frame(loop_started)
-            timings = {} if trace_active else None
-            capture_started = time.perf_counter() if trace_active else 0.0
+            timings = None
             green_capture_requested = os.path.isfile(GREEN_CAPTURE_REQUEST_PATH)
             green_capture_metadata = {}
             if green_capture_requested:
@@ -6232,13 +4813,6 @@ def main():
                     camera_request.release()
             else:
                 raw_frame = picam2.capture_array()
-            capture_completed = time.perf_counter()
-            if trace_active:
-                timings["capture_ms"] = (
-                    capture_completed - capture_started
-                ) * 1000.0
-                vision_profiler.note_capture(capture_completed)
-                line_detection_started = capture_completed
             # O frame capturado permanece intacto. Máscaras e decisões são
             # calculadas antes de criar a cópia exclusiva do dashboard.
             frame_height = raw_frame.shape[0]
@@ -6316,49 +4890,33 @@ def main():
                 else None
             )
             lateral_error = near_error if near_valid else 0.0
-            heading_error = (
-                calculate_heading_error(near_error, far_error)
-                if far_valid and near_valid
-                else 0.0
-            )
             filtered_near_derivative = near_derivative_filter.update(
                 near_valid,
                 lateral_error,
                 loop_started,
             )
-            control_terms = calculate_control_terms(
+            green_reference_error = calculate_green_maneuver_reference_error(
                 near_valid,
                 lateral_error,
                 far_valid,
                 far_error if far_valid else 0.0,
                 filtered_near_derivative,
             )
-            adaptive_preview = control_terms["adaptive_preview"]
-            preview_error = control_terms["preview_error"]
-            p_term = control_terms["p_term"]
-            filtered_near_derivative = control_terms["filtered_derivative"]
-            d_term = control_terms["d_term"]
             line_center_x = near_x if near_valid else far_x
             fit_source_mask = line_candidate_mask
             trajectory_source = "candidate"
             if near_observation["source"] == "structural_fallback":
-                # A banda local já rejeitou larguras grandes. Reaproveitar a
-                # máscara estrutural aqui recupera o fit sem afrouxar o filtro
-                # global nem tornar sombra uma linha de controle geral.
+                # A banda local já rejeitou larguras grandes. A máscara
+                # estrutural recupera somente a referência do handoff verde.
                 fit_source_mask = structural_mask
                 trajectory_source = "structural_fallback"
-            trajectory = analyze_visual_trajectory(
+            trajectory = analyze_green_handoff_trajectory(
                 line_candidate_mask,
                 roi_start_y,
                 vision_geometry["structural_end_y"],
                 frame_half_width,
                 near_valid,
                 near_x if near_valid else None,
-                lateral_error,
-                structural_mask,
-                near_center,
-                near_observation,
-                far_observation,
                 fit_source_mask,
                 trajectory_source,
             )
@@ -6408,13 +4966,6 @@ def main():
             ):
                 green_line_axis = last_green_line_axis
                 green_occlusion_axis_active = True
-            if trace_active:
-                timings["line_detection_ms"] = (
-                    time.perf_counter() - line_detection_started
-                ) * 1000.0
-                timings["green_mask_ms"] = 0.0
-                timings["green_contours_ms"] = 0.0
-                timings["topology_ms"] = 0.0
             green_candidates = []
             green_rejected = []
             green_mask = np.zeros(
@@ -6464,18 +5015,11 @@ def main():
                         if reference_center is not None
                         else 0.0
                     )
-                    topology_started = (
-                        time.perf_counter() if trace_active else 0.0
-                    )
                     green_topology = analyze_line_topology(
                         line_candidate_mask,
                         green_line_axis,
                         reference_line_width_px,
                     )
-                    if trace_active:
-                        timings["topology_ms"] = (
-                            time.perf_counter() - topology_started
-                        ) * 1000.0
                 selected_black_mask = select_near_connected_black_mask(
                     line_candidate_mask,
                     green_mask,
@@ -6486,7 +5030,7 @@ def main():
                 # conectada a uma área grande, evitando que o robô siga sombra.
                 # Para o verde, porém, ainda é necessário medir o preto local
                 # encostado ao marcador. Essa máscara estrutural nunca chega ao
-                # Pure Pursuit, FAR/NEAR ou aos motores como linha de controle.
+                # seguidor normal nem aos motores como linha de controle.
                 green_association_mask = selected_black_mask
                 if not np.any(green_association_mask):
                     green_association_mask = structural_mask
@@ -6520,20 +5064,9 @@ def main():
             green_processing_ms = (
                 time.perf_counter() - green_processing_started
             ) * 1000.0
-            if trace_active:
-                timings["green_processing_ms"] = green_processing_ms
 
             frame_width = raw_frame.shape[1]
             frame_center_x = frame_width / 2.0
-            (
-                safe_half_width_px,
-                safe_left_x,
-                safe_right_x,
-            ) = resolve_horizontal_deadzone(
-                frame_width,
-                vision_profile,
-            )
-
             if trajectory["trajectory_valid"]:
                 (
                     control_error,
@@ -6541,32 +5074,30 @@ def main():
                     correction,
                     left_preview,
                     right_preview,
-                ) = calculate_visual_pursuit_preview(
+                ) = calculate_green_handoff_preview(
                     vision_profile,
                     trajectory["curvature"],
                 )
             else:
-                # Sem fit seguro, o comportamento FAR/NEAR validado continua
-                # responsável pelo comando e pelos fallbacks especiais.
+                # Sem fit seguro, a referência FAR/NEAR preserva as manobras
+                # verdes que dependem dela.
                 (
                     control_error,
                     steering_error,
                     correction,
                     left_preview,
                     right_preview,
-                ) = calculate_control_preview(
+                ) = calculate_green_reference_preview(
                     vision_profile,
                     near_valid,
                     lateral_error,
                     far_valid,
                     far_error if far_valid else 0.0,
                     filtered_near_derivative,
-                    control_terms,
+                    green_reference_error,
                 )
 
             target_correction = correction
-            applied_correction = correction
-            steer_rate_used = 0.0
             line_timestamp = time.time()
             line_sequence += 1
             green_raw_interpretation = green_interpretation["interpretation"]
@@ -6597,135 +5128,36 @@ def main():
                     right_preview,
                 ))
             # Uma direção verde confirmada é uma instrução para a Missão
-            # Principal. As prévias permanecem no Pure Pursuit para que, após
+            # Principal. As prévias permanecem no suporte verde para que, após
             # o giro de 45°, a rota nova não herde a orientação do marcador.
 
-            # O candidato bruto continua disponível durante a breve parada do
-            # C++. Fora dela, somente a margem rígida de entrada pode bloquear
-            # o tracking normal ou armar um novo Corner90.
-            trajectory["corner90_confirmation_candidate"] = bool(
-                trajectory["corner90_candidate"]
-            )
-            trajectory["corner90_confirmation_direction"] = str(
-                trajectory["corner90_direction"]
-            )
-            try:
-                confirmation_angle = float(
-                    trajectory.get("corner90_angle", 0.0)
-                )
-            except (TypeError, ValueError):
-                confirmation_angle = 0.0
-            trajectory["corner90_confirmation_angle"] = (
-                confirmation_angle
-                if math.isfinite(confirmation_angle) else 0.0
-            )
-            try:
-                confirmation_near_error = float(near_error)
-            except (TypeError, ValueError):
-                confirmation_near_error = None
-            # Uma geometria incompleta não pode derrubar a câmera nem armar
-            # cotovelo. O próximo frame fresco continua sendo processado.
-            if (confirmation_near_error is not None and
-                    math.isfinite(confirmation_near_error) and
-                    abs(confirmation_near_error) > CORNER90_MAX_CENTER_ERROR):
-                trajectory["corner90_candidate"] = False
-                trajectory["corner90_direction"] = "NONE"
-                trajectory["black_line_geometry_confidence"] = 0.0
-                trajectory["black_line_geometry_state"] = "idle"
-
-            corner90_tracker.update(
-                trajectory,
-                near_valid
-                and not gap_observation["candidate"]
-                and published_green_interpretation == "SEM_DECISAO",
-            )
-            if not trajectory["corner90_candidate"]:
-                trajectory["black_line_geometry_confidence"] = 0.0
-
-            normal_tracking = (
+            green_maneuver_tracking = (
                 (trajectory["trajectory_valid"] or near_valid or far_valid)
                 and not gap_observation["candidate"]
-                # O primeiro candidato do giro visual ainda precisa manter o
-                # Pure Pursuit. Somente a confirmação completa entrega o
-                # comando ao pivot no C++, sem introduzir uma freada oculta.
-                and trajectory["corner90_state"] != "confirmed"
             )
-            if normal_tracking:
-                if trajectory["corner90_state"] == "exit_aligned":
-                    # A Missão Principal acabou de confirmar a nova direção.
-                    # Não reutilizar correção acumulada antes do pivô evita
-                    # uma guinada residual ao devolver o controle contínuo.
-                    steering_slew_limiter.reset()
-                # O Pure Pursuit/FAR-NEAR calcula a correção-alvo acima. Este é
-                # o único ponto entre o clamp e o mixer dos motores: a imagem,
-                # o fit e os ganhos permanecem intocados.
+            if green_maneuver_tracking:
+                # Estes valores existem somente para conservar a aproximação e
+                # a readquisição da máquina de estados verde já validada.
                 target_correction = correction
-                applied_correction, steer_rate_used = steering_slew_limiter.update(
+                applied_correction, _ = steering_slew_limiter.update(
                     target_correction,
                     loop_started,
                 )
                 correction = applied_correction
                 if trajectory["trajectory_valid"]:
-                    left_preview, right_preview = mix_visual_pursuit_correction(
+                    left_preview, right_preview = mix_green_handoff_correction(
                         vision_profile,
                         applied_correction,
                     )
                 else:
-                    left_preview, right_preview = mix_fallback_correction(
+                    left_preview, right_preview = mix_green_reference_correction(
                         vision_profile,
                         applied_correction,
                     )
             else:
-                # Gap, verde, perda de linha e outros estados especiais não
-                # herdam uma correção atrasada do tracking normal.
+                # Estados especiais não herdam uma correção visual atrasada.
                 steering_slew_limiter.reset()
                 target_correction = correction
-                applied_correction = correction
-                steer_rate_used = 0.0
-
-            if not near_valid and not far_valid:
-                offset_px = None
-                preview_state = "LINHA INVALIDA"
-                preview_direction = "SEM COMANDO"
-            elif not near_valid:
-                offset_px = far_error * (frame_width / 2.0)
-                preview_state = "FALLBACK FAR"
-                preview_direction = (
-                    "DIREITA" if correction > 0.0
-                    else "ESQUERDA" if correction < 0.0
-                    else "RETO"
-                )
-            elif trajectory["trajectory_valid"] and steering_error == 0.0:
-                offset_px = lateral_error * (frame_width / 2.0)
-                preview_state = "VISUAL PURSUIT RETO"
-                preview_direction = "RETO"
-            elif trajectory["trajectory_valid"]:
-                offset_px = lateral_error * (frame_width / 2.0)
-                preview_state = (
-                    "VISUAL PURSUIT QUADRATIC"
-                    if trajectory["fit_degree"] == 2
-                    else "VISUAL PURSUIT LINEAR"
-                )
-                preview_direction = (
-                    "DIREITA" if correction > 0.0
-                    else "ESQUERDA" if correction < 0.0
-                    else "RETO"
-                )
-            elif steering_error == 0.0:
-                offset_px = lateral_error * (frame_width / 2.0)
-                preview_state = "RETO SEGURO"
-                preview_direction = "RETO"
-            else:
-                offset_px = lateral_error * (frame_width / 2.0)
-                if correction > 0.0:
-                    preview_state = "CORRIGINDO DIREITA"
-                    preview_direction = "DIREITA"
-                elif correction < 0.0:
-                    preview_state = "CORRIGINDO ESQUERDA"
-                    preview_direction = "ESQUERDA"
-                else:
-                    preview_state = "RETO"
-                    preview_direction = "RETO"
 
             green_status = build_green_status(
                 green_candidates,
@@ -6755,47 +5187,32 @@ def main():
                     green_raw_interpretation
                     else "candidate"
                 )
-            ipc_started = time.perf_counter() if trace_active else 0.0
+            line_follower_command = calculate_line_follower_command(
+                line_candidate_mask,
+                green_status,
+            )
+            green_maneuver = {
+                "near_valid": near_valid,
+                "far_valid": far_valid,
+                "trajectory_valid": trajectory["trajectory_valid"],
+                "gap_candidate": gap_observation["candidate"],
+                "near_error": lateral_error if near_valid else 0.0,
+                "far_error": far_error if far_valid else 0.0,
+                "correction": target_correction,
+                "left_power": left_preview,
+                "right_power": right_preview,
+            }
             if line_ipc_enabled:
-                # Somente a CAM0/downward publica dados usados pelo segue-faixa.
+                # Somente a CAM0/downward publica dados usados pela missão.
                 # A câmera frontal nunca pode substituir silenciosamente essa fonte.
                 save_line_status(
-                    near_valid,
-                    near_x if near_valid else 0.0,
-                    lateral_error,
-                    far_valid,
-                    far_x if far_valid else 0.0,
-                    far_error if far_valid else 0.0,
-                    lateral_error,
-                    heading_error,
-                    adaptive_preview,
-                    preview_error,
-                    p_term,
-                    filtered_near_derivative,
-                    d_term,
-                    control_error,
-                    correction,
-                    left_preview,
-                    right_preview,
-                    gap_observation["candidate"],
-                    gap_observation["alignment_valid"],
-                    gap_observation["alignment_error"],
-                    gap_observation["return_valid"],
-                    gap_observation["return_error"],
+                    line_follower_command,
+                    green_maneuver,
                     line_timestamp,
                     line_sequence,
                     green_status,
-                    trajectory,
-                    target_correction=target_correction,
-                    applied_correction=applied_correction,
-                    steer_rate_used=steer_rate_used,
                     specular_repair_status=specular_repair_status,
                 )
-            if trace_active:
-                ipc_completed = time.perf_counter()
-                timings["ipc_ms"] = (ipc_completed - ipc_started) * 1000.0
-                if line_ipc_enabled:
-                    vision_profiler.note_ipc(ipc_completed)
 
             if green_capture_requested:
                 # A captura ocorre antes de qualquer desenho no frame e é
@@ -6832,8 +5249,6 @@ def main():
                     except FileNotFoundError:
                         pass
 
-            overlay_started = time.perf_counter() if trace_active else 0.0
-
             # A largura é medida em uma única altura fixa da near_band.
             # A estimativa em centímetros só é útil com a fita aproximadamente
             # longitudinal e nunca participa do cálculo de controle.
@@ -6853,7 +5268,6 @@ def main():
 
             line_left_x = None
             line_right_x = None
-            line_width_px = None
             if line_center_x is not None and line_runs:
                 nearest_run_distance = float("inf")
                 for run_left_x, run_right_x in line_runs:
@@ -6868,14 +5282,6 @@ def main():
                         nearest_run_distance = run_distance
                         line_left_x = run_left_x
                         line_right_x = run_right_x
-
-            px_per_cm_approx = None
-            offset_cm_approx = None
-            if line_left_x is not None and line_right_x is not None:
-                line_width_px = line_right_x - line_left_x + 1
-                px_per_cm_approx = line_width_px / REFERENCE_LINE_WIDTH_CM
-                if offset_px is not None and px_per_cm_approx > 0.0:
-                    offset_cm_approx = offset_px / px_per_cm_approx
 
             display_mode = get_display_mode()
             display_frame = create_display_frame(
@@ -6909,23 +5315,6 @@ def main():
                     cv2.LINE_AA,
                 )
 
-            # O preenchimento usa somente o recorte estreito da zona segura
-            # para reduzir cópias de imagem e preservar o FPS do stream.
-            safe_zone_debug = frame[
-                near_band_start_y:near_band_end_y,
-                safe_left_x:safe_right_x,
-            ]
-            safe_zone_green = safe_zone_debug.copy()
-            safe_zone_green[:] = (0, 255, 0)
-            cv2.addWeighted(
-                safe_zone_green,
-                0.20,
-                safe_zone_debug,
-                0.80,
-                0.0,
-                safe_zone_debug,
-            )
-
             # A linha amarela marca onde começam os 32,5% processados da imagem.
             cv2.line(
                 frame,
@@ -6934,8 +5323,8 @@ def main():
                 (0, 255, 255),
                 vision_profile["overlay_line_thickness"],
             )
-            # As bandas são apenas recortes da máscara já filtrada. FAR usa
-            # laranja e NEAR usa azul para deixar a antecipação visível.
+            # As bandas são recortes da máscara filtrada mantidos como apoio
+            # visual às manobras verdes. FAR usa laranja e NEAR usa azul.
             cv2.rectangle(
                 frame,
                 (0, far_band_start_y),
@@ -6961,12 +5350,6 @@ def main():
                     vision_profile["overlay_thin_line_thickness"],
                 )
 
-            if not near_valid:
-                safe_limit_color = (0, 0, 255)
-            elif abs(near_error) > vision_profile["near_deadzone_ratio"]:
-                safe_limit_color = (0, 255, 255)
-            else:
-                safe_limit_color = (0, 255, 0)
             cv2.line(
                 frame,
                 (int(round(frame_center_x)), far_band_start_y),
@@ -6974,15 +5357,6 @@ def main():
                 (255, 255, 0),
                 vision_profile["overlay_line_thickness"],
             )
-            for safe_limit_x in (safe_left_x, safe_right_x):
-                cv2.line(
-                    frame,
-                    (safe_limit_x, near_band_start_y),
-                    (safe_limit_x, near_band_end_y - 1),
-                    safe_limit_color,
-                    vision_profile["overlay_line_thickness"],
-                )
-
             cv2.line(
                 frame,
                 (0, measurement_y_frame),
@@ -7264,54 +5638,6 @@ def main():
                             cv2.LINE_AA,
                         )
 
-            if display_mode != DISPLAY_MODE_GREEN and near_valid:
-                arrow_start = (
-                    int(round(
-                        frame_width
-                        * vision_profile["overlay_arrow_start_ratio"][0]
-                    )),
-                    int(round(
-                        frame_height
-                        * vision_profile["overlay_arrow_start_ratio"][1]
-                    )),
-                )
-                arrow_horizontal_length = int(round(
-                    frame_width * vision_profile["overlay_arrow_horizontal_ratio"]
-                ))
-                arrow_vertical_length = int(round(
-                    frame_height * vision_profile["overlay_arrow_vertical_ratio"]
-                ))
-                if preview_direction == "ESQUERDA":
-                    arrow_end = (
-                        arrow_start[0] - arrow_horizontal_length,
-                        arrow_start[1],
-                    )
-                elif preview_direction == "DIREITA":
-                    arrow_end = (
-                        arrow_start[0] + arrow_horizontal_length,
-                        arrow_start[1],
-                    )
-                else:
-                    arrow_end = (
-                        arrow_start[0],
-                        arrow_start[1] - arrow_vertical_length,
-                    )
-                cv2.arrowedLine(
-                    frame,
-                    arrow_start,
-                    arrow_end,
-                    (0, 255, 255),
-                    vision_profile["overlay_arrow_thickness"],
-                    cv2.LINE_AA,
-                    tipLength=0.30,
-                )
-
-            overlay_completed = time.perf_counter()
-            if trace_active:
-                timings["overlay_ms"] = (
-                    overlay_completed - overlay_started
-                ) * 1000.0
-
             now = time.monotonic()
             elapsed = now - previous_time
             previous_time = now
@@ -7325,22 +5651,15 @@ def main():
 
             stream_due = now - last_stream_time >= 1.0 / MJPEG_STREAM_FPS
             snapshot_due = now - last_snapshot_time >= 1.0 / SNAPSHOT_FRAME_FPS
-            mjpeg_started = time.perf_counter() if trace_active else 0.0
             if stream_due or snapshot_due:
                 jpeg = encode_frame(frame)
                 if jpeg is not None:
                     if stream_due:
                         publish_stream_frame(jpeg)
                         last_stream_time = now
-                        if trace_active:
-                            vision_profiler.note_mjpeg(time.perf_counter())
                     if snapshot_due:
                         save_frame(jpeg)
                         last_snapshot_time = now
-            if trace_active:
-                timings["mjpeg_ms"] = (
-                    time.perf_counter() - mjpeg_started
-                ) * 1000.0
 
             if now - last_status_time >= 1.0 / STATUS_FPS:
                 save_status(
@@ -7348,60 +5667,12 @@ def main():
                     camera_profile,
                     camera_details,
                     camera_format,
-                    near_valid=near_valid,
-                    near_x=near_x if near_valid else 0.0,
-                    near_error=lateral_error,
-                    near_area=near_contour_area,
-                    near_height_px=near_band_height_px,
-                    far_valid=far_valid,
-                    far_x=far_x if far_valid else 0.0,
-                    far_error=far_error if far_valid else 0.0,
-                    far_area=far_contour_area,
-                    far_height_px=far_band_height_px,
-                    lateral_error=lateral_error,
-                    heading_error=heading_error,
-                    adaptive_preview=adaptive_preview,
-                    preview_error=preview_error,
-                    p_term=p_term,
-                    filtered_derivative=filtered_near_derivative,
-                    d_term=d_term,
-                    control_error=control_error,
-                    correction=correction,
-                    left_preview=left_preview,
-                    right_preview=right_preview,
-                    gap_candidate=gap_observation["candidate"],
-                    gap_alignment_valid=gap_observation["alignment_valid"],
-                    gap_alignment_error=gap_observation["alignment_error"],
-                    gap_return_valid=gap_observation["return_valid"],
-                    gap_return_error=gap_observation["return_error"],
                     line_timestamp=line_timestamp,
                     line_sequence=line_sequence,
-                    trajectory=trajectory,
-                    target_correction=target_correction,
-                    applied_correction=applied_correction,
-                    steer_rate_used=steer_rate_used,
                     specular_repair_status=specular_repair_status,
+                    green_status=green_status,
                 )
                 last_status_time = now
-            if trace_active:
-                profiling_completed = time.perf_counter()
-                timings["total_vision_ms"] = (
-                    profiling_completed - loop_started
-                ) * 1000.0
-                try:
-                    vision_profiler.publish_sample(
-                        line_sequence,
-                        line_timestamp,
-                        timings,
-                        green_raw_interpretation,
-                        green_tracker_result[1],
-                        profiling_completed,
-                    )
-                except (OSError, TypeError, ValueError) as error:
-                    print(
-                        f"Falha ao publicar amostra do trace visual: {error}",
-                        flush=True,
-                    )
     except Exception as error:
         error_message = f"Camera script failed: {error}"
         print(error_message, flush=True)

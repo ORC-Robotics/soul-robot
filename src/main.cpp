@@ -2,7 +2,6 @@
 #include "obr/camera_monitor.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
-#include "obr/line_regression_trace.h"
 #include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
@@ -59,8 +58,7 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
-    return cameraReady && cameraLineSnapshot.sourceFresh &&
-           cameraLineSnapshot.nearValid;
+    return cameraReady && cameraLineSnapshot.sourceFresh;
 }
 }
 
@@ -75,7 +73,6 @@ int main()
     CameraMonitor cameraMonitor;
     MissionController missionController;
     MotorController motors(esp32);
-    LineRegressionTrace lineRegressionTrace;
     StatusLed readyLed(config::kRaspberryReadyLedPin);
     DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
 
@@ -126,43 +123,14 @@ int main()
             // aplicadas separadamente pela Missão Principal.
             std::cout << std::boolalpha
                       << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
-                      << " nearValid=" << cameraLineSnapshot.nearValid
-                      << " nearX=" << cameraLineSnapshot.nearX
-                      << " farValid=" << cameraLineSnapshot.farValid
-                      << " farX=" << cameraLineSnapshot.farX
                       << " lineSequence=" << cameraLineSnapshot.lineSequence
                       << " ageMs=" << cameraLineSnapshot.ageMs
-                      << " nearError=" << cameraLineSnapshot.nearError
-                      << " farError=" << cameraLineSnapshot.farError
-                      << " lateralError=" << cameraLineSnapshot.lateralError
-                      << " headingError=" << cameraLineSnapshot.headingError
-                      << " trajectoryValid="
-                      << cameraLineSnapshot.trajectoryValid
-                      << " fitA=" << cameraLineSnapshot.fitA
-                      << " fitB=" << cameraLineSnapshot.fitB
-                      << " fitC=" << cameraLineSnapshot.fitC
-                      << " fitQuality=" << cameraLineSnapshot.fitQuality
-                      << " fitRmsError=" << cameraLineSnapshot.fitRmsError
-                      << " fitSampleCount="
-                      << cameraLineSnapshot.fitSampleCount
-                      << " lookaheadX=" << cameraLineSnapshot.lookaheadX
-                      << " lookaheadY=" << cameraLineSnapshot.lookaheadY
-                      << " curvature=" << cameraLineSnapshot.curvature
-                      << " adaptivePreview="
-                      << cameraLineSnapshot.adaptivePreview
-                      << " previewError=" << cameraLineSnapshot.previewError
-                      << " pTerm=" << cameraLineSnapshot.pTerm
-                      << " filteredDerivative="
-                      << cameraLineSnapshot.filteredDerivative
-                      << " dTerm=" << cameraLineSnapshot.dTerm
-                      << " controlError=" << cameraLineSnapshot.controlError
-                      << " preview=" << cameraLineSnapshot.previewFactor
-                      << " kControl=" << cameraLineSnapshot.kControl
-                      << " kNear=" << cameraLineSnapshot.kNear
-                      << " kFar=" << cameraLineSnapshot.kFar
-                      << " correction=" << cameraLineSnapshot.correction
-                      << " leftPreview=" << cameraLineSnapshot.leftPreview
-                      << " rightPreview=" << cameraLineSnapshot.rightPreview
+                      << " greenConfirmed="
+                      << cameraLineSnapshot.greenConfirmed
+                      << " normalLeft="
+                      << cameraLineSnapshot.lineFollowerLeftPower
+                      << " normalRight="
+                      << cameraLineSnapshot.lineFollowerRightPower
                       << std::noboolalpha << std::endl;
             lastCameraLineDiagnosticTime = cameraLineDiagnosticTime;
         }
@@ -286,10 +254,6 @@ int main()
             }
         }
         motors.apply(robotSnapshot);
-        lineRegressionTrace.update(
-            cameraLineSnapshot,
-            robotSnapshot,
-            motors.synchronizationSnapshot());
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kMainLoopPeriodMs));
     }
 
