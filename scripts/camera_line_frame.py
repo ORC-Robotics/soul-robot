@@ -2030,14 +2030,14 @@ VIRTUAL_NEAR_Y1 = 0.83
 #              ├──────── C ────────┤
 #                           ├──────── R ────────┤ - isx art
 
-VIRTUAL_LEFT_X0 = 0.155
+VIRTUAL_LEFT_X0 = 0.04
 VIRTUAL_LEFT_X1 = 0.385
 
 VIRTUAL_CENTER_X0 = 0.385
 VIRTUAL_CENTER_X1 = 0.615
 
 VIRTUAL_RIGHT_X0 = 0.615
-VIRTUAL_RIGHT_X1 = 0.845
+VIRTUAL_RIGHT_X1 = 0.96
 def resolve_virtual_sensor_geometry(frame_shape):
     """
     Converte a geometria normalizada dos seis sensores
