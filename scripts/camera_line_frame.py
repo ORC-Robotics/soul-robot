@@ -52,6 +52,7 @@ SNAPSHOT_FRAME_FPS = 2
 STATUS_FPS = 5
 JPEG_QUALITY = 82
 CAMERA_PIXEL_FORMATS = ("RGB888",)
+VIRTUAL_ROW_MIN_ACTIVATION = 0.10
 
 # O nome RGB888 segue a convenção do libcamera. No array retornado pelo
 # Picamera2, cada pixel fica em ordem B, G, R, que é a ordem nativa do OpenCV.
@@ -241,6 +242,9 @@ SPECULAR_REPAIR_MAX_DIAMETER_PX = 12.0
 SPECULAR_REPAIR_MIN_VALUE = 180
 SPECULAR_REPAIR_MAX_SATURATION = 60
 
+VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
+VIRTUAL_HEADING_GAIN = 0.80
+
 GREEN_OBSERVATION_STATES = {
     "SEM_VERDE",
     "UM_CANDIDATO",
@@ -332,7 +336,7 @@ CAMERA_PROFILES = {
             # Uma linha ou cruzamento normal não deve ocupar mais de 30% da
             # máscara. Componentes maiores indicam sombra ou obstrução e
             # são rejeitados para o robô não seguir um falso contorno.
-            "full_line_max_area_ratio": 0.30,
+            "full_line_max_area_ratio": 1.0,
             # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se
             # a altura real do frame for diferente durante um diagnóstico.
@@ -2106,7 +2110,8 @@ def draw_virtual_sensor_geometry(
     line_follower_command,
 ):
     """
-    Desenha os seis sensores e suas leituras analógicas.
+    Desenha os seis sensores, suas leituras analógicas
+    e as posições FAR/NEAR.
     """
 
     geometry = resolve_virtual_sensor_geometry(
@@ -2168,6 +2173,135 @@ def draw_virtual_sensor_geometry(
             1,
             cv2.LINE_AA,
         )
+
+    far_position = line_follower_command["farPosition"]
+    near_position = line_follower_command["nearPosition"]
+
+    far_text = (
+        f"FAR POS {far_position:+.2f}"
+        if far_position is not None
+        else "FAR POS INVALID"
+    )
+
+    near_text = (
+        f"NEAR POS {near_position:+.2f}"
+        if near_position is not None
+        else "NEAR POS INVALID"
+    )
+
+    cv2.putText(
+        frame,
+        far_text,
+        (
+            geometry["far"]["center"]["x0"] + 8,
+            geometry["far"]["center"]["y0"] + 48,
+        ),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    cv2.putText(
+        frame,
+        near_text,
+        (
+            geometry["near"]["center"]["x0"] + 8,
+            geometry["near"]["center"]["y0"] + 48,
+        ),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    heading_angle = line_follower_command["headingAngle"]
+    far_point = virtual_row_position_to_point(
+        far_position,
+        geometry["far"],
+    )
+
+    near_point = virtual_row_position_to_point(
+        near_position,
+        geometry["near"],
+    )
+
+    if far_point is not None and near_point is not None:
+        far_point_int = (
+            int(round(far_point[0])),
+            int(round(far_point[1])),
+        )
+
+        near_point_int = (
+            int(round(near_point[0])),
+            int(round(near_point[1])),
+        )
+
+        cv2.line(
+            frame,
+            near_point_int,
+            far_point_int,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        cv2.circle(
+            frame,
+            near_point_int,
+            5,
+            (0, 255, 255),
+            -1,
+        )
+
+        cv2.circle(
+            frame,
+            far_point_int,
+            5,
+            (0, 255, 255),
+            -1,
+        )
+
+    heading_text = (
+        f"HEADING {heading_angle:+.1f} deg"
+        if heading_angle is not None
+        else "HEADING INVALID"
+    )
+
+    cv2.putText(
+        frame,
+        heading_text,
+        (
+            geometry["near"]["center"]["x0"] + 8,
+            geometry["near"]["center"]["y0"] + 72,
+        ),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    steering_error = line_follower_command["steeringError"]
+    steering_text = (
+        f"STEERING {steering_error:+.2f}"
+        if steering_error is not None
+        else "STEERING INVALID"
+    )
+
+    cv2.putText(
+        frame,
+        steering_text,
+        (
+            geometry["near"]["center"]["x0"] + 8,
+            geometry["near"]["center"]["y0"] + 96,
+        ),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
     Mede quanto da área de um sensor virtual está ocupada
@@ -2195,41 +2329,107 @@ def read_virtual_sensor(processed_line_mask, sensor_geometry):
 
     return float(active_pixels) / float(sensor_roi.size)
 
+def calculate_virtual_row_position(
+    left,
+    center,
+    right,
+):
+    """
+    Converte três sensores analógicos L/C/R
+    em uma posição lateral contínua.
+
+    -1.0 = esquerda
+     0.0 = centro
+    +1.0 = direita
+
+    Retorna None quando nenhuma linha é observada.
+    """
+
+    total = left + center + right
+
+    if total < VIRTUAL_ROW_MIN_ACTIVATION:
+        return None
+
+    position = (
+        -left + right
+    ) / total
+
+    return float(position)
+
 def read_virtual_line_sensors(processed_line_mask):
     """
-    Lê os seis sensores virtuais da máscara final da linha.
+    Lê os seis sensores virtuais e calcula
+    a posição lateral de FAR e NEAR.
     """
 
     geometry = resolve_virtual_sensor_geometry(
         processed_line_mask.shape
     )
 
-    return {
-        "farLeft": read_virtual_sensor(
-            processed_line_mask,
-            geometry["far"]["left"],
-        ),
-        "farCenter": read_virtual_sensor(
-            processed_line_mask,
-            geometry["far"]["center"],
-        ),
-        "farRight": read_virtual_sensor(
-            processed_line_mask,
-            geometry["far"]["right"],
-        ),
+    far_left = read_virtual_sensor(
+        processed_line_mask,
+        geometry["far"]["left"],
+    )
 
-        "nearLeft": read_virtual_sensor(
-            processed_line_mask,
-            geometry["near"]["left"],
-        ),
-        "nearCenter": read_virtual_sensor(
-            processed_line_mask,
-            geometry["near"]["center"],
-        ),
-        "nearRight": read_virtual_sensor(
-            processed_line_mask,
-            geometry["near"]["right"],
-        ),
+    far_center = read_virtual_sensor(
+        processed_line_mask,
+        geometry["far"]["center"],
+    )
+
+    far_right = read_virtual_sensor(
+        processed_line_mask,
+        geometry["far"]["right"],
+    )
+
+    near_left = read_virtual_sensor(
+        processed_line_mask,
+        geometry["near"]["left"],
+    )
+
+    near_center = read_virtual_sensor(
+        processed_line_mask,
+        geometry["near"]["center"],
+    )
+
+    near_right = read_virtual_sensor(
+        processed_line_mask,
+        geometry["near"]["right"],
+    )
+
+    far_position = calculate_virtual_row_position(
+        far_left,
+        far_center,
+        far_right,
+    )
+
+    near_position = calculate_virtual_row_position(
+        near_left,
+        near_center,
+        near_right,
+    )
+
+    heading_angle = calculate_virtual_heading_angle(
+    far_position,
+    near_position,
+    geometry,
+)
+    steering_error = calculate_virtual_steering_error(
+    near_position,
+    heading_angle,
+)
+
+    return {
+        "farLeft": far_left,
+        "farCenter": far_center,
+        "farRight": far_right,
+        "farPosition": far_position,
+
+        "nearLeft": near_left,
+        "nearCenter": near_center,
+        "nearRight": near_right,
+        "nearPosition": near_position,
+        "headingAngle": heading_angle,
+        "steeringError": steering_error,
     }
 
 
@@ -2238,10 +2438,12 @@ def calculate_line_follower_command(
     green_detection_result,
 ):
     """
-    Etapa atual:
-    lê os seis sensores virtuais.
+    Primeiro teste físico do novo seguidor.
 
-    Nenhum controle de motor ainda.
+    Usa somente steeringError para gerar
+    uma correção diferencial simples.
+
+    Ainda não há PID.
     """
 
     _ = green_detection_result
@@ -2250,19 +2452,219 @@ def calculate_line_follower_command(
         processed_line_mask
     )
 
+    steering_error = sensors["steeringError"]
+
+        # --------------------------------------------------------
+    # CONTROLE DE MOTORES
+    # --------------------------------------------------------
+
+    BASE_POWER = 0.68
+    MAX_POWER = 0.78
+
+    # A partir daqui a curva é forte o suficiente
+    # para exigir pivot.
+    PIVOT_THRESHOLD = 0.36
+
+    # Potência durante pivot.
+    PIVOT_OUTER_POWER = 0.7 #roda de giro
+    PIVOT_INNER_POWER = 0.0 #roda de dentro desligada..
+
+    if steering_error is None:
+        left_power = 0.0
+        right_power = 0.0
+
+    elif steering_error >= PIVOT_THRESHOLD:
+        # Curva forte para DIREITA.
+        #
+        # Esquerda para frente
+        # Direita para trás
+        left_power = PIVOT_OUTER_POWER
+        right_power = -PIVOT_INNER_POWER
+
+    elif steering_error <= -PIVOT_THRESHOLD:
+        # Curva forte para ESQUERDA.
+        #
+        # Direita para frente
+        # Esquerda para trás
+        left_power = -PIVOT_INNER_POWER
+        right_power = PIVOT_OUTER_POWER
+
+    else:
+        # Correção normal.
+        #
+        # Escala steering até o limite antes do pivot.
+        normalized_steering = (
+            steering_error / PIVOT_THRESHOLD
+        )
+
+        correction = (
+            normalized_steering
+            * (MAX_POWER - BASE_POWER)
+        )
+
+        if correction > 0.0:
+            # Direita
+            left_power = BASE_POWER + correction
+            right_power = BASE_POWER
+
+        else:
+            # Esquerda
+            left_power = BASE_POWER
+            right_power = BASE_POWER - correction
+
+        left_power = min(MAX_POWER, left_power)
+        right_power = min(MAX_POWER, right_power)
+
     return {
-        "left_power": 0.0,
-        "right_power": 0.0,
+        "left_power": left_power,
+        "right_power": right_power,
 
         "farLeft": sensors["farLeft"],
         "farCenter": sensors["farCenter"],
         "farRight": sensors["farRight"],
+        "farPosition": sensors["farPosition"],
 
         "nearLeft": sensors["nearLeft"],
         "nearCenter": sensors["nearCenter"],
         "nearRight": sensors["nearRight"],
+        "nearPosition": sensors["nearPosition"],
+
+        "headingAngle": sensors["headingAngle"],
+        "steeringError": sensors["steeringError"],
     }
 
+def virtual_row_position_to_point(
+    position,
+    row_geometry,
+):
+    """
+    Converte uma posição normalizada -1..+1
+    em um ponto real (x, y) dentro da fileira.
+
+    -1 = centro do sensor LEFT
+     0 = centro do sensor CENTER
+    +1 = centro do sensor RIGHT
+    """
+
+    if position is None:
+        return None
+
+    left_center_x = (
+        row_geometry["left"]["x0"]
+        + row_geometry["left"]["x1"]
+    ) / 2.0
+
+    right_center_x = (
+        row_geometry["right"]["x0"]
+        + row_geometry["right"]["x1"]
+    ) / 2.0
+
+    center_y = (
+        row_geometry["center"]["y0"]
+        + row_geometry["center"]["y1"]
+    ) / 2.0
+
+    normalized = (position + 1.0) / 2.0
+
+    x = (
+        left_center_x
+        + normalized
+        * (right_center_x - left_center_x)
+    )
+
+    return (
+        float(x),
+        float(center_y),
+    )
+
+
+def calculate_virtual_heading_angle(
+    far_position,
+    near_position,
+    geometry,
+):
+    """
+    Calcula a direção da faixa entre NEAR e FAR.
+
+    0°  = reta
+    >0° = aponta para a direita
+    <0° = aponta para a esquerda
+
+    Retorna None se FAR ou NEAR forem inválidos.
+    """
+
+    far_point = virtual_row_position_to_point(
+        far_position,
+        geometry["far"],
+    )
+
+    near_point = virtual_row_position_to_point(
+        near_position,
+        geometry["near"],
+    )
+
+    if far_point is None or near_point is None:
+        return None
+
+    delta_x = far_point[0] - near_point[0]
+    delta_y = near_point[1] - far_point[1]
+
+    if delta_y <= 0.0:
+        return None
+
+    angle_radians = math.atan2(
+        delta_x,
+        delta_y,
+    )
+
+    return float(
+        math.degrees(angle_radians)
+    )
+
+def calculate_virtual_steering_error(
+    near_position,
+    heading_angle,
+):
+    """
+    Combina posição lateral atual e antecipação da trajetória.
+
+    Se FAR desaparecer, continua seguindo somente por NEAR.
+
+    -1.0 = correção máxima para esquerda
+     0.0 = seguir reto
+    +1.0 = correção máxima para direita
+    """
+
+    if near_position is None:
+        return None
+
+    # FAR é antecipação, não requisito para continuar seguindo.
+    if heading_angle is None:
+        return float(
+            max(-1.0, min(1.0, near_position))
+        )
+
+    heading_normalized = (
+        heading_angle
+        / VIRTUAL_HEADING_FULL_SCALE_DEG
+    )
+
+    heading_normalized = max(
+        -1.0,
+        min(1.0, heading_normalized),
+    )
+
+    steering_error = (
+        near_position
+        + VIRTUAL_HEADING_GAIN * heading_normalized
+    )
+
+    steering_error = max(
+        -1.0,
+        min(1.0, steering_error),
+    )
+
+    return float(steering_error)
 
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""
