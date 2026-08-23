@@ -930,6 +930,7 @@ std::string DashboardServer::dashboardHtml()
     .camera-hud-value > span { color: var(--text-muted); font-size: .5rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
     .camera-hud-value strong { color: var(--text); font-size: .76rem; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .camera-hud-value small { color: var(--muted); font-size: .5rem; }
+    .camera-hud-value.pipeline { grid-column: span 2; }
     .camera-hud-value.green-status strong,
     .camera-hud-value.path-status strong { color: var(--text-primary); }
     .camera-hud-value.speed strong { color: var(--text-primary); font-size: .67rem; }
@@ -1209,6 +1210,7 @@ std::string DashboardServer::dashboardHtml()
               <div class="camera-hud-value path-status"><span>Faixa associada</span><strong id="operationGreenPathBlackValid">NÃO</strong><small id="operationLineSequence">—</small></div>
               <div class="camera-hud-value"><span>Reparo da máscara</span><strong id="operationSpecularRepair">—</strong></div>
               <div class="camera-hud-value speed"><span>Speed</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
+              <div class="camera-hud-value pipeline"><span>Pipeline</span><strong id="operationPipelinePrimary">BIN — · SPEC — ms</strong><small id="operationPipelineSecondary">MORPH — · CONT — ms</small></div>
             </div>
           </div>
         </section>
@@ -1493,7 +1495,9 @@ std::string DashboardServer::dashboardHtml()
       greenConfirmed: element("operationGreenConfirmed"),
       greenPathBlackValid: element("operationGreenPathBlackValid"),
       lineSequence: element("operationLineSequence"),
-      specularRepair: element("operationSpecularRepair")
+      specularRepair: element("operationSpecularRepair"),
+      pipelinePrimary: element("operationPipelinePrimary"),
+      pipelineSecondary: element("operationPipelineSecondary")
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
@@ -1574,6 +1578,12 @@ std::string DashboardServer::dashboardHtml()
     function formatNumber(value, digits = 1) {
       const number = Number(value);
       return Number.isFinite(number) ? number.toFixed(digits) : "--";
+    }
+
+    function formatPipelineTiming(value) {
+      return typeof value === "number" && Number.isFinite(value) && value >= 0
+        ? formatNumber(value, 2)
+        : "—";
     }
 
     function formatUptime(milliseconds) {
@@ -2540,6 +2550,16 @@ std::string DashboardServer::dashboardHtml()
   setTextIfChanged(
     operationCameraDiagnosticFields.specularRepair,
     `${formatNumber(data.specularRepairPixels, 0)} px · ${formatNumber(data.specularRepairComponents, 0)} comp`
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.pipelinePrimary,
+    `BIN ${formatPipelineTiming(data.binaryMs)} · SPEC ${formatPipelineTiming(data.specularMs)} ms`
+  );
+
+  setTextIfChanged(
+    operationCameraDiagnosticFields.pipelineSecondary,
+    `MORPH ${formatPipelineTiming(data.morphMs)} · CONT ${formatPipelineTiming(data.contoursMs)} ms`
   );
 }
 

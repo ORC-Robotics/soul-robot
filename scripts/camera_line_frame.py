@@ -791,9 +791,20 @@ def tune_camera_image(picam2):
             print(f"Controle de câmera {name} não foi aplicado: {error}", flush=True)
 
 
-def create_line_binary_mask(gray_roi, vision_profile):
+@lru_cache(maxsize=16)
+def cached_structuring_element(shape, width, height):
+    """Reutiliza até 16 kernels imutáveis definidos apenas por sua geometria."""
+
+    return cv2.getStructuringElement(shape, (width, height))
+
+
+def create_line_binary_mask(gray_roi, vision_profile, timings=None):
     """Separa a fita preta usando o método configurado para cada câmera."""
 
+    if timings is not None:
+        timings["backgroundKernelMs"] = 0.0
+        timings["backgroundCloseMs"] = 0.0
+        timings["binaryCompareMs"] = 0.0
     background_kernel_size = vision_profile.get("line_background_kernel_size")
     if background_kernel_size is None:
         _, binary_mask = cv2.threshold(
@@ -807,24 +818,48 @@ def create_line_binary_mask(gray_roi, vision_profile):
     # O fechamento grande remove estruturas escuras menores que o kernel e
     # produz uma estimativa da iluminação do piso. A comparação relativa
     # continua funcionando quando o papel branco fica escuro sem o LED.
-    background_kernel = cv2.getStructuringElement(
+    background_kernel_started = (
+        time.perf_counter() if timings is not None else 0.0
+    )
+    background_kernel = cached_structuring_element(
         cv2.MORPH_RECT,
-        (background_kernel_size, background_kernel_size),
+        background_kernel_size,
+        background_kernel_size,
+    )
+    if timings is not None:
+        timings["backgroundKernelMs"] = (
+            time.perf_counter() - background_kernel_started
+        ) * 1000.0
+    background_close_started = (
+        time.perf_counter() if timings is not None else 0.0
     )
     local_background = cv2.morphologyEx(
         gray_roi,
         cv2.MORPH_CLOSE,
         background_kernel,
     )
-    gray_16 = gray_roi.astype(np.uint16)
-    background_16 = local_background.astype(np.uint16)
+    if timings is not None:
+        timings["backgroundCloseMs"] = (
+            time.perf_counter() - background_close_started
+        ) * 1000.0
     ratio_percent = vision_profile["line_max_background_ratio_percent"]
     maximum_brightness = vision_profile["line_max_brightness"]
-    black_pixels = np.logical_and(
-        gray_16 <= maximum_brightness,
-        gray_16 * 100 <= background_16 * ratio_percent,
+    binary_compare_started = (
+        time.perf_counter() if timings is not None else 0.0
     )
-    return np.where(black_pixels, 255, 0).astype(np.uint8)
+    gray_16 = gray_roi.astype(np.uint16)
+    background_16 = local_background.astype(np.uint16)
+    np.multiply(gray_16, 100, out=gray_16)
+    np.multiply(background_16, ratio_percent, out=background_16)
+    relative_mask = cv2.compare(gray_16, background_16, cv2.CMP_LE)
+    absolute_mask = cv2.inRange(gray_roi, 0, maximum_brightness)
+    cv2.bitwise_and(relative_mask, absolute_mask, dst=relative_mask)
+    binary_mask = relative_mask
+    if timings is not None:
+        timings["binaryCompareMs"] = (
+            time.perf_counter() - binary_compare_started
+        ) * 1000.0
+    return binary_mask
 
 
 def scaled_odd_kernel_size(reference_size, frame_height):
@@ -922,6 +957,7 @@ def create_filtered_line_mask(
     vision_profile,
     camera_format="RGB888",
     return_repair_status=False,
+    timings=None,
 ):
     """Segmenta a linha preta na parte inferior sem gerar decisões de controle."""
 
@@ -943,28 +979,60 @@ def create_filtered_line_mask(
         scaled_profile["close_kernel_size"] = scaled_odd_kernel_size(
             vision_profile["close_kernel_size"], frame_height
         )
-    binary_mask = create_line_binary_mask(gray_roi, scaled_profile)
-    binary_mask, repair_status = repair_small_specular_holes(
-        binary_mask,
-        line_roi,
-        camera_format,
+    binary_started = time.perf_counter() if timings is not None else 0.0
+    binary_mask = create_line_binary_mask(
+        gray_roi,
+        scaled_profile,
+        timings=timings,
     )
+    if timings is not None:
+        timings["binaryMs"] = (
+            time.perf_counter() - binary_started
+        ) * 1000.0
+    specular_started = time.perf_counter() if timings is not None else 0.0
+
+    repair_status = {
+        "specularRepairPixels": 0,
+        "specularRepairComponents": 0,
+    }
+    if timings is not None:
+        timings["specularMs"] = (
+            time.perf_counter() - specular_started
+        ) * 1000.0
 
     open_kernel_shape = (
         cv2.MORPH_ELLIPSE
         if scaled_profile.get("open_kernel_shape") == "ellipse"
         else cv2.MORPH_RECT
     )
-    open_kernel = cv2.getStructuringElement(
+    open_kernel = cached_structuring_element(
         open_kernel_shape,
-        (scaled_profile["open_kernel_size"], scaled_profile["open_kernel_size"]),
+        scaled_profile["open_kernel_size"],
+        scaled_profile["open_kernel_size"],
     )
-    close_kernel = cv2.getStructuringElement(
+    close_kernel = cached_structuring_element(
         cv2.MORPH_RECT,
-        (scaled_profile["close_kernel_size"], scaled_profile["close_kernel_size"]),
+        scaled_profile["close_kernel_size"],
+        scaled_profile["close_kernel_size"],
     )
+    morph_open_started = time.perf_counter() if timings is not None else 0.0
     filtered_mask = cv2.morphologyEx(binary_mask, cv2.MORPH_OPEN, open_kernel)
+    morph_open_ms = (
+        (time.perf_counter() - morph_open_started) * 1000.0
+        if timings is not None
+        else 0.0
+    )
+    morph_close_started = time.perf_counter() if timings is not None else 0.0
     filtered_mask = cv2.morphologyEx(filtered_mask, cv2.MORPH_CLOSE, close_kernel)
+    morph_close_ms = (
+        (time.perf_counter() - morph_close_started) * 1000.0
+        if timings is not None
+        else 0.0
+    )
+    if timings is not None:
+        timings["morphOpenMs"] = morph_open_ms
+        timings["morphCloseMs"] = morph_close_ms
+        timings["morphMs"] = morph_open_ms + morph_close_ms
     if return_repair_status:
         return filtered_mask, roi_start_y, repair_status
     return filtered_mask, roi_start_y
@@ -2307,7 +2375,7 @@ def draw_virtual_sensor_geometry(
     )
     cv2.putText(
         frame,
-        f"LINE PROCESSING: {line_processing_ms:.2f} ms",
+        f"{line_processing_ms:.2f} ms",
         (
             geometry["near"]["center"]["x0"] + 8,
             geometry["near"]["center"]["y0"] + 120,
@@ -2934,6 +3002,7 @@ def save_status(
     line_sequence=0,
     specular_repair_status=None,
     green_status=None,
+    line_timings=None,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -2970,6 +3039,27 @@ def save_status(
     repaired_components = max(
         0, int(repair_status.get("specularRepairComponents", 0))
     )
+    timing_status = line_timings if isinstance(line_timings, dict) else {}
+    safe_line_timings = {}
+    for timing_name in (
+        "lineProcessingMs",
+        "binaryMs",
+        "backgroundKernelMs",
+        "backgroundCloseMs",
+        "binaryCompareMs",
+        "specularMs",
+        "morphMs",
+        "morphOpenMs",
+        "morphCloseMs",
+        "contoursMs",
+    ):
+        try:
+            timing_value = float(timing_status.get(timing_name, 0.0))
+        except (TypeError, ValueError):
+            timing_value = 0.0
+        if not math.isfinite(timing_value) or timing_value < 0.0:
+            timing_value = 0.0
+        safe_line_timings[timing_name] = timing_value
     status = {
         "fps": round(fps, 2),
         "active": active,
@@ -3006,6 +3096,16 @@ def save_status(
         "lineSequence": line_sequence,
         "specularRepairPixels": repaired_pixels,
         "specularRepairComponents": repaired_components,
+        "lineProcessingMs": safe_line_timings["lineProcessingMs"],
+        "binaryMs": safe_line_timings["binaryMs"],
+        "backgroundKernelMs": safe_line_timings["backgroundKernelMs"],
+        "backgroundCloseMs": safe_line_timings["backgroundCloseMs"],
+        "binaryCompareMs": safe_line_timings["binaryCompareMs"],
+        "specularMs": safe_line_timings["specularMs"],
+        "morphMs": safe_line_timings["morphMs"],
+        "morphOpenMs": safe_line_timings["morphOpenMs"],
+        "morphCloseMs": safe_line_timings["morphCloseMs"],
+        "contoursMs": safe_line_timings["contoursMs"],
     }
     status.update(green_status or empty_green_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
@@ -3117,6 +3217,7 @@ def main():
                 vision_profile,
             )
             line_vision_started = time.perf_counter()
+            line_timings = {}
 
             filtered_mask, roi_start_y, specular_repair_status = (
                 create_filtered_line_mask(
@@ -3124,6 +3225,7 @@ def main():
                     vision_profile,
                     camera_format,
                     return_repair_status=True,
+                    timings=line_timings,
                 )
             )
             structural_mask = create_structural_line_mask(
@@ -3131,10 +3233,14 @@ def main():
                 roi_start_y,
                 vision_geometry["structural_end_y"],
             )
+            contours_started = time.perf_counter()
             line_candidate_mask = create_line_candidate_mask(
                 structural_mask,
                 vision_profile,
             )
+            line_timings["contoursMs"] = (
+                time.perf_counter() - contours_started
+            ) * 1000.0
             line_vision_ms = (
                 time.perf_counter() - line_vision_started
             ) * 1000.0
@@ -3224,6 +3330,9 @@ def main():
             line_follower_command["lineProcessingMs"] = (
                 line_vision_ms + line_control_ms
             )
+            line_timings["lineProcessingMs"] = line_follower_command[
+                "lineProcessingMs"
+            ]
             
             
             if line_ipc_enabled:
@@ -3362,6 +3471,7 @@ def main():
                     line_sequence=line_sequence,
                     specular_repair_status=specular_repair_status,
                     green_status=green_status,
+                    line_timings=line_timings,
                 )
                 last_status_time = now
     except Exception as error:
