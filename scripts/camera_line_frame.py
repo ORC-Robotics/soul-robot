@@ -2106,6 +2106,28 @@ VIRTUAL_CENTER_X1 = 0.615
 
 VIRTUAL_RIGHT_X0 = 0.615
 VIRTUAL_RIGHT_X1 = 0.96
+
+# Controle da prioridade de direção após um verde confirmado.
+#
+# A direção permanece memorizada durante toda a curva.
+# ESQUERDA e DIREITA usam os sensores virtuais para selecionar
+# somente o ramo permitido da interseção.
+#
+# Após terminar a curva, novos verdes continuam bloqueados até
+# que nenhum candidato verde seja visto por esta quantidade
+# de quadros consecutivos.
+QUADROS_PARA_REARMAR_VERDE = 60
+
+# A curva é considerada iniciada quando o NEAR se desloca
+# suficientemente para o lado escolhido.
+LIMIAR_CURVA_VERDE_INICIADA = 0.20
+
+# Após a curva ter começado, o retorno do NEAR para esta região
+# central indica que o robô entrou e se alinhou com a nova faixa.
+LIMIAR_CENTRALIZACAO_VERDE = 0.18
+# Evita encerrar a prioridade por uma leitura central isolada.
+QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
+
 def resolve_virtual_sensor_geometry(frame_shape):
     """
     Converte a geometria normalizada dos seis sensores
@@ -2441,7 +2463,10 @@ def calculate_virtual_row_position(
 
     return float(position)
 
-def read_virtual_line_sensors(processed_line_mask):
+def read_virtual_line_sensors(
+    processed_line_mask,
+    direcao_verde_ativa="NENHUMA",
+):
     """
     Lê os seis sensores virtuais e calcula
     a posição lateral de FAR e NEAR.
@@ -2480,6 +2505,21 @@ def read_virtual_line_sensors(processed_line_mask):
         processed_line_mask,
         geometry["near"]["right"],
     )
+
+    # Durante uma interseção sinalizada por verde, somente o ramo
+    # permitido deve influenciar a antecipação do FAR.
+    #
+    # O NEAR mantém o centro ativo para representar a posição física
+    # atual do robô enquanto ele abandona a linha antiga e entra na nova.
+    if direcao_verde_ativa == "ESQUERDA":
+        far_center = 0.0
+        far_right = 0.0
+        near_right = 0.0
+
+    elif direcao_verde_ativa == "DIREITA":
+        far_left = 0.0
+        far_center = 0.0
+        near_left = 0.0
 
     far_position = calculate_virtual_row_position(
         far_left,
@@ -2521,6 +2561,7 @@ def read_virtual_line_sensors(processed_line_mask):
 def calculate_line_follower_command(
     processed_line_mask,
     green_detection_result,
+    direcao_verde_ativa="NENHUMA",
 ):
     """
     Primeiro teste físico do novo seguidor.
@@ -2534,7 +2575,8 @@ def calculate_line_follower_command(
     _ = green_detection_result
 
     sensors = read_virtual_line_sensors(
-        processed_line_mask
+        processed_line_mask,
+        direcao_verde_ativa,
     )
 
     steering_error = sensors["steeringError"]
@@ -2551,7 +2593,7 @@ def calculate_line_follower_command(
     PIVOT_THRESHOLD = 0.36
 
     # Potência durante pivot.
-    PIVOT_OUTER_POWER = 0.7 #roda de giro
+    PIVOT_OUTER_POWER = 0.75 #roda de giro
     PIVOT_INNER_POWER = 0.0 #roda de dentro desligada..
 
     if steering_error is None:
@@ -3187,6 +3229,16 @@ def main():
         smoothed_fps = 0.0
         line_sequence = 0
         green_tracker = GreenObservationTracker()
+
+        # Estado persistente das manobras sinalizadas por verde.
+        direcao_verde_ativa = "NENHUMA"
+        curva_verde_iniciada = False
+        quadros_centralizado_verde = 0
+
+        # Impede que o mesmo marcador verde seja aceito novamente.
+        verde_armado = True
+        quadros_sem_verde = 0
+
         green_processing_enabled = bool(
             vision_profile.get("green_detection_enabled", False)
             and GREEN_PROCESSING_ENABLED
@@ -3317,12 +3369,100 @@ def main():
                 else "idle"
             )
 
+                        # Um verde confirmado é aceito apenas quando o sistema está armado
+            # e nenhuma outra direção verde está sendo executada.
+            if (
+                verde_armado
+                and direcao_verde_ativa == "NENHUMA"
+                and green_status["greenConfirmed"]
+            ):
+                interpretacao_verde = green_status["greenInterpretation"]
+
+                if interpretacao_verde == "ESQUERDA":
+                    direcao_verde_ativa = "ESQUERDA"
+                    curva_verde_iniciada = False
+                    quadros_centralizado_verde = 0
+                    verde_armado = False
+                    quadros_sem_verde = 0
+
+                elif interpretacao_verde == "DIREITA":
+                    direcao_verde_ativa = "DIREITA"
+                    curva_verde_iniciada = False
+                    quadros_centralizado_verde = 0
+                    verde_armado = False
+                    quadros_sem_verde = 0
+
+            # Depois que um verde foi aceito, o sistema só poderá ser armado
+            # novamente após vários quadros consecutivos sem nenhum candidato verde. % isaque hulk verde
+            if not verde_armado:
+                if green_status["greenCandidateCount"] == 0:
+                    quadros_sem_verde += 1
+                else:
+                    quadros_sem_verde = 0
+
+
             line_control_started = time.perf_counter()
 
             line_follower_command = calculate_line_follower_command(
                 line_candidate_mask,
                 green_status,
+                direcao_verde_ativa,
             )
+
+            near_position = line_follower_command["nearPosition"]
+
+            # Confirma que o robô realmente começou a entrar no ramo
+            # indicado pelo marcador verde.
+            if not curva_verde_iniciada:
+                if (
+                    direcao_verde_ativa == "ESQUERDA"
+                    and near_position is not None
+                    and near_position <= -LIMIAR_CURVA_VERDE_INICIADA
+                ):
+                    curva_verde_iniciada = True
+                    quadros_centralizado_verde = 0
+
+                elif (
+                    direcao_verde_ativa == "DIREITA"
+                    and near_position is not None
+                    and near_position >= LIMIAR_CURVA_VERDE_INICIADA
+                ):
+                    curva_verde_iniciada = True
+                    quadros_centralizado_verde = 0
+
+            # Depois que a curva começou, espera o NEAR voltar ao centro
+            # por vários quadros consecutivos. Isso indica que o robô
+            # já entrou e se alinhou com a nova faixa.
+            if (
+                direcao_verde_ativa != "NENHUMA"
+                and curva_verde_iniciada
+            ):
+                if (
+                    near_position is not None
+                    and abs(near_position) <= LIMIAR_CENTRALIZACAO_VERDE
+                ):
+                    quadros_centralizado_verde += 1
+                else:
+                    quadros_centralizado_verde = 0
+
+                if (
+                    quadros_centralizado_verde
+                    >= QUADROS_CENTRALIZADO_PARA_CONCLUIR
+                ):
+                    direcao_verde_ativa = "NENHUMA"
+                    curva_verde_iniciada = False
+                    quadros_centralizado_verde = 0
+
+            # A curva já pode ter terminado, mas um novo verde só será
+            # aceito depois de X quadros consecutivos sem candidato verde.
+            if (
+                not verde_armado
+                and direcao_verde_ativa == "NENHUMA"
+                and quadros_sem_verde >= QUADROS_PARA_REARMAR_VERDE
+            ):
+                verde_armado = True
+                quadros_sem_verde = 0
+
             line_control_ms = (
                 time.perf_counter() - line_control_started
             ) * 1000.0
