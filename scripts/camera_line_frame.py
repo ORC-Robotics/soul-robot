@@ -2302,6 +2302,23 @@ def draw_virtual_sensor_geometry(
         1,
         cv2.LINE_AA,
     )
+    line_processing_ms = line_follower_command.get(
+        "lineProcessingMs", 0.0,
+    )
+    cv2.putText(
+        frame,
+        f"LINE PROCESSING: {line_processing_ms:.2f} ms",
+        (
+            geometry["near"]["center"]["x0"] + 8,
+            geometry["near"]["center"]["y0"] + 120,
+        ),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
     Mede quanto da área de um sensor virtual está ocupada
@@ -3099,6 +3116,8 @@ def main():
                 frame_height,
                 vision_profile,
             )
+            line_vision_started = time.perf_counter()
+
             filtered_mask, roi_start_y, specular_repair_status = (
                 create_filtered_line_mask(
                     raw_frame,
@@ -3116,6 +3135,9 @@ def main():
                 structural_mask,
                 vision_profile,
             )
+            line_vision_ms = (
+                time.perf_counter() - line_vision_started
+            ) * 1000.0
 
             green_candidates = []
             green_rejected = []
@@ -3189,10 +3211,21 @@ def main():
                 else "idle"
             )
 
+            line_control_started = time.perf_counter()
+
             line_follower_command = calculate_line_follower_command(
                 line_candidate_mask,
                 green_status,
             )
+            line_control_ms = (
+                time.perf_counter() - line_control_started
+            ) * 1000.0
+
+            line_follower_command["lineProcessingMs"] = (
+                line_vision_ms + line_control_ms
+            )
+            
+            
             if line_ipc_enabled:
                 # Somente a CAM0/inferior publica o ponto de extensão 0/0.
                 save_line_status(
