@@ -2128,6 +2128,19 @@ LIMIAR_CENTRALIZACAO_VERDE = 0.18
 # Evita encerrar a prioridade por uma leitura central isolada.
 QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
 
+# Orientação geométrica experimental da faixa.
+#
+# Este método ainda não controla os motores. Ele apenas extrai
+# uma trajetória central da máscara para comparação visual com
+# o seguidor atual por sensores virtuais.
+GEOMETRIC_PATH_SAMPLE_COUNT = 21
+GEOMETRIC_PATH_BAND_HALF_HEIGHT = 2
+GEOMETRIC_PATH_LOCAL_HEADING_POINTS = 5
+
+# FAR e NEAR permanecem em alturas fixas da imagem.
+GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
+GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
+
 def resolve_virtual_sensor_geometry(frame_shape):
     """
     Converte a geometria normalizada dos seis sensores
@@ -2405,6 +2418,353 @@ def draw_virtual_sensor_geometry(
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
         (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+def find_active_band_segments(processed_line_mask, y):
+    """
+    Encontra os segmentos horizontais da faixa preta em uma pequena
+    banda ao redor de uma determinada altura da imagem.
+
+    Cada segmento retornado contém o centro horizontal ponderado
+    pela quantidade real de pixels da máscara.
+    """
+
+    height, width = processed_line_mask.shape[:2]
+
+    y0 = max(
+        0,
+        y - GEOMETRIC_PATH_BAND_HALF_HEIGHT,
+    )
+    y1 = min(
+        height,
+        y + GEOMETRIC_PATH_BAND_HALF_HEIGHT + 1,
+    )
+
+    band = processed_line_mask[y0:y1, :]
+
+    if band.size == 0:
+        return []
+
+    active_columns = np.any(band > 0, axis=0)
+    active_x = np.flatnonzero(active_columns)
+
+    if active_x.size == 0:
+        return []
+
+    split_indices = np.where(
+        np.diff(active_x) > 1
+    )[0] + 1
+
+    groups = np.split(
+        active_x,
+        split_indices,
+    )
+
+    segments = []
+
+    for group in groups:
+        if group.size == 0:
+            continue
+
+        x0 = int(group[0])
+        x1 = int(group[-1])
+
+        column_weights = np.count_nonzero(
+            band[:, x0:x1 + 1],
+            axis=0,
+        ).astype(np.float32)
+
+        total_weight = float(column_weights.sum())
+
+        if total_weight <= 0.0:
+            continue
+
+        columns = np.arange(
+            x0,
+            x1 + 1,
+            dtype=np.float32,
+        )
+
+        center_x = float(
+            np.sum(columns * column_weights)
+            / total_weight
+        )
+
+        segments.append({
+            "x0": x0,
+            "x1": x1,
+            "centerX": center_x,
+        })
+
+    return segments
+
+
+def calculate_geometric_far_heading(path_points):
+    """
+    Calcula a direção local da faixa perto do FAR.
+
+    0 graus representa uma faixa vertical na imagem.
+    Valor positivo aponta para a direita.
+    Valor negativo aponta para a esquerda.
+    """
+
+    point_count = min(
+        len(path_points),
+        GEOMETRIC_PATH_LOCAL_HEADING_POINTS,
+    )
+
+    if point_count < 2:
+        return None
+
+    far_points = np.asarray(
+        path_points[-point_count:],
+        dtype=np.float32,
+    ).reshape(-1, 1, 2)
+
+    vx, vy, _, _ = cv2.fitLine(
+        far_points,
+        cv2.DIST_L2,
+        0,
+        0.01,
+        0.01,
+    ).flatten()
+
+    vx = float(vx)
+    vy = float(vy)
+
+    # O vetor deve apontar do NEAR em direção ao FAR.
+    if vy > 0.0:
+        vx = -vx
+        vy = -vy
+
+    return float(
+        math.degrees(
+            math.atan2(
+                vx,
+                -vy,
+            )
+        )
+    )
+
+
+def extract_geometric_line_path(processed_line_mask):
+    """
+    Percorre a faixa do NEAR para o FAR usando centros reais
+    da máscara em várias alturas fixas.
+
+    Quando aparecem múltiplos segmentos em uma mesma banda,
+    escolhe o mais próximo da trajetória encontrada anteriormente.
+    """
+
+    height, width = processed_line_mask.shape[:2]
+
+    far_y = int(round(
+        height * GEOMETRIC_PATH_FAR_Y_RATIO
+    ))
+
+    near_y = int(round(
+        height * GEOMETRIC_PATH_NEAR_Y_RATIO
+    ))
+
+    far_y = max(
+        0,
+        min(height - 1, far_y),
+    )
+
+    near_y = max(
+        0,
+        min(height - 1, near_y),
+    )
+
+    sample_y_values = np.linspace(
+        near_y,
+        far_y,
+        GEOMETRIC_PATH_SAMPLE_COUNT,
+    )
+
+    path_points = []
+    previous_x = float(width) / 2.0
+
+    for sample_y in sample_y_values:
+        y = int(round(sample_y))
+
+        segments = find_active_band_segments(
+            processed_line_mask,
+            y,
+        )
+
+        if not segments:
+            break
+
+        selected_segment = min(
+            segments,
+            key=lambda segment: abs(
+                segment["centerX"] - previous_x
+            ),
+        )
+
+        center_x = selected_segment["centerX"]
+
+        path_points.append(
+            (
+                float(center_x),
+                float(y),
+            )
+        )
+
+        previous_x = center_x
+
+    near_point = (
+        path_points[0]
+        if path_points
+        else None
+    )
+
+    far_point = (
+        path_points[-1]
+        if (
+            path_points
+            and int(round(path_points[-1][1])) == far_y
+        )
+        else None
+    )
+
+    far_heading = calculate_geometric_far_heading(
+        path_points
+    )
+
+    return {
+        "points": path_points,
+        "nearPoint": near_point,
+        "farPoint": far_point,
+        "farHeadingDeg": far_heading,
+    }
+
+def draw_geometric_line_overlay(
+    frame,
+    processed_line_mask,
+    geometric_guidance,
+):
+    """
+    Desenha a orientação geométrica experimental sem alterar
+    nenhuma decisão de controle do robô.
+    """
+
+    contours, _ = cv2.findContours(
+        processed_line_mask.copy(),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+
+    # Contorno azul da faixa, semelhante ao diagnóstico visual
+    # usado como referência.
+    if contours:
+        cv2.drawContours(
+            frame,
+            contours,
+            -1,
+            (255, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    path_points = geometric_guidance["points"]
+
+    if len(path_points) >= 2:
+        polyline = np.asarray(
+            [
+                (
+                    int(round(x)),
+                    int(round(y)),
+                )
+                for x, y in path_points
+            ],
+            dtype=np.int32,
+        ).reshape(-1, 1, 2)
+
+        cv2.polylines(
+            frame,
+            [polyline],
+            False,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    near_point = geometric_guidance["nearPoint"]
+
+    if near_point is not None:
+        cv2.circle(
+            frame,
+            (
+                int(round(near_point[0])),
+                int(round(near_point[1])),
+            ),
+            5,
+            (255, 0, 0),
+            -1,
+            cv2.LINE_AA,
+        )
+
+    far_point = geometric_guidance["farPoint"]
+
+    if far_point is not None:
+        cv2.circle(
+            frame,
+            (
+                int(round(far_point[0])),
+                int(round(far_point[1])),
+            ),
+            5,
+            (0, 0, 255),
+            -1,
+            cv2.LINE_AA,
+        )
+
+    far_heading = geometric_guidance["farHeadingDeg"]
+
+    heading_text = (
+        f"{far_heading:+.0f}deg"
+        if far_heading is not None
+        else "--deg"
+    )
+
+    processing_ms = geometric_guidance.get(
+        "processingMs",
+        0.0,
+    )
+
+    cv2.putText(
+        frame,
+        "LINE",
+        (8, 22),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    cv2.putText(
+        frame,
+        heading_text,
+        (8, 44),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 0, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    cv2.putText(
+        frame,
+        f"{processing_ms:.1f}ms",
+        (8, 66),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 0, 255),
         1,
         cv2.LINE_AA,
     )
@@ -3515,6 +3875,15 @@ def main():
                         os.unlink(GREEN_CAPTURE_REQUEST_PATH)
                     except FileNotFoundError:
                         pass
+            geometric_started = time.perf_counter()
+
+            geometric_guidance = extract_geometric_line_path(
+                line_candidate_mask
+            )
+
+            geometric_guidance["processingMs"] = (
+                time.perf_counter() - geometric_started
+            ) * 1000.0
 
             display_mode = get_display_mode()
             frame = create_display_frame(
@@ -3527,7 +3896,7 @@ def main():
             )
 
             if camera_profile["role"] == "down":
-                 draw_virtual_sensor_geometry(frame, line_follower_command)
+                  draw_geometric_line_overlay(frame, line_follower_command, geometric_guidance)
 
             cv2.line(
                 frame,
