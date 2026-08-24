@@ -322,7 +322,7 @@ CAMERA_PROFILES = {
             # Mesmo com contraste local, tons acima deste limite não são pretos.
             # A unidade é o nível de cinza de 8 bits, entre 0 e 255. Aumentar o
             # limite aceita sombras; reduzir demais pode perder uma fita clara.
-            "line_max_brightness": 110,
+            "line_max_brightness": 190,
             # Valores de referência em 640×480; são sempre escalados para
             # kernels ímpares antes da morfologia (17 vira 13 e 7 vira 5).
             "open_kernel_shape": "ellipse",
@@ -2133,9 +2133,26 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
 # Este método ainda não controla os motores. Ele apenas extrai
 # uma trajetória central da máscara para comparação visual com
 # o seguidor atual por sensores virtuais.
-GEOMETRIC_PATH_SAMPLE_COUNT = 21
 GEOMETRIC_PATH_BAND_HALF_HEIGHT = 2
 GEOMETRIC_PATH_LOCAL_HEADING_POINTS = 5
+
+# Distância aproximada entre pontos consecutivos da trajetória.
+GEOMETRIC_TRACE_STEP_PX = 10.0
+
+# Permite ao rastreador procurar o centro da faixa um pouco
+# antes ou depois da distância nominal de avanço.
+GEOMETRIC_TRACE_SEARCH_RANGE_PX = 5.0
+
+# Permite inclusive uma mudança de 90 graus entre dois passos.
+# Nunca permite continuar para trás.
+GEOMETRIC_TRACE_MAX_TURN_DEG = 90.0
+
+# Limite de segurança contra caminhos que entrem em ciclos.
+GEOMETRIC_TRACE_MAX_POINTS = 80
+
+# FAR e NEAR continuam presos às alturas extremas escolhidas.
+GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
+GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
 
 # FAR e NEAR permanecem em alturas fixas da imagem.
 GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
@@ -2500,6 +2517,323 @@ def find_active_band_segments(processed_line_mask, y):
 
     return segments
 
+def find_next_geometric_path_point(
+    distance_map,
+    current_point,
+    direction,
+):
+    """
+    Procura o próximo ponto central da faixa ao redor do ponto atual.
+
+    A busca acontece em uma coroa circular, permitindo que a
+    trajetória avance em qualquer direção até 90 graus em relação
+    à direção atual.
+
+    O distance transform favorece pontos mais distantes das bordas,
+    ou seja, próximos do eixo central da faixa.
+    """
+
+    height, width = distance_map.shape[:2]
+
+    current_x = float(current_point[0])
+    current_y = float(current_point[1])
+
+    step = GEOMETRIC_TRACE_STEP_PX
+    search_range = GEOMETRIC_TRACE_SEARCH_RANGE_PX
+
+    minimum_step = max(
+        2.0,
+        step - search_range,
+    )
+
+    maximum_step = (
+        step + search_range
+    )
+
+    search_radius = int(
+        math.ceil(maximum_step)
+    )
+
+    center_x = int(round(current_x))
+    center_y = int(round(current_y))
+
+    x0 = max(
+        0,
+        center_x - search_radius,
+    )
+    x1 = min(
+        width,
+        center_x + search_radius + 1,
+    )
+
+    y0 = max(
+        0,
+        center_y - search_radius,
+    )
+    y1 = min(
+        height,
+        center_y + search_radius + 1,
+    )
+
+    local_distance = distance_map[
+        y0:y1,
+        x0:x1,
+    ]
+
+    if local_distance.size == 0:
+        return None
+
+    local_y, local_x = np.nonzero(
+        local_distance > 0.0
+    )
+
+    if local_x.size == 0:
+        return None
+
+    candidate_x = (
+        local_x.astype(np.float32)
+        + float(x0)
+    )
+
+    candidate_y = (
+        local_y.astype(np.float32)
+        + float(y0)
+    )
+
+    delta_x = (
+        candidate_x - current_x
+    )
+
+    delta_y = (
+        candidate_y - current_y
+    )
+
+    radial_distance = np.hypot(
+        delta_x,
+        delta_y,
+    )
+
+    valid_distance = (
+        (radial_distance >= minimum_step)
+        & (radial_distance <= maximum_step)
+    )
+
+    safe_distance = np.maximum(
+        radial_distance,
+        1e-6,
+    )
+
+    alignment = (
+        delta_x * float(direction[0])
+        + delta_y * float(direction[1])
+    ) / safe_distance
+
+    minimum_alignment = math.cos(
+        math.radians(
+            GEOMETRIC_TRACE_MAX_TURN_DEG
+        )
+    )
+
+    valid_direction = (
+        alignment >= minimum_alignment
+    )
+
+    valid = (
+        valid_distance
+        & valid_direction
+    )
+
+    if not np.any(valid):
+        return None
+
+    center_strength = local_distance[
+        local_y,
+        local_x,
+    ].astype(np.float32)
+
+    # Prioridades:
+    #
+    # 1. ficar no centro físico da faixa;
+    # 2. manter continuidade de direção quando possível;
+    # 3. manter aproximadamente o passo nominal.
+    score = (
+        center_strength
+        + alignment * 2.0
+        - np.abs(
+            radial_distance - step
+        ) * 0.10
+    )
+
+    score[~valid] = -np.inf
+
+    best_index = int(
+        np.argmax(score)
+    )
+
+    next_x = float(
+        candidate_x[best_index]
+    )
+
+    next_y = float(
+        candidate_y[best_index]
+    )
+
+    movement_x = (
+        next_x - current_x
+    )
+
+    movement_y = (
+        next_y - current_y
+    )
+
+    movement_length = math.hypot(
+        movement_x,
+        movement_y,
+    )
+
+    if movement_length <= 0.0:
+        return None
+
+    next_direction = (
+        movement_x / movement_length,
+        movement_y / movement_length,
+    )
+
+    return (
+        (next_x, next_y),
+        next_direction,
+    )
+
+def estimate_geometric_initial_direction(
+    processed_line_mask,
+    near_point,
+):
+    """
+    Estima a direção inicial real da faixa a partir do NEAR.
+
+    Usa duas pequenas amostras à frente do NEAR e acompanha
+    o segmento mais próximo entre elas. Depois ajusta uma reta
+    aos pontos encontrados.
+
+    Caso não exista informação suficiente, mantém o fallback
+    seguro apontando para a frente da câmera.
+    """
+
+    height, _ = processed_line_mask.shape[:2]
+
+    near_x = float(near_point[0])
+    near_y = float(near_point[1])
+
+    direction_points = [
+        (
+            near_x,
+            near_y,
+        )
+    ]
+
+    previous_x = near_x
+
+    for multiplier in (
+        1.0,
+        2.0,
+    ):
+        sample_y = int(round(
+            near_y
+            - GEOMETRIC_TRACE_STEP_PX
+            * multiplier
+        ))
+
+        if sample_y < 0:
+            break
+
+        if sample_y >= height:
+            continue
+
+        segments = find_active_band_segments(
+            processed_line_mask,
+            sample_y,
+        )
+
+        if not segments:
+            break
+
+        selected_segment = min(
+            segments,
+            key=lambda segment: abs(
+                segment["centerX"]
+                - previous_x
+            ),
+        )
+
+        sample_x = float(
+            selected_segment["centerX"]
+        )
+
+        direction_points.append(
+            (
+                sample_x,
+                float(sample_y),
+            )
+        )
+
+        previous_x = sample_x
+
+    if len(direction_points) < 2:
+        return (
+            0.0,
+            -1.0,
+        )
+
+    fit_points = np.asarray(
+        direction_points,
+        dtype=np.float32,
+    ).reshape(-1, 1, 2)
+
+    vx, vy, _, _ = cv2.fitLine(
+        fit_points,
+        cv2.DIST_L2,
+        0,
+        0.01,
+        0.01,
+    ).flatten()
+
+    vx = float(vx)
+    vy = float(vy)
+
+    reference_x = (
+        direction_points[-1][0]
+        - near_x
+    )
+
+    reference_y = (
+        direction_points[-1][1]
+        - near_y
+    )
+
+    # O cv2.fitLine não possui sentido definido.
+    # Orienta o vetor do NEAR em direção à faixa à frente.
+    if (
+        vx * reference_x
+        + vy * reference_y
+    ) < 0.0:
+        vx = -vx
+        vy = -vy
+
+    length = math.hypot(
+        vx,
+        vy,
+    )
+
+    if length <= 0.0:
+        return (
+            0.0,
+            -1.0,
+        )
+
+    return (
+        vx / length,
+        vy / length,
+    )
 
 def calculate_geometric_far_heading(path_points):
     """
@@ -2551,11 +2885,13 @@ def calculate_geometric_far_heading(path_points):
 
 def extract_geometric_line_path(processed_line_mask):
     """
-    Percorre a faixa do NEAR para o FAR usando centros reais
-    da máscara em várias alturas fixas.
+    Rastreia geometricamente o centro da faixa do NEAR ao FAR.
 
-    Quando aparecem múltiplos segmentos em uma mesma banda,
-    escolhe o mais próximo da trajetória encontrada anteriormente.
+    Diferentemente da versão baseada em bandas horizontais,
+    os pontos intermediários não possuem Y fixo. O caminho pode
+    avançar verticalmente, diagonalmente ou lateralmente.
+
+    NEAR e FAR continuam presos às alturas de referência.
     """
 
     height, width = processed_line_mask.shape[:2]
@@ -2578,61 +2914,168 @@ def extract_geometric_line_path(processed_line_mask):
         min(height - 1, near_y),
     )
 
-    sample_y_values = np.linspace(
+    near_segments = find_active_band_segments(
+        processed_line_mask,
         near_y,
-        far_y,
-        GEOMETRIC_PATH_SAMPLE_COUNT,
     )
 
-    path_points = []
-    previous_x = float(width) / 2.0
+    if not near_segments:
+        return {
+            "points": [],
+            "nearPoint": None,
+            "farPoint": None,
+            "farHeadingDeg": None,
+        }
 
-    for sample_y in sample_y_values:
-        y = int(round(sample_y))
+    # No início, escolhe a faixa mais próxima do centro físico
+    # da câmera. Depois disso, a própria continuidade geométrica
+    # decide o caminho.
+    image_center_x = (
+        float(width - 1) / 2.0
+    )
 
-        segments = find_active_band_segments(
-            processed_line_mask,
-            y,
+    near_segment = min(
+        near_segments,
+        key=lambda segment: abs(
+            segment["centerX"]
+            - image_center_x
+        ),
+    )
+
+    near_point = (
+        float(near_segment["centerX"]),
+        float(near_y),
+    )
+
+    # Quanto maior o valor, mais longe este pixel está das bordas
+    # da faixa. Os máximos locais formam aproximadamente seu eixo.
+    distance_map = cv2.distanceTransform(
+        processed_line_mask,
+        cv2.DIST_L2,
+        3,
+    )
+
+    path_points = [
+        near_point
+    ]
+
+    current_point = near_point
+
+# A direção inicial é medida na própria geometria da faixa.
+# Depois do primeiro passo, o rastreador continua atualizando
+# a direção normalmente pelos pontos encontrados.
+    direction = estimate_geometric_initial_direction(
+        processed_line_mask,
+        near_point,
+    )
+
+    far_point = None    
+
+    maximum_step = (
+        GEOMETRIC_TRACE_STEP_PX
+        + GEOMETRIC_TRACE_SEARCH_RANGE_PX
+    )
+
+    for _ in range(
+        GEOMETRIC_TRACE_MAX_POINTS - 1
+    ):
+        current_x = float(
+            current_point[0]
         )
 
-        if not segments:
-            break
-
-        selected_segment = min(
-            segments,
-            key=lambda segment: abs(
-                segment["centerX"] - previous_x
-            ),
+        current_y = float(
+            current_point[1]
         )
 
-        center_x = selected_segment["centerX"]
+        # Quando a trajetória chega suficientemente perto do FAR,
+        # tenta conectar ao centro real da faixa exatamente no Y
+        # superior de referência.
+        if current_y <= (
+            far_y + maximum_step
+        ):
+            far_segments = (
+                find_active_band_segments(
+                    processed_line_mask,
+                    far_y,
+                )
+            )
 
-        path_points.append(
-            (
-                float(center_x),
-                float(y),
+            if far_segments:
+                selected_far_segment = min(
+                    far_segments,
+                    key=lambda segment: abs(
+                        segment["centerX"]
+                        - current_x
+                    ),
+                )
+
+                candidate_far_point = (
+                    float(
+                        selected_far_segment[
+                            "centerX"
+                        ]
+                    ),
+                    float(far_y),
+                )
+
+                distance_to_far = math.hypot(
+                    (
+                        candidate_far_point[0]
+                        - current_x
+                    ),
+                    (
+                        candidate_far_point[1]
+                        - current_y
+                    ),
+                )
+
+                if distance_to_far <= (
+                    maximum_step * 2.0
+                ):
+                    far_point = (
+                        candidate_far_point
+                    )
+
+                    if distance_to_far > 1.0:
+                        path_points.append(
+                            far_point
+                        )
+
+                    break
+
+        next_result = (
+            find_next_geometric_path_point(
+                distance_map,
+                current_point,
+                direction,
             )
         )
 
-        previous_x = center_x
+        if next_result is None:
+            break
 
-    near_point = (
-        path_points[0]
-        if path_points
-        else None
-    )
-
-    far_point = (
-        path_points[-1]
-        if (
-            path_points
-            and int(round(path_points[-1][1])) == far_y
+        next_point, next_direction = (
+            next_result
         )
-        else None
-    )
 
-    far_heading = calculate_geometric_far_heading(
-        path_points
+        path_points.append(
+            next_point
+        )
+
+        current_point = (
+            next_point
+        )
+
+        direction = (
+            next_direction
+        )
+
+    far_heading = (
+        calculate_geometric_far_heading(
+            path_points
+        )
+        if far_point is not None
+        else None
     )
 
     return {
@@ -3896,7 +4339,7 @@ def main():
             )
 
             if camera_profile["role"] == "down":
-                  draw_geometric_line_overlay(frame, line_follower_command, geometric_guidance)
+                  draw_geometric_line_overlay(frame,  line_candidate_mask, geometric_guidance)
 
             cv2.line(
                 frame,
