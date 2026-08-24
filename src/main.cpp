@@ -12,7 +12,9 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <thread>
 
 namespace
@@ -60,6 +62,32 @@ bool selectedMissionReady(
     }
     return cameraReady && cameraLineSnapshot.sourceFresh;
 }
+
+const char* motorDirectionName(double power)
+{
+    if (power > 0.0)
+    {
+        return "forward";
+    }
+    if (power < 0.0)
+    {
+        return "reverse";
+    }
+    return "stopped";
+}
+
+const char* autonomousCommandSourceName(AutonomousMission mission)
+{
+    if (mission == AutonomousMission::TurnRight90)
+    {
+        return "imu";
+    }
+    if (mission == AutonomousMission::DriveDistance)
+    {
+        return "encoders";
+    }
+    return "camera";
+}
 }
 
 int main()
@@ -101,6 +129,16 @@ int main()
     bool lastSystemDisplayReady = false;
     auto lastSystemDisplayStatusTime = std::chrono::steady_clock::now();
     auto lastCameraLineDiagnosticTime =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    bool autonomousMotorTraceInitialized = false;
+    std::uint64_t lastAutonomousMotorTraceLineSequence = 0;
+    long long lastAutonomousMotorTraceEsp32UptimeMs = -1;
+    double lastAutonomousMotorTraceLeft = 0.0;
+    double lastAutonomousMotorTraceRight = 0.0;
+    AutonomousMission lastAutonomousMotorTraceMission =
+        AutonomousMission::MainMission;
+    std::string lastAutonomousMotorTracePhase;
+    auto lastAutonomousMotorTraceTime =
         std::chrono::steady_clock::now() - std::chrono::seconds(1);
     while (running)
     {
@@ -254,6 +292,137 @@ int main()
             }
         }
         motors.apply(robotSnapshot);
+
+        const MotorSynchronizationSnapshot finalMotorCommand =
+            motors.synchronizationSnapshot();
+        const Esp32TelemetrySnapshot finalEsp32Telemetry =
+            esp32.telemetrySnapshot();
+        const auto motorTraceTime = std::chrono::steady_clock::now();
+        const bool autonomousTraceActive =
+            robotSnapshot.mode == "autonomous";
+        if (autonomousTraceActive || autonomousMotorTraceInitialized)
+        {
+            const double finalLeft = finalMotorCommand.correctedLeftPower;
+            const double finalRight = finalMotorCommand.correctedRightPower;
+            const bool traceChanged =
+                !autonomousMotorTraceInitialized ||
+                cameraLineSnapshot.lineSequence !=
+                    lastAutonomousMotorTraceLineSequence ||
+                finalEsp32Telemetry.esp32UptimeMs !=
+                    lastAutonomousMotorTraceEsp32UptimeMs ||
+                std::abs(finalLeft - lastAutonomousMotorTraceLeft) > 0.0005 ||
+                std::abs(finalRight - lastAutonomousMotorTraceRight) > 0.0005 ||
+                robotSnapshot.autonomousMission !=
+                    lastAutonomousMotorTraceMission ||
+                robotSnapshot.autonomousStatus.phase !=
+                    lastAutonomousMotorTracePhase ||
+                !autonomousTraceActive;
+            const bool traceHeartbeatDue =
+                motorTraceTime - lastAutonomousMotorTraceTime >=
+                std::chrono::milliseconds(500);
+            if (traceChanged || traceHeartbeatDue)
+            {
+                // O trace registra apenas dados já decididos. Os motores de um
+                // mesmo lado compartilham o PWM, por isso os campos dianteiro e
+                // traseiro repetem o comando final enviado pela Raspberry.
+                const auto timestampUs =
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+                const char* priority = "autonomous";
+                if (robotSnapshot.emergencyStop ||
+                    finalEsp32Telemetry.emergencyStopActive)
+                {
+                    priority = "emergency_stop";
+                }
+                else if (finalEsp32Telemetry.calibrationActive)
+                {
+                    priority = "calibration";
+                }
+                else if (!autonomousTraceActive)
+                {
+                    priority = "mode_exit";
+                }
+                else if (finalEsp32Telemetry.motorWatchdogTimedOut)
+                {
+                    priority = "esp32_watchdog";
+                }
+                std::ostringstream trace;
+                trace << std::fixed << std::setprecision(3)
+                      << "AUTONOMOUS_MOTOR_TRACE"
+                      << " timestampUs=" << timestampUs
+                      << " mode=" << robotSnapshot.mode
+                      << " mission="
+                      << autonomousMissionName(robotSnapshot.autonomousMission)
+                      << " phase=" << robotSnapshot.autonomousStatus.phase
+                      << " commandSource="
+                      << autonomousCommandSourceName(
+                             robotSnapshot.autonomousMission)
+                      << " visionSource="
+                      << cameraLineSnapshot.lineControlSource
+                      << " visionSequence="
+                      << cameraLineSnapshot.lineSequence
+                      << " visionFresh=" << cameraLineSnapshot.sourceFresh
+                      << " visionLeft="
+                      << cameraLineSnapshot.lineFollowerLeftPower
+                      << " visionRight="
+                      << cameraLineSnapshot.lineFollowerRightPower
+                      << " requestedLeft=" << robotSnapshot.left
+                      << " requestedRight=" << robotSnapshot.right
+                      << " commandAgeMs=" << robotSnapshot.commandAgeMs
+                      << " commandTimedOut="
+                      << robotSnapshot.commandTimedOut
+                      << " frontLeft=" << finalLeft
+                      << " rearLeft=" << finalLeft
+                      << " frontRight=" << finalRight
+                      << " rearRight=" << finalRight
+                      << " leftDirection=" << motorDirectionName(finalLeft)
+                      << " rightDirection=" << motorDirectionName(finalRight)
+                      << " leftPwm=" << std::abs(finalLeft)
+                      << " rightPwm=" << std::abs(finalRight)
+                      << " raw=" << robotSnapshot.rawMotorCommand
+                      << " syncEligible=" << finalMotorCommand.eligible
+                      << " syncActive=" << finalMotorCommand.active
+                      << " uartOpen=" << finalEsp32Telemetry.serialOpen
+                      << " esp32TelemetryFresh="
+                      << finalEsp32Telemetry.sensorFresh
+                      << " driverEnabled="
+                      << finalEsp32Telemetry.motorSleepPinHigh
+                      << " esp32AppliedLeft="
+                      << finalEsp32Telemetry.appliedLeftPower
+                      << " esp32AppliedRight="
+                      << finalEsp32Telemetry.appliedRightPower
+                      << " esp32LeftPwm="
+                      << std::abs(finalEsp32Telemetry.appliedLeftPower)
+                      << " esp32RightPwm="
+                      << std::abs(finalEsp32Telemetry.appliedRightPower)
+                      << " esp32Estop="
+                      << finalEsp32Telemetry.emergencyStopActive
+                      << " calibration="
+                      << finalEsp32Telemetry.calibrationActive
+                      << " watchdogAgeMs="
+                      << finalEsp32Telemetry.motorCommandAgeMs
+                      << " watchdogTimedOut="
+                      << finalEsp32Telemetry.motorWatchdogTimedOut
+                      << " uartSource="
+                      << finalEsp32Telemetry.motorControlSource
+                      << " priority=" << priority << '\n';
+                std::cout << trace.str();
+
+                autonomousMotorTraceInitialized = autonomousTraceActive;
+                lastAutonomousMotorTraceLineSequence =
+                    cameraLineSnapshot.lineSequence;
+                lastAutonomousMotorTraceEsp32UptimeMs =
+                    finalEsp32Telemetry.esp32UptimeMs;
+                lastAutonomousMotorTraceLeft = finalLeft;
+                lastAutonomousMotorTraceRight = finalRight;
+                lastAutonomousMotorTraceMission =
+                    robotSnapshot.autonomousMission;
+                lastAutonomousMotorTracePhase =
+                    robotSnapshot.autonomousStatus.phase;
+                lastAutonomousMotorTraceTime = motorTraceTime;
+            }
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(config::kMainLoopPeriodMs));
     }
 

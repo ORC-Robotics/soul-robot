@@ -1572,7 +1572,17 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(isRemoteOledPageActive(nowMs) ? 1 : 0);
   Serial.print(',');
-  Serial.println(isRaspberrySystemReady(nowMs) ? 1 : 0);
+  Serial.print(isRaspberrySystemReady(nowMs) ? 1 : 0);
+
+  // Estes campos adicionais são somente diagnósticos. Eles permitem conferir
+  // se o watchdog zerou a saída e qual interface enviou o último comando.
+  const uint32_t motorCommandAgeMs = nowMs - lastMotorCommandMs;
+  Serial.print(',');
+  Serial.print(motorCommandAgeMs);
+  Serial.print(',');
+  Serial.print(motorCommandAgeMs > kMotorCommandTimeoutMs ? 1 : 0);
+  Serial.print(',');
+  Serial.println(static_cast<int>(controlSource));
 }
 
 void enforceMotorTimeout()

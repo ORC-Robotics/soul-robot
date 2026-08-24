@@ -38,6 +38,8 @@ struct RobotSnapshot
     double left = 0.0;
     double right = 0.0;
     bool rawMotorCommand = false;
+    long long commandAgeMs = 0;
+    bool commandTimedOut = false;
     unsigned long long autonomousRunSequence = 0;
     double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
     AutonomousStatus autonomousStatus;

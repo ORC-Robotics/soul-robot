@@ -205,6 +205,9 @@ GREEN_CLOSE_ITERATIONS = 2
 # O detector de referência exige que o verde ocupe mais de 6,25% da região
 # estrutural. Como a área cresce com a resolução, este limite não fica preso
 # aos 4.000 pixels usados originalmente em 320 x 200.
+LINE_MIN_COMPONENT_AREA_PX = 120
+LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
+LINE_MIN_COMPONENT_CORE_RATIO = 0.15
 GREEN_MIN_AREA_RATIO = 4000.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
@@ -318,7 +321,7 @@ CAMERA_PROFILES = {
             # Um pixel precisa estar pelo menos 32% abaixo do fundo local.
             # Aumentar este valor aceita linhas com menos contraste, mas também
             # aumenta o risco de aceitar sombras como parte da linha.
-            "line_max_background_ratio_percent": 68,
+            "line_max_background_ratio_percent": 70,
             # Mesmo com contraste local, tons acima deste limite não são pretos.
             # A unidade é o nível de cinza de 8 bits, entre 0 e 255. Aumentar o
             # limite aceita sombras; reduzir demais pode perder uma fita clara.
@@ -329,7 +332,7 @@ CAMERA_PROFILES = {
             "open_kernel_size": 17,
             # O fechamento 7×7 preenche pequenas falhas sem unir objetos
             # separados à linha de 2 cm.
-            "close_kernel_size": 7,
+            "close_kernel_size": 11,
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
@@ -1070,7 +1073,6 @@ def resolve_vision_geometry(frame_height, vision_profile):
         "pixel_scale": float(frame_height) / float(reference_height),
     }
 
-
 def create_structural_line_mask(
     filtered_mask,
     roi_start_y,
@@ -1082,38 +1084,115 @@ def create_structural_line_mask(
         0,
         min(filtered_mask.shape[0], structural_end_y - roi_start_y),
     )
+
     if structural_end_in_roi >= filtered_mask.shape[0]:
         return filtered_mask
 
     structural_mask = filtered_mask.copy()
     structural_mask[structural_end_in_roi:, :] = 0
+
     return structural_mask
 
 
-def create_line_candidate_mask(structural_mask, vision_profile):
-    """Mantém somente contornos completos com espessura compatível com a fita."""
+def component_has_min_thickness(component_mask):
+    """
+    Rejeita componentes predominantemente finos,
+    como frestas entre placas da pista.
+
+    Não basta existir um único ponto grosso:
+    uma fração relevante do componente precisa
+    possuir espessura compatível com a fita.
+    """
+
+    if component_mask.size == 0:
+        return False
+
+    component_pixels = cv2.countNonZero(
+        component_mask
+    )
+
+    if component_pixels == 0:
+        return False
+
+    distance_map = cv2.distanceTransform(
+        component_mask,
+        cv2.DIST_L2,
+        3,
+    )
+
+    minimum_radius = (
+        LINE_MIN_COMPONENT_THICKNESS_PX
+        / 2.0
+    )
+
+    thick_core_pixels = int(
+        np.count_nonzero(
+            distance_map >= minimum_radius
+        )
+    )
+
+    thick_core_ratio = (
+        float(thick_core_pixels)
+        / float(component_pixels)
+    )
+
+    return (
+        thick_core_ratio
+        >= LINE_MIN_COMPONENT_CORE_RATIO
+    )
+
+
+def create_line_candidate_mask(
+    structural_mask,
+    vision_profile,
+):
+    """Mantém somente componentes compatíveis com a fita preta."""
 
     full_contours, _ = cv2.findContours(
         structural_mask.copy(),
         cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE,
     )
+
     accepted_contours = []
+
     minimum_short_side_px = (
         min(structural_mask.shape[:2])
-        * vision_profile["full_line_min_short_side_ratio"]
+        * vision_profile[
+            "full_line_min_short_side_ratio"
+        ]
     )
+
     maximum_area = (
         structural_mask.size
-        * vision_profile.get("full_line_max_area_ratio", 1.0)
+        * vision_profile.get(
+            "full_line_max_area_ratio",
+            1.0,
+        )
     )
+
     for contour in full_contours:
-        contour_area = cv2.contourArea(contour)
+        contour_area = cv2.contourArea(
+            contour
+        )
+
+        # Componentes minúsculos não podem representar
+        # uma faixa útil para o robô.
+        if (
+            contour_area
+            < LINE_MIN_COMPONENT_AREA_PX
+        ):
+            continue
+
         if contour_area > maximum_area:
             continue
 
-        rect = cv2.minAreaRect(contour)
+        rect = cv2.minAreaRect(
+            contour
+        )
+
         width, height = rect[1]
+
         if (
             not math.isfinite(width)
             or not math.isfinite(height)
@@ -1122,12 +1201,47 @@ def create_line_candidate_mask(structural_mask, vision_profile):
         ):
             continue
 
-        short_side_px = min(width, height)
-        if short_side_px >= minimum_short_side_px:
-            accepted_contours.append(contour)
+        short_side_px = min(
+            width,
+            height,
+        )
 
-    line_candidate_mask = structural_mask.copy()
+        if (
+            short_side_px
+            < minimum_short_side_px
+        ):
+            continue
+
+        # Analisa a espessura real do próprio componente.
+        # Isso evita aceitar uma fresta longa apenas porque
+        # sua caixa rotacionada ficou larga.
+        component_mask = np.zeros_like(
+            structural_mask
+        )
+
+        cv2.drawContours(
+            component_mask,
+            [contour],
+            -1,
+            255,
+            cv2.FILLED,
+        )
+
+        if not component_has_min_thickness(
+            component_mask
+        ):
+            continue
+
+        accepted_contours.append(
+            contour
+        )
+
+    line_candidate_mask = (
+        structural_mask.copy()
+    )
+
     line_candidate_mask.fill(0)
+
     if accepted_contours:
         cv2.drawContours(
             line_candidate_mask,
@@ -1136,8 +1250,8 @@ def create_line_candidate_mask(structural_mask, vision_profile):
             255,
             cv2.FILLED,
         )
-    return line_candidate_mask
 
+    return line_candidate_mask
 
 def frame_to_hsv(frame, camera_format="RGB888"):
     """Converte o array da câmera para HSV respeitando a ordem real dos canais."""
@@ -2128,6 +2242,22 @@ LIMIAR_CENTRALIZACAO_VERDE = 0.18
 # Evita encerrar a prioridade por uma leitura central isolada.
 QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
 
+# Reaquisição geométrica após gaps.
+#
+# Quando não existe faixa no NEAR, procura uma continuação válida
+# mais à frente antes de declarar a trajetória completamente perdida.
+GEOMETRIC_GAP_FORWARD_MAX_FRAMES = 45
+GEOMETRIC_GAP_REACQUIRE_FRAMES = 2
+GEOMETRIC_GAP_SEARCH_STEP_PX = 6
+GEOMETRIC_GAP_MAX_SEARCH_PX = 120
+
+# Uma faixa encontrada após o gap precisa continuar também nesta
+# distância para não aceitarmos um pequeno blob isolado como caminho.
+GEOMETRIC_GAP_CONFIRM_OFFSET_PX = 12
+GEOMETRIC_GAP_PROJECTION_POINTS = 5
+# Limita quanto o centro da faixa pode mudar entre a primeira
+# detecção após o gap e sua amostra de confirmação.
+GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX = 50
 # Orientação geométrica experimental da faixa.
 #
 # Este método ainda não controla os motores. Ele apenas extrai
@@ -2150,11 +2280,15 @@ GEOMETRIC_TRACE_MAX_TURN_DEG = 90.0
 # Limite de segurança contra caminhos que entrem em ciclos.
 GEOMETRIC_TRACE_MAX_POINTS = 80
 
-# FAR e NEAR continuam presos às alturas extremas escolhidas.
-GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
-GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
+# Peso dado ao progresso em direção a uma saída lateral
+# inequívoca do componente da faixa.
+GEOMETRIC_TRACE_TARGET_PROGRESS_GAIN = 2.0
 
-# FAR e NEAR permanecem em alturas fixas da imagem.
+# Pequena margem usada para considerar que a faixa alcançou
+# uma borda da imagem.
+GEOMETRIC_TRACE_EXIT_MARGIN_PX = 3
+
+# FAR e NEAR continuam presos às alturas extremas escolhidas.
 GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
 GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
 
@@ -2517,10 +2651,248 @@ def find_active_band_segments(processed_line_mask, y):
 
     return segments
 
+def find_geometric_lateral_exit(
+    processed_line_mask,
+    start_point,
+):
+    """
+    Detecta uma saída lateral inequívoca do mesmo componente
+    conectado que contém o início da trajetória.
+
+    Se o componente alcançar o topo, mantém o comportamento
+    geométrico normal.
+
+    Se tocar somente a esquerda ou somente a direita, retorna
+    um alvo naquela borda.
+
+    Se houver ambiguidade, não interfere no rastreamento.
+    """
+
+    height, width = processed_line_mask.shape[:2]
+
+    binary_mask = (
+        processed_line_mask > 0
+    ).astype(np.uint8)
+
+    _, labels = cv2.connectedComponents(
+        binary_mask,
+        connectivity=8,
+    )
+
+    start_x = max(
+        0,
+        min(
+            width - 1,
+            int(round(start_point[0])),
+        ),
+    )
+
+    start_y = max(
+        0,
+        min(
+            height - 1,
+            int(round(start_point[1])),
+        ),
+    )
+
+    component_label = int(
+        labels[start_y, start_x]
+    )
+
+    if component_label == 0:
+        return None
+
+    margin = GEOMETRIC_TRACE_EXIT_MARGIN_PX
+
+    top_region = labels[
+        0:min(height, margin + 1),
+        :
+    ]
+
+    # Se a própria faixa chega ao topo, o tracer normal já
+    # possui uma continuação natural para frente.
+    if np.any(
+        top_region == component_label
+    ):
+        return None
+
+    left_region = labels[
+        :,
+        0:min(width, margin + 1),
+    ]
+
+    right_region = labels[
+        :,
+        max(0, width - margin - 1):width,
+    ]
+
+    left_positions = np.argwhere(
+        left_region == component_label
+    )
+
+    right_positions = np.argwhere(
+        right_region == component_label
+    )
+
+    touches_left = (
+        left_positions.size > 0
+    )
+
+    touches_right = (
+        right_positions.size > 0
+    )
+
+    # Nenhuma saída lateral ou duas saídas:
+    # geometria ambígua, então não escolhemos por conta própria.
+    if touches_left == touches_right:
+        return None
+
+    if touches_left:
+        target_y = float(
+            np.mean(left_positions[:, 0])
+        )
+
+        return (
+            0.0,
+            target_y,
+        )
+
+    target_y = float(
+        np.mean(right_positions[:, 0])
+    )
+
+    return (
+        float(width - 1),
+        target_y,
+    )
+
+def find_geometric_gap_start(
+    processed_line_mask,
+    near_y,
+):
+    """
+    Procura uma continuação válida da faixa à frente quando o
+    NEAR está vazio.
+
+    A primeira banda encontrada só é aceita se existir uma segunda
+    amostra coerente um pouco mais à frente. Isso ajuda a rejeitar
+    manchas pretas isoladas.
+
+    Não cria pixels nem preenche o gap. Apenas encontra onde a
+    faixa real reaparece.
+    """
+
+    height, width = processed_line_mask.shape[:2]
+
+    image_center_x = (
+        float(width - 1) / 2.0
+    )
+
+    minimum_y = max(
+        0,
+        near_y - GEOMETRIC_GAP_MAX_SEARCH_PX,
+    )
+
+    search_y = (
+        near_y - GEOMETRIC_GAP_SEARCH_STEP_PX
+    )
+
+    while search_y >= minimum_y:
+        segments = find_active_band_segments(
+            processed_line_mask,
+            search_y,
+        )
+
+        if not segments:
+            search_y -= (
+                GEOMETRIC_GAP_SEARCH_STEP_PX
+            )
+            continue
+
+        confirmation_y = max(
+            0,
+            search_y
+            - GEOMETRIC_GAP_CONFIRM_OFFSET_PX,
+        )
+
+        confirmation_segments = (
+            find_active_band_segments(
+                processed_line_mask,
+                confirmation_y,
+            )
+        )
+
+        if not confirmation_segments:
+            search_y -= (
+                GEOMETRIC_GAP_SEARCH_STEP_PX
+            )
+            continue
+
+        valid_candidates = []
+
+        for segment in segments:
+            center_x = float(
+                segment["centerX"]
+            )
+
+            confirmation_segment = min(
+                confirmation_segments,
+                key=lambda candidate: abs(
+                    float(candidate["centerX"])
+                    - center_x
+                ),
+            )
+
+            confirmation_x = float(
+                confirmation_segment["centerX"]
+            )
+
+            center_shift = abs(
+                confirmation_x - center_x
+            )
+
+            if (
+                center_shift
+                <= GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX
+            ):
+                valid_candidates.append(
+                    segment
+                )
+
+        if valid_candidates:
+            selected_segment = min(
+                valid_candidates,
+                key=lambda segment: abs(
+                    float(segment["centerX"])
+                    - image_center_x
+                ),
+            )
+
+            start_point = (
+                float(
+                    selected_segment["centerX"]
+                ),
+                float(search_y),
+            )
+
+            return {
+                "point": start_point,
+                "gapDistancePx": float(
+                    near_y - search_y
+                ),
+            }
+
+        search_y -= (
+            GEOMETRIC_GAP_SEARCH_STEP_PX
+        )
+
+    return None
+
 def find_next_geometric_path_point(
     distance_map,
     current_point,
     direction,
+    target_point=None,
 ):
     """
     Procura o próximo ponto central da faixa ao redor do ponto atual.
@@ -2634,8 +3006,12 @@ def find_next_geometric_path_point(
         )
     )
 
+    # Tolerância numérica para que uma mudança exatamente
+    # perpendicular seja realmente aceita quando o limite é 90°.
+    alignment_tolerance = 1e-6
+
     valid_direction = (
-        alignment >= minimum_alignment
+        alignment >= minimum_alignment - alignment_tolerance
     )
 
     valid = (
@@ -2663,6 +3039,41 @@ def find_next_geometric_path_point(
             radial_distance - step
         ) * 0.10
     )
+
+    if target_point is not None:
+        target_x = float(
+            target_point[0]
+        )
+
+        target_y = float(
+            target_point[1]
+        )
+
+        current_target_distance = (
+            math.hypot(
+                target_x - current_x,
+                target_y - current_y,
+            )
+        )
+
+        candidate_target_distance = (
+            np.hypot(
+                target_x - candidate_x,
+                target_y - candidate_y,
+            )
+        )
+
+        # Positivo = candidato aproxima da saída correta.
+        # Negativo = candidato se afasta dela.
+        target_progress = (
+            current_target_distance
+            - candidate_target_distance
+        )
+
+        score += (
+            target_progress
+            * GEOMETRIC_TRACE_TARGET_PROGRESS_GAIN
+        )
 
     score[~valid] = -np.inf
 
@@ -2835,11 +3246,105 @@ def estimate_geometric_initial_direction(
         vy / length,
     )
 
+def project_geometric_gap_to_near(
+    path_points,
+    near_y,
+    frame_width,
+):
+    """
+    Projeta a direção local da faixa reaparecida através do gap
+    até a altura fixa do NEAR.
+
+    O ponto retornado é apenas uma estimativa geométrica.
+    Ele não representa pixels realmente observados na máscara.
+    """
+
+    point_count = min(
+        len(path_points),
+        GEOMETRIC_GAP_PROJECTION_POINTS,
+    )
+
+    if point_count < 2:
+        return None
+
+    local_points = np.asarray(
+        path_points[:point_count],
+        dtype=np.float32,
+    ).reshape(-1, 1, 2)
+
+    vx, vy, _, _ = cv2.fitLine(
+        local_points,
+        cv2.DIST_L2,
+        0,
+        0.01,
+        0.01,
+    ).flatten()
+
+    vx = float(vx)
+    vy = float(vy)
+
+    first_point = path_points[0]
+    last_point = path_points[point_count - 1]
+
+    reference_x = (
+        float(last_point[0])
+        - float(first_point[0])
+    )
+
+    reference_y = (
+        float(last_point[1])
+        - float(first_point[1])
+    )
+
+    # O cv2.fitLine não define o sentido do vetor.
+    # Orienta a direção do começo da faixa para o FAR.
+    if (
+        vx * reference_x
+        + vy * reference_y
+    ) < 0.0:
+        vx = -vx
+        vy = -vy
+
+    # Uma direção praticamente horizontal não possui uma
+    # interseção estável com a altura fixa do NEAR.
+    if abs(vy) <= 1e-6:
+        return None
+
+    start_x = float(first_point[0])
+    start_y = float(first_point[1])
+
+    scale = (
+        float(near_y) - start_y
+    ) / vy
+
+    projected_x = (
+        start_x + vx * scale
+    )
+
+    if not math.isfinite(projected_x):
+        return None
+
+    # Se a continuação atingiria o NEAR fora da imagem,
+    # não fingimos possuir uma referência utilizável.
+    if (
+        projected_x < 0.0
+        or projected_x > float(frame_width - 1)
+    ):
+        return None
+
+    return (
+        projected_x,
+        float(near_y),
+    )
+
 def calculate_geometric_far_heading(path_points):
     """
-    Calcula a direção local da faixa perto do FAR.
+    Calcula a direção local no final da trajetória disponível.
 
-    0 graus representa uma faixa vertical na imagem.
+    Não exige que a trajetória alcance o FAR superior:
+    também funciona quando ela sai lateralmente da imagem.
+
+    0 graus representa seguir para a frente.
     Valor positivo aponta para a direita.
     Valor negativo aponta para a esquerda.
     """
@@ -2852,13 +3357,17 @@ def calculate_geometric_far_heading(path_points):
     if point_count < 2:
         return None
 
-    far_points = np.asarray(
-        path_points[-point_count:],
+    local_points = path_points[
+        -point_count:
+    ]
+
+    fit_points = np.asarray(
+        local_points,
         dtype=np.float32,
     ).reshape(-1, 1, 2)
 
     vx, vy, _, _ = cv2.fitLine(
-        far_points,
+        fit_points,
         cv2.DIST_L2,
         0,
         0.01,
@@ -2868,8 +3377,26 @@ def calculate_geometric_far_heading(path_points):
     vx = float(vx)
     vy = float(vy)
 
-    # O vetor deve apontar do NEAR em direção ao FAR.
-    if vy > 0.0:
+    first_point = local_points[0]
+    last_point = local_points[-1]
+
+    reference_x = (
+        float(last_point[0])
+        - float(first_point[0])
+    )
+
+    reference_y = (
+        float(last_point[1])
+        - float(first_point[1])
+    )
+
+    # O fitLine não possui sentido definido.
+    # Orienta o vetor no mesmo sentido em que a trajetória
+    # foi percorrida, do NEAR em direção ao futuro.
+    if (
+        vx * reference_x
+        + vy * reference_y
+    ) < 0.0:
         vx = -vx
         vy = -vy
 
@@ -2914,19 +3441,6 @@ def extract_geometric_line_path(processed_line_mask):
         min(height - 1, near_y),
     )
 
-    near_segments = find_active_band_segments(
-        processed_line_mask,
-        near_y,
-    )
-
-    if not near_segments:
-        return {
-            "points": [],
-            "nearPoint": None,
-            "farPoint": None,
-            "farHeadingDeg": None,
-        }
-
     # No início, escolhe a faixa mais próxima do centro físico
     # da câmera. Depois disso, a própria continuidade geométrica
     # decide o caminho.
@@ -2934,17 +3448,69 @@ def extract_geometric_line_path(processed_line_mask):
         float(width - 1) / 2.0
     )
 
-    near_segment = min(
-        near_segments,
-        key=lambda segment: abs(
-            segment["centerX"]
-            - image_center_x
-        ),
+    near_segments = find_active_band_segments(
+        processed_line_mask,
+        near_y,
     )
 
-    near_point = (
-        float(near_segment["centerX"]),
-        float(near_y),
+    gap_reacquired = False
+    gap_distance_px = None
+
+    if near_segments:
+        near_segment = min(
+            near_segments,
+            key=lambda segment: abs(
+                float(segment["centerX"])
+                - image_center_x
+            ),
+        )
+
+        start_point = (
+            float(near_segment["centerX"]),
+            float(near_y),
+        )
+
+        # Há observação real exatamente no NEAR.
+        near_point = start_point
+
+    else:
+        gap_start = find_geometric_gap_start(
+            processed_line_mask,
+            near_y,
+        )
+
+        if gap_start is None:
+            return {
+                "points": [],
+                "startPoint": None,
+                "nearPoint": None,
+                "farPoint": None,
+                "farHeadingDeg": None,
+                "gapReacquired": False,
+                "gapDistancePx": None,
+                "virtualNearPoint": None,
+                "lateralExitTarget": None,
+            }
+
+        start_point = (
+            gap_start["point"]
+        )
+
+        gap_distance_px = (
+            gap_start["gapDistancePx"]
+        )
+
+        gap_reacquired = True
+
+        # Não fingimos que existe uma medição no NEAR.
+        # A trajetória começa onde a faixa reaparece.
+        near_point = None
+
+    lateral_exit_target = (
+        find_geometric_lateral_exit(
+            processed_line_mask,
+            start_point,
+        )
     )
 
     # Quanto maior o valor, mais longe este pixel está das bordas
@@ -2956,17 +3522,17 @@ def extract_geometric_line_path(processed_line_mask):
     )
 
     path_points = [
-        near_point
+        start_point
     ]
 
-    current_point = near_point
+    current_point = start_point
 
 # A direção inicial é medida na própria geometria da faixa.
 # Depois do primeiro passo, o rastreador continua atualizando
 # a direção normalmente pelos pontos encontrados.
     direction = estimate_geometric_initial_direction(
         processed_line_mask,
-        near_point,
+        start_point,
     )
 
     far_point = None    
@@ -2976,6 +3542,8 @@ def extract_geometric_line_path(processed_line_mask):
         + GEOMETRIC_TRACE_SEARCH_RANGE_PX
     )
 
+    virtual_near_point = None
+    
     for _ in range(
         GEOMETRIC_TRACE_MAX_POINTS - 1
     ):
@@ -2986,6 +3554,22 @@ def extract_geometric_line_path(processed_line_mask):
         current_y = float(
             current_point[1]
         )
+
+        if lateral_exit_target is not None:
+            distance_to_lateral_exit = math.hypot(
+                float(lateral_exit_target[0])
+                - current_x,
+                float(lateral_exit_target[1])
+                - current_y,
+            )
+
+            if distance_to_lateral_exit <= maximum_step:
+                if distance_to_lateral_exit > 1.0:
+                    path_points.append(
+                        lateral_exit_target
+                    )
+
+                break
 
         # Quando a trajetória chega suficientemente perto do FAR,
         # tenta conectar ao centro real da faixa exatamente no Y
@@ -3048,6 +3632,7 @@ def extract_geometric_line_path(processed_line_mask):
                 distance_map,
                 current_point,
                 direction,
+                lateral_exit_target,
             )
         )
 
@@ -3070,20 +3655,34 @@ def extract_geometric_line_path(processed_line_mask):
             next_direction
         )
 
-    far_heading = (
-        calculate_geometric_far_heading(
-            path_points
+       
+
+    if gap_reacquired:
+        virtual_near_point = (
+            project_geometric_gap_to_near(
+                path_points,
+                near_y,
+                width,
+            )
         )
-        if far_point is not None
-        else None
+
+    far_heading = (
+    calculate_geometric_far_heading(
+        path_points
     )
+)
 
     return {
         "points": path_points,
+        "startPoint": start_point,
         "nearPoint": near_point,
         "farPoint": far_point,
         "farHeadingDeg": far_heading,
-    }
+        "gapReacquired": gap_reacquired,
+        "gapDistancePx": gap_distance_px,
+        "virtualNearPoint": virtual_near_point,
+         "lateralExitTarget": lateral_exit_target,
+}
 
 def draw_geometric_line_overlay(
     frame,
@@ -3133,6 +3732,111 @@ def draw_geometric_line_overlay(
             False,
             (0, 0, 255),
             2,
+            cv2.LINE_AA,
+        )
+
+    virtual_near_point = geometric_guidance.get(
+        "virtualNearPoint"
+    )
+
+    start_point = geometric_guidance.get(
+        "startPoint"
+    )
+
+    if (
+        virtual_near_point is not None
+        and start_point is not None
+    ):
+        virtual_x = int(round(
+            virtual_near_point[0]
+        ))
+        virtual_y = int(round(
+            virtual_near_point[1]
+        ))
+
+        start_x = int(round(
+            start_point[0]
+        ))
+        start_y = int(round(
+            start_point[1]
+        ))
+
+        delta_x = start_x - virtual_x
+        delta_y = start_y - virtual_y
+
+        bridge_length = math.hypot(
+            delta_x,
+            delta_y,
+        )
+
+        if bridge_length > 0.0:
+            dash_length = 8.0
+            gap_length = 6.0
+            dash_period = (
+                dash_length + gap_length
+            )
+
+            distance = 0.0
+
+            while distance < bridge_length:
+                dash_start = distance
+                dash_end = min(
+                    distance + dash_length,
+                    bridge_length,
+                )
+
+                start_ratio = (
+                    dash_start / bridge_length
+                )
+
+                end_ratio = (
+                    dash_end / bridge_length
+                )
+
+                dash_start_point = (
+                    int(round(
+                        virtual_x
+                        + delta_x * start_ratio
+                    )),
+                    int(round(
+                        virtual_y
+                        + delta_y * start_ratio
+                    )),
+                )
+
+                dash_end_point = (
+                    int(round(
+                        virtual_x
+                        + delta_x * end_ratio
+                    )),
+                    int(round(
+                        virtual_y
+                        + delta_y * end_ratio
+                    )),
+                )
+
+                cv2.line(
+                    frame,
+                    dash_start_point,
+                    dash_end_point,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+                distance += dash_period
+
+        # Círculo vazado porque este ponto é inferido,
+        # não observado diretamente na máscara.
+        cv2.circle(
+            frame,
+            (
+                virtual_x,
+                virtual_y,
+            ),
+            5,
+            (0, 255, 255),
+            1,
             cv2.LINE_AA,
         )
 
@@ -3360,11 +4064,162 @@ def read_virtual_line_sensors(
         "steeringError": steering_error,
     }
 
+def calculate_geometric_steering_error(
+    geometric_guidance,
+    frame_width,
+):
+    """
+    Converte a trajetória geométrica em erro de direção normalizado.
+
+    Usa o NEAR realmente observado quando disponível.
+    Durante um gap, usa o NEAR projetado geometricamente.
+
+    Uma saída lateral inequívoca possui prioridade sobre o
+    heading local para antecipar curvas fortes de 90 graus.
+    """
+
+    near_point = geometric_guidance.get(
+        "nearPoint"
+    )
+
+    if near_point is None:
+        near_point = geometric_guidance.get(
+            "virtualNearPoint"
+        )
+
+    lateral_exit_target = geometric_guidance.get(
+        "lateralExitTarget"
+    )
+
+    center_x = (
+        float(frame_width - 1) / 2.0
+    )
+
+    # Se existe uma saída lateral inequívoca, ela é uma
+    # indicação mais forte da direção da curva que o heading local.
+    # Isso também permite iniciar a curva mesmo se o NEAR
+    # desaparecer naquele frame.
+    if lateral_exit_target is not None:
+        exit_x = float(
+            lateral_exit_target[0]
+        )
+
+        if exit_x < center_x:
+            steering_error = -1.0
+        else:
+            steering_error = 1.0
+
+        heading_angle = geometric_guidance.get(
+            "farHeadingDeg"
+        )
+
+        if near_point is not None:
+            half_width = max(
+                1.0,
+                center_x,
+            )
+
+            near_position = (
+                float(near_point[0])
+                - center_x
+            ) / half_width
+
+            near_position = max(
+                -1.0,
+                min(1.0, near_position),
+            )
+
+        else:
+            near_position = None
+
+        return {
+            "nearPosition": (
+                float(near_position)
+                if near_position is not None
+                else None
+            ),
+            "headingAngle": (
+                float(heading_angle)
+                if heading_angle is not None
+                else None
+            ),
+            "steeringError": float(
+                steering_error
+            ),
+        }
+
+    # Sem saída lateral, precisamos de NEAR real ou projetado.
+    if near_point is None:
+        return {
+            "nearPosition": None,
+            "headingAngle": None,
+            "steeringError": None,
+        }
+
+    half_width = max(
+        1.0,
+        center_x,
+    )
+
+    near_position = (
+        float(near_point[0])
+        - center_x
+    ) / half_width
+
+    near_position = max(
+        -1.0,
+        min(1.0, near_position),
+    )
+
+    heading_angle = geometric_guidance.get(
+        "farHeadingDeg"
+    )
+
+    if heading_angle is None:
+        steering_error = near_position
+
+    else:
+        heading_normalized = (
+            float(heading_angle)
+            / VIRTUAL_HEADING_FULL_SCALE_DEG
+        )
+
+        heading_normalized = max(
+            -1.0,
+            min(1.0, heading_normalized),
+        )
+
+        steering_error = (
+            near_position
+            + VIRTUAL_HEADING_GAIN
+            * heading_normalized
+        )
+
+    steering_error = max(
+        -1.0,
+        min(1.0, steering_error),
+    )
+
+    return {
+        "nearPosition": float(
+            near_position
+        ),
+        "headingAngle": (
+            float(heading_angle)
+            if heading_angle is not None
+            else None
+        ),
+        "steeringError": float(
+            steering_error
+        ),
+    }
 
 def calculate_line_follower_command(
     processed_line_mask,
     green_detection_result,
+    geometric_guidance,
     direcao_verde_ativa="NENHUMA",
+    gap_forward_active=False,
 ):
     """
     Primeiro teste físico do novo seguidor.
@@ -3382,22 +4237,43 @@ def calculate_line_follower_command(
         direcao_verde_ativa,
     )
 
-    steering_error = sensors["steeringError"]
+    geometric_control = (
+        calculate_geometric_steering_error(
+            geometric_guidance,
+            processed_line_mask.shape[1],
+        )
+    )
 
-        # --------------------------------------------------------
+    if direcao_verde_ativa != "NENHUMA":
+        steering_error = sensors[
+            "steeringError"
+        ]
+        control_source = "virtual-green"
+
+    elif gap_forward_active:
+        steering_error = 0.0
+        control_source = "gap-forward"
+
+    else:
+        steering_error = geometric_control[
+            "steeringError"
+        ]
+        control_source = "geometric"
+
+    # --------------------------------------------------------
     # CONTROLE DE MOTORES
     # --------------------------------------------------------
 
-    BASE_POWER = 0.68
-    MAX_POWER = 0.78
+    BASE_POWER = 0.69
+    MAX_POWER = 0.75
 
     # A partir daqui a curva é forte o suficiente
     # para exigir pivot.
-    PIVOT_THRESHOLD = 0.36
+    PIVOT_THRESHOLD = 0.25
 
     # Potência durante pivot.
-    PIVOT_OUTER_POWER = 0.75 #roda de giro
-    PIVOT_INNER_POWER = 0.0 #roda de dentro desligada..
+    PIVOT_OUTER_POWER = 0.75#roda de giro
+    PIVOT_INNER_POWER = 0.2 #roda de dentro desligada..
 
     if steering_error is None:
         left_power = 0.0
@@ -3460,7 +4336,17 @@ def calculate_line_follower_command(
         "nearPosition": sensors["nearPosition"],
 
         "headingAngle": sensors["headingAngle"],
-        "steeringError": sensors["steeringError"],
+        "steeringError": steering_error,
+          "geometricNearPosition": geometric_control[
+            "nearPosition"
+        ],
+        "geometricHeadingAngle": geometric_control[
+            "headingAngle"
+        ],
+        "geometricSteeringError": geometric_control[
+            "steeringError"
+        ],
+        "controlSource": control_source,
     }
 
 def virtual_row_position_to_point(
@@ -3816,6 +4702,9 @@ def save_line_status(
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
+            "lineControlSource": str(
+                line_follower_command.get("controlSource", "unknown")
+            ),
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
             "specularRepairPixels": max(
@@ -4038,6 +4927,13 @@ def main():
         curva_verde_iniciada = False
         quadros_centralizado_verde = 0
 
+         # Estado persistente da travessia de gap.
+        gap_forward_active = False
+        gap_forward_frames = 0
+        gap_reacquire_frames = 0
+        gap_line_lost_seen = False
+        gap_had_real_line = False
+
         # Impede que o mesmo marcador verde seja aceito novamente.
         verde_armado = True
         quadros_sem_verde = 0
@@ -4203,13 +5099,113 @@ def main():
                 else:
                     quadros_sem_verde = 0
 
+            geometric_started = time.perf_counter()
+
+            geometric_guidance = (
+                extract_geometric_line_path(
+                    line_candidate_mask
+                )
+            )
+
+            geometric_guidance[
+                "processingMs"
+            ] = (
+                time.perf_counter()
+                - geometric_started
+            ) * 1000.0
+
+            geometric_heading = geometric_guidance.get(
+                "farHeadingDeg"
+            )
+
+            lateral_exit_target = geometric_guidance.get(
+                "lateralExitTarget"
+            )
+
+            real_near_point = geometric_guidance.get(
+                "nearPoint"
+            )
+
+            virtual_near_point = geometric_guidance.get(
+                "virtualNearPoint"
+            )
+
+            trace_folded_back = (
+                geometric_heading is not None
+                and abs(float(geometric_heading)) > 90.0
+            )
+
+            if (
+                not gap_forward_active
+                and direcao_verde_ativa == "NENHUMA"
+                and gap_had_real_line
+                and real_near_point is None
+                and virtual_near_point is None
+                and lateral_exit_target is None
+            ):
+                gap_forward_active = True
+                gap_forward_frames = 0
+                gap_reacquire_frames = 0
+                gap_line_lost_seen = True
+                
+
+            if gap_forward_active:
+                gap_forward_frames += 1
+
+                # Marca quando a linha antiga realmente desapareceu do NEAR.
+                if real_near_point is None:
+                    gap_line_lost_seen = True
+
+                # Só permite considerar a linha como reaquirida depois
+                # que o robô realmente passou pela região sem linha.
+                if (
+                    gap_line_lost_seen
+                    and (
+                        virtual_near_point is not None
+                        or (
+                            real_near_point is not None
+                            and not trace_folded_back
+                        )
+                    )
+                ):
+                    gap_reacquire_frames += 1
+                else:
+                    gap_reacquire_frames = 0
+
+                # A nova linha foi encontrada por quadros consecutivos.
+                if (
+                    gap_reacquire_frames
+                    >= GEOMETRIC_GAP_REACQUIRE_FRAMES
+                ):
+                    gap_forward_active = False
+                    gap_forward_frames = 0
+                    gap_reacquire_frames = 0
+                    gap_line_lost_seen = False
+
+                # Segurança: não segue reto indefinidamente.
+                elif (
+                    gap_forward_frames
+                    >= GEOMETRIC_GAP_FORWARD_MAX_FRAMES
+                ):
+                    gap_forward_active = False
+                    gap_forward_frames = 0
+                    gap_reacquire_frames = 0
+                    gap_line_lost_seen = False
+
+            gap_had_real_line = (
+                real_near_point is not None
+            )
 
             line_control_started = time.perf_counter()
 
-            line_follower_command = calculate_line_follower_command(
-                line_candidate_mask,
-                green_status,
-                direcao_verde_ativa,
+            line_follower_command = (
+                calculate_line_follower_command(
+                    line_candidate_mask,
+                    green_status,
+                    geometric_guidance,
+                    direcao_verde_ativa,
+                    gap_forward_active,
+                )
             )
 
             near_position = line_follower_command["nearPosition"]
@@ -4271,13 +5267,15 @@ def main():
             ) * 1000.0
 
             line_follower_command["lineProcessingMs"] = (
-                line_vision_ms + line_control_ms
+                line_vision_ms
+                + geometric_guidance["processingMs"]
+                + line_control_ms
             )
-            line_timings["lineProcessingMs"] = line_follower_command[
-                "lineProcessingMs"
-            ]
-            
-            
+
+            line_timings["lineProcessingMs"] = (
+                line_follower_command["lineProcessingMs"]
+            )
+
             if line_ipc_enabled:
                 # Somente a CAM0/inferior publica o ponto de extensão 0/0.
                 save_line_status(
@@ -4318,15 +5316,6 @@ def main():
                         os.unlink(GREEN_CAPTURE_REQUEST_PATH)
                     except FileNotFoundError:
                         pass
-            geometric_started = time.perf_counter()
-
-            geometric_guidance = extract_geometric_line_path(
-                line_candidate_mask
-            )
-
-            geometric_guidance["processingMs"] = (
-                time.perf_counter() - geometric_started
-            ) * 1000.0
 
             display_mode = get_display_mode()
             frame = create_display_frame(

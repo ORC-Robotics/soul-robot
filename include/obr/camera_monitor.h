@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 enum class GreenInterpretation
 {
@@ -19,6 +20,7 @@ struct CameraLineSnapshot
     bool sourceFresh = false;
     double lineFollowerLeftPower = 0.0;
     double lineFollowerRightPower = 0.0;
+    std::string lineControlSource = "unknown";
 
     bool greenPathBlackValid = false;
     std::uint64_t greenCandidateCount = 0;

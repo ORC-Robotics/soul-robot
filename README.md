@@ -222,9 +222,9 @@ O comportamento esperado é:
   `0.61` depois de duas amostras recentes do encoder confirmarem movimento no
   mesmo sentido, com taxa de pelo menos `20 cont/s`;
 - três amostras recentes inválidas fazem a roda voltar ao estado de partida;
-- o modo Manual do dashboard usa `drive_raw`: é diagnóstico direto, sem piso
-  START/RUN e sem sincronismo, portanto permite testar valores entre `0.05` e
-  `1.00` por lado;
+- o controle comum do modo Manual usa `drive`, com o perfil START/RUN e
+  sincronismo em avanço reto; somente o ajuste independente usa `drive_raw`
+  para testar diretamente valores entre `-1.00` e `1.00` por lado;
 - o sincronismo por encoder atua somente em avanço reto, com os dois lados no
   mesmo sentido e praticamente com o mesmo comando; curvas e giros preservam o
   diferencial pedido pela visão;
@@ -415,10 +415,11 @@ No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
 ré; `A/D` giram os dois lados em sentidos opostos e têm prioridade sobre `W/S`.
 Assim, uma combinação como `W+A` executa o giro completo, sem zerar um lado.
 Os limites separados de reta e
-curva começam em `0.05`, podem ser ajustados até `1.0` e ficam salvos no navegador. Eles usam o caminho
-manual direto (`drive_raw`) para permitir ensaios abaixo do piso autônomo. Soltar a tecla, trocar
-de janela ou ocultar a página zera os comandos. O teclado não movimenta o robô
-nos modos Parado, Autônomo ou E-Stop.
+curva começam em `0.05`, podem ser ajustados até `1.0` e ficam salvos no navegador.
+Eles usam o caminho operacional (`drive`); ao avançar em linha reta, o
+`MotorController` sincroniza os lados pelos encoders. Soltar a tecla, trocar de
+janela ou ocultar a página zera os comandos. O teclado não movimenta o robô nos
+modos Parado, Autônomo ou E-Stop.
 
 Os campos de ajuste exato permitem comandar esquerda e direita separadamente em
 passos de `0.01`. O painel de sincronização compara o módulo das taxas dos dois
@@ -430,11 +431,12 @@ diagnóstico. Use-o apenas com rodas suspensas ao testar valores baixos.
 A ESP32 recalcula as taxas dos encoders no mesmo período de `100 ms` da UART para
 que cada atualização da escala use uma janela de velocidade realmente nova.
 
-Os sliders e o WASD são manuais e diretos. Já os comandos autônomos usam o perfil
-START/RUN: zero permanece parada; uma roda parada parte em `0.67`; após
-confirmação individual do encoder ela pode manter `0.61`. Giros em sentidos
-opostos não recebem sincronização. A missão isolada de giro de 90° usa comando
-lógico `0.01`, inicialmente convertido em aproximadamente `0.67 / -0.67`.
+Os sliders e o WASD usam o perfil START/RUN: zero permanece parada; uma roda
+parada parte em `0.67`; após confirmação individual do encoder ela pode manter
+`0.61`. Giros em sentidos opostos não recebem sincronização. O ajuste
+independente de Manutenção continua direto. A missão isolada de giro de 90° usa
+comando lógico `0.01`, inicialmente convertido em aproximadamente
+`0.67 / -0.67`.
 
 ### Segue-faixa autônomo
 

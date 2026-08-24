@@ -527,6 +527,24 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
         {
             next.raspberrySystemReady = std::stoi(values[28]) != 0;
         }
+        if (values.size() >= 32)
+        {
+            next.motorCommandAgeMs = std::stoll(values[29]);
+            next.motorWatchdogTimedOut = std::stoi(values[30]) != 0;
+            const int motorControlSource = std::stoi(values[31]);
+            if (motorControlSource == 1)
+            {
+                next.motorControlSource = "dashboard";
+            }
+            else if (motorControlSource == 2)
+            {
+                next.motorControlSource = "raspberry";
+            }
+            else if (motorControlSource == 0)
+            {
+                next.motorControlSource = "none";
+            }
+        }
 
         std::lock_guard<std::mutex> lock(telemetryMutex_);
         next.startButtonPressSequence = telemetry_.startButtonPressSequence;

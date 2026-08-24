@@ -241,6 +241,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.sourceFresh = false;
     snapshot.lineFollowerLeftPower = 0.0;
     snapshot.lineFollowerRightPower = 0.0;
+    snapshot.lineControlSource = "unavailable";
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
@@ -297,6 +298,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
 
         CameraLineSnapshot candidate;
         std::string greenInterpretation;
+        std::string lineControlSource;
         if (!tryGetJsonNumber(
                 json,
                 "lineFollowerLeftPower",
@@ -327,6 +329,13 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         {
             return unavailableLineSnapshot(
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
+        }
+
+        // A origem do controle é opcional para manter compatibilidade com um
+        // processo de câmera antigo. Este campo serve somente ao diagnóstico.
+        if (tryGetJsonString(json, "lineControlSource", lineControlSource))
+        {
+            candidate.lineControlSource = lineControlSource;
         }
 
         const bool valuesValid =

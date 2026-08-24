@@ -41,6 +41,9 @@ struct Esp32TelemetrySnapshot
     bool motorSleepPinHigh = false;
     bool emergencyStopActive = false;
     bool calibrationActive = false;
+    long long motorCommandAgeMs = -1;
+    bool motorWatchdogTimedOut = false;
+    std::string motorControlSource = "unknown";
     bool calibrationStatusKnown = false;
     bool lastCalibrationSucceeded = false;
     long long esp32UptimeMs = 0;

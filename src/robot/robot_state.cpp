@@ -35,7 +35,15 @@ const char* autonomousMissionName(AutonomousMission mission)
 RobotSnapshot RobotState::snapshot() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    return state_;
+    RobotSnapshot snapshot = state_;
+    snapshot.commandAgeMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - lastCommand_)
+            .count();
+    snapshot.commandTimedOut =
+        (snapshot.mode == "manual" || snapshot.mode == "autonomous") &&
+        snapshot.commandAgeMs > config::kCommandTimeoutMs;
+    return snapshot;
 }
 
 void RobotState::start()

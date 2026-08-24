@@ -1302,7 +1302,7 @@ std::string DashboardServer::dashboardHtml()
                     <label for="manualTurnPower"><span>Velocidade em curva de teste</span><output id="manualTurnPowerValue">0.69</output></label>
                     <input id="manualTurnPower" type="range" min="0.05" max="1.00" step="0.01" value="0.69">
                   </div>
-                  <p class="manual-test-note">Os controles manuais enviam o duty exato entre 0,05 e 1,00. Eles não alteram a velocidade autônoma.</p>
+                  <p class="manual-test-note">O controle manual usa o perfil operacional. Em reta, o sincronismo pelos encoders corrige a diferença entre os lados.</p>
                 </div>
               </div>
             </details>
@@ -1413,6 +1413,15 @@ std::string DashboardServer::dashboardHtml()
       </div>
 
       <section class="diagnostic-tools">
+        <article id="independentMotorControl" class="card section-card command-card">
+          <div class="section-header"><h3 class="section-title">Acionamento independente dos motores</h3></div>
+          <div class="requested-drive">
+            <div class="request-value"><span>Lado esquerdo · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="left" data-delta="-0.01" aria-label="Reduzir lado esquerdo em 0,01">−.01</button><input id="leftValue" aria-label="Potência exata do lado esquerdo" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="left" data-delta="0.01" aria-label="Aumentar lado esquerdo em 0,01">+.01</button></div></div>
+            <div class="request-value"><span>Lado direito · ajuste exato</span><div class="request-adjustment"><button class="trim-button" data-side="right" data-delta="-0.01" aria-label="Reduzir lado direito em 0,01">−.01</button><input id="rightValue" aria-label="Potência exata do lado direito" type="number" min="-1" max="1" step="0.01" value="0.00" inputmode="decimal"><button class="trim-button" data-side="right" data-delta="0.01" aria-label="Aumentar lado direito em 0,01">+.01</button></div></div>
+          </div>
+          <div class="safety-note">Ative o modo Manual antes do teste e mantenha as rodas suspensas. Cada lado usa PWM direto; clamp, E-Stop e timeouts continuam ativos.</div>
+        </article>
+
         <article class="card section-card diagnostic-oled-card">
           <details class="oled-editor">
             <summary>Personalizar OLED pela Raspberry</summary>
@@ -1481,6 +1490,8 @@ std::string DashboardServer::dashboardHtml()
     const connection = element("connection");
     const manualDrivePower = element("manualDrivePower");
     const manualTurnPower = element("manualTurnPower");
+    const leftValue = element("leftValue");
+    const rightValue = element("rightValue");
     const cameraFeeds = element("cameraFeeds");
     const cameraMetadata = element("cameraMetadata");
     const cameraTechnicalMetadata = element("cameraTechnicalMetadata");
@@ -2082,16 +2093,44 @@ std::string DashboardServer::dashboardHtml()
 
       requestedLeft = scaleOperationalAxis(leftAxis, selectedPower);
       requestedRight = scaleOperationalAxis(rightAxis, selectedPower);
-      // O modo manual é destinado a testes e deve preservar a potência escolhida.
-      // O perfil START/RUN permanece exclusivo do controle autônomo.
-      rawDiagnosticDrive = true;
+      // O controle manual comum usa o perfil START/RUN e permite o sincronismo
+      // pelos encoders durante a marcha reta. O ajuste independente permanece direto.
+      rawDiagnosticDrive = false;
+      leftValue.value = requestedLeft.toFixed(2);
+      rightValue.value = requestedRight.toFixed(2);
       sendCurrentDrive();
+    }
+
+    function updateDriveFromExactInputs() {
+      const parsedLeft = Number(leftValue.value);
+      const parsedRight = Number(rightValue.value);
+      if (!Number.isFinite(parsedLeft) || !Number.isFinite(parsedRight)) {
+        leftValue.value = requestedLeft.toFixed(2);
+        rightValue.value = requestedRight.toFixed(2);
+        return;
+      }
+      requestedLeft = clamp(parsedLeft);
+      requestedRight = clamp(parsedRight);
+      rawDiagnosticDrive = true;
+      leftValue.value = requestedLeft.toFixed(2);
+      rightValue.value = requestedRight.toFixed(2);
+      sendCurrentDrive();
+    }
+
+    function adjustExactSide(side, delta) {
+      const target = side === "left" ? leftValue : rightValue;
+      const currentValue = Number(target.value);
+      if (!Number.isFinite(currentValue)) return;
+      target.value = (Math.round(clamp(currentValue + delta) * 100) / 100).toFixed(2);
+      updateDriveFromExactInputs();
     }
 
     function resetDrive() {
       requestedLeft = 0;
       requestedRight = 0;
       rawDiagnosticDrive = false;
+      leftValue.value = "0.00";
+      rightValue.value = "0.00";
       sendCurrentDrive();
     }
 
@@ -2747,6 +2786,11 @@ std::string DashboardServer::dashboardHtml()
     });
     manualDrivePower.addEventListener("input", updateManualPowerSettings);
     manualTurnPower.addEventListener("input", updateManualPowerSettings);
+    leftValue.addEventListener("change", updateDriveFromExactInputs);
+    rightValue.addEventListener("change", updateDriveFromExactInputs);
+    document.querySelectorAll("#independentMotorControl [data-side][data-delta]").forEach(button => {
+      button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
+    });
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
