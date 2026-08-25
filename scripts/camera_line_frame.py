@@ -4,6 +4,7 @@ Somente o papel ``down`` publica o ponto de extensão ainda zerado do seguidor.
 """
 
 import argparse
+import heapq
 import json
 import math
 import os
@@ -2266,12 +2267,28 @@ GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX = 50
 GEOMETRIC_PATH_BAND_HALF_HEIGHT = 2
 GEOMETRIC_PATH_LOCAL_HEADING_POINTS = 5
 
+# Reduz somente o crop usado pelo diagnóstico de centerline.
+# A segmentação e o controle continuam na resolução original.
+GEOMETRIC_CENTERLINE_SCALE = 0.33
+
+# Quantidade máxima de pontos usada para suavizar as direções na bifurcação.
+GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS = 8
+
+# Diferenças menores ou iguais a este valor encerram o path na bifurcação.
+GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE = 0.05
+
+# Margem do frame original que identifica terminais reais da centerline.
+GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX = 6.0
+
+
 # Distância aproximada entre pontos consecutivos da trajetória.
 GEOMETRIC_TRACE_STEP_PX = 10.0
 
 # Permite ao rastreador procurar o centro da faixa um pouco
 # antes ou depois da distância nominal de avanço.
 GEOMETRIC_TRACE_SEARCH_RANGE_PX = 5.0
+
+GEOMETRIC_TRACE_MAX_BACKTRACK_Y_PX = 10.0
 
 # Permite inclusive uma mudança de 90 graus entre dois passos.
 # Nunca permite continuar para trás.
@@ -3027,10 +3044,26 @@ def find_next_geometric_path_point(
         local_x,
     ].astype(np.float32)
 
+    # A distância ao contorno é medida em pixels e pode crescer
+    # muito dentro de regiões pretas largas. Normalizamos somente
+    # entre os candidatos geometricamente válidos para que uma
+    # grande massa preta não domine a continuidade da trajetória.
+    maximum_center_strength = float(
+        np.max(
+            center_strength[valid]
+        )
+    )
+
+    if maximum_center_strength > 0.0:
+        center_strength = (
+            center_strength
+            / maximum_center_strength
+        )
+
     # Prioridades:
     #
-    # 1. ficar no centro físico da faixa;
-    # 2. manter continuidade de direção quando possível;
+    # 1. manter continuidade com a direção atual da faixa;
+    # 2. preferir o centro físico entre caminhos coerentes;
     # 3. manter aproximadamente o passo nominal.
     score = (
         center_strength
@@ -3409,6 +3442,465 @@ def calculate_geometric_far_heading(path_points):
         )
     )
 
+def build_geometric_centerline_mask(
+    processed_line_mask,
+    start_point,
+):
+    """
+    Extrai, em resolução reduzida, o eixo central do componente
+    preto conectado ao ponto inicial da trajetória.
+
+    O thinning é executado somente no bounding box do
+    componente. Os metadados retornados permitem converter
+    coordenadas entre o crop reduzido e o frame original.
+    """
+
+    empty_centerline = np.zeros(
+        (0, 0),
+        dtype=np.uint8,
+    )
+
+    if start_point is None:
+        return empty_centerline, None
+
+    binary_mask = (
+        processed_line_mask > 0
+    ).astype(np.uint8)
+
+    _, labels = cv2.connectedComponents(
+        binary_mask,
+        connectivity=8,
+    )
+
+    height, width = processed_line_mask.shape[:2]
+
+    start_x = max(
+        0,
+        min(
+            width - 1,
+            int(round(start_point[0])),
+        ),
+    )
+
+    start_y = max(
+        0,
+        min(
+            height - 1,
+            int(round(start_point[1])),
+        ),
+    )
+
+    component_label = int(
+        labels[start_y, start_x]
+    )
+
+    # O startPoint é uma referência geométrica e pode cair
+    # alguns pixels fora da máscara por arredondamento,
+    # perspectiva ou pequenas variações da segmentação.
+    # Se isso acontecer, procura o pixel ativo mais próximo
+    # dentro de uma vizinhança pequena.
+    if component_label == 0:
+        search_radius = 8
+
+        search_x0 = max(
+            0,
+            start_x - search_radius,
+        )
+
+        search_y0 = max(
+            0,
+            start_y - search_radius,
+        )
+
+        search_x1 = min(
+            width,
+            start_x + search_radius + 1,
+        )
+
+        search_y1 = min(
+            height,
+            start_y + search_radius + 1,
+        )
+
+        local_labels = labels[
+            search_y0:search_y1,
+            search_x0:search_x1,
+        ]
+
+        active_local_y, active_local_x = np.nonzero(
+            local_labels
+        )
+
+        if active_local_x.size == 0:
+            return empty_centerline, None
+
+        global_x = (
+            active_local_x
+            + search_x0
+        )
+
+        global_y = (
+            active_local_y
+            + search_y0
+        )
+
+        nearest_index = int(
+            np.argmin(
+                (global_x - start_x) ** 2
+                + (global_y - start_y) ** 2
+            )
+        )
+
+        nearest_x = int(
+            global_x[nearest_index]
+        )
+
+        nearest_y = int(
+            global_y[nearest_index]
+        )
+
+        component_label = int(
+            labels[nearest_y, nearest_x]
+        )
+
+    component_mask = np.zeros(
+        processed_line_mask.shape,
+        dtype=np.uint8,
+    )
+
+    component_mask[
+        labels == component_label
+    ] = 255
+
+    x, y, box_width, box_height = cv2.boundingRect(
+        component_mask
+    )
+
+    if box_width <= 0 or box_height <= 0:
+        return empty_centerline, None
+
+    # Pequena margem preserva fundo ao redor do componente
+    # para o thinning se comportar como no frame completo.
+    crop_margin = 2
+
+    x0 = max(
+        0,
+        x - crop_margin,
+    )
+
+    y0 = max(
+        0,
+        y - crop_margin,
+    )
+
+    x1 = min(
+        width,
+        x + box_width + crop_margin,
+    )
+
+    y1 = min(
+        height,
+        y + box_height + crop_margin,
+    )
+
+    component_crop = component_mask[
+        y0:y1,
+        x0:x1,
+    ].copy()
+
+    crop_height, crop_width = component_crop.shape[:2]
+    reduced_width = max(
+        1,
+        int(round(
+            crop_width * GEOMETRIC_CENTERLINE_SCALE
+        )),
+    )
+    reduced_height = max(
+        1,
+        int(round(
+            crop_height * GEOMETRIC_CENTERLINE_SCALE
+        )),
+    )
+
+    reduced_component_crop = cv2.resize(
+        component_crop,
+        (reduced_width, reduced_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
+
+    reduced_centerline = cv2.ximgproc.thinning(
+        reduced_component_crop,
+        thinningType=cv2.ximgproc.THINNING_ZHANGSUEN,
+    )
+
+    transform = {
+        "cropX0": x0,
+        "cropY0": y0,
+        "cropWidth": crop_width,
+        "cropHeight": crop_height,
+        "frameWidth": width,
+        "reducedWidth": reduced_width,
+        "reducedHeight": reduced_height,
+        "scaleX": float(reduced_width) / float(crop_width),
+        "scaleY": float(reduced_height) / float(crop_height),
+    }
+
+    return reduced_centerline, transform
+
+
+def select_geometric_centerline_branch_path(candidate_paths):
+    """Seleciona bifurcações pela continuidade da direção de chegada."""
+
+    while len(candidate_paths) > 1:
+        shortest_length = min(len(path) for path in candidate_paths)
+        common_length = 0
+        for index in range(shortest_length):
+            reference_point = candidate_paths[0][index]
+            if any(path[index] != reference_point for path in candidate_paths[1:]):
+                break
+            common_length += 1
+
+        if common_length == 0:
+            return []
+
+        junction_index = common_length - 1
+        junction = candidate_paths[0][junction_index]
+        path_to_junction = candidate_paths[0][:common_length]
+
+        if common_length >= shortest_length:
+            return path_to_junction
+
+        previous_index = max(
+            0, junction_index - GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS,
+        )
+        previous_point = candidate_paths[0][previous_index]
+        incoming_x = float(junction[0] - previous_point[0])
+        incoming_y = float(junction[1] - previous_point[1])
+        incoming_length = math.hypot(incoming_x, incoming_y)
+
+        if incoming_length <= 0.0:
+            return path_to_junction
+
+        branch_groups = {}
+        for path in candidate_paths:
+            branch_groups.setdefault(path[common_length], []).append(path)
+
+        ranked_groups = []
+        for group_paths in branch_groups.values():
+            branch_common_length = common_length
+            branch_shortest_length = min(len(path) for path in group_paths)
+            while branch_common_length < branch_shortest_length:
+                reference_point = group_paths[0][branch_common_length]
+                if any(
+                    path[branch_common_length] != reference_point
+                    for path in group_paths[1:]
+                ):
+                    break
+                branch_common_length += 1
+
+            future_index = min(
+                junction_index + GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS,
+                branch_common_length - 1,
+            )
+            future_point = group_paths[0][future_index]
+            outgoing_x = float(future_point[0] - junction[0])
+            outgoing_y = float(future_point[1] - junction[1])
+            outgoing_length = math.hypot(outgoing_x, outgoing_y)
+            alignment = (
+                (incoming_x * outgoing_x + incoming_y * outgoing_y)
+                / (incoming_length * outgoing_length)
+                if outgoing_length > 0.0
+                else -1.0
+            )
+            ranked_groups.append((alignment, group_paths))
+
+        ranked_groups.sort(key=lambda item: item[0], reverse=True)
+        if not ranked_groups:
+            return path_to_junction
+        if (
+            len(ranked_groups) >= 2
+            and ranked_groups[0][0] - ranked_groups[1][0]
+            <= GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE
+        ):
+            return path_to_junction
+
+        candidate_paths = ranked_groups[0][1]
+
+    return candidate_paths[0] if candidate_paths else []
+
+
+def truncate_centerline_path_at_frame_border(
+    path_points,
+    transform,
+    frame_border_margin_px,
+):
+    """Encerra o path no primeiro contato com uma borda terminal do frame."""
+
+    if transform is None:
+        return path_points
+
+    crop_x0 = float(transform["cropX0"])
+    crop_y0 = float(transform["cropY0"])
+    scale_x = float(transform["scaleX"])
+    scale_y = float(transform["scaleY"])
+    frame_width = float(transform["frameWidth"])
+
+    for index, (reduced_x, reduced_y) in enumerate(path_points):
+        full_x = crop_x0 + float(reduced_x) / scale_x
+        full_y = crop_y0 + float(reduced_y) / scale_y
+
+        if (
+            full_y <= frame_border_margin_px
+            or full_x <= frame_border_margin_px
+            or full_x >= frame_width - 1.0 - frame_border_margin_px
+        ):
+            return path_points[:index + 1]
+
+    return path_points
+
+
+def find_geometric_centerline_path(
+    centerline_mask,
+    start_point,
+    centerline_transform=None,
+):
+    """
+    Encontra uma rota contínua entre os endpoints da centerline.
+
+    O resultado é usado somente pelo overlay de diagnóstico.
+    """
+
+    if start_point is None:
+        return []
+
+    active_y, active_x = np.nonzero(centerline_mask)
+    if active_x.size == 0:
+        return []
+
+    start_x = float(start_point[0])
+    start_y = float(start_point[1])
+    nearest_index = int(
+        np.argmin(
+            (active_x - start_x) ** 2 + (active_y - start_y) ** 2
+        )
+    )
+    start_pixel = (
+        int(active_x[nearest_index]),
+        int(active_y[nearest_index]),
+    )
+
+    active_pixels = set(zip(active_x.tolist(), active_y.tolist()))
+    distances = {start_pixel: 0.0}
+    parents = {start_pixel: None}
+    pending = [(0.0, start_pixel)]
+    visited = set()
+    farthest_pixel = start_pixel
+    farthest_distance = 0.0
+    diagonal_cost = math.sqrt(2.0)
+
+    while pending:
+        current_distance, current_pixel = heapq.heappop(pending)
+        if current_pixel in visited:
+            continue
+        visited.add(current_pixel)
+
+        if current_distance > farthest_distance:
+            farthest_pixel = current_pixel
+            farthest_distance = current_distance
+
+        current_x, current_y = current_pixel
+
+        for delta_y in (-1, 0, 1):
+            for delta_x in (-1, 0, 1):
+                if delta_x == 0 and delta_y == 0:
+                    continue
+
+                neighbor = (current_x + delta_x, current_y + delta_y)
+                if (
+                    neighbor not in active_pixels
+                    or neighbor in visited
+                ):
+                    continue
+
+                step_cost = (
+                    diagonal_cost
+                    if delta_x != 0 and delta_y != 0
+                    else 1.0
+                )
+                candidate_distance = current_distance + step_cost
+
+                if candidate_distance >= distances.get(
+                    neighbor,
+                    math.inf,
+                ):
+                    continue
+
+                distances[neighbor] = candidate_distance
+                parents[neighbor] = current_pixel
+                heapq.heappush(pending, (candidate_distance, neighbor))
+
+    endpoint_pixels = []
+    for current_x, current_y in visited:
+        current_pixel = (current_x, current_y)
+        if current_pixel == start_pixel:
+            continue
+
+        connection_count = 0
+        for delta_y in (-1, 0, 1):
+            for delta_x in (-1, 0, 1):
+                if delta_x == 0 and delta_y == 0:
+                    continue
+                neighbor = (current_x + delta_x, current_y + delta_y)
+                if neighbor in visited:
+                    connection_count += 1
+
+        if connection_count == 1:
+            endpoint_pixels.append(current_pixel)
+
+    endpoint_paths = []
+    endpoint_path_keys = set()
+    for endpoint_pixel in endpoint_pixels:
+        endpoint_path = []
+        current_pixel = endpoint_pixel
+        while current_pixel is not None:
+            endpoint_path.append(current_pixel)
+            current_pixel = parents[current_pixel]
+        endpoint_path.reverse()
+        endpoint_path = truncate_centerline_path_at_frame_border(
+            endpoint_path,
+            centerline_transform,
+            GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX,
+        )
+        endpoint_path_key = tuple(endpoint_path)
+
+        if endpoint_path_key not in endpoint_path_keys:
+            endpoint_path_keys.add(endpoint_path_key)
+            endpoint_paths.append(endpoint_path)
+
+    if endpoint_paths:
+        return select_geometric_centerline_branch_path(endpoint_paths)
+
+    # Ciclos sem endpoint preservam o fallback geodésico anterior.
+    path = []
+    current_pixel = farthest_pixel
+
+    while current_pixel is not None:
+        path.append(current_pixel)
+        current_pixel = parents[current_pixel]
+
+    path.reverse()
+    return path
+
+def sample_centerline_extremes(path_points):
+    """Retorna os extremos NEAR e FAR do caminho geodésico."""
+
+    if not path_points:
+        return None, None
+
+    return (
+        path_points[0],
+        path_points[-1],
+    )
 
 def extract_geometric_line_path(processed_line_mask):
     """
@@ -3712,6 +4204,167 @@ def draw_geometric_line_overlay(
             cv2.LINE_AA,
         )
 
+    # A centerline precisa ser calculada independentemente de
+    # findContours ter retornado algum contorno neste frame.
+    centerline_started = time.perf_counter()
+
+    reduced_centerline_mask, centerline_transform = (
+        build_geometric_centerline_mask(
+            processed_line_mask,
+            geometric_guidance.get(
+                "startPoint"
+            ),
+        )
+    )
+
+    # Reconstrói o skeleton no tamanho do crop original somente
+    # para preservar o overlay amarelo. O Dijkstra nunca usa esta máscara.
+    centerline_display = np.zeros_like(
+        processed_line_mask
+    )
+
+    if centerline_transform is not None:
+        crop_x0 = centerline_transform["cropX0"]
+        crop_y0 = centerline_transform["cropY0"]
+        crop_width = centerline_transform["cropWidth"]
+        crop_height = centerline_transform["cropHeight"]
+
+        restored_centerline_crop = cv2.resize(
+            reduced_centerline_mask,
+            (crop_width, crop_height),
+            interpolation=cv2.INTER_NEAREST,
+        )
+        centerline_display[
+            crop_y0:crop_y0 + crop_height,
+            crop_x0:crop_x0 + crop_width,
+        ] = restored_centerline_crop
+
+    # Engrossa somente a visualização para que a centerline
+    # seja fácil de enxergar no stream.
+    centerline_display = cv2.dilate(
+        centerline_display,
+        np.ones(
+            (3, 3),
+            dtype=np.uint8,
+        ),
+    )
+
+    centerline_ms = (
+        time.perf_counter()
+        - centerline_started
+    ) * 1000.0
+
+    frame[
+        centerline_display > 0
+    ] = (
+        0,
+        255,
+        255,
+    )
+
+    centerline_path_started = time.perf_counter()
+
+    centerline_path = []
+
+    if centerline_transform is not None:
+        start_point = geometric_guidance.get(
+            "startPoint"
+        )
+        scale_x = centerline_transform["scaleX"]
+        scale_y = centerline_transform["scaleY"]
+        reduced_width = centerline_transform["reducedWidth"]
+        reduced_height = centerline_transform["reducedHeight"]
+
+        reduced_start_point = (
+            max(
+                0.0,
+                min(
+                    float(reduced_width - 1),
+                    (float(start_point[0]) - crop_x0) * scale_x,
+                ),
+            ),
+            max(
+                0.0,
+                min(
+                    float(reduced_height - 1),
+                    (float(start_point[1]) - crop_y0) * scale_y,
+                ),
+            ),
+        )
+
+        reduced_centerline_path = find_geometric_centerline_path(
+            reduced_centerline_mask,
+            reduced_start_point,
+            centerline_transform,
+        )
+
+        crop_max_x = float(crop_x0 + crop_width - 1)
+        crop_max_y = float(crop_y0 + crop_height - 1)
+        centerline_path = [
+            (
+                max(
+                    float(crop_x0),
+                    min(
+                        crop_max_x,
+                        crop_x0 + reduced_x / scale_x,
+                    ),
+                ),
+                max(
+                    float(crop_y0),
+                    min(
+                        crop_max_y,
+                        crop_y0 + reduced_y / scale_y,
+                    ),
+                ),
+            )
+            for reduced_x, reduced_y in reduced_centerline_path
+        ]
+
+    centerline_path_ms = (
+        time.perf_counter()
+        - centerline_path_started
+    ) * 1000.0
+
+    cv2.putText(
+        frame,
+        (
+            f"SKEL {centerline_ms:.1f}ms "
+            f"PATH {centerline_path_ms:.1f}ms"
+        ),
+        (8, 88),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.45,
+        (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    # Tracer geométrico antigo em vermelho.
+    path_points = geometric_guidance[
+        "points"
+    ]
+
+    if len(path_points) >= 2:
+        polyline = np.asarray(
+            [
+                (
+                    int(round(x)),
+                    int(round(y)),
+                )
+                for x, y in path_points
+            ],
+            dtype=np.int32,
+        ).reshape(-1, 1, 2)
+
+        cv2.polylines(
+            frame,
+            [polyline],
+            False,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
     path_points = geometric_guidance["points"]
 
     if len(path_points) >= 2:
@@ -3915,7 +4568,80 @@ def draw_geometric_line_overlay(
         1,
         cv2.LINE_AA,
     )
-    
+
+    # Caminho geodésico novo em verde.
+    # É desenhado por último para permanecer visível
+    # mesmo quando coincide com o tracer antigo.
+    if len(centerline_path) >= 2:
+        centerline_polyline = np.asarray(
+            [
+                (
+                    int(round(x)),
+                    int(round(y)),
+                )
+                for x, y in centerline_path
+            ],
+            dtype=np.int32,
+        ).reshape(-1, 1, 2)
+
+        cv2.polylines(
+            frame,
+            [centerline_polyline],
+            False,
+            (0, 255, 0),
+            2,
+            cv2.LINE_AA,
+        )
+
+    centerline_near_point, centerline_far_point = (
+        sample_centerline_extremes(
+            centerline_path
+        )
+    )
+
+    if (
+        centerline_near_point is not None
+        and centerline_far_point is not None
+    ):
+        centerline_near_pixel = tuple(
+            int(round(value))
+            for value in centerline_near_point
+        )
+
+        centerline_far_pixel = tuple(
+            int(round(value))
+            for value in centerline_far_point
+        )
+
+        cv2.line(
+            frame,
+            centerline_near_pixel,
+            centerline_far_pixel,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+        # Magenta identifica o FAR.
+        cv2.circle(
+            frame,
+            centerline_far_pixel,
+            6,
+            (255, 0, 255),
+            -1,
+            cv2.LINE_AA,
+        )
+
+        # Ciano identifica o NEAR.
+        cv2.circle(
+            frame,
+            centerline_near_pixel,
+            5,
+            (255, 255, 0),
+            -1,
+            cv2.LINE_AA,
+        )
+
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
     Mede quanto da área de um sensor virtual está ocupada
@@ -4266,14 +4992,15 @@ def calculate_line_follower_command(
 
     BASE_POWER = 0.69
     MAX_POWER = 0.75
+    NORMAL_INNER_MIN_POWER = 0.66
 
     # A partir daqui a curva é forte o suficiente
     # para exigir pivot.
-    PIVOT_THRESHOLD = 0.25
+    PIVOT_THRESHOLD = 0.55
 
     # Potência durante pivot.
-    PIVOT_OUTER_POWER = 0.75#roda de giro
-    PIVOT_INNER_POWER = 0.2 #roda de dentro desligada..
+    PIVOT_OUTER_POWER = 0.75
+    PIVOT_INNER_POWER = 0.0
 
     if steering_error is None:
         left_power = 0.0
@@ -4282,44 +5009,44 @@ def calculate_line_follower_command(
     elif steering_error >= PIVOT_THRESHOLD:
         # Curva forte para DIREITA.
         #
-        # Esquerda para frente
-        # Direita para trás
+        # Esquerda para frente e direita parada.
         left_power = PIVOT_OUTER_POWER
-        right_power = -PIVOT_INNER_POWER
+        right_power = PIVOT_INNER_POWER
 
     elif steering_error <= -PIVOT_THRESHOLD:
         # Curva forte para ESQUERDA.
         #
-        # Direita para frente
-        # Esquerda para trás
-        left_power = -PIVOT_INNER_POWER
+        # Direita para frente e esquerda parada.
+        left_power = PIVOT_INNER_POWER
         right_power = PIVOT_OUTER_POWER
 
     else:
         # Correção normal.
-        #
-        # Escala steering até o limite antes do pivot.
-        normalized_steering = (
-            steering_error / PIVOT_THRESHOLD
+        steering_strength = min(
+            1.0,
+            abs(steering_error) / PIVOT_THRESHOLD,
         )
 
-        correction = (
-            normalized_steering
+        outer_power = (
+            BASE_POWER
+            + steering_strength
             * (MAX_POWER - BASE_POWER)
         )
+        inner_power = (
+            BASE_POWER
+            - steering_strength
+            * (BASE_POWER - NORMAL_INNER_MIN_POWER)
+        )
 
-        if correction > 0.0:
-            # Direita
-            left_power = BASE_POWER + correction
-            right_power = BASE_POWER
+        if steering_error > 0.0:
+            # Curva para DIREITA.
+            left_power = outer_power
+            right_power = inner_power
 
         else:
-            # Esquerda
-            left_power = BASE_POWER
-            right_power = BASE_POWER - correction
-
-        left_power = min(MAX_POWER, left_power)
-        right_power = min(MAX_POWER, right_power)
+            # Curva para ESQUERDA.
+            left_power = inner_power
+            right_power = outer_power
 
     return {
         "left_power": left_power,
