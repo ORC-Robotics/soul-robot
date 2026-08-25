@@ -6655,7 +6655,7 @@ def calculate_line_follower_command(
 
     # A partir daqui a curva é forte o suficiente
     # para exigir pivot.
-    PIVOT_THRESHOLD = 0.45
+    PIVOT_THRESHOLD = 0.40
 
     # Potência durante pivot.
     PIVOT_OUTER_POWER = 0.75
