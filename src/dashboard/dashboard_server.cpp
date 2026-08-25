@@ -1400,6 +1400,18 @@ std::string DashboardServer::dashboardHtml()
           <div class="telemetry-row"><span>Status</span><strong id="centerlinePathStatus">SEM TELEMETRIA</strong></div>
           <div class="telemetry-row"><span>Path points</span><strong id="centerlinePathPointCount">—</strong></div>
           <div class="telemetry-row"><span>Decisões</span><strong id="centerlineDecisionCount">—</strong></div>
+          <div class="telemetry-row"><span>Path length</span><strong id="centerlineGuidancePathLength">—</strong></div>
+          <div class="telemetry-row"><span>Lookahead</span><strong id="centerlineGuidanceLookahead">—</strong></div>
+          <div class="telemetry-row"><span>Lookahead clamped</span><strong id="centerlineGuidanceClamped">—</strong></div>
+          <div class="telemetry-row"><span>Near error</span><strong id="centerlineGuidanceNearError">—</strong></div>
+          <div class="telemetry-row"><span>Target angle</span><strong id="centerlineGuidanceTargetAngle">—</strong></div>
+          <div class="telemetry-row"><span>TANGENT NOW</span><strong id="centerlineGuidanceTangentAngle">—</strong></div>
+          <div class="telemetry-row"><span>TANGENT AHEAD</span><strong id="centerlineGuidanceAheadTangent">—</strong></div>
+          <div class="telemetry-row"><span>TURN</span><strong id="centerlineGuidanceTurnAhead">—</strong></div>
+          <div class="telemetry-row"><span>BASE</span><strong id="centerlineGuidanceBaseSteering">—</strong></div>
+          <div class="telemetry-row"><span>AHEAD FF</span><strong id="centerlineGuidanceAheadFeedForward">—</strong></div>
+          <div class="telemetry-row"><span>FINAL</span><strong id="centerlineGuidanceFinalSteering">—</strong></div>
+          <div class="telemetry-row"><span>SOURCE</span><strong id="centerlineGuidanceHybridSource">—</strong></div>
         </div>
         <div class="centerline-entry-filter">
           <div class="centerline-subsection-title">Entry filter</div>
@@ -1553,6 +1565,18 @@ std::string DashboardServer::dashboardHtml()
       pathStatus: element("centerlinePathStatus"),
       pathPointCount: element("centerlinePathPointCount"),
       decisionCount: element("centerlineDecisionCount"),
+      guidancePathLength: element("centerlineGuidancePathLength"),
+      guidanceLookahead: element("centerlineGuidanceLookahead"),
+      guidanceClamped: element("centerlineGuidanceClamped"),
+      guidanceNearError: element("centerlineGuidanceNearError"),
+      guidanceTargetAngle: element("centerlineGuidanceTargetAngle"),
+      guidanceTangentAngle: element("centerlineGuidanceTangentAngle"),
+      guidanceAheadTangent: element("centerlineGuidanceAheadTangent"),
+      guidanceTurnAhead: element("centerlineGuidanceTurnAhead"),
+      guidanceBaseSteering: element("centerlineGuidanceBaseSteering"),
+      guidanceAheadFeedForward: element("centerlineGuidanceAheadFeedForward"),
+      guidanceFinalSteering: element("centerlineGuidanceFinalSteering"),
+      guidanceHybridSource: element("centerlineGuidanceHybridSource"),
       entryFilterContent: element("centerlineEntryFilterContent"),
       decisions: element("centerlineDecisions")
     };
@@ -2602,6 +2626,18 @@ std::string DashboardServer::dashboardHtml()
       setTextIfChanged(centerlineDiagnosticFields.pathStatus, "SEM TELEMETRIA");
       setTextIfChanged(centerlineDiagnosticFields.pathPointCount, "—");
       setTextIfChanged(centerlineDiagnosticFields.decisionCount, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidancePathLength, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceLookahead, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceClamped, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceNearError, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceTargetAngle, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceTangentAngle, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceAheadTangent, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceTurnAhead, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceBaseSteering, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceAheadFeedForward, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceFinalSteering, "—");
+      setTextIfChanged(centerlineDiagnosticFields.guidanceHybridSource, "—");
       clearCenterlineEntryFilter();
       centerlineDiagnosticFields.decisions.replaceChildren();
       const empty = document.createElement("p");
@@ -2690,6 +2726,12 @@ std::string DashboardServer::dashboardHtml()
       return `${numericValue >= 0 ? "+" : ""}${numericValue.toFixed(2)}`;
     }
 
+    function formatCompactSignedCenterlineAngle(value) {
+      const numericValue = Number(value);
+      if (!Number.isFinite(numericValue)) return "—";
+      return `${numericValue >= 0 ? "+" : ""}${numericValue.toFixed(1)}°`;
+    }
+
     function updateCenterlineDiagnostics(data) {
       const debug = data.centerlineDebug;
       if (!debug || !Number.isInteger(debug.pathPointCount) ||
@@ -2706,6 +2748,103 @@ std::string DashboardServer::dashboardHtml()
       setTextIfChanged(centerlineDiagnosticFields.pathStatus, pathExists ? "OK" : "SEM PATH");
       setTextIfChanged(centerlineDiagnosticFields.pathPointCount, String(debug.pathPointCount));
       setTextIfChanged(centerlineDiagnosticFields.decisionCount, String(decisions.length));
+      const guidance = debug.guidance && typeof debug.guidance === "object"
+        ? debug.guidance
+        : {};
+      const pathLengthPx = Number(guidance.pathLengthPx);
+      const lookaheadPoint = Array.isArray(guidance.lookaheadPoint)
+        ? guidance.lookaheadPoint.map(Number)
+        : [];
+      const nearError = Number(guidance.nearError);
+      const targetAngleDeg = Number(guidance.targetAngleDeg);
+      const tangentAngleDeg = Number(guidance.tangentAngleDeg);
+      const aheadTangentAngleDeg = Number(guidance.aheadTangentAngleDeg);
+      const turnAheadDeg = Number(guidance.turnAheadDeg);
+      const baseVirtualSteering = Number(guidance.baseVirtualSteering);
+      const aheadFeedForward = Number(guidance.aheadFF);
+      const finalSteering = Number(guidance.finalSteering);
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidancePathLength,
+        guidance.pathLengthPx !== null && guidance.pathLengthPx !== undefined &&
+          Number.isFinite(pathLengthPx)
+          ? `${formatEntryFilterNumber(pathLengthPx)} px`
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceLookahead,
+        lookaheadPoint.length === 2 && lookaheadPoint.every(Number.isFinite)
+          ? `${formatEntryFilterNumber(lookaheadPoint[0])}, ${formatEntryFilterNumber(lookaheadPoint[1])} px`
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceClamped,
+        typeof guidance.lookaheadClamped === "boolean"
+          ? (guidance.lookaheadClamped ? "SIM" : "NÃO")
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceNearError,
+        guidance.nearError !== null && guidance.nearError !== undefined &&
+          Number.isFinite(nearError)
+          ? formatSignedCenterlineValue(nearError)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceTargetAngle,
+        guidance.targetAngleDeg !== null && guidance.targetAngleDeg !== undefined &&
+          Number.isFinite(targetAngleDeg)
+          ? `${formatSignedCenterlineValue(targetAngleDeg)}°`
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceTangentAngle,
+        guidance.tangentAngleDeg !== null && guidance.tangentAngleDeg !== undefined &&
+          Number.isFinite(tangentAngleDeg)
+          ? `${formatSignedCenterlineValue(tangentAngleDeg)}°`
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceAheadTangent,
+        guidance.aheadTangentAngleDeg !== null &&
+          guidance.aheadTangentAngleDeg !== undefined &&
+          Number.isFinite(aheadTangentAngleDeg)
+          ? formatCompactSignedCenterlineAngle(aheadTangentAngleDeg)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceTurnAhead,
+        guidance.turnAheadDeg !== null && guidance.turnAheadDeg !== undefined &&
+          Number.isFinite(turnAheadDeg)
+          ? formatCompactSignedCenterlineAngle(turnAheadDeg)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceBaseSteering,
+        guidance.baseVirtualSteering !== null &&
+          guidance.baseVirtualSteering !== undefined &&
+          Number.isFinite(baseVirtualSteering)
+          ? formatSignedCenterlineValue(baseVirtualSteering)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceAheadFeedForward,
+        guidance.aheadFF !== null && guidance.aheadFF !== undefined &&
+          Number.isFinite(aheadFeedForward)
+          ? formatSignedCenterlineValue(aheadFeedForward)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceFinalSteering,
+        guidance.finalSteering !== null &&
+          guidance.finalSteering !== undefined &&
+          Number.isFinite(finalSteering)
+          ? formatSignedCenterlineValue(finalSteering)
+          : "—"
+      );
+      setTextIfChanged(
+        centerlineDiagnosticFields.guidanceHybridSource,
+        guidance.hybridSource === "HYBRID" ? "HYBRID" : "VIRTUAL"
+      );
       updateCenterlineEntryFilter(debug.entryFilter);
       centerlineDiagnosticFields.decisions.replaceChildren();
 
@@ -2777,7 +2916,27 @@ std::string DashboardServer::dashboardHtml()
           const terminalText = ["BORDER", "INTERIOR"].includes(branch.terminalType)
             ? `  ${branch.terminalType}`
             : "";
-          branchMetrics.textContent = `${forwardText}AL ${formatSignedCenterlineValue(branch.alignment)}${remainingText}${terminalText}`;
+          const localWidthPx = Number(branch.localWidthPx);
+          const widthText = branch.localWidthPx !== null &&
+            branch.localWidthPx !== undefined && Number.isFinite(localWidthPx)
+            ? `W${formatEntryFilterNumber(localWidthPx)}`
+            : "W-";
+          const survivalWidths = Number(branch.survivalWidths);
+          const survivalText = branch.survivalWidths !== null &&
+            branch.survivalWidths !== undefined && Number.isFinite(survivalWidths)
+            ? `S${formatEntryFilterNumber(survivalWidths)}`
+            : "S-";
+          const terminalWidthPx = Number(branch.terminalWidthPx);
+          const terminalWidthText = branch.terminalWidthPx !== null &&
+            branch.terminalWidthPx !== undefined && Number.isFinite(terminalWidthPx)
+            ? `TW${formatEntryFilterNumber(terminalWidthPx)}`
+            : "TW-";
+          const terminalWidthRatio = Number(branch.terminalWidthRatio);
+          const terminalWidthRatioText = branch.terminalWidthRatio !== null &&
+            branch.terminalWidthRatio !== undefined && Number.isFinite(terminalWidthRatio)
+            ? `TR${formatEntryFilterNumber(terminalWidthRatio)}`
+            : "TR-";
+          branchMetrics.textContent = `${forwardText}AL ${formatSignedCenterlineValue(branch.alignment)}${remainingText}  ${widthText}  ${survivalText}  ${terminalWidthText}  ${terminalWidthRatioText}${terminalText}`;
           branchElement.append(branchLabel, branchMetrics);
           if (branch.selected === true && decision.ambiguous !== true) {
             const selected = document.createElement("span");
