@@ -2277,6 +2277,30 @@ GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS = 8
 # Diferenças menores ou iguais a este valor encerram o path na bifurcação.
 GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE = 0.05
 
+# Limita somente a telemetria das bifurcações. O algoritmo continua
+# percorrendo o path normalmente quando existem mais decisões no mesmo frame.
+GEOMETRIC_CENTERLINE_DEBUG_MAX_DECISIONS = 4
+
+# Comprimento geodésico máximo, em pixels do frame original, para que um
+# caminho curto na entrada possa ser descartado como cap local do skeleton.
+GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_LENGTH_PX = 50.0
+
+# Progresso máximo, em pixels do frame original, que ainda caracteriza um cap.
+# Acima deste valor, o caminho pode representar uma entrada válida da pista.
+GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_FORWARD_PX = 12.0
+
+# Progresso mínimo, em pixels do frame original, exigido de outra rota antes
+# de remover um cap. Sem essa alternativa clara, todos os paths são preservados.
+GEOMETRIC_CENTERLINE_ENTRY_MIN_ALTERNATIVE_FORWARD_PX = 30.0
+
+# Distância geodésica máxima, em pixels do frame original, na qual
+# bifurcações locais da entrada podem ser resolvidas pelo progresso frontal.
+GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX = 28.0
+
+# Vantagem mínima, em pixels do frame original, para o entry lock escolher
+# um ramo. Diferenças menores preservam a seleção normal por alinhamento.
+GEOMETRIC_CENTERLINE_ENTRY_LOCK_FORWARD_TIE_PX = 3.0
+
 # Margem do frame original que identifica terminais reais da centerline.
 GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX = 6.0
 
@@ -3648,12 +3672,162 @@ def build_geometric_centerline_mask(
     return reduced_centerline, transform
 
 
+def filter_geometric_centerline_entry_caps(
+    candidate_paths,
+    initial_direction,
+    centerline_transform,
+    entry_filter_debug=None,
+):
+    """Remove somente dead-ends curtos da entrada quando há uma rota melhor."""
+
+    debug_enabled = isinstance(entry_filter_debug, dict)
+    if debug_enabled:
+        entry_filter_debug.clear()
+        entry_filter_debug.update({
+            "before": len(candidate_paths),
+            "after": len(candidate_paths),
+            "bestForwardPx": None,
+            "candidates": [],
+        })
+
+    if (
+        len(candidate_paths) < 2
+        or initial_direction is None
+        or centerline_transform is None
+        or any(len(path) < 2 for path in candidate_paths)
+    ):
+        return candidate_paths
+
+    start_pixel = candidate_paths[0][0]
+    if any(path[0] != start_pixel for path in candidate_paths[1:]):
+        return candidate_paths
+
+    # Se todos seguem pelo mesmo segundo pixel, a primeira decisão acontece
+    # depois da entrada e usa o próprio path como incoming, não a direção inicial.
+    first_step = candidate_paths[0][1]
+    if all(path[1] == first_step for path in candidate_paths[1:]):
+        return candidate_paths
+
+    scale_x = float(centerline_transform["scaleX"])
+    scale_y = float(centerline_transform["scaleY"])
+    if scale_x <= 0.0 or scale_y <= 0.0:
+        return candidate_paths
+
+    # O D0 recebe a direção normalizada no espaço reduzido. Dividir cada
+    # componente pela escala recupera a mesma orientação no frame original.
+    full_direction_x = float(initial_direction[0]) / scale_x
+    full_direction_y = float(initial_direction[1]) / scale_y
+    full_direction_length = math.hypot(
+        full_direction_x,
+        full_direction_y,
+    )
+    if full_direction_length <= 0.0:
+        return candidate_paths
+
+    full_direction_x /= full_direction_length
+    full_direction_y /= full_direction_length
+
+    path_metrics = []
+    for path in candidate_paths:
+        if not path:
+            path_metrics.append((path, 0.0, 0.0))
+            continue
+
+        start_x = float(path[0][0])
+        start_y = float(path[0][1])
+        previous_x = start_x
+        previous_y = start_y
+        geodesic_length_px = 0.0
+        maximum_forward_progress_px = 0.0
+
+        for point_x, point_y in path[1:]:
+            point_x = float(point_x)
+            point_y = float(point_y)
+            step_x_full = (point_x - previous_x) / scale_x
+            step_y_full = (point_y - previous_y) / scale_y
+            geodesic_length_px += math.hypot(
+                step_x_full,
+                step_y_full,
+            )
+
+            delta_x_full = (point_x - start_x) / scale_x
+            delta_y_full = (point_y - start_y) / scale_y
+            forward_progress_px = (
+                delta_x_full * full_direction_x
+                + delta_y_full * full_direction_y
+            )
+            maximum_forward_progress_px = max(
+                maximum_forward_progress_px,
+                forward_progress_px,
+            )
+            previous_x = point_x
+            previous_y = point_y
+
+        path_metrics.append((
+            path,
+            geodesic_length_px,
+            maximum_forward_progress_px,
+        ))
+        if debug_enabled:
+            entry_filter_debug["candidates"].append({
+                "lengthPx": geodesic_length_px,
+                "forwardPx": maximum_forward_progress_px,
+                "filtered": False,
+            })
+
+    best_forward_progress_px = max(
+        metrics[2]
+        for metrics in path_metrics
+    )
+    if debug_enabled:
+        entry_filter_debug["bestForwardPx"] = best_forward_progress_px
+    if (
+        best_forward_progress_px
+        < GEOMETRIC_CENTERLINE_ENTRY_MIN_ALTERNATIVE_FORWARD_PX
+    ):
+        return candidate_paths
+
+    remaining_paths = []
+    for index, (
+        path,
+        geodesic_length_px,
+        maximum_forward_progress_px,
+    ) in enumerate(path_metrics):
+        filtered = (
+            geodesic_length_px
+            <= GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_LENGTH_PX
+            and maximum_forward_progress_px
+            <= GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_FORWARD_PX
+        )
+        if debug_enabled:
+            entry_filter_debug["candidates"][index]["filtered"] = filtered
+        if not filtered:
+            remaining_paths.append(path)
+
+    # O fallback preserva a geometria original se uma entrada inesperada fizer
+    # todos os candidatos parecerem caps ao mesmo tempo.
+    if not remaining_paths:
+        if debug_enabled:
+            for candidate_debug in entry_filter_debug["candidates"]:
+                candidate_debug["filtered"] = False
+        return candidate_paths
+
+    if debug_enabled:
+        entry_filter_debug["after"] = len(remaining_paths)
+    return remaining_paths
+
+
 def select_geometric_centerline_branch_path(
     candidate_paths,
     initial_direction=None,
     branch_debug=None,
+    centerline_transform=None,
 ):
     """Seleciona bifurcações pela continuidade da direção de chegada."""
+
+    debug_decisions = None
+    if branch_debug is not None:
+        debug_decisions = branch_debug.setdefault("decisions", [])
 
     while len(candidate_paths) > 1:
         shortest_length = min(len(path) for path in candidate_paths)
@@ -3702,12 +3876,155 @@ def select_geometric_centerline_branch_path(
         for path in candidate_paths:
             branch_groups.setdefault(path[common_length], []).append(path)
 
+        capture_branch_debug = (
+            debug_decisions is not None
+            and len(debug_decisions)
+            < GEOMETRIC_CENTERLINE_DEBUG_MAX_DECISIONS
+        )
+        entry_lock_active = False
+        junction_distance_px = None
+        full_direction_x = 0.0
+        full_direction_y = 0.0
+        if centerline_transform is not None:
+            scale_x = float(centerline_transform["scaleX"])
+            scale_y = float(centerline_transform["scaleY"])
+            if scale_x > 0.0 and scale_y > 0.0:
+                # A mesma soma governa o lock e alimenta a telemetria. Fora dos
+                # quatro slots de debug, ela pode parar assim que ultrapassa 28 px.
+                junction_distance_px = 0.0
+                for point_index in range(1, len(path_to_junction)):
+                    previous_path_point = path_to_junction[point_index - 1]
+                    current_path_point = path_to_junction[point_index]
+                    junction_distance_px += math.hypot(
+                        (
+                            float(current_path_point[0])
+                            - float(previous_path_point[0])
+                        ) / scale_x,
+                        (
+                            float(current_path_point[1])
+                            - float(previous_path_point[1])
+                        ) / scale_y,
+                    )
+                    if (
+                        not capture_branch_debug
+                        and junction_distance_px
+                        >= GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
+                    ):
+                        break
+
+                if (
+                    initial_direction is not None
+                    and junction_distance_px
+                    < GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
+                ):
+                    full_direction_x = float(initial_direction[0]) / scale_x
+                    full_direction_y = float(initial_direction[1]) / scale_y
+                    full_direction_length = math.hypot(
+                        full_direction_x,
+                        full_direction_y,
+                    )
+                    if full_direction_length > 0.0:
+                        full_direction_x /= full_direction_length
+                        full_direction_y /= full_direction_length
+                        entry_lock_active = True
+
+        entry_lock_ranked_groups = []
+        entry_lock_group_forward_progress = {}
+        entry_lock_has_clear_winner = False
+        if entry_lock_active:
+            for group_paths in branch_groups.values():
+                group_forward_progress_px = 0.0
+                for path in group_paths:
+                    start_x = float(path[0][0])
+                    start_y = float(path[0][1])
+                    previous_x = start_x
+                    previous_y = start_y
+                    path_distance_px = 0.0
+                    maximum_forward_progress_px = 0.0
+
+                    for point_x, point_y in path[1:]:
+                        point_x = float(point_x)
+                        point_y = float(point_y)
+                        step_x_full = (point_x - previous_x) / scale_x
+                        step_y_full = (point_y - previous_y) / scale_y
+                        step_length_px = math.hypot(
+                            step_x_full,
+                            step_y_full,
+                        )
+
+                        limited_x = point_x
+                        limited_y = point_y
+                        reaches_horizon = (
+                            path_distance_px + step_length_px
+                            >= GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
+                        )
+                        # Interpola o último segmento para comparar todos os
+                        # candidatos no mesmo horizonte full-resolution.
+                        if reaches_horizon and step_length_px > 0.0:
+                            remaining_distance_px = max(
+                                0.0,
+                                GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
+                                - path_distance_px,
+                            )
+                            step_fraction = (
+                                remaining_distance_px / step_length_px
+                            )
+                            limited_x = previous_x + (
+                                point_x - previous_x
+                            ) * step_fraction
+                            limited_y = previous_y + (
+                                point_y - previous_y
+                            ) * step_fraction
+
+                        delta_x_full = (limited_x - start_x) / scale_x
+                        delta_y_full = (limited_y - start_y) / scale_y
+                        forward_progress_px = (
+                            delta_x_full * full_direction_x
+                            + delta_y_full * full_direction_y
+                        )
+                        maximum_forward_progress_px = max(
+                            maximum_forward_progress_px,
+                            forward_progress_px,
+                        )
+
+                        path_distance_px += step_length_px
+                        previous_x = point_x
+                        previous_y = point_y
+                        if reaches_horizon:
+                            break
+
+                    group_forward_progress_px = max(
+                        group_forward_progress_px,
+                        maximum_forward_progress_px,
+                    )
+
+                entry_lock_ranked_groups.append((
+                    group_forward_progress_px,
+                    group_paths,
+                ))
+                entry_lock_group_forward_progress[id(group_paths)] = (
+                    group_forward_progress_px
+                )
+
+            entry_lock_ranked_groups.sort(
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            entry_lock_has_clear_winner = (
+                len(entry_lock_ranked_groups) >= 2
+                and entry_lock_ranked_groups[0][0]
+                - entry_lock_ranked_groups[1][0]
+                > GEOMETRIC_CENTERLINE_ENTRY_LOCK_FORWARD_TIE_PX
+            )
+
+            # Sem slot de telemetria, mantém o atalho original do entry lock e
+            # evita calcular alinhamentos que não participam da seleção.
+            if entry_lock_has_clear_winner and not capture_branch_debug:
+                candidate_paths = entry_lock_ranked_groups[0][1]
+                continue
+
         ranked_groups = []
         debug_branch_groups = []
-        capture_branch_debug = (
-            branch_debug is not None
-            and "junction" not in branch_debug
-        )
         for group_paths in branch_groups.values():
             branch_common_length = common_length
             branch_shortest_length = min(len(path) for path in group_paths)
@@ -3737,20 +4054,56 @@ def select_geometric_centerline_branch_path(
             ranked_groups.append((alignment, group_paths))
 
             if capture_branch_debug:
-                normalized_outgoing = (
-                    (
-                        outgoing_x / outgoing_length,
-                        outgoing_y / outgoing_length,
+                group_remaining_length_px = 0.0
+                group_has_terminal_border = any(
+                    path
+                    and is_geometric_centerline_terminal_border_point(
+                        path[-1],
+                        centerline_transform,
+                        GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX,
                     )
-                    if outgoing_length > 0.0
-                    else (0.0, 0.0)
+                    for path in group_paths
                 )
-                debug_branch_groups.append((group_paths, {
-                    "outgoing": normalized_outgoing,
+                for path in group_paths:
+                    path_remaining_length_px = 0.0
+                    previous_path_point = path[junction_index]
+                    for current_path_point in path[junction_index + 1:]:
+                        path_remaining_length_px += math.hypot(
+                            (
+                                float(current_path_point[0])
+                                - float(previous_path_point[0])
+                            ) / scale_x,
+                            (
+                                float(current_path_point[1])
+                                - float(previous_path_point[1])
+                            ) / scale_y,
+                        )
+                        previous_path_point = current_path_point
+
+                    # O maior comprimento mostra se o grupo possui ao menos
+                    # uma continuação longa a partir da junção atual.
+                    group_remaining_length_px = max(
+                        group_remaining_length_px,
+                        path_remaining_length_px,
+                    )
+
+                branch_debug_values = {
                     "alignment": alignment,
-                    "futurePoint": future_point,
-                    "pathCount": len(group_paths),
-                }))
+                    "remainingLengthPx": group_remaining_length_px,
+                    "terminalType": (
+                        "BORDER"
+                        if group_has_terminal_border
+                        else "INTERIOR"
+                    ),
+                }
+                if entry_lock_active:
+                    branch_debug_values["forwardPx"] = (
+                        entry_lock_group_forward_progress[id(group_paths)]
+                    )
+                debug_branch_groups.append((
+                    group_paths,
+                    branch_debug_values,
+                ))
 
         ranked_groups.sort(key=lambda item: item[0], reverse=True)
         if not ranked_groups:
@@ -3760,28 +4113,73 @@ def select_geometric_centerline_branch_path(
             and ranked_groups[0][0] - ranked_groups[1][0]
             <= GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE
         )
-        if capture_branch_debug:
+        if entry_lock_has_clear_winner:
+            decision_mode = "ENTRY_LOCK"
+            decision_ambiguous = False
+            selected_group = entry_lock_ranked_groups[0][1]
+        else:
+            decision_mode = (
+                "ENTRY_FALLBACK" if entry_lock_active else "PATH"
+            )
+            decision_ambiguous = ambiguous
             selected_group = None if ambiguous else ranked_groups[0][1]
-            branch_debug.update({
-                "junction": junction,
+
+        if capture_branch_debug:
+            debug_decisions.append({
                 "junctionIndex": junction_index,
+                "mode": decision_mode,
+                "junctionDistancePx": junction_distance_px,
+                "entryLockActive": entry_lock_active,
                 "usedInitial": used_initial,
                 "incoming": (
                     incoming_x / incoming_length,
                     incoming_y / incoming_length,
                 ),
-                "ambiguous": ambiguous,
+                "ambiguous": decision_ambiguous,
                 "branches": [
                     dict(values, selected=group_paths is selected_group)
                     for group_paths, values in debug_branch_groups
                 ],
             })
+
+        if entry_lock_has_clear_winner:
+            candidate_paths = selected_group
+            continue
+
         if ambiguous:
             return path_to_junction
 
         candidate_paths = ranked_groups[0][1]
 
     return candidate_paths[0] if candidate_paths else []
+
+
+def is_geometric_centerline_terminal_border_point(
+    point,
+    transform,
+    frame_border_margin_px,
+):
+    """Indica se o ponto alcançou uma borda terminal válida do frame."""
+
+    if transform is None:
+        return False
+
+    reduced_x, reduced_y = point
+    crop_x0 = float(transform["cropX0"])
+    crop_y0 = float(transform["cropY0"])
+    scale_x = float(transform["scaleX"])
+    scale_y = float(transform["scaleY"])
+    frame_width = float(transform["frameWidth"])
+    full_x = crop_x0 + float(reduced_x) / scale_x
+    full_y = crop_y0 + float(reduced_y) / scale_y
+
+    # Somente topo, esquerda e direita encerram um path FAR. A borda inferior
+    # representa a entrada próxima do robô e, portanto, não é terminal.
+    return (
+        full_y <= frame_border_margin_px
+        or full_x <= frame_border_margin_px
+        or full_x >= frame_width - 1.0 - frame_border_margin_px
+    )
 
 
 def truncate_centerline_path_at_frame_border(
@@ -3794,20 +4192,11 @@ def truncate_centerline_path_at_frame_border(
     if transform is None:
         return path_points
 
-    crop_x0 = float(transform["cropX0"])
-    crop_y0 = float(transform["cropY0"])
-    scale_x = float(transform["scaleX"])
-    scale_y = float(transform["scaleY"])
-    frame_width = float(transform["frameWidth"])
-
-    for index, (reduced_x, reduced_y) in enumerate(path_points):
-        full_x = crop_x0 + float(reduced_x) / scale_x
-        full_y = crop_y0 + float(reduced_y) / scale_y
-
-        if (
-            full_y <= frame_border_margin_px
-            or full_x <= frame_border_margin_px
-            or full_x >= frame_width - 1.0 - frame_border_margin_px
+    for index, point in enumerate(path_points):
+        if is_geometric_centerline_terminal_border_point(
+            point,
+            transform,
+            frame_border_margin_px,
         ):
             return path_points[:index + 1]
 
@@ -3820,11 +4209,12 @@ def find_geometric_centerline_path(
     centerline_transform=None,
     initial_direction=None,
     branch_debug=None,
+    entry_filter_debug=None,
 ):
     """
     Encontra uma rota contínua entre os endpoints da centerline.
 
-    O resultado é usado somente pelo overlay de diagnóstico.
+    O resultado é usado somente pelo overlay e pela telemetria de diagnóstico.
     """
 
     if start_point is None:
@@ -3935,10 +4325,17 @@ def find_geometric_centerline_path(
             endpoint_paths.append(endpoint_path)
 
     if endpoint_paths:
+        endpoint_paths = filter_geometric_centerline_entry_caps(
+            endpoint_paths,
+            initial_direction,
+            centerline_transform,
+            entry_filter_debug=entry_filter_debug,
+        )
         return select_geometric_centerline_branch_path(
             endpoint_paths,
             initial_direction=initial_direction,
             branch_debug=branch_debug,
+            centerline_transform=centerline_transform,
         )
 
     # Ciclos sem endpoint preservam o fallback geodésico anterior.
@@ -4326,7 +4723,15 @@ def draw_geometric_line_overlay(
     centerline_path_started = time.perf_counter()
 
     centerline_path = []
-    branch_debug = {}
+    branch_debug = {
+        "decisions": [],
+    }
+    entry_filter_debug = {
+        "before": 0,
+        "after": 0,
+        "bestForwardPx": None,
+        "candidates": [],
+    }
 
     if centerline_transform is not None:
         start_point = geometric_guidance.get(
@@ -4379,6 +4784,7 @@ def draw_geometric_line_overlay(
             centerline_transform,
             initial_direction=reduced_initial_direction,
             branch_debug=branch_debug,
+            entry_filter_debug=entry_filter_debug,
         )
 
         crop_max_x = float(crop_x0 + crop_width - 1)
@@ -4725,75 +5131,13 @@ def draw_geometric_line_overlay(
             cv2.LINE_AA,
         )
 
-    if branch_debug and centerline_transform is not None:
-        # O algoritmo permanece em coordenadas reduced; a conversão abaixo
-        # existe somente para desenhar o diagnóstico no frame completo.
-        def direction_to_full(direction):
-            full_x = float(direction[0]) / scale_x
-            full_y = float(direction[1]) / scale_y
-            full_length = math.hypot(full_x, full_y)
-            if full_length <= 0.0:
-                return (0.0, 0.0)
-            return (full_x / full_length, full_y / full_length)
-
-        junction = branch_debug["junction"]
-        junction_pixel = (
-            int(round(crop_x0 + float(junction[0]) / scale_x)),
-            int(round(crop_y0 + float(junction[1]) / scale_y)),
-        )
-        arrow_length = 36.0
-        incoming_full = direction_to_full(branch_debug["incoming"])
-        incoming_start = (
-            int(round(junction_pixel[0] - incoming_full[0] * arrow_length)),
-            int(round(junction_pixel[1] - incoming_full[1] * arrow_length)),
-        )
-        diagnostic_color = (0, 165, 255)
-        cv2.arrowedLine(
-            frame, incoming_start, junction_pixel, diagnostic_color,
-            2, cv2.LINE_AA, tipLength=0.28,
-        )
-        cv2.circle(
-            frame, junction_pixel, 5, diagnostic_color, 2, cv2.LINE_AA,
-        )
-        panel_mode = (
-            "AMBIG" if branch_debug["ambiguous"]
-            else ("INITIAL" if branch_debug["usedInitial"] else "PATH")
-        )
-        panel_lines = [
-            f"BRANCH {panel_mode}",
-            (
-                f"IN {branch_debug['incoming'][0]:+.2f} "
-                f"{branch_debug['incoming'][1]:+.2f}"
-            ),
-        ]
-
-        for index, branch in enumerate(branch_debug["branches"]):
-            label = chr(ord("A") + index)
-            outgoing_full = direction_to_full(branch["outgoing"])
-            arrow_end = (
-                int(round(junction_pixel[0] + outgoing_full[0] * arrow_length)),
-                int(round(junction_pixel[1] + outgoing_full[1] * arrow_length)),
-            )
-            branch_color = diagnostic_color if branch["selected"] else (210, 210, 210)
-            branch_mark = " *" if branch["selected"] else ""
-            branch_text = f"{label} {branch['alignment']:+.2f}{branch_mark}"
-            cv2.arrowedLine(
-                frame, junction_pixel, arrow_end, branch_color,
-                2 if branch["selected"] else 1,
-                cv2.LINE_AA, tipLength=0.28,
-            )
-            cv2.putText(
-                frame, branch_text, (arrow_end[0] + 4, arrow_end[1] - 4),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40, branch_color, 1, cv2.LINE_AA,
-            )
-            panel_lines.append(branch_text)
-
-        for index, text in enumerate(panel_lines):
-            cv2.putText(
-                frame, text, (8, 110 + index * 17),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.43,
-                diagnostic_color, 1, cv2.LINE_AA,
-            )
+    return {
+        "pathPointCount": len(centerline_path),
+        "skeletonMs": centerline_ms,
+        "pathMs": centerline_path_ms,
+        "entryFilter": entry_filter_debug,
+        "decisions": branch_debug["decisions"],
+    }
 
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
@@ -5556,8 +5900,9 @@ def save_line_status(
     line_sequence,
     green_status,
     specular_repair_status=None,
+    centerline_debug=None,
 ):
-    """Publica somente a interface normal e os dados exigidos pelo verde."""
+    """Publica controle visual e telemetria leve no IPC rápido da linha."""
 
     try:
         line_timestamp = float(line_timestamp)
@@ -5595,6 +5940,8 @@ def save_line_status(
             ),
         }
         line_status.update(green_status)
+        if isinstance(centerline_debug, dict):
+            line_status["centerlineDebug"] = centerline_debug
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
         os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
@@ -5617,6 +5964,7 @@ def save_status(
     specular_repair_status=None,
     green_status=None,
     line_timings=None,
+    centerline_debug=None,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -5722,6 +6070,8 @@ def save_status(
         "contoursMs": safe_line_timings["contoursMs"],
     }
     status.update(green_status or empty_green_status())
+    if isinstance(centerline_debug, dict):
+        status["centerlineDebug"] = centerline_debug
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -5800,6 +6150,7 @@ def main():
         last_status_time = 0.0
         smoothed_fps = 0.0
         line_sequence = 0
+        centerline_debug = None
         green_tracker = GreenObservationTracker()
 
         # Estado persistente das manobras sinalizadas por verde.
@@ -6164,6 +6515,7 @@ def main():
                     line_sequence,
                     green_status,
                     specular_repair_status=specular_repair_status,
+                    centerline_debug=centerline_debug,
                 )
 
             if green_capture_requested:
@@ -6208,7 +6560,11 @@ def main():
             )
 
             if camera_profile["role"] == "down":
-                  draw_geometric_line_overlay(frame,  line_candidate_mask, geometric_guidance)
+                centerline_debug = draw_geometric_line_overlay(
+                    frame,
+                    line_candidate_mask,
+                    geometric_guidance,
+                )
 
             cv2.line(
                 frame,
@@ -6293,6 +6649,7 @@ def main():
                     specular_repair_status=specular_repair_status,
                     green_status=green_status,
                     line_timings=line_timings,
+                    centerline_debug=centerline_debug,
                 )
                 last_status_time = now
     except Exception as error:

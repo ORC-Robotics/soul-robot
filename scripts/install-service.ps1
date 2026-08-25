@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.8",
+    [string]$HostName = "obr.local",
     [string]$User = "raspberry",
     [string]$ServiceName = "obr-robot",
     [string]$KeyPath = "$env:USERPROFILE\.ssh\obr_raspberry"

@@ -288,7 +288,7 @@ No Windows, o próprio primeiro deploy detecta a ausência de acesso e executa a
 preparação automaticamente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.8
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName obr.local
 ```
 
 A preparação cria uma chave SSH exclusiva para deploy, instala a chave pública e
@@ -310,7 +310,7 @@ instalado e o robô permanece parado. Depois da troca, o deploy reinicia o servi
 Se precisar escolher o host manualmente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.8
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName obr.local
 ```
 
 Para apenas enviar e compilar, sem iniciar o robô:
@@ -324,7 +324,7 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 Também é necessário preparar cada computador uma vez:
 
 ```sh
-bash scripts/install-service.sh --host 192.168.0.104
+bash scripts/install-service.sh --host obr.local
 ```
 
 Depois da preparação, o deploy é não interativo:
@@ -412,7 +412,7 @@ processos continuam ativos, mas o segue-faixa permanece parado por segurança.
 Depois do serviço subir, abra:
 
 ```txt
-http://192.168.0.104:8080
+http://obr.local:8080
 ```
 
 No modo Manual, o dashboard aceita `W`, `A`, `S` e `D`. `W/S` comandam frente e
@@ -494,7 +494,7 @@ O dashboard mostra a imagem direta da câmera pelo stream MJPEG na própria port
 dashboard:
 
 ```txt
-http://192.168.0.104:8080/camera-stream.mjpg
+http://obr.local:8080/camera-stream.mjpg
 ```
 
 O script Python mantém um servidor local em `127.0.0.1:8090`, e o C++ faz proxy
@@ -509,7 +509,7 @@ gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando
 modo físico `1920x1080` de 10 bits, pela rota:
 
 ```txt
-http://192.168.0.104:8080/forward-camera-stream.mjpg
+http://obr.local:8080/forward-camera-stream.mjpg
 ```
 
 Ao usar `DESATIVAR`, o Picamera2 é encerrado e a CAM1 é liberada; permanece apenas

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HOST_NAME="${HOST_NAME:-192.168.0.104}"
+HOST_NAME="${HOST_NAME:-obr.local}"
 USER_NAME="${USER_NAME:-raspberry}"
 SERVICE_NAME="${SERVICE_NAME:-obr-robot}"
 LINE_CAMERA_SERVICE_NAME="obr-line-camera"

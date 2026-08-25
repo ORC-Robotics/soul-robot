@@ -872,6 +872,29 @@ std::string DashboardServer::dashboardHtml()
     .diagnostic-subsystem[data-telemetry="missing"] .big-reading { border-color: var(--border-subtle); background: var(--bg-primary); }
     .diagnostic-subsystem[data-telemetry="missing"] .big-reading strong,
     .diagnostic-subsystem[data-telemetry="missing"] .telemetry-row strong { color: var(--text-muted); }
+    .centerline-card { align-self: start; }
+    .centerline-summary { display: grid; gap: 0; margin-bottom: var(--space-2); }
+    .centerline-decisions { display: grid; gap: var(--space-2); }
+    .centerline-empty { margin: 0; padding: var(--space-2) 0; color: var(--text-muted); font-size: .7rem; }
+    .centerline-decision { padding: var(--space-2); border: 1px solid var(--line-soft); border-radius: 9px; background: var(--bg-primary); font-size: .7rem; font-variant-numeric: tabular-nums; }
+    .centerline-decision-header, .centerline-junction, .centerline-vector, .centerline-branch { display: flex; align-items: baseline; gap: var(--space-2); }
+    .centerline-decision-header { margin-bottom: var(--space-1); font-weight: 900; letter-spacing: .08em; }
+    .centerline-junction, .centerline-vector, .centerline-branch { min-height: 20px; color: var(--text-secondary); }
+    .centerline-junction { color: var(--yellow); }
+    .centerline-label { width: 22px; color: var(--muted); font-weight: 850; }
+    .centerline-selected { margin-left: auto; color: var(--green); font-size: .58rem; font-weight: 900; letter-spacing: .07em; }
+    .centerline-entry-filter { margin: var(--space-2) 0; padding: var(--space-2) 0; border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); }
+    .centerline-subsection-title { margin-bottom: var(--space-2); color: var(--text-secondary); font-size: .62rem; font-weight: 900; letter-spacing: .09em; text-transform: uppercase; }
+    .entry-filter-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-1); margin-bottom: var(--space-2); }
+    .entry-filter-reading { padding: var(--space-1); border-radius: 7px; background: var(--bg-primary); }
+    .entry-filter-reading span { display: block; color: var(--muted); font-size: .52rem; letter-spacing: .06em; }
+    .entry-filter-reading strong { display: block; margin-top: 2px; font-size: .68rem; font-variant-numeric: tabular-nums; }
+    .entry-filter-candidates { display: grid; gap: 2px; }
+    .entry-filter-candidate { min-height: 21px; display: grid; grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: var(--space-1); color: var(--text-secondary); font-size: .61rem; font-variant-numeric: tabular-nums; }
+    .entry-filter-candidate-label { color: var(--text); font-weight: 900; }
+    .entry-filter-state { font-size: .54rem; font-weight: 900; letter-spacing: .05em; }
+    .entry-filter-state.kept { color: var(--green); }
+    .entry-filter-state.filtered { color: var(--yellow); }
     .diagnostic-maintenance-heading { margin: var(--space-3) 0 0; padding-top: var(--space-4); border-top: 1px solid var(--line-soft); }
     .operation-overview { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr) minmax(0, .75fr) minmax(0, 2.15fr) minmax(0, .85fr); align-items: stretch; margin: 0; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-card); box-shadow: none; overflow: hidden; }
     .operation-overview > div { min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: var(--space-1); padding: var(--space-3); border-right: 1px solid var(--line-soft); }
@@ -1371,6 +1394,20 @@ std::string DashboardServer::dashboardHtml()
         </div>
       </article>
 
+      <article id="centerlineSubsystem" class="card telemetry-card diagnostic-subsystem diagnostic-third centerline-card" data-telemetry="missing">
+        <div class="section-header"><h3 class="section-title">Centerline geométrica</h3><span id="centerlineStatus" class="subsystem-status">sem telemetria</span></div>
+        <div class="telemetry-list centerline-summary">
+          <div class="telemetry-row"><span>Status</span><strong id="centerlinePathStatus">SEM TELEMETRIA</strong></div>
+          <div class="telemetry-row"><span>Path points</span><strong id="centerlinePathPointCount">—</strong></div>
+          <div class="telemetry-row"><span>Decisões</span><strong id="centerlineDecisionCount">—</strong></div>
+        </div>
+        <div class="centerline-entry-filter">
+          <div class="centerline-subsection-title">Entry filter</div>
+          <div id="centerlineEntryFilterContent"><p class="centerline-empty">SEM DADOS DE ENTRY FILTER</p></div>
+        </div>
+        <div id="centerlineDecisions" class="centerline-decisions"><p class="centerline-empty">SEM TELEMETRIA</p></div>
+      </article>
+
       <article id="imuSubsystem" class="card telemetry-card diagnostic-subsystem diagnostic-third" data-telemetry="missing">
         <div class="section-header"><h3 class="section-title">IMU · MPU6050</h3><span id="imuSubsystemStatus" class="subsystem-status">sem telemetria</span></div>
         <div class="big-pair">
@@ -1509,6 +1546,15 @@ std::string DashboardServer::dashboardHtml()
       specularRepair: element("operationSpecularRepair"),
       pipelinePrimary: element("operationPipelinePrimary"),
       pipelineSecondary: element("operationPipelineSecondary")
+    };
+    const centerlineDiagnosticFields = {
+      subsystem: element("centerlineSubsystem"),
+      status: element("centerlineStatus"),
+      pathStatus: element("centerlinePathStatus"),
+      pathPointCount: element("centerlinePathPointCount"),
+      decisionCount: element("centerlineDecisionCount"),
+      entryFilterContent: element("centerlineEntryFilterContent"),
+      decisions: element("centerlineDecisions")
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
@@ -2549,6 +2595,203 @@ std::string DashboardServer::dashboardHtml()
       renderCurrentCameraDiagnostics();
     }
 
+    function clearCenterlineDiagnostics() {
+      centerlineDiagnosticFields.subsystem.dataset.telemetry = "missing";
+      setTextIfChanged(centerlineDiagnosticFields.status, "sem telemetria");
+      centerlineDiagnosticFields.status.className = "subsystem-status";
+      setTextIfChanged(centerlineDiagnosticFields.pathStatus, "SEM TELEMETRIA");
+      setTextIfChanged(centerlineDiagnosticFields.pathPointCount, "—");
+      setTextIfChanged(centerlineDiagnosticFields.decisionCount, "—");
+      clearCenterlineEntryFilter();
+      centerlineDiagnosticFields.decisions.replaceChildren();
+      const empty = document.createElement("p");
+      empty.className = "centerline-empty";
+      empty.textContent = "SEM TELEMETRIA";
+      centerlineDiagnosticFields.decisions.appendChild(empty);
+    }
+
+    function clearCenterlineEntryFilter() {
+      centerlineDiagnosticFields.entryFilterContent.replaceChildren();
+      const empty = document.createElement("p");
+      empty.className = "centerline-empty";
+      empty.textContent = "SEM DADOS DE ENTRY FILTER";
+      centerlineDiagnosticFields.entryFilterContent.appendChild(empty);
+    }
+
+    function formatEntryFilterNumber(value) {
+      const numericValue = Number(value);
+      return Number.isFinite(numericValue) ? numericValue.toFixed(1) : "—";
+    }
+
+    function updateCenterlineEntryFilter(entryFilter) {
+      const candidates = entryFilter && Array.isArray(entryFilter.candidates)
+        ? entryFilter.candidates
+        : [];
+      const before = Number(entryFilter && entryFilter.before);
+      const after = Number(entryFilter && entryFilter.after);
+      const bestForwardPx = Number(entryFilter && entryFilter.bestForwardPx);
+      const candidatesValid = candidates.every(candidate =>
+        Number.isFinite(Number(candidate.lengthPx)) &&
+        Number.isFinite(Number(candidate.forwardPx)) &&
+        typeof candidate.filtered === "boolean"
+      );
+      if (!entryFilter || entryFilter.bestForwardPx === null ||
+          !Number.isInteger(before) || before < 0 ||
+          !Number.isInteger(after) || after < 0 || after > before ||
+          !Number.isFinite(bestForwardPx) || candidates.length !== before ||
+          !candidatesValid) {
+        clearCenterlineEntryFilter();
+        return;
+      }
+
+      centerlineDiagnosticFields.entryFilterContent.replaceChildren();
+      const summary = document.createElement("div");
+      summary.className = "entry-filter-summary";
+      [
+        ["BEFORE", String(before)],
+        ["AFTER", String(after)],
+        ["BEST FWD", `${formatEntryFilterNumber(bestForwardPx)} px`]
+      ].forEach(([label, value]) => {
+        const reading = document.createElement("div");
+        reading.className = "entry-filter-reading";
+        const readingLabel = document.createElement("span");
+        readingLabel.textContent = label;
+        const readingValue = document.createElement("strong");
+        readingValue.textContent = value;
+        reading.append(readingLabel, readingValue);
+        summary.appendChild(reading);
+      });
+      centerlineDiagnosticFields.entryFilterContent.appendChild(summary);
+
+      const candidateList = document.createElement("div");
+      candidateList.className = "entry-filter-candidates";
+      candidates.forEach((candidate, index) => {
+        const candidateElement = document.createElement("div");
+        candidateElement.className = "entry-filter-candidate";
+        const candidateLabel = document.createElement("span");
+        candidateLabel.className = "entry-filter-candidate-label";
+        candidateLabel.textContent = String.fromCharCode("A".charCodeAt(0) + index);
+        const length = document.createElement("span");
+        length.textContent = `LEN ${formatEntryFilterNumber(candidate.lengthPx)}`;
+        const forward = document.createElement("span");
+        forward.textContent = `FWD ${formatEntryFilterNumber(candidate.forwardPx)}`;
+        const state = document.createElement("span");
+        state.className = `entry-filter-state ${candidate.filtered ? "filtered" : "kept"}`;
+        state.textContent = candidate.filtered ? "FILTERED" : "KEPT";
+        candidateElement.append(candidateLabel, length, forward, state);
+        candidateList.appendChild(candidateElement);
+      });
+      centerlineDiagnosticFields.entryFilterContent.appendChild(candidateList);
+    }
+
+    function formatSignedCenterlineValue(value) {
+      const numericValue = Number(value);
+      if (!Number.isFinite(numericValue)) return "—";
+      return `${numericValue >= 0 ? "+" : ""}${numericValue.toFixed(2)}`;
+    }
+
+    function updateCenterlineDiagnostics(data) {
+      const debug = data.centerlineDebug;
+      if (!debug || !Number.isInteger(debug.pathPointCount) ||
+          debug.pathPointCount < 0 || !Array.isArray(debug.decisions)) {
+        clearCenterlineDiagnostics();
+        return;
+      }
+
+      const decisions = debug.decisions.slice(0, 4);
+      const pathExists = debug.pathPointCount > 0;
+      centerlineDiagnosticFields.subsystem.dataset.telemetry = "fresh";
+      setTextIfChanged(centerlineDiagnosticFields.status, pathExists ? "ok" : "sem path");
+      centerlineDiagnosticFields.status.className = `subsystem-status ${pathExists ? "ok" : "warn"}`;
+      setTextIfChanged(centerlineDiagnosticFields.pathStatus, pathExists ? "OK" : "SEM PATH");
+      setTextIfChanged(centerlineDiagnosticFields.pathPointCount, String(debug.pathPointCount));
+      setTextIfChanged(centerlineDiagnosticFields.decisionCount, String(decisions.length));
+      updateCenterlineEntryFilter(debug.entryFilter);
+      centerlineDiagnosticFields.decisions.replaceChildren();
+
+      if (decisions.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "centerline-empty";
+        empty.textContent = pathExists
+          ? "Nenhuma bifurcação no frame atual"
+          : "Nenhuma decisão disponível";
+        centerlineDiagnosticFields.decisions.appendChild(empty);
+        return;
+      }
+
+      const knownDecisionModes = ["ENTRY_LOCK", "ENTRY_FALLBACK", "PATH"];
+      decisions.forEach((decision, decisionIndex) => {
+        const incoming = Array.isArray(decision.incoming) ? decision.incoming : [];
+        const branches = Array.isArray(decision.branches) ? decision.branches : [];
+        const rawMode = knownDecisionModes.includes(decision.mode)
+          ? decision.mode
+          : "PATH";
+        const mode = rawMode.replaceAll("_", " ");
+        const decisionElement = document.createElement("div");
+        decisionElement.className = "centerline-decision";
+
+        const header = document.createElement("div");
+        header.className = "centerline-decision-header";
+        header.textContent = `D${decisionIndex}  ${mode}`;
+        decisionElement.appendChild(header);
+
+        const junctionElement = document.createElement("div");
+        junctionElement.className = "centerline-junction";
+        const junctionLabel = document.createElement("span");
+        junctionLabel.className = "centerline-label";
+        junctionLabel.textContent = "JUNC";
+        const junctionValue = document.createElement("span");
+        const junctionDistancePx = Number(decision.junctionDistancePx);
+        junctionValue.textContent = (
+          decision.junctionDistancePx !== null && Number.isFinite(junctionDistancePx)
+            ? `${formatEntryFilterNumber(junctionDistancePx)} px`
+            : "—"
+        );
+        junctionElement.append(junctionLabel, junctionValue);
+        decisionElement.appendChild(junctionElement);
+
+        const incomingElement = document.createElement("div");
+        incomingElement.className = "centerline-vector";
+        incomingElement.innerHTML = `<span class="centerline-label">IN</span><span>${formatSignedCenterlineValue(incoming[0])}&nbsp;&nbsp;${formatSignedCenterlineValue(incoming[1])}</span>`;
+        decisionElement.appendChild(incomingElement);
+
+        branches.forEach((branch, branchIndex) => {
+          const branchElement = document.createElement("div");
+          branchElement.className = "centerline-branch";
+          const label = String.fromCharCode("A".charCodeAt(0) + branchIndex);
+          const branchLabel = document.createElement("span");
+          branchLabel.className = "centerline-label";
+          branchLabel.textContent = label;
+          const branchMetrics = document.createElement("span");
+          const forwardPx = Number(branch.forwardPx);
+          const forwardText = branch.forwardPx !== null &&
+            branch.forwardPx !== undefined && Number.isFinite(forwardPx)
+            ? `FWD ${formatEntryFilterNumber(forwardPx)}  `
+            : "";
+          const remainingLengthPx = Number(branch.remainingLengthPx);
+          const remainingText = branch.remainingLengthPx !== null &&
+            branch.remainingLengthPx !== undefined &&
+            Number.isFinite(remainingLengthPx)
+            ? `  REM ${formatEntryFilterNumber(remainingLengthPx)}`
+            : "";
+          const terminalText = ["BORDER", "INTERIOR"].includes(branch.terminalType)
+            ? `  ${branch.terminalType}`
+            : "";
+          branchMetrics.textContent = `${forwardText}AL ${formatSignedCenterlineValue(branch.alignment)}${remainingText}${terminalText}`;
+          branchElement.append(branchLabel, branchMetrics);
+          if (branch.selected === true && decision.ambiguous !== true) {
+            const selected = document.createElement("span");
+            selected.className = "centerline-selected";
+            selected.textContent = "SELECTED";
+            branchElement.appendChild(selected);
+          }
+          decisionElement.appendChild(branchElement);
+        });
+
+        centerlineDiagnosticFields.decisions.appendChild(decisionElement);
+      });
+    }
+
     function clearOperationCameraDiagnostics() {
       Object.values(operationCameraDiagnosticFields)
         .forEach(field => setTextIfChanged(field, "—"));
@@ -2605,8 +2848,10 @@ std::string DashboardServer::dashboardHtml()
     function renderCurrentCameraDiagnostics() {
       if (latestCameraDiagnosticData) {
         updateOperationCameraDiagnostics(latestCameraDiagnosticData);
+        updateCenterlineDiagnostics(latestCameraDiagnosticData);
       } else {
         clearOperationCameraDiagnostics();
+        clearCenterlineDiagnostics();
       }
     }
 
@@ -2640,7 +2885,7 @@ std::string DashboardServer::dashboardHtml()
     }
 
     async function refreshCameraStatus() {
-      if (!cameraIsVisible("downward")) return;
+      if (!cameraIsVisible("downward") && activeDashboardMode !== "diagnostics") return;
       const camera = cameras.downward;
       try {
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
@@ -2816,7 +3061,7 @@ std::string DashboardServer::dashboardHtml()
       if (document.hidden) stopDriveOnFocusLoss();
     });
     window.setInterval(sendCurrentDrive, 100);
-    window.setInterval(refreshCameraStatus, 500);
+    window.setInterval(refreshCameraStatus, 200);
     window.setInterval(refreshForwardCameraStatus, 500);
     selectDashboardMode("operation");
     renderCameraView("downward");
