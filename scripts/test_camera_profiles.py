@@ -386,10 +386,13 @@ class CameraProfilesTest(unittest.TestCase):
 
         self.assertEqual(published["lineFollowerLeftPower"], 0.0)
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
+        self.assertFalse(published["lineNearDetected"])
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
         expected_keys = set(status) | {
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
+            "lineNearDetected",
+            "lineControlSource",
             "lineTimestamp",
             "lineSequence",
             "specularRepairPixels",

@@ -6745,6 +6745,10 @@ def calculate_line_follower_command(
         "nearCenter": sensors["nearCenter"],
         "nearRight": sensors["nearRight"],
         "nearPosition": sensors["nearPosition"],
+        "rawNearPosition": sensors.get(
+            "rawNearPosition",
+            sensors["nearPosition"],
+        ),
 
         "headingAngle": sensors["headingAngle"],
         "steeringError": steering_error,
@@ -7124,6 +7128,15 @@ def save_line_status(
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
+            "lineNearDetected": bool(
+                finite_virtual_position(
+                    line_follower_command.get(
+                        "rawNearPosition",
+                        line_follower_command.get("nearPosition"),
+                    )
+                )
+                is not None
+            ),
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")
             ),
@@ -7838,7 +7851,8 @@ def main():
                 )
 
             # A câmera inferior mantém os overlays da centerline e dos nove
-            # sensores virtuais. Os demais diagnósticos ficam no Soul Sync.
+            # sensores virtuais. As linhas estruturais antigas permanecem
+            # restritas às outras câmeras.
             if camera_profile["role"] != "down":
                 cv2.line(
                     frame,
@@ -7857,10 +7871,9 @@ def main():
                         vision_profile["overlay_thin_line_thickness"],
                     )
 
-            if (
-                camera_profile["role"] != "down"
-                and green_processing_enabled
-            ):
+            # Os contornos, símbolos e ROIs verdes continuam visíveis também
+            # na câmera inferior sem alterar a classificação ou o controle.
+            if green_processing_enabled:
                 interpretation = green_status["greenInterpretation"]
                 green_overlay_accepted = bool(
                     green_status["greenConfirmed"]

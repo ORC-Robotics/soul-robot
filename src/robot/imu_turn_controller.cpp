@@ -127,17 +127,11 @@ ImuTurnOutput ImuTurnController::update(
         output.rightPower = -output.leftPower;
         output.progressPercent = progressPercent;
         output.phase = "turning";
-        if (targetDegrees_ > 90.0)
-        {
-            output.action = "Executando retorno de 180° pelo MPU6050";
-        }
-        else
-        {
-            const int targetDegrees = static_cast<int>(std::round(targetDegrees_));
-            output.action = "Executando giro de " +
-                            std::to_string(targetDegrees) + "° " +
-                            (directionSign_ > 0.0 ? "à direita" : "à esquerda");
-        }
+        const int targetDegrees = static_cast<int>(std::round(targetDegrees_));
+        output.action = "Executando giro de " +
+                        std::to_string(targetDegrees) + "° " +
+                        (directionSign_ > 0.0 ? "à direita" : "à esquerda") +
+                        " pelo MPU6050";
         return output;
     }
 

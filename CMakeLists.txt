@@ -35,6 +35,7 @@ endif()
 if(BUILD_TESTING)
     add_executable(main_mission_test
         tests/main_mission_test.cpp
+        src/robot/imu_turn_controller.cpp
         src/robot/main_mission.cpp
         src/robot/robot_state.cpp
     )

@@ -265,6 +265,56 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
                   kDriveDistanceMaximumSideDifferenceCm > 0.0 &&
                   kDriveDistanceDifferenceConfirmationSamples > 0,
               "O controle fechado da missão de distância deve permanecer seguro.");
+
+// Sequência configurável do retorno sinalizado por dois marcadores verdes.
+// Primeiro o robô avança pelos encoders, depois gira pelo MPU6050 e continua
+// no mesmo sentido até a câmera inferior confirmar novamente a linha próxima.
+// Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
+constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
+// Potência normalizada dos dois motores durante os 12 cm iniciais.
+// O valor 0,80 representa 80% da referência, não uma velocidade em cm/s.
+constexpr double kGreenTurnAroundForwardPower = 0.80;
+// Tempo parado, em milissegundos, entre o avanço e o início do giro.
+constexpr int kGreenTurnAroundForwardSettleMs = 250;
+// Idade máxima, em milissegundos, aceita para os dados dos encoders.
+// O avanço só é interrompido por encoder quando a telemetria fica ausente.
+constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
+
+// Limite absoluto de segurança, em milissegundos, para o avanço de 9 cm.
+// Ele não controla a distância; apenas impede movimento indefinido se uma
+// contagem congelada continuar chegando como telemetria aparentemente válida.
+constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
+// Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
+constexpr double kGreenTurnAroundImuDegrees = 150.0;
+// Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
+constexpr double kGreenTurnAroundImuToleranceDegrees = 5.0;
+// Define o sentido do retorno: true gira à direita; false gira à esquerda.
+constexpr bool kGreenTurnAroundTurnsRight = true;
+// Potência normalizada do pivot que continua até o NEAR encontrar a linha.
+constexpr double kGreenTurnAroundLineSearchPower = kTurn90CommandPower;
+// Quantidade de frames consecutivos com NEAR válido para retomar o seguidor.
+constexpr int kGreenTurnAroundLineReacquireFrames = 2;
+// Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
+constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
+
+static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
+                  kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
+                  kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
+                  kGreenTurnAroundForwardSettleMs >= 0 &&
+                  kGreenTurnAroundEncoderDataTimeoutMs > 0 &&
+                  kGreenTurnAroundForwardSafetyTimeoutMs >
+                      kGreenTurnAroundEncoderDataTimeoutMs,
+              "O avanço inicial do retorno verde deve permanecer seguro.");
+static_assert(kGreenTurnAroundImuDegrees > 0.0 &&
+                  kGreenTurnAroundImuDegrees <= 180.0 &&
+                  kGreenTurnAroundImuToleranceDegrees > 0.0 &&
+                  kGreenTurnAroundImuToleranceDegrees <
+                      kGreenTurnAroundImuDegrees &&
+                  kGreenTurnAroundLineSearchPower > 0.0 &&
+                  kGreenTurnAroundLineSearchPower <= kMaxMotorOutput &&
+                  kGreenTurnAroundLineReacquireFrames > 0 &&
+                  kGreenTurnAroundLineSearchTimeoutMs > 0,
+              "O giro e a busca visual do retorno verde devem ser válidos.");
 // Tempo de espera, em milissegundos, após exportar um GPIO no Linux.
 // A pasta /sys/class/gpio/gpioN pode levar um instante para aparecer.
 constexpr int kGpioExportDelayMs = 100;

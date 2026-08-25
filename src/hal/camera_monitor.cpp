@@ -242,6 +242,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lineFollowerLeftPower = 0.0;
     snapshot.lineFollowerRightPower = 0.0;
     snapshot.lineControlSource = "unavailable";
+    snapshot.lineNearDetected = false;
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
@@ -307,6 +308,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 json,
                 "lineFollowerRightPower",
                 candidate.lineFollowerRightPower) ||
+            !tryGetJsonBool(
+                json, "lineNearDetected", candidate.lineNearDetected) ||
             !tryGetJsonBool(
                 json,
                 "greenPathBlackValid",

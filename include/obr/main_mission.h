@@ -2,10 +2,13 @@
 
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
+#include "obr/imu_turn_controller.h"
 #include "obr/robot_state.h"
 
-// Mantém a Missão Principal parada até o seguidor normal ser implementado.
-// A percepção verde é recebida apenas para telemetria e nunca altera motores.
+#include <chrono>
+
+// Executa o segue-linha e comportamentos curtos disparados pela visão verde.
+// A classe não acessa hardware diretamente e mantém cada etapa fail-safe.
 class MainMission
 {
 public:
@@ -16,4 +19,21 @@ public:
         bool cameraReady,
         const CameraLineSnapshot& cameraLineSnapshot);
 
+private:
+    enum class TurnAroundPhase
+    {
+        Idle,
+        DrivingForward,
+        ForwardSettling,
+        TurningByImu,
+        SearchingLine
+    };
+
+    TurnAroundPhase turnAroundPhase_ = TurnAroundPhase::Idle;
+    ImuTurnController turnAroundController_;
+    bool turnAroundArmed_ = true;
+    long long forwardStartLeftCount_ = 0;
+    long long forwardStartRightCount_ = 0;
+    int lineReacquireFrames_ = 0;
+    std::chrono::steady_clock::time_point phaseStartedAt_{};
 };

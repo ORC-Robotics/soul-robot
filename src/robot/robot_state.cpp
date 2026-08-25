@@ -218,6 +218,9 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_mismatch" ||
                                        status.phase == "distance_correction_failed" ||
                                        status.phase == "distance_invalid_target" ||
+                                       status.phase == "turnaround_forward_timeout" ||
+                                       status.phase == "turnaround_encoder_lost" ||
+                                       status.phase == "turnaround_line_search_timeout" ||
                                        status.phase == "esp32_not_ready" ||
                                        status.phase == "camera_not_ready" ||
                                        status.phase == "line_ipc_stale";

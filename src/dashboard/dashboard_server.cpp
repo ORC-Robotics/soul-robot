@@ -1727,6 +1727,15 @@ std::string DashboardServer::dashboardHtml()
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
+        line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
+        turnaround_waiting_sensors: ["RETORNO: SENSORES", "warn", "machineStepPerception"],
+        turnaround_forward: ["RETORNO: AVANÇO", "active", "machineStepMotion"],
+        turnaround_forward_settling: ["RETORNO: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        turnaround_imu: ["RETORNO: GIRO IMU", "active", "machineStepMotion"],
+        turnaround_searching_line: ["RETORNO: BUSCANDO LINHA", "active", "machineStepPerception"],
+        turnaround_forward_timeout: ["RETORNO: TIMEOUT", "danger", "machineStepFeedback"],
+        turnaround_encoder_lost: ["RETORNO: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        turnaround_line_search_timeout: ["RETORNO: LINHA AUSENTE", "danger", "machineStepFeedback"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
         turn_correction: ["CORRIGINDO GIRO", "active", "machineStepMotion"],
@@ -1775,9 +1784,12 @@ std::string DashboardServer::dashboardHtml()
       element("machineMission").textContent = mission === "turn_right_90"
         ? "Giro 90° à direita"
         : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
+      const turnAroundActive = phase.startsWith("turnaround_");
       element("machineBehavior").textContent = mission === "turn_right_90"
         ? "TESTE DE GIRO"
-        : mission === "drive_distance" ? "TESTE DE DISTÂNCIA" : "NENHUM";
+        : mission === "drive_distance"
+          ? "TESTE DE DISTÂNCIA"
+          : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;
       element("machineAppliedSpeed").textContent = fresh
@@ -2968,7 +2980,11 @@ std::string DashboardServer::dashboardHtml()
 
   setTextIfChanged(
     operationCameraDiagnosticFields.greenInterpretation,
-    String(data.greenInterpretation || "SEM_DECISAO").replaceAll("_", " ")
+    String(
+      data.greenRawInterpretation ||
+      data.greenInterpretation ||
+      "SEM_DECISAO"
+    ).replaceAll("_", " ")
   );
 
   setTextIfChanged(
