@@ -1,5 +1,5 @@
 param(
-    [string]$HostName = "192.168.0.104",
+    [string]$HostName = "192.168.0.8",
     [string]$User = "raspberry",
     [string]$RemoteDir = "/home/raspberry/OBR2026K",
     [string]$Target = "robot_test",
@@ -24,6 +24,29 @@ function Invoke-Checked {
     }
 }
 
+function Initialize-DeployAccess {
+    param(
+        [string]$SetupScriptPath,
+        [string]$RaspberryHost,
+        [string]$RaspberryUser,
+        [string]$RobotServiceName,
+        [string]$PrivateKeyPath
+    )
+
+    # A preparação é necessária apenas no primeiro deploy de cada computador.
+    # Ela solicita as senhas interativamente e libera somente os serviços do robô.
+    Write-Host "Preparing SSH and limited sudo access for the first deploy."
+    Invoke-Checked powershell.exe @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $SetupScriptPath,
+        "-HostName", $RaspberryHost,
+        "-User", $RaspberryUser,
+        "-ServiceName", $RobotServiceName,
+        "-KeyPath", $PrivateKeyPath
+    )
+}
+
 $workspace = Split-Path -Parent $PSScriptRoot
 $remote = "$User@$HostName"
 $remoteBuild = "$RemoteDir/build"
@@ -33,8 +56,8 @@ $remoteForwardCameraPattern = "$RemoteDir/scripts/[f]orward_camera_stream.py"
 $remoteRunScript = "$RemoteDir/scripts/run_robot.sh"
 $remoteLineCameraRunScript = "$RemoteDir/scripts/run_line_camera.sh"
 $lineCameraServiceName = "obr-line-camera"
-$sshArgs = @()
-$scpArgs = @()
+$setupScriptPath = Join-Path $PSScriptRoot "install-service.ps1"
+$setupCommand = "powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1 -HostName $HostName"
 
 # As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
@@ -49,11 +72,23 @@ foreach ($assetPath in $requiredDashboardAssets) {
     }
 }
 
-if (Test-Path $KeyPath) {
-    $sshArgs += @("-i", $KeyPath)
-    $scpArgs += @("-i", $KeyPath)
-} else {
-    Write-Host "SSH key not found at $KeyPath. SSH may ask for the Raspberry password."
+if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) {
+    Initialize-DeployAccess -SetupScriptPath $setupScriptPath -RaspberryHost $HostName -RaspberryUser $User -RobotServiceName $ServiceName -PrivateKeyPath $KeyPath
+}
+
+# Depois da preparação inicial, o deploy deve ser totalmente não interativo.
+# O modo BatchMode impede que uma falha de acesso gere vários pedidos de senha.
+$sshArgs = @("-i", $KeyPath, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
+$scpArgs = @("-i", $KeyPath, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
+
+& ssh @($sshArgs + @($remote, "true"))
+if ($LASTEXITCODE -ne 0) {
+    Initialize-DeployAccess -SetupScriptPath $setupScriptPath -RaspberryHost $HostName -RaspberryUser $User -RobotServiceName $ServiceName -PrivateKeyPath $KeyPath
+
+    & ssh @($sshArgs + @($remote, "true"))
+    if ($LASTEXITCODE -ne 0) {
+        throw "SSH key access could not be configured for $remote. Retry manually with: $setupCommand"
+    }
 }
 
 Write-Host "Deploying to ${remote}:$RemoteDir"
@@ -62,7 +97,7 @@ Invoke-Checked ssh @($sshArgs + @($remote, "mkdir -p '$RemoteDir' '$remoteBuild'
 
 # Para o serviço antes de trocar código ou binário. Se o build falhar, o robô
 # permanece parado e o executável válido anterior não é substituído.
-Invoke-Checked ssh @($sshArgs + @($remote, "sudo systemctl stop '$ServiceName.service' '$lineCameraServiceName.service' >/dev/null 2>&1 || true"))
+Invoke-Checked ssh @($sshArgs + @($remote, "sudo -n systemctl stop '$ServiceName.service' '$lineCameraServiceName.service' || { echo 'Deploy access is not configured. Run: $setupCommand' >&2; exit 1; }"))
 Invoke-Checked scp @(
     $scpArgs +
     "$workspace/CMakeLists.txt",
@@ -102,9 +137,8 @@ Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"
 
 $stopOldCameraCommand = "pkill -f '$remoteCameraPattern' >/dev/null 2>&1 || true; pkill -f '$remoteForwardCameraPattern' >/dev/null 2>&1 || true"
 $prepareScriptsCommand = "cd '$RemoteDir' && find scripts -type f \( -name '*.sh' -o -name '*.service' \) -exec sed -i 's/\r$//' {} + && chmod +x '$remoteRunScript' '$remoteLineCameraRunScript'"
-$installServiceCommand = "$prepareScriptsCommand && sudo cp '$RemoteDir/scripts/$ServiceName.service' '/etc/systemd/system/$ServiceName.service' && sudo cp '$RemoteDir/scripts/$lineCameraServiceName.service' '/etc/systemd/system/$lineCameraServiceName.service' && sudo systemctl daemon-reload && sudo systemctl enable $ServiceName.service $lineCameraServiceName.service >/dev/null 2>&1"
-$restartServiceCommand = "$installServiceCommand && sudo systemctl restart $ServiceName.service $lineCameraServiceName.service"
-$statusServiceCommand = "sudo systemctl is-active --quiet $ServiceName.service && sudo systemctl is-active --quiet $lineCameraServiceName.service && sudo systemctl status $ServiceName.service $lineCameraServiceName.service --no-pager"
+$restartServiceCommand = "$prepareScriptsCommand && sudo -n systemctl restart '$ServiceName.service' '$lineCameraServiceName.service'"
+$statusServiceCommand = "sudo -n systemctl is-active --quiet '$ServiceName.service' && sudo -n systemctl is-active --quiet '$lineCameraServiceName.service' && sudo -n systemctl status '$ServiceName.service' '$lineCameraServiceName.service' --no-pager"
 
 if ($NoRun) {
     Write-Host "Robot was deployed but is not running."
@@ -116,8 +150,7 @@ if ($NoRun) {
 } elseif ($Run) {
     Invoke-Checked ssh @($sshArgs + @($remote, "$stopOldCameraCommand; $prepareScriptsCommand; cd '$RemoteDir' && ./build/$Target"))
 } else {
-    $startCommand = "$stopOldCameraCommand; if [ -f '$RemoteDir/scripts/$ServiceName.service' ]; then $restartServiceCommand; else $prepareScriptsCommand; cd '$RemoteDir' && ./build/$Target; fi"
-    Invoke-Checked ssh @($sshArgs + @($remote, $startCommand))
+    Invoke-Checked ssh @($sshArgs + @($remote, "$stopOldCameraCommand; $restartServiceCommand"))
     Invoke-Checked ssh @($sshArgs + @($remote, $statusServiceCommand))
     Write-Host "Dashboard URL: http://${HostName}:8080"
 }

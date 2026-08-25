@@ -1,0 +1,7 @@
+# Permite que o usuário de deploy controle somente os dois serviços do robô.
+# A instalação e outras operações administrativas continuam exigindo senha.
+@DEPLOY_USER@ ALL=(root) NOPASSWD: @SYSTEMCTL_PATH@ stop @SERVICE_NAME@.service @LINE_CAMERA_SERVICE_NAME@.service, \
+    @SYSTEMCTL_PATH@ restart @SERVICE_NAME@.service @LINE_CAMERA_SERVICE_NAME@.service, \
+    @SYSTEMCTL_PATH@ is-active --quiet @SERVICE_NAME@.service, \
+    @SYSTEMCTL_PATH@ is-active --quiet @LINE_CAMERA_SERVICE_NAME@.service, \
+    @SYSTEMCTL_PATH@ status @SERVICE_NAME@.service @LINE_CAMERA_SERVICE_NAME@.service --no-pager

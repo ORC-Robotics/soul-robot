@@ -284,11 +284,21 @@ sudo apt install -y python3-picamera2 python3-opencv python3-numpy
 
 ## Deploy pelo Windows
 
-Na pasta do projeto:
+No Windows, o próprio primeiro deploy detecta a ausência de acesso e executa a
+preparação automaticamente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.8
 ```
+
+A preparação cria uma chave SSH exclusiva para deploy, instala a chave pública e
+autoriza sem senha somente os comandos necessários para parar, reiniciar e
+consultar os serviços `obr-robot` e `obr-line-camera`. Na primeira execução, ela
+pede a senha SSH da Raspberry uma vez e a senha de `sudo` uma vez. Nenhuma senha
+ou chave privada é salva no repositório. Os deploys seguintes não fazem perguntas
+interativas.
+
+Se quiser executar somente a preparação, use `scripts/install-service.ps1`.
 
 O deploy copia o código para `/home/raspberry/OBR2026K`, para o serviço e compila em
 `.build-staging`. O executável em uso só é substituído depois que o novo build
@@ -300,7 +310,7 @@ instalado e o robô permanece parado. Depois da troca, o deploy reinicia o servi
 Se precisar escolher o host manualmente:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.104
+powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -HostName 192.168.0.8
 ```
 
 Para apenas enviar e compilar, sem iniciar o robô:
@@ -309,16 +319,15 @@ Para apenas enviar e compilar, sem iniciar o robô:
 powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 ```
 
-Para não digitar a senha em todo deploy, crie uma chave SSH no computador de
-desenvolvimento e instale a chave pública na Raspberry. A senha da Raspberry será
-pedida só nessa configuração inicial:
+## Deploy pelo Linux/macOS
 
-```powershell
-ssh-keygen -t ed25519 -f "$env:USERPROFILE\.ssh\obr_raspberry" -N ""
-Get-Content "$env:USERPROFILE\.ssh\obr_raspberry.pub" | ssh raspberry@192.168.0.104 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys"
+Também é necessário preparar cada computador uma vez:
+
+```sh
+bash scripts/install-service.sh --host 192.168.0.104
 ```
 
-## Deploy pelo Linux/macOS
+Depois da preparação, o deploy é não interativo:
 
 ```sh
 bash scripts/deploy.sh
@@ -328,13 +337,6 @@ Para apenas enviar e compilar, sem iniciar o robô:
 
 ```sh
 bash scripts/deploy.sh --no-run
-```
-
-No Linux/macOS, use a mesma chave esperada pelo script:
-
-```sh
-ssh-keygen -t ed25519 -f ~/.ssh/obr_raspberry -N ""
-ssh-copy-id -i ~/.ssh/obr_raspberry.pub raspberry@192.168.0.104
 ```
 
 ## Botão de deploy local
@@ -357,8 +359,10 @@ em `127.0.0.1`, então ele fica disponível só no computador de desenvolvimento
 
 ## Serviço no boot
 
-Depois que o projeto já tiver sido compilado pelo menos uma vez na Raspberry,
-instale o serviço:
+Os scripts de preparação mostrados acima também instalam e habilitam os serviços.
+Eles podem ser executados antes do primeiro deploy: se o binário ainda não existir,
+os serviços ficam habilitados e serão iniciados pelo primeiro deploy concluído.
+Execute o mesmo comando novamente quando um arquivo `.service` for alterado.
 
 No Windows:
 

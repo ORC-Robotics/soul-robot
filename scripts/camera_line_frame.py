@@ -3648,7 +3648,11 @@ def build_geometric_centerline_mask(
     return reduced_centerline, transform
 
 
-def select_geometric_centerline_branch_path(candidate_paths):
+def select_geometric_centerline_branch_path(
+    candidate_paths,
+    initial_direction=None,
+    branch_debug=None,
+):
     """Seleciona bifurcações pela continuidade da direção de chegada."""
 
     while len(candidate_paths) > 1:
@@ -3677,6 +3681,19 @@ def select_geometric_centerline_branch_path(candidate_paths):
         incoming_x = float(junction[0] - previous_point[0])
         incoming_y = float(junction[1] - previous_point[1])
         incoming_length = math.hypot(incoming_x, incoming_y)
+        used_initial = False
+
+        # A primeira divergência pode coincidir com o início do path e ainda
+        # não possuir histórico. Nesse único caso, usa a direção local do NEAR.
+        if (
+            incoming_length <= 0.0
+            and junction_index == 0
+            and initial_direction is not None
+        ):
+            incoming_x = float(initial_direction[0])
+            incoming_y = float(initial_direction[1])
+            incoming_length = math.hypot(incoming_x, incoming_y)
+            used_initial = True
 
         if incoming_length <= 0.0:
             return path_to_junction
@@ -3686,6 +3703,11 @@ def select_geometric_centerline_branch_path(candidate_paths):
             branch_groups.setdefault(path[common_length], []).append(path)
 
         ranked_groups = []
+        debug_branch_groups = []
+        capture_branch_debug = (
+            branch_debug is not None
+            and "junction" not in branch_debug
+        )
         for group_paths in branch_groups.values():
             branch_common_length = common_length
             branch_shortest_length = min(len(path) for path in group_paths)
@@ -3714,14 +3736,47 @@ def select_geometric_centerline_branch_path(candidate_paths):
             )
             ranked_groups.append((alignment, group_paths))
 
+            if capture_branch_debug:
+                normalized_outgoing = (
+                    (
+                        outgoing_x / outgoing_length,
+                        outgoing_y / outgoing_length,
+                    )
+                    if outgoing_length > 0.0
+                    else (0.0, 0.0)
+                )
+                debug_branch_groups.append((group_paths, {
+                    "outgoing": normalized_outgoing,
+                    "alignment": alignment,
+                    "futurePoint": future_point,
+                    "pathCount": len(group_paths),
+                }))
+
         ranked_groups.sort(key=lambda item: item[0], reverse=True)
         if not ranked_groups:
             return path_to_junction
-        if (
+        ambiguous = (
             len(ranked_groups) >= 2
             and ranked_groups[0][0] - ranked_groups[1][0]
             <= GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE
-        ):
+        )
+        if capture_branch_debug:
+            selected_group = None if ambiguous else ranked_groups[0][1]
+            branch_debug.update({
+                "junction": junction,
+                "junctionIndex": junction_index,
+                "usedInitial": used_initial,
+                "incoming": (
+                    incoming_x / incoming_length,
+                    incoming_y / incoming_length,
+                ),
+                "ambiguous": ambiguous,
+                "branches": [
+                    dict(values, selected=group_paths is selected_group)
+                    for group_paths, values in debug_branch_groups
+                ],
+            })
+        if ambiguous:
             return path_to_junction
 
         candidate_paths = ranked_groups[0][1]
@@ -3763,6 +3818,8 @@ def find_geometric_centerline_path(
     centerline_mask,
     start_point,
     centerline_transform=None,
+    initial_direction=None,
+    branch_debug=None,
 ):
     """
     Encontra uma rota contínua entre os endpoints da centerline.
@@ -3878,7 +3935,11 @@ def find_geometric_centerline_path(
             endpoint_paths.append(endpoint_path)
 
     if endpoint_paths:
-        return select_geometric_centerline_branch_path(endpoint_paths)
+        return select_geometric_centerline_branch_path(
+            endpoint_paths,
+            initial_direction=initial_direction,
+            branch_debug=branch_debug,
+        )
 
     # Ciclos sem endpoint preservam o fallback geodésico anterior.
     path = []
@@ -4265,6 +4326,7 @@ def draw_geometric_line_overlay(
     centerline_path_started = time.perf_counter()
 
     centerline_path = []
+    branch_debug = {}
 
     if centerline_transform is not None:
         start_point = geometric_guidance.get(
@@ -4292,10 +4354,31 @@ def draw_geometric_line_overlay(
             ),
         )
 
+        initial_direction = estimate_geometric_initial_direction(
+            processed_line_mask,
+            start_point,
+        )
+
+        # Converte o vetor do frame para as coordenadas do skeleton reduzido.
+        reduced_direction_x = float(initial_direction[0]) * scale_x
+        reduced_direction_y = float(initial_direction[1]) * scale_y
+        reduced_direction_length = math.hypot(
+            reduced_direction_x,
+            reduced_direction_y,
+        )
+        reduced_initial_direction = None
+        if reduced_direction_length > 0.0:
+            reduced_initial_direction = (
+                reduced_direction_x / reduced_direction_length,
+                reduced_direction_y / reduced_direction_length,
+            )
+
         reduced_centerline_path = find_geometric_centerline_path(
             reduced_centerline_mask,
             reduced_start_point,
             centerline_transform,
+            initial_direction=reduced_initial_direction,
+            branch_debug=branch_debug,
         )
 
         crop_max_x = float(crop_x0 + crop_width - 1)
@@ -4641,6 +4724,76 @@ def draw_geometric_line_overlay(
             -1,
             cv2.LINE_AA,
         )
+
+    if branch_debug and centerline_transform is not None:
+        # O algoritmo permanece em coordenadas reduced; a conversão abaixo
+        # existe somente para desenhar o diagnóstico no frame completo.
+        def direction_to_full(direction):
+            full_x = float(direction[0]) / scale_x
+            full_y = float(direction[1]) / scale_y
+            full_length = math.hypot(full_x, full_y)
+            if full_length <= 0.0:
+                return (0.0, 0.0)
+            return (full_x / full_length, full_y / full_length)
+
+        junction = branch_debug["junction"]
+        junction_pixel = (
+            int(round(crop_x0 + float(junction[0]) / scale_x)),
+            int(round(crop_y0 + float(junction[1]) / scale_y)),
+        )
+        arrow_length = 36.0
+        incoming_full = direction_to_full(branch_debug["incoming"])
+        incoming_start = (
+            int(round(junction_pixel[0] - incoming_full[0] * arrow_length)),
+            int(round(junction_pixel[1] - incoming_full[1] * arrow_length)),
+        )
+        diagnostic_color = (0, 165, 255)
+        cv2.arrowedLine(
+            frame, incoming_start, junction_pixel, diagnostic_color,
+            2, cv2.LINE_AA, tipLength=0.28,
+        )
+        cv2.circle(
+            frame, junction_pixel, 5, diagnostic_color, 2, cv2.LINE_AA,
+        )
+        panel_mode = (
+            "AMBIG" if branch_debug["ambiguous"]
+            else ("INITIAL" if branch_debug["usedInitial"] else "PATH")
+        )
+        panel_lines = [
+            f"BRANCH {panel_mode}",
+            (
+                f"IN {branch_debug['incoming'][0]:+.2f} "
+                f"{branch_debug['incoming'][1]:+.2f}"
+            ),
+        ]
+
+        for index, branch in enumerate(branch_debug["branches"]):
+            label = chr(ord("A") + index)
+            outgoing_full = direction_to_full(branch["outgoing"])
+            arrow_end = (
+                int(round(junction_pixel[0] + outgoing_full[0] * arrow_length)),
+                int(round(junction_pixel[1] + outgoing_full[1] * arrow_length)),
+            )
+            branch_color = diagnostic_color if branch["selected"] else (210, 210, 210)
+            branch_mark = " *" if branch["selected"] else ""
+            branch_text = f"{label} {branch['alignment']:+.2f}{branch_mark}"
+            cv2.arrowedLine(
+                frame, junction_pixel, arrow_end, branch_color,
+                2 if branch["selected"] else 1,
+                cv2.LINE_AA, tipLength=0.28,
+            )
+            cv2.putText(
+                frame, branch_text, (arrow_end[0] + 4, arrow_end[1] - 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.40, branch_color, 1, cv2.LINE_AA,
+            )
+            panel_lines.append(branch_text)
+
+        for index, text in enumerate(panel_lines):
+            cv2.putText(
+                frame, text, (8, 110 + index * 17),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.43,
+                diagnostic_color, 1, cv2.LINE_AA,
+            )
 
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
