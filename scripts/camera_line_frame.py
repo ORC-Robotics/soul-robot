@@ -13,6 +13,7 @@ import threading
 import time
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import traceback
 from urllib.parse import parse_qs, urlsplit
 
 
@@ -2204,6 +2205,13 @@ VIRTUAL_FAR_Y1 = 0.54
 """rois virtuais para o seguidor de linha, em coordenadas normalizadas"""
 VIRTUAL_NEAR_Y0 = 0.54
 VIRTUAL_NEAR_Y1 = 0.83
+
+# As duas novas bandas dividem somente a inteligência de curva. O FAR legado
+# acima continua cobrindo 0,00–0,54 diretamente e não é reconstruído por elas.
+VIRTUAL_FAR_BAND_Y0 = 0.00
+VIRTUAL_FAR_BAND_Y1 = 0.27
+VIRTUAL_MEDIUM_Y0 = 0.27
+VIRTUAL_MEDIUM_Y1 = 0.54
 # Divisão horizontal dos três sensores.
 #
 # Existe uma pequena sobreposição entre L/C e C/R.
@@ -2221,6 +2229,22 @@ VIRTUAL_CENTER_X1 = 0.615
 
 VIRTUAL_RIGHT_X0 = 0.615
 VIRTUAL_RIGHT_X1 = 0.96
+
+# O scan usa somente uma direção clara do MEDIUM e termina após três frames.
+VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD = 0.20
+VIRTUAL_MEDIUM_SCAN_MAX_FRAMES = 3
+
+# MEDIUM e FAR BAND precisam concordar claramente antes do pivot de recovery.
+VIRTUAL_REORIENT_DIRECTION_THRESHOLD = 0.20
+VIRTUAL_REORIENT_CONFIRMATION_FRAMES = 4
+
+# O steering normal precisa reaparecer em dois frames antes de encerrar o
+# estado persistente, mas recebe autoridade já no primeiro frame válido.
+VIRTUAL_REORIENT_RECOVERY_FRAMES = 2
+
+VIRTUAL_STATE_NORMAL = "NORMAL"
+VIRTUAL_STATE_REORIENT_LEFT = "REORIENT_LEFT"
+VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 
 # Controle da prioridade de direção após um verde confirmado.
 #
@@ -2242,6 +2266,15 @@ LIMIAR_CURVA_VERDE_INICIADA = 0.20
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
 # Evita encerrar a prioridade por uma leitura central isolada.
 QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
+
+# A manobra verde não pode manter a máscara de controle indefinidamente.
+# Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
+GREEN_MANEUVER_TIMEOUT_FRAMES = 90
+
+# A busca cega começa no último lado confiável por uma janela curta e depois
+# varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
+VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = 12
+VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = 30
 
 # Reaquisição geométrica após gaps.
 #
@@ -2371,14 +2404,22 @@ GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
 
 def resolve_virtual_sensor_geometry(frame_shape):
     """
-    Converte a geometria normalizada dos seis sensores
-    para coordenadas reais em pixels.
+    Converte o FAR/NEAR legado e as novas bandas para pixels.
+
+    O retângulo FAR original é calculado diretamente para preservar
+    exatamente a leitura usada pelo seguidor base.
     """
 
     height, width = frame_shape[:2]
 
     far_y0 = int(round(height * VIRTUAL_FAR_Y0))
     far_y1 = int(round(height * VIRTUAL_FAR_Y1))
+
+    far_band_y0 = int(round(height * VIRTUAL_FAR_BAND_Y0))
+    far_band_y1 = int(round(height * VIRTUAL_FAR_BAND_Y1))
+
+    medium_y0 = int(round(height * VIRTUAL_MEDIUM_Y0))
+    medium_y1 = int(round(height * VIRTUAL_MEDIUM_Y1))
 
     near_y0 = int(round(height * VIRTUAL_NEAR_Y0))
     near_y1 = int(round(height * VIRTUAL_NEAR_Y1))
@@ -2414,6 +2455,48 @@ def resolve_virtual_sensor_geometry(frame_shape):
             },
         },
 
+        "farBand": {
+            "left": {
+                "x0": left_x0,
+                "y0": far_band_y0,
+                "x1": left_x1,
+                "y1": far_band_y1,
+            },
+            "center": {
+                "x0": center_x0,
+                "y0": far_band_y0,
+                "x1": center_x1,
+                "y1": far_band_y1,
+            },
+            "right": {
+                "x0": right_x0,
+                "y0": far_band_y0,
+                "x1": right_x1,
+                "y1": far_band_y1,
+            },
+        },
+
+        "medium": {
+            "left": {
+                "x0": left_x0,
+                "y0": medium_y0,
+                "x1": left_x1,
+                "y1": medium_y1,
+            },
+            "center": {
+                "x0": center_x0,
+                "y0": medium_y0,
+                "x1": center_x1,
+                "y1": medium_y1,
+            },
+            "right": {
+                "x0": right_x0,
+                "y0": medium_y0,
+                "x1": right_x1,
+                "y1": medium_y1,
+            },
+        },
+
         "near": {
             "left": {
                 "x0": left_x0,
@@ -2441,8 +2524,10 @@ def draw_virtual_sensor_geometry(
     line_follower_command,
 ):
     """
-    Desenha os seis sensores, suas leituras analógicas
-    e as posições FAR/NEAR.
+    Desenha as bandas FAR, MEDIUM e NEAR com o estado virtual atual.
+
+    O heading continua usando o FAR legado, embora seus retângulos não
+    sejam repetidos sobre as nove regiões exibidas.
     """
 
     geometry = resolve_virtual_sensor_geometry(
@@ -2451,19 +2536,34 @@ def draw_virtual_sensor_geometry(
 
     sensors = (
         (
-            "FAR-L",
-            geometry["far"]["left"],
-            line_follower_command["farLeft"],
+            "FB-L",
+            geometry["farBand"]["left"],
+            line_follower_command["farBandLeft"],
         ),
         (
-            "FAR-C",
-            geometry["far"]["center"],
-            line_follower_command["farCenter"],
+            "FB-C",
+            geometry["farBand"]["center"],
+            line_follower_command["farBandCenter"],
         ),
         (
-            "FAR-R",
-            geometry["far"]["right"],
-            line_follower_command["farRight"],
+            "FB-R",
+            geometry["farBand"]["right"],
+            line_follower_command["farBandRight"],
+        ),
+        (
+            "MED-L",
+            geometry["medium"]["left"],
+            line_follower_command["mediumLeft"],
+        ),
+        (
+            "MED-C",
+            geometry["medium"]["center"],
+            line_follower_command["mediumCenter"],
+        ),
+        (
+            "MED-R",
+            geometry["medium"]["right"],
+            line_follower_command["mediumRight"],
         ),
         (
             "NEAR-L",
@@ -2506,12 +2606,20 @@ def draw_virtual_sensor_geometry(
         )
 
     far_position = line_follower_command["farPosition"]
+    far_band_position = line_follower_command["farBandPosition"]
+    medium_position = line_follower_command["mediumPosition"]
     near_position = line_follower_command["nearPosition"]
 
-    far_text = (
-        f"FAR POS {far_position:+.2f}"
-        if far_position is not None
-        else "FAR POS INVALID"
+    far_band_text = (
+        f"FAR BAND POS {far_band_position:+.2f}"
+        if far_band_position is not None
+        else "FAR BAND POS INVALID"
+    )
+
+    medium_text = (
+        f"MEDIUM POS {medium_position:+.2f}"
+        if medium_position is not None
+        else "MEDIUM POS INVALID"
     )
 
     near_text = (
@@ -2520,33 +2628,25 @@ def draw_virtual_sensor_geometry(
         else "NEAR POS INVALID"
     )
 
-    cv2.putText(
-        frame,
-        far_text,
-        (
-            geometry["far"]["center"]["x0"] + 8,
-            geometry["far"]["center"]["y0"] + 48,
-        ),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
+    position_texts = (
+        (far_band_text, geometry["farBand"]["center"]),
+        (medium_text, geometry["medium"]["center"]),
+        (near_text, geometry["near"]["center"]),
     )
-
-    cv2.putText(
-        frame,
-        near_text,
-        (
-            geometry["near"]["center"]["x0"] + 8,
-            geometry["near"]["center"]["y0"] + 48,
-        ),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
+    for position_text, position_geometry in position_texts:
+        cv2.putText(
+            frame,
+            position_text,
+            (
+                position_geometry["x0"] + 8,
+                position_geometry["y0"] + 48,
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
     heading_angle = line_follower_command["headingAngle"]
     far_point = virtual_row_position_to_point(
         far_position,
@@ -2646,6 +2746,41 @@ def draw_virtual_sensor_geometry(
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
         (0, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    virtual_state_labels = {
+        VIRTUAL_STATE_NORMAL: "NORMAL",
+        VIRTUAL_STATE_REORIENT_LEFT: "REORIENT LEFT",
+        VIRTUAL_STATE_REORIENT_RIGHT: "REORIENT RIGHT",
+    }
+    virtual_state = line_follower_command.get(
+        "virtualState",
+        VIRTUAL_STATE_NORMAL,
+    )
+    cv2.putText(
+        frame,
+        f"VSTATE {virtual_state_labels.get(virtual_state, 'NORMAL')}",
+        (8, 88),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 220, 255),
+        1,
+        cv2.LINE_AA,
+    )
+
+    green_direction = line_follower_command.get(
+        "greenDirection",
+        "NENHUMA",
+    )
+    cv2.putText(
+        frame,
+        f"GREEN DIR {green_direction}",
+        (8, 110),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 220, 255),
         1,
         cv2.LINE_AA,
     )
@@ -5429,11 +5564,12 @@ def draw_geometric_line_overlay(
         ),
         f"STATE {'GAP' if gap_forward_active else 'LINE'}",
     )
+    overlay_text_start_y = max(22, frame.shape[0] - 50)
     for line_index, overlay_text in enumerate(overlay_texts):
         cv2.putText(
             frame,
             overlay_text,
-            (8, 22 + line_index * 22),
+            (8, overlay_text_start_y + line_index * 22),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.50,
             (0, 255, 255),
@@ -5500,8 +5636,7 @@ def read_virtual_line_sensors(
     direcao_verde_ativa="NENHUMA",
 ):
     """
-    Lê os seis sensores virtuais e calcula
-    a posição lateral de FAR e NEAR.
+    Preserva o FAR/NEAR legado e lê FAR BAND/MEDIUM separadamente.
     """
 
     geometry = resolve_virtual_sensor_geometry(
@@ -5538,31 +5673,90 @@ def read_virtual_line_sensors(
         geometry["near"]["right"],
     )
 
-    # Durante uma interseção sinalizada por verde, somente o ramo
-    # permitido deve influenciar a antecipação do FAR.
-    #
-    # O NEAR mantém o centro ativo para representar a posição física
-    # atual do robô enquanto ele abandona a linha antiga e entra na nova.
-    if direcao_verde_ativa == "ESQUERDA":
-        far_center = 0.0
-        far_right = 0.0
-        near_right = 0.0
+    far_band_left = read_virtual_sensor(
+        processed_line_mask,
+        geometry["farBand"]["left"],
+    )
 
-    elif direcao_verde_ativa == "DIREITA":
-        far_left = 0.0
-        far_center = 0.0
-        near_left = 0.0
+    far_band_center = read_virtual_sensor(
+        processed_line_mask,
+        geometry["farBand"]["center"],
+    )
 
-    far_position = calculate_virtual_row_position(
+    far_band_right = read_virtual_sensor(
+        processed_line_mask,
+        geometry["farBand"]["right"],
+    )
+
+    medium_left = read_virtual_sensor(
+        processed_line_mask,
+        geometry["medium"]["left"],
+    )
+
+    medium_center = read_virtual_sensor(
+        processed_line_mask,
+        geometry["medium"]["center"],
+    )
+
+    medium_right = read_virtual_sensor(
+        processed_line_mask,
+        geometry["medium"]["right"],
+    )
+
+    raw_far_position = calculate_virtual_row_position(
         far_left,
         far_center,
         far_right,
     )
-
-    near_position = calculate_virtual_row_position(
+    raw_near_position = calculate_virtual_row_position(
         near_left,
         near_center,
         near_right,
+    )
+
+    control_far_left = far_left
+    control_far_center = far_center
+    control_far_right = far_right
+    control_near_left = near_left
+    control_near_center = near_center
+    control_near_right = near_right
+
+    # Durante uma interseção sinalizada por verde, somente o ramo
+    # permitido deve influenciar a antecipação do FAR.
+    #
+    # As cópias de controle preservam no overlay as leituras RAW da câmera.
+    if direcao_verde_ativa == "ESQUERDA":
+        control_far_center = 0.0
+        control_far_right = 0.0
+        control_near_right = 0.0
+
+    elif direcao_verde_ativa == "DIREITA":
+        control_far_left = 0.0
+        control_far_center = 0.0
+        control_near_left = 0.0
+
+    far_position = calculate_virtual_row_position(
+        control_far_left,
+        control_far_center,
+        control_far_right,
+    )
+
+    near_position = calculate_virtual_row_position(
+        control_near_left,
+        control_near_center,
+        control_near_right,
+    )
+
+    far_band_position = calculate_virtual_row_position(
+        far_band_left,
+        far_band_center,
+        far_band_right,
+    )
+
+    medium_position = calculate_virtual_row_position(
+        medium_left,
+        medium_center,
+        medium_right,
     )
 
     heading_angle = calculate_virtual_heading_angle(
@@ -5580,11 +5774,23 @@ def read_virtual_line_sensors(
         "farCenter": far_center,
         "farRight": far_right,
         "farPosition": far_position,
+        "rawFarPosition": raw_far_position,
+
+        "farBandLeft": far_band_left,
+        "farBandCenter": far_band_center,
+        "farBandRight": far_band_right,
+        "farBandPosition": far_band_position,
+
+        "mediumLeft": medium_left,
+        "mediumCenter": medium_center,
+        "mediumRight": medium_right,
+        "mediumPosition": medium_position,
 
         "nearLeft": near_left,
         "nearCenter": near_center,
         "nearRight": near_right,
         "nearPosition": near_position,
+        "rawNearPosition": raw_near_position,
         "headingAngle": heading_angle,
         "steeringError": steering_error,
     }
@@ -5878,6 +6084,299 @@ class CenterlineAheadFeedForwardTracker:
         )
 
 
+def virtual_reorient_direction(sensors):
+    """Detecta concordância lateral entre MEDIUM e FAR BAND."""
+
+    medium_position = sensors.get("mediumPosition")
+    far_band_position = sensors.get("farBandPosition")
+    if medium_position is None or far_band_position is None:
+        return None
+
+    threshold = VIRTUAL_REORIENT_DIRECTION_THRESHOLD
+    if medium_position >= threshold and far_band_position >= threshold:
+        return "RIGHT"
+    if medium_position <= -threshold and far_band_position <= -threshold:
+        return "LEFT"
+    return None
+
+
+def virtual_medium_scan_direction(sensors):
+    """Retorna o lado confiável observado somente pelo MEDIUM."""
+
+    medium_position = sensors.get("mediumPosition")
+    if medium_position is None:
+        return None
+    try:
+        medium_position = float(medium_position)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(medium_position):
+        return None
+    if medium_position <= -VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD:
+        return "LEFT"
+    if medium_position >= VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD:
+        return "RIGHT"
+    return None
+
+
+def finite_virtual_position(value):
+    """Valida uma posição virtual antes de compará-la com thresholds."""
+
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def virtual_recovery_sensor_direction(sensors):
+    """Escolhe uma direção lateral RAW na ordem NEAR, MEDIUM e FAR BAND."""
+
+    positions = (
+        sensors.get("rawNearPosition", sensors.get("nearPosition")),
+        sensors.get("mediumPosition"),
+        sensors.get("farBandPosition"),
+    )
+    for position in positions:
+        position = finite_virtual_position(position)
+        if position is None:
+            continue
+        if position <= -VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD:
+            return "LEFT"
+        if position >= VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD:
+            return "RIGHT"
+    return None
+
+
+def virtual_raw_line_is_visible(sensors):
+    """Indica se alguma das três fileiras RAW possui posição utilizável."""
+
+    positions = (
+        sensors.get("rawNearPosition", sensors.get("nearPosition")),
+        sensors.get("mediumPosition"),
+        sensors.get("farBandPosition"),
+    )
+    return any(finite_virtual_position(position) is not None for position in positions)
+
+
+class VirtualLineSearchTracker:
+    """Alterna uma busca cega curta e outra maior sem memorizar steering."""
+
+    def __init__(self):
+        self.last_direction = None
+        self.active = False
+        self.initial_direction = None
+        self.search_frames = 0
+
+    def remember(self, direction):
+        """Guarda somente uma direção lateral realmente observada."""
+
+        if direction in ("LEFT", "RIGHT"):
+            self.last_direction = direction
+
+    def stop(self):
+        """Interrompe a busca sem apagar a última direção confiável."""
+
+        self.active = False
+        self.initial_direction = None
+        self.search_frames = 0
+
+    def start(self, preferred_direction=None):
+        """Inicia a busca uma única vez com a melhor direção disponível."""
+
+        if self.active:
+            return
+        initial_direction = (
+            preferred_direction
+            if preferred_direction in ("LEFT", "RIGHT")
+            else self.last_direction
+        )
+        self.initial_direction = initial_direction or "RIGHT"
+        self.active = True
+        self.search_frames = 0
+
+    def next_direction(self):
+        """Retorna o lado da janela atual e avança um frame."""
+
+        if not self.active:
+            return None
+        cycle_frames = (
+            VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES
+            + VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES
+        )
+        cycle_index = self.search_frames % cycle_frames
+        if cycle_index < VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES:
+            direction = self.initial_direction
+        else:
+            direction = (
+                "RIGHT" if self.initial_direction == "LEFT" else "LEFT"
+            )
+        self.search_frames += 1
+        return direction
+
+
+def update_gap_forward_recovery(
+    active,
+    forward_frames,
+    reacquire_frames,
+    line_lost_seen,
+    near_reacquired,
+):
+    """Atualiza o GAP sem permitir que MEDIUM ou FAR encerrem a travessia."""
+
+    if not active:
+        return {
+            "active": False,
+            "forwardFrames": 0,
+            "reacquireFrames": 0,
+            "lineLostSeen": False,
+            "blindSearchRequested": False,
+        }
+
+    forward_frames += 1
+    if not near_reacquired:
+        line_lost_seen = True
+    if line_lost_seen and near_reacquired:
+        reacquire_frames += 1
+    else:
+        reacquire_frames = 0
+
+    if reacquire_frames >= GEOMETRIC_GAP_REACQUIRE_FRAMES:
+        return {
+            "active": False,
+            "forwardFrames": 0,
+            "reacquireFrames": 0,
+            "lineLostSeen": False,
+            "blindSearchRequested": False,
+        }
+
+    return {
+        "active": True,
+        "forwardFrames": forward_frames,
+        "reacquireFrames": reacquire_frames,
+        "lineLostSeen": line_lost_seen,
+        "blindSearchRequested": (
+            forward_frames >= GEOMETRIC_GAP_FORWARD_MAX_FRAMES
+        ),
+    }
+
+
+def update_green_maneuver_state(
+    direction,
+    active_frames,
+    raw_line_visible,
+    completed=False,
+):
+    """Conclui o verde normalmente ou libera sua máscara após o timeout."""
+
+    if direction == "NENHUMA":
+        return {
+            "direction": "NENHUMA",
+            "activeFrames": 0,
+            "timedOut": False,
+            "searchDirection": None,
+        }
+    if completed:
+        return {
+            "direction": "NENHUMA",
+            "activeFrames": 0,
+            "timedOut": False,
+            "searchDirection": None,
+        }
+
+    active_frames += 1
+    if active_frames < GREEN_MANEUVER_TIMEOUT_FRAMES:
+        return {
+            "direction": direction,
+            "activeFrames": active_frames,
+            "timedOut": False,
+            "searchDirection": None,
+        }
+    return {
+        "direction": "NENHUMA",
+        "activeFrames": 0,
+        "timedOut": True,
+        "searchDirection": None if raw_line_visible else direction,
+    }
+
+
+class VirtualTurnStateTracker:
+    """Mantém somente o pivot temporário usado para recuperar a linha."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Retorna ao seguidor normal e limpa todas as confirmações."""
+
+        self.state = VIRTUAL_STATE_NORMAL
+        self.reorient_candidate = None
+        self.reorient_frames = 0
+        self.normal_recovery_frames = 0
+        self.medium_scan_frames = 0
+        return self.state
+
+    def allow_medium_scan(self, direction):
+        """Consome no máximo três frames de scan enquanto permanece NORMAL."""
+
+        if direction is None or self.state != VIRTUAL_STATE_NORMAL:
+            return False
+        if self.medium_scan_frames >= VIRTUAL_MEDIUM_SCAN_MAX_FRAMES:
+            return False
+        self.medium_scan_frames += 1
+        return True
+
+    def update(self, sensors, steering_valid):
+        """Confirma o recovery e devolve autoridade ao steering normal."""
+
+        if steering_valid:
+            self.reorient_candidate = None
+            self.reorient_frames = 0
+            self.medium_scan_frames = 0
+            if self.state in (
+                VIRTUAL_STATE_REORIENT_LEFT,
+                VIRTUAL_STATE_REORIENT_RIGHT,
+            ):
+                self.normal_recovery_frames += 1
+                if (
+                    self.normal_recovery_frames
+                    >= VIRTUAL_REORIENT_RECOVERY_FRAMES
+                ):
+                    return self.reset()
+                return self.state
+            return self.reset()
+
+        self.normal_recovery_frames = 0
+        if self.state in (
+            VIRTUAL_STATE_REORIENT_LEFT,
+            VIRTUAL_STATE_REORIENT_RIGHT,
+        ):
+            return self.state
+
+        direction = virtual_reorient_direction(sensors)
+        if direction is None:
+            self.reorient_candidate = None
+            self.reorient_frames = 0
+            return self.state
+
+        if direction == self.reorient_candidate:
+            self.reorient_frames += 1
+        else:
+            self.reorient_candidate = direction
+            self.reorient_frames = 1
+
+        if self.reorient_frames >= VIRTUAL_REORIENT_CONFIRMATION_FRAMES:
+            self.state = (
+                VIRTUAL_STATE_REORIENT_LEFT
+                if direction == "LEFT"
+                else VIRTUAL_STATE_REORIENT_RIGHT
+            )
+            self.medium_scan_frames = 0
+        return self.state
+
+
 def calculate_hybrid_virtual_steering(
     base_virtual_steering,
     centerline_guidance,
@@ -5964,6 +6463,11 @@ def calculate_line_follower_command(
     gap_forward_active=False,
     centerline_decisions=None,
     ahead_feed_forward_tracker=None,
+    virtual_turn_tracker=None,
+    virtual_sensors=None,
+    line_search_tracker=None,
+    blind_search_requested=False,
+    sensor_recovery_requested=False,
 ):
     """
     Aplica o seguidor virtual validado e uma antecipação geométrica opcional.
@@ -5974,10 +6478,18 @@ def calculate_line_follower_command(
 
     _ = green_detection_result
 
-    sensors = read_virtual_line_sensors(
-        processed_line_mask,
-        direcao_verde_ativa,
+    sensors = (
+        virtual_sensors
+        if isinstance(virtual_sensors, dict)
+        else read_virtual_line_sensors(
+            processed_line_mask,
+            direcao_verde_ativa,
+        )
     )
+    observed_recovery_direction = virtual_recovery_sensor_direction(sensors)
+    raw_line_visible = virtual_raw_line_is_visible(sensors)
+    if line_search_tracker is not None:
+        line_search_tracker.remember(observed_recovery_direction)
 
     centerline_control = calculate_centerline_guidance_steering(
         centerline_guidance
@@ -5988,10 +6500,17 @@ def calculate_line_follower_command(
         centerline_decisions,
         ahead_feed_forward_tracker,
     )
+    virtual_state = VIRTUAL_STATE_NORMAL
+    medium_scan_direction = None
+    direct_recovery_direction = None
 
     if direcao_verde_ativa != "NENHUMA":
         if ahead_feed_forward_tracker is not None:
             ahead_feed_forward_tracker.reset()
+        if virtual_turn_tracker is not None:
+            virtual_turn_tracker.reset()
+        if line_search_tracker is not None:
+            line_search_tracker.stop()
         steering_error = sensors[
             "steeringError"
         ]
@@ -6005,8 +6524,38 @@ def calculate_line_follower_command(
     elif gap_forward_active:
         if ahead_feed_forward_tracker is not None:
             ahead_feed_forward_tracker.reset()
-        steering_error = 0.0
-        control_source = "gap-forward"
+        if virtual_turn_tracker is not None:
+            virtual_turn_tracker.reset()
+        if observed_recovery_direction is not None:
+            if line_search_tracker is not None:
+                line_search_tracker.stop()
+            steering_error = None
+            direct_recovery_direction = observed_recovery_direction
+            control_source = "gap-sensor-recovery"
+        elif raw_line_visible:
+            # Qualquer linha RAW encerra a busca cega, mas somente o NEAR
+            # confirmado pode encerrar o estado GAP fora deste mapper.
+            if line_search_tracker is not None:
+                line_search_tracker.stop()
+            steering_error = 0.0
+            control_source = "gap-forward"
+        else:
+            if line_search_tracker is not None and blind_search_requested:
+                line_search_tracker.start()
+            blind_direction = (
+                line_search_tracker.next_direction()
+                if line_search_tracker is not None
+                else None
+            )
+            if blind_direction == "LEFT":
+                steering_error = -1.0
+                control_source = "gap-blind-search"
+            elif blind_direction == "RIGHT":
+                steering_error = 1.0
+                control_source = "gap-blind-search"
+            else:
+                steering_error = 0.0
+                control_source = "gap-forward"
         hybrid_control.update({
             "aheadFF": 0.0,
             "finalSteering": steering_error,
@@ -6014,12 +6563,83 @@ def calculate_line_follower_command(
         })
 
     else:
-        steering_error = hybrid_control["finalSteering"]
-        control_source = (
-            "hybrid"
-            if hybrid_control["hybridSource"] == "HYBRID"
-            else "virtual"
-        )
+        normal_steering_valid = sensors["steeringError"] is not None
+        if virtual_turn_tracker is not None:
+            virtual_state = virtual_turn_tracker.update(
+                sensors,
+                normal_steering_valid,
+            )
+
+        if normal_steering_valid:
+            # O seguidor normal recupera autoridade no primeiro frame válido,
+            # mesmo enquanto o tracker confirma a saída do REORIENT.
+            steering_error = hybrid_control["finalSteering"]
+            if line_search_tracker is not None:
+                line_search_tracker.stop()
+            control_source = (
+                "hybrid"
+                if hybrid_control["hybridSource"] == "HYBRID"
+                else "virtual"
+            )
+        else:
+            if virtual_state == VIRTUAL_STATE_REORIENT_LEFT:
+                steering_error = -1.0
+                control_source = "virtual-reorient"
+            elif virtual_state == VIRTUAL_STATE_REORIENT_RIGHT:
+                steering_error = 1.0
+                control_source = "virtual-reorient"
+            elif (
+                raw_line_visible
+                and line_search_tracker is not None
+                and (
+                    line_search_tracker.active
+                    or sensor_recovery_requested
+                )
+            ):
+                line_search_tracker.stop()
+                if observed_recovery_direction is None:
+                    steering_error = 0.0
+                else:
+                    steering_error = None
+                    direct_recovery_direction = observed_recovery_direction
+                control_source = "virtual-sensor-recovery"
+            elif (
+                line_search_tracker is not None
+                and line_search_tracker.active
+            ):
+                blind_direction = line_search_tracker.next_direction()
+                steering_error = -1.0 if blind_direction == "LEFT" else 1.0
+                control_source = "virtual-blind-search"
+            else:
+                steering_error = None
+                observed_medium_direction = virtual_medium_scan_direction(
+                    sensors
+                )
+                if (
+                    virtual_turn_tracker is not None
+                    and virtual_turn_tracker.allow_medium_scan(
+                        observed_medium_direction
+                    )
+                ):
+                    medium_scan_direction = observed_medium_direction
+                    control_source = "virtual-medium-scan"
+                else:
+                    if (
+                        observed_recovery_direction is None
+                        and not raw_line_visible
+                        and line_search_tracker is not None
+                    ):
+                        line_search_tracker.start()
+                        blind_direction = line_search_tracker.next_direction()
+                        steering_error = (
+                            -1.0 if blind_direction == "LEFT" else 1.0
+                        )
+                        control_source = "virtual-blind-search"
+                    else:
+                        control_source = "virtual-no-line"
+
+    # FINAL representa o steering efetivamente entregue ao mapper existente.
+    hybrid_control["finalSteering"] = steering_error
 
     if isinstance(centerline_guidance, dict):
         centerline_guidance.update(centerline_control)
@@ -6035,7 +6655,7 @@ def calculate_line_follower_command(
 
     # A partir daqui a curva é forte o suficiente
     # para exigir pivot.
-    PIVOT_THRESHOLD = 0.55
+    PIVOT_THRESHOLD = 0.45
 
     # Potência durante pivot.
     PIVOT_OUTER_POWER = 0.75
@@ -6087,6 +6707,21 @@ def calculate_line_follower_command(
             left_power = inner_power
             right_power = outer_power
 
+    # O scan não cria steering nem passa pelo mapper. Ele gira lentamente
+    # usando somente a potência base e é reavaliado no próximo frame.
+    if medium_scan_direction == "LEFT":
+        left_power = 0.0
+        right_power = BASE_POWER
+    elif medium_scan_direction == "RIGHT":
+        left_power = BASE_POWER
+        right_power = 0.0
+    elif direct_recovery_direction == "LEFT":
+        left_power = 0.0
+        right_power = BASE_POWER
+    elif direct_recovery_direction == "RIGHT":
+        left_power = BASE_POWER
+        right_power = 0.0
+
     return {
         "left_power": left_power,
         "right_power": right_power,
@@ -6095,6 +6730,16 @@ def calculate_line_follower_command(
         "farCenter": sensors["farCenter"],
         "farRight": sensors["farRight"],
         "farPosition": sensors["farPosition"],
+
+        "farBandLeft": sensors["farBandLeft"],
+        "farBandCenter": sensors["farBandCenter"],
+        "farBandRight": sensors["farBandRight"],
+        "farBandPosition": sensors["farBandPosition"],
+
+        "mediumLeft": sensors["mediumLeft"],
+        "mediumCenter": sensors["mediumCenter"],
+        "mediumRight": sensors["mediumRight"],
+        "mediumPosition": sensors["mediumPosition"],
 
         "nearLeft": sensors["nearLeft"],
         "nearCenter": sensors["nearCenter"],
@@ -6107,6 +6752,8 @@ def calculate_line_follower_command(
         "aheadFF": hybrid_control["aheadFF"],
         "finalSteering": hybrid_control["finalSteering"],
         "hybridSource": hybrid_control["hybridSource"],
+        "virtualState": virtual_state,
+        "greenDirection": direcao_verde_ativa,
         "geometricNearPosition": (
             centerline_guidance.get("nearError")
             if isinstance(centerline_guidance, dict)
@@ -6703,11 +7350,14 @@ def main():
         centerline_debug = None
         green_tracker = GreenObservationTracker()
         ahead_feed_forward_tracker = CenterlineAheadFeedForwardTracker()
+        virtual_turn_tracker = VirtualTurnStateTracker()
+        line_search_tracker = VirtualLineSearchTracker()
 
         # Estado persistente das manobras sinalizadas por verde.
         direcao_verde_ativa = "NENHUMA"
         curva_verde_iniciada = False
         quadros_centralizado_verde = 0
+        quadros_verde_ativo = 0
 
          # Estado persistente da travessia de gap.
         gap_forward_active = False
@@ -6863,6 +7513,8 @@ def main():
                     direcao_verde_ativa = "ESQUERDA"
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
+                    quadros_verde_ativo = 0
+                    line_search_tracker.stop()
                     verde_armado = False
                     quadros_sem_verde = 0
 
@@ -6870,6 +7522,8 @@ def main():
                     direcao_verde_ativa = "DIREITA"
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
+                    quadros_verde_ativo = 0
+                    line_search_tracker.stop()
                     verde_armado = False
                     quadros_sem_verde = 0
 
@@ -6917,6 +7571,38 @@ def main():
                 and abs(float(geometric_heading)) > 90.0
             )
 
+            virtual_sensors = read_virtual_line_sensors(
+                line_candidate_mask,
+                direcao_verde_ativa,
+            )
+            raw_line_visible = virtual_raw_line_is_visible(
+                virtual_sensors
+            )
+            green_timeout_state = update_green_maneuver_state(
+                direcao_verde_ativa,
+                quadros_verde_ativo,
+                raw_line_visible,
+            )
+            sensor_recovery_requested = False
+            if green_timeout_state["timedOut"]:
+                direcao_verde_ativa = green_timeout_state["direction"]
+                quadros_verde_ativo = green_timeout_state["activeFrames"]
+                curva_verde_iniciada = False
+                quadros_centralizado_verde = 0
+                search_direction = green_timeout_state["searchDirection"]
+                if search_direction is not None:
+                    line_search_tracker.start(search_direction)
+                else:
+                    sensor_recovery_requested = True
+                # Remove a máscara verde já no mesmo frame do timeout.
+                virtual_sensors = read_virtual_line_sensors(
+                    line_candidate_mask,
+                    direcao_verde_ativa,
+                )
+            else:
+                direcao_verde_ativa = green_timeout_state["direction"]
+                quadros_verde_ativo = green_timeout_state["activeFrames"]
+
             if (
                 not gap_forward_active
                 and direcao_verde_ativa == "NENHUMA"
@@ -6931,48 +7617,37 @@ def main():
                 gap_line_lost_seen = True
                 
 
+            gap_blind_search_requested = False
             if gap_forward_active:
-                gap_forward_frames += 1
-
-                # Marca quando a linha antiga realmente desapareceu do NEAR.
-                if real_near_point is None:
-                    gap_line_lost_seen = True
-
-                # Só permite considerar a linha como reaquirida depois
-                # que o robô realmente passou pela região sem linha.
-                if (
-                    gap_line_lost_seen
-                    and (
-                        virtual_near_point is not None
-                        or (
-                            real_near_point is not None
-                            and not trace_folded_back
-                        )
+                raw_near_reacquired = (
+                    finite_virtual_position(
+                        virtual_sensors.get("rawNearPosition")
                     )
-                ):
-                    gap_reacquire_frames += 1
-                else:
-                    gap_reacquire_frames = 0
-
-                # A nova linha foi encontrada por quadros consecutivos.
-                if (
-                    gap_reacquire_frames
-                    >= GEOMETRIC_GAP_REACQUIRE_FRAMES
-                ):
-                    gap_forward_active = False
-                    gap_forward_frames = 0
-                    gap_reacquire_frames = 0
-                    gap_line_lost_seen = False
-
-                # Segurança: não segue reto indefinidamente.
-                elif (
-                    gap_forward_frames
-                    >= GEOMETRIC_GAP_FORWARD_MAX_FRAMES
-                ):
-                    gap_forward_active = False
-                    gap_forward_frames = 0
-                    gap_reacquire_frames = 0
-                    gap_line_lost_seen = False
+                    is not None
+                )
+                near_reacquired = (
+                    raw_near_reacquired
+                    or (
+                        real_near_point is not None
+                        and not trace_folded_back
+                    )
+                )
+                gap_state = update_gap_forward_recovery(
+                    gap_forward_active,
+                    gap_forward_frames,
+                    gap_reacquire_frames,
+                    gap_line_lost_seen,
+                    near_reacquired,
+                )
+                gap_forward_active = gap_state["active"]
+                gap_forward_frames = gap_state["forwardFrames"]
+                gap_reacquire_frames = gap_state["reacquireFrames"]
+                gap_line_lost_seen = gap_state["lineLostSeen"]
+                gap_blind_search_requested = gap_state[
+                    "blindSearchRequested"
+                ]
+                if not gap_forward_active:
+                    line_search_tracker.stop()
 
             gap_had_real_line = (
                 real_near_point is not None
@@ -7006,6 +7681,11 @@ def main():
                         else None
                     ),
                     ahead_feed_forward_tracker=ahead_feed_forward_tracker,
+                    virtual_turn_tracker=virtual_turn_tracker,
+                    virtual_sensors=virtual_sensors,
+                    line_search_tracker=line_search_tracker,
+                    blind_search_requested=gap_blind_search_requested,
+                    sensor_recovery_requested=sensor_recovery_requested,
                 )
             )
 
@@ -7049,9 +7729,19 @@ def main():
                     quadros_centralizado_verde
                     >= QUADROS_CENTRALIZADO_PARA_CONCLUIR
                 ):
-                    direcao_verde_ativa = "NENHUMA"
+                    completed_green_state = update_green_maneuver_state(
+                        direcao_verde_ativa,
+                        quadros_verde_ativo,
+                        raw_line_visible,
+                        completed=True,
+                    )
+                    direcao_verde_ativa = completed_green_state["direction"]
+                    quadros_verde_ativo = completed_green_state[
+                        "activeFrames"
+                    ]
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
+                    line_search_tracker.stop()
 
             # A curva já pode ter terminado, mas um novo verde só será
             # aceito depois de X quadros consecutivos sem candidato verde.
@@ -7142,9 +7832,13 @@ def main():
                     line_follower_command,
                     gap_forward_active,
                 )
+                draw_virtual_sensor_geometry(
+                    frame,
+                    line_follower_command,
+                )
 
-            # A câmera inferior mantém somente o overlay compacto da
-            # centerline. Os diagnósticos continuam disponíveis no Soul Sync.
+            # A câmera inferior mantém os overlays da centerline e dos nove
+            # sensores virtuais. Os demais diagnósticos ficam no Soul Sync.
             if camera_profile["role"] != "down":
                 cv2.line(
                     frame,
@@ -7236,6 +7930,8 @@ def main():
                 )
                 last_status_time = now
     except Exception as error:
+        import traceback
+        traceback.print_exc()
         error_message = f"Camera script failed: {error}"
         print(error_message, flush=True)
         save_status(
