@@ -44,6 +44,7 @@ def sensor_values(
         "nearRight": 0.10,
         "nearPosition": None if steering_error is None else 0.0,
         "nearFinePosition": near_fine_position,
+        "rawNearPosition": None if steering_error is None else 0.0,
         "headingAngle": 0.0,
         "steeringError": steering_error,
     }
@@ -58,10 +59,12 @@ def calculate_command(
     line_search_tracker=None,
     blind_search_requested=False,
     sensor_recovery_requested=False,
+    mask=None,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
-    mask = np.zeros((10, 10), dtype=np.uint8)
+    if mask is None:
+        mask = np.zeros((100, 100), dtype=np.uint8)
     with patch.object(
         camera_line_frame,
         "read_virtual_line_sensors",
@@ -114,6 +117,42 @@ def expected_normal_motor_powers(steering_error):
         return outer_power, inner_power
     return inner_power, outer_power
 
+
+class CameraStreamRegressionTests(unittest.TestCase):
+    def setUp(self):
+        with camera_line_frame.frame_condition:
+            self.original_client_count = (
+                camera_line_frame.active_stream_clients
+            )
+            camera_line_frame.active_stream_clients = 0
+
+    def tearDown(self):
+        with camera_line_frame.frame_condition:
+            camera_line_frame.active_stream_clients = (
+                self.original_client_count
+            )
+
+    def test_stream_frame_is_due_only_with_connected_client(self):
+        self.assertFalse(camera_line_frame.stream_frame_is_due(10.0, 0.0))
+
+        camera_line_frame.register_stream_client()
+        self.assertTrue(camera_line_frame.stream_frame_is_due(10.0, 0.0))
+
+        camera_line_frame.unregister_stream_client()
+        self.assertFalse(camera_line_frame.stream_frame_is_due(10.0, 0.0))
+
+    def test_stream_waits_for_fps_interval_with_connected_client(self):
+        camera_line_frame.register_stream_client()
+        interval = 1.0 / camera_line_frame.MJPEG_STREAM_FPS
+
+        self.assertFalse(camera_line_frame.stream_frame_is_due(
+            interval * 0.99,
+            0.0,
+        ))
+        self.assertTrue(camera_line_frame.stream_frame_is_due(
+            interval,
+            0.0,
+        ))
 
 class VirtualSensorRegressionTests(unittest.TestCase):
     def test_near_fine_position_is_centered(self):
@@ -304,18 +343,24 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 self.assertEqual(result["fineCorrection"], 0.0)
                 self.assertEqual(result["controlSource"], expected_source)
 
-    def test_virtual_overlay_shows_near_fine_and_correction(self):
+    def test_virtual_overlay_draws_only_near_far_direction(self):
         command = calculate_command(sensor_values(
             steering_error=0.10,
             near_fine_position=0.50,
         ))
         frame = np.zeros((360, 480, 3), dtype=np.uint8)
-        with patch.object(camera_line_frame.cv2, "putText") as put_text:
+        with (
+            patch.object(camera_line_frame.cv2, "putText") as put_text,
+            patch.object(camera_line_frame.cv2, "rectangle") as rectangle,
+            patch.object(camera_line_frame.cv2, "line") as line,
+            patch.object(camera_line_frame.cv2, "circle") as circle,
+        ):
             camera_line_frame.draw_virtual_sensor_geometry(frame, command)
 
-        texts = [call.args[1] for call in put_text.call_args_list]
-        self.assertIn("NEAR FINE +0.50", texts)
-        self.assertIn("FINE CORR +0.12", texts)
+        put_text.assert_not_called()
+        rectangle.assert_not_called()
+        line.assert_called_once()
+        self.assertEqual(circle.call_count, 2)
 
     def test_opposite_heading_cannot_invert_near_without_medium(self):
         steering_error = camera_line_frame.protect_virtual_near_direction(
@@ -359,23 +404,39 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(math.isclose(result["right_power"], expected_right))
         self.assertEqual(result["controlSource"], "virtual")
 
-    def test_control_overlay_reports_only_current_states_and_source(self):
+    def test_control_overlay_is_compact_and_anchored_at_top(self):
         frame = np.zeros((120, 200, 3), dtype=np.uint8)
         command = {
             "left_power": 0.69,
             "right_power": 0.66,
             "lineProcessingMs": 4.25,
-            "lineState": "LINE",
-            "virtualState": "NORMAL",
-            "controlSource": "virtual",
         }
-        with patch.object(camera_line_frame.cv2, "putText") as put_text:
-            camera_line_frame.draw_line_control_overlay(frame, command)
+        for line_state, virtual_state, expected_state in (
+            ("LINE", "NORMAL", "LINE"),
+            ("GAP", "NORMAL", "GAP"),
+            ("GREEN", "NORMAL", "GREEN"),
+            ("LINE", "REORIENT_LEFT", "REORIENT"),
+            ("LINE", "REORIENT_RIGHT", "REORIENT"),
+        ):
+            with self.subTest(
+                line_state=line_state,
+                virtual_state=virtual_state,
+            ):
+                command["lineState"] = line_state
+                command["virtualState"] = virtual_state
+                with patch.object(
+                    camera_line_frame.cv2,
+                    "putText",
+                ) as put_text:
+                    camera_line_frame.draw_line_control_overlay(frame, command)
 
-        texts = [call.args[1] for call in put_text.call_args_list]
-        self.assertEqual(texts[0], "LINE 4.2ms")
-        self.assertIn("STATE LINE  VSTATE NORMAL", texts)
-        self.assertIn("CONTROL SOURCE: VIRTUAL", texts)
+                texts = [call.args[1] for call in put_text.call_args_list]
+                positions = [call.args[2] for call in put_text.call_args_list]
+                self.assertEqual(texts, [
+                    f"{expected_state} 4.2ms",
+                    "L 0.69  R 0.66",
+                ])
+                self.assertEqual(positions, [(8, 22), (8, 44)])
 
     def test_legacy_geometry_uses_original_direct_roi(self):
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(
@@ -480,6 +541,81 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
 
 class VirtualRecoveryTests(unittest.TestCase):
+    def test_normal_line_with_raw_near_skips_gap_geometry(self):
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        with patch.object(
+            camera_line_frame,
+            "extract_geometric_line_path",
+        ) as extract_path:
+            guidance = camera_line_frame.extract_gap_geometric_guidance(
+                mask,
+                gap_forward_active=False,
+                green_direction="NENHUMA",
+                raw_near_visible=True,
+            )
+
+        extract_path.assert_not_called()
+        self.assertEqual(guidance, {
+            "nearPoint": None,
+            "farHeadingDeg": None,
+            "virtualNearPoint": None,
+            "lateralExitTarget": None,
+            "processingMs": 0.0,
+        })
+
+    def test_active_green_without_gap_skips_gap_geometry(self):
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        with patch.object(
+            camera_line_frame,
+            "extract_geometric_line_path",
+        ) as extract_path:
+            guidance = camera_line_frame.extract_gap_geometric_guidance(
+                mask,
+                gap_forward_active=False,
+                green_direction="ESQUERDA",
+                raw_near_visible=False,
+            )
+
+        extract_path.assert_not_called()
+        self.assertEqual(guidance["processingMs"], 0.0)
+
+    def test_gap_geometry_result_is_preserved_when_required(self):
+        mask = np.zeros((100, 100), dtype=np.uint8)
+        expected_guidance = {
+            "nearPoint": (49.0, 83.0),
+            "farHeadingDeg": -12.5,
+            "virtualNearPoint": None,
+            "lateralExitTarget": (0.0, 45.0),
+        }
+        required_cases = (
+            (False, "NENHUMA", False),
+            (True, "DIREITA", True),
+        )
+        for gap_active, green_direction, raw_near_visible in required_cases:
+            with self.subTest(
+                gap_active=gap_active,
+                green_direction=green_direction,
+                raw_near_visible=raw_near_visible,
+            ):
+                with patch.object(
+                    camera_line_frame,
+                    "extract_geometric_line_path",
+                    return_value=expected_guidance.copy(),
+                ) as extract_path:
+                    guidance = (
+                        camera_line_frame.extract_gap_geometric_guidance(
+                            mask,
+                            gap_forward_active=gap_active,
+                            green_direction=green_direction,
+                            raw_near_visible=raw_near_visible,
+                        )
+                    )
+
+                extract_path.assert_called_once_with(mask)
+                for field_name, expected_value in expected_guidance.items():
+                    self.assertEqual(guidance[field_name], expected_value)
+                self.assertGreaterEqual(guidance["processingMs"], 0.0)
+
     def test_gap_geometry_preserves_real_near_path(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         mask[:85, 47:53] = 255

@@ -384,6 +384,7 @@ CAMERA_PROFILES = {
 running = True
 latest_jpeg = None
 latest_jpeg_sequence = 0
+active_stream_clients = 0
 frame_condition = threading.Condition()
 selected_display_mode = DISPLAY_MODE_REAL
 display_mode_lock = threading.Lock()
@@ -619,6 +620,33 @@ def handle_signal(signum, frame):
         frame_condition.notify_all()
 
 
+def register_stream_client():
+    """Registra uma conexão MJPEG para habilitar a codificação rápida."""
+
+    global active_stream_clients
+    with frame_condition:
+        active_stream_clients += 1
+
+
+def unregister_stream_client():
+    """Remove uma conexão MJPEG encerrada sem permitir contagem negativa."""
+
+    global active_stream_clients
+    with frame_condition:
+        active_stream_clients = max(0, active_stream_clients - 1)
+
+
+def stream_frame_is_due(now, last_stream_time):
+    """Solicita JPEG de stream somente enquanto existe cliente conectado."""
+
+    with frame_condition:
+        has_clients = active_stream_clients > 0
+    return (
+        has_clients
+        and now - last_stream_time >= 1.0 / MJPEG_STREAM_FPS
+    )
+
+
 class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
@@ -648,6 +676,7 @@ class CameraStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         last_sequence = -1
+        register_stream_client()
         try:
             while running:
                 with frame_condition:
@@ -668,6 +697,8 @@ class CameraStreamHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             return
+        finally:
+            unregister_stream_client()
 
     def do_HEAD(self):
         path = self.path.split("?", 1)[0]
@@ -2475,131 +2506,14 @@ def draw_virtual_sensor_geometry(
     frame,
     line_follower_command,
 ):
-    """
-    Desenha as bandas FAR, MEDIUM e NEAR com o estado virtual atual.
-
-    O heading continua usando o FAR legado, embora seus retângulos não
-    sejam repetidos sobre as nove regiões exibidas.
-    """
+    """Desenha somente a direção observada entre os pontos NEAR e FAR."""
 
     geometry = resolve_virtual_sensor_geometry(
         frame.shape
     )
 
-    sensors = (
-        (
-            "FB-L",
-            geometry["farBand"]["left"],
-            line_follower_command["farBandLeft"],
-        ),
-        (
-            "FB-C",
-            geometry["farBand"]["center"],
-            line_follower_command["farBandCenter"],
-        ),
-        (
-            "FB-R",
-            geometry["farBand"]["right"],
-            line_follower_command["farBandRight"],
-        ),
-        (
-            "MED-L",
-            geometry["medium"]["left"],
-            line_follower_command["mediumLeft"],
-        ),
-        (
-            "MED-C",
-            geometry["medium"]["center"],
-            line_follower_command["mediumCenter"],
-        ),
-        (
-            "MED-R",
-            geometry["medium"]["right"],
-            line_follower_command["mediumRight"],
-        ),
-        (
-            "NEAR-L",
-            geometry["near"]["left"],
-            line_follower_command["nearLeft"],
-        ),
-        (
-            "NEAR-C",
-            geometry["near"]["center"],
-            line_follower_command["nearCenter"],
-        ),
-        (
-            "NEAR-R",
-            geometry["near"]["right"],
-            line_follower_command["nearRight"],
-        ),
-    )
-
-    for name, sensor, value in sensors:
-        cv2.rectangle(
-            frame,
-            (sensor["x0"], sensor["y0"]),
-            (sensor["x1"], sensor["y1"]),
-            (255, 0, 255),
-            2,
-        )
-
-        cv2.putText(
-            frame,
-            f"{name} {value:.2f}",
-            (
-                sensor["x0"] + 8,
-                sensor["y0"] + 24,
-            ),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 0, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
     far_position = line_follower_command["farPosition"]
-    far_band_position = line_follower_command["farBandPosition"]
-    medium_position = line_follower_command["mediumPosition"]
     near_position = line_follower_command["nearPosition"]
-
-    far_band_text = (
-        f"FAR BAND POS {far_band_position:+.2f}"
-        if far_band_position is not None
-        else "FAR BAND POS INVALID"
-    )
-
-    medium_text = (
-        f"MEDIUM POS {medium_position:+.2f}"
-        if medium_position is not None
-        else "MEDIUM POS INVALID"
-    )
-
-    near_text = (
-        f"NEAR POS {near_position:+.2f}"
-        if near_position is not None
-        else "NEAR POS INVALID"
-    )
-
-    position_texts = (
-        (far_band_text, geometry["farBand"]["center"]),
-        (medium_text, geometry["medium"]["center"]),
-        (near_text, geometry["near"]["center"]),
-    )
-    for position_text, position_geometry in position_texts:
-        cv2.putText(
-            frame,
-            position_text,
-            (
-                position_geometry["x0"] + 8,
-                position_geometry["y0"] + 48,
-            ),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (0, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-    heading_angle = line_follower_command["headingAngle"]
     far_point = virtual_row_position_to_point(
         far_position,
         geometry["far"],
@@ -2644,128 +2558,6 @@ def draw_virtual_sensor_geometry(
             5,
             (0, 255, 255),
             -1,
-        )
-
-    heading_text = (
-        f"HEADING {heading_angle:+.1f} deg"
-        if heading_angle is not None
-        else "HEADING INVALID"
-    )
-
-    cv2.putText(
-        frame,
-        heading_text,
-        (
-            geometry["near"]["center"]["x0"] + 8,
-            geometry["near"]["center"]["y0"] + 72,
-        ),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
-    steering_error = line_follower_command["steeringError"]
-    steering_text = (
-        f"STEERING {steering_error:+.2f}"
-        if steering_error is not None
-        else "STEERING INVALID"
-    )
-
-    cv2.putText(
-        frame,
-        steering_text,
-        (
-            geometry["near"]["center"]["x0"] + 8,
-            geometry["near"]["center"]["y0"] + 96,
-        ),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
-    line_processing_ms = line_follower_command.get(
-        "lineProcessingMs", 0.0,
-    )
-    cv2.putText(
-        frame,
-        f"{line_processing_ms:.2f} ms",
-        (
-            geometry["near"]["center"]["x0"] + 8,
-            geometry["near"]["center"]["y0"] + 120,
-        ),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
-
-    virtual_state_labels = {
-        VIRTUAL_STATE_NORMAL: "NORMAL",
-        VIRTUAL_STATE_REORIENT_LEFT: "REORIENT LEFT",
-        VIRTUAL_STATE_REORIENT_RIGHT: "REORIENT RIGHT",
-    }
-    virtual_state = line_follower_command.get(
-        "virtualState",
-        VIRTUAL_STATE_NORMAL,
-    )
-    cv2.putText(
-        frame,
-        f"VSTATE {virtual_state_labels.get(virtual_state, 'NORMAL')}",
-        (8, 88),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.50,
-        (0, 220, 255),
-        1,
-        cv2.LINE_AA,
-    )
-
-    green_direction = line_follower_command.get(
-        "greenDirection",
-        "NENHUMA",
-    )
-    cv2.putText(
-        frame,
-        f"GREEN DIR {green_direction}",
-        (8, 110),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.50,
-        (0, 220, 255),
-        1,
-        cv2.LINE_AA,
-    )
-
-    near_fine_position = finite_virtual_position(
-        line_follower_command.get("nearFinePosition")
-    )
-    near_fine_text = (
-        f"NEAR FINE {near_fine_position:+.2f}"
-        if near_fine_position is not None
-        else "NEAR FINE INVALID"
-    )
-    fine_correction = finite_virtual_position(
-        line_follower_command.get("fineCorrection", 0.0)
-    )
-    fine_correction_text = (
-        f"FINE CORR {fine_correction:+.2f}"
-        if fine_correction is not None
-        else "FINE CORR INVALID"
-    )
-    for text_line, text_y in (
-        (near_fine_text, 132),
-        (fine_correction_text, 154),
-    ):
-        cv2.putText(
-            frame,
-            text_line,
-            (8, text_y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.50,
-            (0, 220, 255),
-            1,
-            cv2.LINE_AA,
         )
 
 def find_active_band_segments(processed_line_mask, y):
@@ -3861,26 +3653,67 @@ def extract_geometric_line_path(processed_line_mask):
         "lateralExitTarget": lateral_exit_target,
     }
 
+
+def extract_gap_geometric_guidance(
+    processed_line_mask,
+    gap_forward_active,
+    green_direction,
+    raw_near_visible,
+):
+    """Executa a geometria somente quando ela pode participar do GAP."""
+
+    geometry_required = (
+        gap_forward_active
+        or (
+            green_direction == "NENHUMA"
+            and not raw_near_visible
+        )
+    )
+    if not geometry_required:
+        return {
+            "nearPoint": None,
+            "farHeadingDeg": None,
+            "virtualNearPoint": None,
+            "lateralExitTarget": None,
+            "processingMs": 0.0,
+        }
+
+    geometric_started = time.perf_counter()
+    geometric_guidance = extract_geometric_line_path(
+        processed_line_mask
+    )
+    geometric_guidance["processingMs"] = (
+        time.perf_counter() - geometric_started
+    ) * 1000.0
+    return geometric_guidance
+
 def draw_line_control_overlay(frame, line_follower_command):
-    """Desenha somente o comando e os estados usados pelo controle atual."""
+    """Desenha o estado principal e as potências no topo da câmera inferior."""
 
     processing_ms = finite_virtual_position(
         line_follower_command.get("lineProcessingMs")
     )
-    processing_text = (
-        f"LINE {processing_ms:.1f}ms"
-        if processing_ms is not None
-        else "LINE --ms"
-    )
-    control_source = str(
-        line_follower_command.get("controlSource", "unknown")
-    ).strip().upper() or "UNKNOWN"
     line_state = str(
         line_follower_command.get("lineState", "INVALID")
     ).strip().upper() or "INVALID"
     virtual_state = str(
         line_follower_command.get("virtualState", "INVALID")
     ).strip().upper() or "INVALID"
+    display_state = line_state
+    if (
+        line_state == "LINE"
+        and virtual_state in (
+            VIRTUAL_STATE_REORIENT_LEFT,
+            VIRTUAL_STATE_REORIENT_RIGHT,
+        )
+    ):
+        display_state = "REORIENT"
+
+    processing_text = (
+        f"{display_state} {processing_ms:.1f}ms"
+        if processing_ms is not None
+        else f"{display_state} --ms"
+    )
 
     overlay_texts = (
         processing_text,
@@ -3888,18 +3721,12 @@ def draw_line_control_overlay(frame, line_follower_command):
             f"L {float(line_follower_command['left_power']):.2f}  "
             f"R {float(line_follower_command['right_power']):.2f}"
         ),
-        f"STATE {line_state}  VSTATE {virtual_state}",
-        f"CONTROL SOURCE: {control_source}",
-    )
-    overlay_text_start_y = max(
-        22,
-        frame.shape[0] - (len(overlay_texts) - 1) * 22 - 6,
     )
     for line_index, overlay_text in enumerate(overlay_texts):
         cv2.putText(
             frame,
             overlay_text,
-            (8, overlay_text_start_y + line_index * 22),
+            (8, 22 + line_index * 22),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.50,
             (0, 255, 255),
@@ -3983,6 +3810,7 @@ def calculate_virtual_near_fine_position(
     maximum_x = float(near_roi.shape[1] - 1)
     normalized_position = 2.0 * mean_x / maximum_x - 1.0
     return float(max(-1.0, min(1.0, normalized_position)))
+
 
 def read_virtual_line_sensors(
     processed_line_mask,
@@ -4070,7 +3898,6 @@ def read_virtual_line_sensors(
         processed_line_mask,
         geometry["near"],
     )
-
     control_far_left = far_left
     control_far_center = far_center
     control_far_right = far_right
@@ -4737,8 +4564,8 @@ def calculate_line_follower_command(
     # CONTROLE DE MOTORES
     # --------------------------------------------------------
 
-    BASE_POWER = 0.69
-    MAX_POWER = 0.75
+    BASE_POWER = 0.72
+    MAX_POWER = 0.78
     NORMAL_INNER_MIN_POWER = 0.66
 
     # A faixa forte amplia a curva sem reduzir nenhuma roda abaixo de 0,61.
@@ -5732,42 +5559,6 @@ def main():
                 else:
                     quadros_sem_verde = 0
 
-            geometric_started = time.perf_counter()
-
-            geometric_guidance = (
-                extract_geometric_line_path(
-                    line_candidate_mask
-                )
-            )
-
-            geometric_guidance[
-                "processingMs"
-            ] = (
-                time.perf_counter()
-                - geometric_started
-            ) * 1000.0
-
-            geometric_heading = geometric_guidance.get(
-                "farHeadingDeg"
-            )
-
-            lateral_exit_target = geometric_guidance.get(
-                "lateralExitTarget"
-            )
-
-            real_near_point = geometric_guidance.get(
-                "nearPoint"
-            )
-
-            virtual_near_point = geometric_guidance.get(
-                "virtualNearPoint"
-            )
-
-            trace_folded_back = (
-                geometric_heading is not None
-                and abs(float(geometric_heading)) > 90.0
-            )
-
             virtual_sensors = read_virtual_line_sensors(
                 line_candidate_mask,
                 direcao_verde_ativa,
@@ -5809,6 +5600,29 @@ def main():
             else:
                 direcao_verde_ativa = green_timeout_state["direction"]
                 quadros_verde_ativo = green_timeout_state["activeFrames"]
+
+            geometric_guidance = extract_gap_geometric_guidance(
+                line_candidate_mask,
+                gap_forward_active,
+                direcao_verde_ativa,
+                raw_near_visible,
+            )
+            geometric_heading = geometric_guidance.get(
+                "farHeadingDeg"
+            )
+            lateral_exit_target = geometric_guidance.get(
+                "lateralExitTarget"
+            )
+            real_near_point = geometric_guidance.get(
+                "nearPoint"
+            )
+            virtual_near_point = geometric_guidance.get(
+                "virtualNearPoint"
+            )
+            trace_folded_back = (
+                geometric_heading is not None
+                and abs(float(geometric_heading)) > 90.0
+            )
 
             if gap_entry_is_required(
                 gap_forward_active,
@@ -6075,7 +5889,7 @@ def main():
                     else actual_fps
                 )
 
-            stream_due = now - last_stream_time >= 1.0 / MJPEG_STREAM_FPS
+            stream_due = stream_frame_is_due(now, last_stream_time)
             snapshot_due = now - last_snapshot_time >= 1.0 / SNAPSHOT_FRAME_FPS
             if stream_due or snapshot_due:
                 jpeg = encode_frame(frame)

@@ -920,7 +920,7 @@ std::string DashboardServer::dashboardHtml()
     .camera-technical-metadata .meta-chip { padding: 0; border: 0; background: transparent; font-size: .59rem; }
     .camera-hud { position: absolute; inset: var(--space-2); z-index: 3; display: flex; flex-direction: column; justify-content: space-between; gap: var(--space-2); pointer-events: none; }
     .camera-hud[hidden], .camera-frame:not(.online) .camera-hud { display: none; }
-    .camera-hud-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
+    .camera-hud-header { display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start; gap: var(--space-1); }
     .camera-hud-header > * { padding: 5px 8px; border: 1px solid var(--border-primary); border-radius: 6px; color: var(--text); background: var(--bg-overlay); font-size: .62rem; font-weight: 900; letter-spacing: .07em; }
     .camera-hud-line.valid { color: var(--green); border-color: var(--green); }
     .camera-hud-line.invalid { color: var(--danger); border-color: var(--danger); }
