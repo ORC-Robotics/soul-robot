@@ -247,26 +247,26 @@ SPECULAR_REPAIR_MIN_VALUE = 180
 SPECULAR_REPAIR_MAX_SATURATION = 60
 
 VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
-VIRTUAL_HEADING_GAIN = 0.80
+VIRTUAL_HEADING_GAIN = 0.60
 
 # A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
 # CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.
-VIRTUAL_FINE_CENTER_GAIN = 0.35
+VIRTUAL_FINE_CENTER_GAIN = 0.25
 # A deadband elimina ruído perto do centro. O remapeamento contínuo fora dela
 # preserva o alcance completo de -1,0 a +1,0 sem criar um salto no limite.
-VIRTUAL_FINE_CENTER_DEADBAND = 0.03
+VIRTUAL_FINE_CENTER_DEADBAND = 0.06
 VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
 
 # O heading não pode inverter uma leitura lateral clara do NEAR sem que a
 # banda MEDIUM também confirme o novo lado observado mais à frente.
 VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD = 0.20
 
-# A correção normal alcança toda a diferença de potência em 0,30.
-# Entre 0,30 e a entrada do pivot em 0,50, a faixa forte aumenta o diferencial.
-NORMAL_FULL_STEERING_ERROR = 0.30
+# A correção normal alcança toda a diferença de potência em 0,36.
+# Entre 0,36 e a entrada do pivot em 0,45, a faixa forte aumenta o diferencial.
+NORMAL_FULL_STEERING_ERROR = 0.36
 
 # A histerese impede alternância rápida entre a faixa forte e o pivot.
-# A entrada exige erro alto; a saída ocorre somente após cair até 0,35.
+# A entrada exige erro 0,45; a saída ocorre somente após cair até 0,35.
 PIVOT_ENTER_THRESHOLD = 0.45
 PIVOT_EXIT_THRESHOLD = 0.35
 
@@ -4855,7 +4855,7 @@ def calculate_virtual_steering_error(
     )
 
     steering_error = (
-        near_position
+        0.60 * near_position
         + VIRTUAL_HEADING_GAIN * heading_normalized
     )
 
@@ -4902,7 +4902,7 @@ def protect_virtual_near_direction(
         return steering_error
 
     # Sem confirmação à frente, usa somente a posição realmente vista no NEAR.
-    return max(-1.0, min(1.0, near_position))
+    return max(-1.0, min(1.0, 0.60 * near_position))
 
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""

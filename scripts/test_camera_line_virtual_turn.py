@@ -104,15 +104,15 @@ def expected_normal_motor_powers(steering_error):
         )
         transition_progress = max(0.0, min(1.0, transition_progress))
         transition_progress *= transition_progress
-        outer_power = 0.75 + transition_progress * (0.85 - 0.75)
+        outer_power = 0.78 + transition_progress * (0.85 - 0.78)
         inner_power = 0.66 - transition_progress * (0.66 - 0.61)
     else:
         steering_strength = (
             steering_magnitude
             / camera_line_frame.NORMAL_FULL_STEERING_ERROR
         )
-        outer_power = 0.69 + steering_strength * (0.75 - 0.69)
-        inner_power = 0.69 - steering_strength * (0.69 - 0.66)
+        outer_power = 0.72 + steering_strength * (0.78 - 0.72)
+        inner_power = 0.72 - steering_strength * (0.72 - 0.66)
     if steering_error > 0.0:
         return outer_power, inner_power
     return inner_power, outer_power
@@ -369,7 +369,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             heading_angle=-14.7,
             steering_error=-0.26,
         )
-        self.assertTrue(math.isclose(steering_error, 0.23))
+        self.assertTrue(math.isclose(steering_error, 0.60 * 0.23))
 
     def test_strong_medium_allows_heading_to_invert_near(self):
         steering_error = camera_line_frame.protect_virtual_near_direction(
@@ -398,8 +398,10 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         expected_left, expected_right = expected_normal_motor_powers(
             protected_steering
         )
-
-        self.assertTrue(math.isclose(result["finalSteering"], 0.23))
+        self.assertTrue(math.isclose(
+            result["finalSteering"],
+            protected_steering,
+        ))
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
         self.assertEqual(result["controlSource"], "virtual")
@@ -985,15 +987,13 @@ class VirtualRecoveryTests(unittest.TestCase):
         sensors = camera_line_frame.read_virtual_line_sensors(mask, "ESQUERDA")
         self.assertGreater(sensors["nearRight"], 0.0)
 
-    def test_normal_mapper_below_point_thirty_is_unchanged(self):
-        for steering_error, expected_powers in (
-            (0.20, (0.73, 0.67)),
-            (-0.20, (0.67, 0.73)),
-        ):
+    def test_normal_mapper_below_strong_transition_matches_expected_curve(self):
+        for steering_error in (0.20, -0.20):
             result = calculate_command(
                 sensor_values(steering_error, None, None),
                 camera_line_frame.VirtualTurnStateTracker(),
             )
+            expected_powers = expected_normal_motor_powers(steering_error)
             self.assertTrue(math.isclose(
                 result["left_power"], expected_powers[0]
             ))
@@ -1001,16 +1001,17 @@ class VirtualRecoveryTests(unittest.TestCase):
                 result["right_power"], expected_powers[1]
             ))
 
-    def test_normal_mapper_is_continuous_at_point_thirty(self):
+    def test_normal_mapper_is_continuous_at_strong_transition(self):
+        transition = camera_line_frame.NORMAL_FULL_STEERING_ERROR
         before_transition = calculate_command(
-            sensor_values(0.30 - 1e-9, None, None),
+            sensor_values(transition - 1e-9, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         at_transition = calculate_command(
-            sensor_values(0.30, None, None),
+            sensor_values(transition, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
-        self.assertTrue(math.isclose(at_transition["left_power"], 0.75))
+        self.assertTrue(math.isclose(at_transition["left_power"], 0.78))
         self.assertTrue(math.isclose(at_transition["right_power"], 0.66))
         self.assertTrue(math.isclose(
             before_transition["left_power"],
@@ -1023,12 +1024,18 @@ class VirtualRecoveryTests(unittest.TestCase):
             abs_tol=1e-8,
         ))
 
-    def test_normal_mapper_uses_quadratic_progress_at_point_thirty_five(self):
+    def test_normal_mapper_uses_quadratic_progress_in_strong_range(self):
+        steering_error = (
+            camera_line_frame.NORMAL_FULL_STEERING_ERROR
+            + camera_line_frame.PIVOT_ENTER_THRESHOLD
+        ) * 0.5
         result = calculate_command(
-            sensor_values(0.35, None, None),
+            sensor_values(steering_error, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
-        expected_left, expected_right = expected_normal_motor_powers(0.35)
+        expected_left, expected_right = expected_normal_motor_powers(
+            steering_error
+        )
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
 
@@ -1057,11 +1064,11 @@ class VirtualRecoveryTests(unittest.TestCase):
 
     def test_normal_mapper_transition_is_symmetric(self):
         right = calculate_command(
-            sensor_values(0.35, None, None),
+            sensor_values(0.40, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         left = calculate_command(
-            sensor_values(-0.35, None, None),
+            sensor_values(-0.40, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         self.assertTrue(math.isclose(
@@ -1161,11 +1168,11 @@ class VirtualRecoveryTests(unittest.TestCase):
         steering_strength = 0.30 / 0.40
         self.assertTrue(math.isclose(
             result["left_power"],
-            0.69 + steering_strength * (0.75 - 0.69),
+            0.72 + steering_strength * (0.78 - 0.72),
         ))
         self.assertTrue(math.isclose(
             result["right_power"],
-            0.69 - steering_strength * (0.69 - 0.66),
+            0.72 - steering_strength * (0.72 - 0.66),
         ))
 
 

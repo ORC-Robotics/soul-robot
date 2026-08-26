@@ -65,19 +65,16 @@ double configuredTurnSign()
 {
     return config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
 }
-}
 
-bool greenTurnAroundImuProgressAllowsVisualSearch(
-    double maximumProgressPercent)
+double shortestAngularDistanceDegrees(double first, double second)
 {
-    if (!std::isfinite(maximumProgressPercent))
+    double difference = std::fmod(std::abs(second - first), 360.0);
+    if (difference > 180.0)
     {
-        return false;
+        difference = 360.0 - difference;
     }
-    const double minimumProgressPercent =
-        config::kGreenTurnAroundImuMinimumAcceptedDegrees /
-        config::kGreenTurnAroundImuDegrees * 100.0;
-    return maximumProgressPercent >= minimumProgressPercent;
+    return difference;
+}
 }
 
 void MainMission::reset()
@@ -88,7 +85,7 @@ void MainMission::reset()
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
-    turnAroundMaximumImuProgressPercent_ = 0.0;
+    lineSearchStartYawDegrees_ = 0.0;
 }
 
 void MainMission::update(
@@ -160,7 +157,7 @@ void MainMission::update(
         forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
         phaseStartedAt_ = now;
         lineReacquireFrames_ = 0;
-        turnAroundMaximumImuProgressPercent_ = 0.0;
+        lineSearchStartYawDegrees_ = 0.0;
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
@@ -283,38 +280,21 @@ void MainMission::update(
     {
         const ImuTurnOutput output =
             turnAroundController_.update(esp32Telemetry);
-        if (std::isfinite(output.progressPercent))
-        {
-            turnAroundMaximumImuProgressPercent_ = std::max(
-                turnAroundMaximumImuProgressPercent_,
-                output.progressPercent);
-        }
-        const bool visualSearchAllowed =
-            greenTurnAroundImuProgressAllowsVisualSearch(
-                turnAroundMaximumImuProgressPercent_);
-        const bool settlingCanUseVisualSearch =
-            output.result == ImuTurnResult::Running &&
-            output.phase == "turn_settling" && visualSearchAllowed;
-        const bool failureCanUseVisualSearch =
-            output.result == ImuTurnResult::Failed && visualSearchAllowed;
-        if (output.result == ImuTurnResult::Failed &&
-            !failureCanUseVisualSearch)
+        if (output.result == ImuTurnResult::Failed)
         {
             robotState.stop();
             robotState.updateAutonomousStatus(makeMainMissionStatus(
                 output.phase, output.action, output.progressPercent));
             return;
         }
-        if (output.result == ImuTurnResult::Completed ||
-            settlingCanUseVisualSearch || failureCanUseVisualSearch)
+        if (output.result == ImuTurnResult::Completed)
         {
-            // Depois de 90°, não é necessário esperar a velocidade angular
-            // estabilizar: a busca visual continua girando no mesmo sentido.
-            // O limite visual separado ainda impede um movimento infinito.
-            turnAroundController_.reset();
+            // A busca visual começa somente após a IMU concluir e estabilizar
+            // o giro inicial. Isso evita trocar cedo para um pivot sem alvo angular.
             turnAroundPhase_ = TurnAroundPhase::SearchingLine;
             phaseStartedAt_ = now;
             lineReacquireFrames_ = 0;
+            lineSearchStartYawDegrees_ = esp32Telemetry.yawZDeg;
         }
         else
         {
@@ -327,6 +307,15 @@ void MainMission::update(
 
     if (turnAroundPhase_ == TurnAroundPhase::SearchingLine)
     {
+        if (!ImuTurnController::imuReady(esp32Telemetry))
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turn_imu_lost",
+                "Retorno interrompido: IMU perdida durante a busca da linha"));
+            return;
+        }
+
         if (cameraLineSnapshot.lineNearDetected)
         {
             ++lineReacquireFrames_;
@@ -348,6 +337,18 @@ void MainMission::update(
                 "line_following",
                 "Retorno 180° concluído: linha próxima recuperada",
                 100.0));
+            return;
+        }
+
+        const double lineSearchDegrees = shortestAngularDistanceDegrees(
+            lineSearchStartYawDegrees_, esp32Telemetry.yawZDeg);
+        if (lineSearchDegrees >=
+            config::kGreenTurnAroundLineSearchMaximumDegrees)
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_line_search_angle_limit",
+                "Retorno interrompido: limite angular da busca visual atingido"));
             return;
         }
         if (now - phaseStartedAt_ > std::chrono::milliseconds(

@@ -1665,6 +1665,7 @@ std::string DashboardServer::dashboardHtml()
         turnaround_searching_line: ["RETORNO: BUSCANDO LINHA", "active", "machineStepPerception"],
         turnaround_forward_timeout: ["RETORNO: TIMEOUT", "danger", "machineStepFeedback"],
         turnaround_encoder_lost: ["RETORNO: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        turnaround_line_search_angle_limit: ["RETORNO: LIMITE ANGULAR", "danger", "machineStepFeedback"],
         turnaround_line_search_timeout: ["RETORNO: LINHA AUSENTE", "danger", "machineStepFeedback"],
         turning_right_90: ["GIRO DE 90°", "active", "machineStepMotion"],
         turn_settling: ["ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
