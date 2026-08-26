@@ -250,6 +250,23 @@ SPECULAR_REPAIR_MAX_SATURATION = 60
 VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
 VIRTUAL_HEADING_GAIN = 0.80
 
+# O heading não pode inverter uma leitura lateral clara do NEAR sem que a
+# banda MEDIUM também confirme o novo lado observado mais à frente.
+VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD = 0.20
+
+# A correção normal alcança toda a diferença de potência em 0,30.
+# Entre 0,30 e a entrada do pivot em 0,50, a faixa forte aumenta o diferencial.
+NORMAL_FULL_STEERING_ERROR = 0.30
+
+# A histerese impede alternância rápida entre a faixa forte e o pivot.
+# A entrada exige erro alto; a saída ocorre somente após cair até 0,35.
+PIVOT_ENTER_THRESHOLD = 0.45
+PIVOT_EXIT_THRESHOLD = 0.35
+
+PIVOT_STATE_NONE = "NONE"
+PIVOT_STATE_LEFT = "LEFT"
+PIVOT_STATE_RIGHT = "RIGHT"
+
 GREEN_OBSERVATION_STATES = {
     "SEM_VERDE",
     "UM_CANDIDATO",
@@ -2269,7 +2286,7 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 90
+GREEN_MANEUVER_TIMEOUT_FRAMES = 60
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -2310,13 +2327,55 @@ GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS = 8
 # Diferenças menores ou iguais a este valor encerram o path na bifurcação.
 GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE = 0.05
 
-# Distância geodésica, em pixels do frame original, usada pelo alvo
-# diagnóstico da centerline. Este ponto não participa do controle do robô.
-GEOMETRIC_CENTERLINE_GUIDANCE_LOOKAHEAD_PX = 80.0
+# Distâncias mínima e máxima, em pixels do frame original, usadas pelo alvo
+# dinâmico. O target continua sempre interpolado sobre a centerline selecionada.
+LOOKAHEAD_MIN_PX = 80.0
+LOOKAHEAD_MAX_PX = 220.0
+
+# Uma diferença de 60° entre as tangentes local e distante usa o alcance
+# máximo. Curvas menores interpolam linearmente entre 80 e 220 pixels.
+LOOKAHEAD_CURVE_FULL_SCALE_DEG = 60.0
+
+# O Curve Intent confirma uma curva indicada pela geometria e aplica somente
+# um piso de steering. Ele não cria comandos de motor nem altera o mapper.
+CURVE_INTENT_ENTER_ANGLE_DEG = 20.0
+CURVE_INTENT_EXIT_ANGLE_DEG = 8.0
+CURVE_INTENT_CONFIRM_FRAMES = 2
+CURVE_INTENT_RELEASE_FRAMES = 2
+CURVE_INTENT_MIN_STEERING = 0.30
+CURVE_INTENT_NEAR_CONFLICT_THRESHOLD = 0.20
+
+CURVE_INTENT_NONE = "NONE"
+CURVE_INTENT_LEFT = "LEFT"
+CURVE_INTENT_RIGHT = "RIGHT"
+
+# O consenso distante usa vários pontos internos do mesmo path para que uma
+# oscilação isolada perto do endpoint não domine a interpretação da curva.
+FAR_PATH_SAMPLE_RATIOS = (0.60, 0.75, 0.90)
+
+# A mediana precisa alcançar 35° para representar uma curva distante forte.
+FAR_PATH_STRONG_ANGLE_DEG = 35.0
+
+# Diferenças maiores que 20° entre amostras indicam geometria instável.
+FAR_PATH_MAX_ANGLE_SPREAD_DEG = 20.0
+
+# Três frames consecutivos impedem que uma oscilação isolada ganhe autoridade.
+FAR_PATH_CONFIRM_FRAMES = 2
+
+# O alvo extremo para em 90% do path e nunca usa automaticamente o endpoint.
+FAR_PATH_TARGET_MAX_RATIO = 0.90
+
+# Acima de 90°, o avanço adicional já alcançou seu limite conservador.
+# Entre 35° e 90°, o alcance cresce progressivamente com a curva observada.
+FAR_PATH_TARGET_FULL_SCALE_ANGLE_DEG = 90.0
+
+FAR_PATH_CONSENSUS_NONE = "NONE"
+FAR_PATH_CONSENSUS_LEFT = "LEFT"
+FAR_PATH_CONSENSUS_RIGHT = "RIGHT"
 
 # Distância geodésica usada para antecipar curvas com a centerline selecionada.
 # O ponto continua sendo calculado uma única vez pelo pipeline geométrico.
-GEOMETRIC_CENTERLINE_GUIDANCE_AHEAD_PX = 220.0
+GEOMETRIC_CENTERLINE_GUIDANCE_AHEAD_PX = LOOKAHEAD_MAX_PX
 
 # Distância geodésica aproximada antes e depois do alvo usada para medir
 # somente a tangente diagnóstica local da centerline selecionada.
@@ -4842,9 +4901,100 @@ def sample_centerline_extremes(path_points):
     )
 
 
+def evaluate_far_path_angles(sample_angles_deg, path_ambiguous):
+    """Calcula mediana, dispersão e lado confiável dos três ângulos internos."""
+
+    result = {
+        "anglesDeg": [],
+        "medianAngleDeg": None,
+        "spreadDeg": None,
+        "candidateDirection": FAR_PATH_CONSENSUS_NONE,
+        "valid": False,
+    }
+    if len(sample_angles_deg) != len(FAR_PATH_SAMPLE_RATIOS):
+        return result
+
+    try:
+        angles_deg = [float(angle) for angle in sample_angles_deg]
+    except (TypeError, ValueError):
+        return result
+    if not all(math.isfinite(angle) for angle in angles_deg):
+        return result
+
+    ordered_angles = sorted(angles_deg)
+    median_angle_deg = ordered_angles[len(ordered_angles) // 2]
+    spread_deg = ordered_angles[-1] - ordered_angles[0]
+    result.update({
+        "anglesDeg": angles_deg,
+        "medianAngleDeg": median_angle_deg,
+        "spreadDeg": spread_deg,
+    })
+
+    all_right = all(angle > 0.0 for angle in angles_deg)
+    all_left = all(angle < 0.0 for angle in angles_deg)
+    if (
+        path_ambiguous
+        or not (all_left or all_right)
+        or abs(median_angle_deg) < FAR_PATH_STRONG_ANGLE_DEG
+        or spread_deg > FAR_PATH_MAX_ANGLE_SPREAD_DEG
+    ):
+        return result
+
+    result["candidateDirection"] = (
+        FAR_PATH_CONSENSUS_LEFT
+        if all_left
+        else FAR_PATH_CONSENSUS_RIGHT
+    )
+    result["valid"] = True
+    return result
+
+
+class FarPathConsensusTracker:
+    """Confirma o mesmo consenso distante sem trocar de lado por um frame."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Apaga confirmações ao sair do seguimento normal da centerline."""
+
+        self.active_direction = FAR_PATH_CONSENSUS_NONE
+        self.candidate_direction = FAR_PATH_CONSENSUS_NONE
+        self.confirmation_frames = 0
+        return self.active_direction
+
+    def update(self, candidate_direction):
+        """Exige três frames consecutivos antes de liberar qualquer lado."""
+
+        self.active_direction = FAR_PATH_CONSENSUS_NONE
+        if candidate_direction not in (
+            FAR_PATH_CONSENSUS_LEFT,
+            FAR_PATH_CONSENSUS_RIGHT,
+        ):
+            # Um frame inválido não recebe autoridade e interrompe a sequência.
+            self.candidate_direction = FAR_PATH_CONSENSUS_NONE
+            self.confirmation_frames = 0
+            return self.active_direction
+
+        if candidate_direction == self.candidate_direction:
+            self.confirmation_frames = min(
+                FAR_PATH_CONFIRM_FRAMES,
+                self.confirmation_frames + 1,
+            )
+        else:
+            self.candidate_direction = candidate_direction
+            self.confirmation_frames = 1
+
+        if self.confirmation_frames >= FAR_PATH_CONFIRM_FRAMES:
+            self.active_direction = candidate_direction
+        return self.active_direction
+
+
 def calculate_geometric_centerline_guidance(
     centerline_path,
     frame_width,
+    centerline_decisions=None,
+    far_path_consensus_tracker=None,
 ):
     """Resume o path selecionado sem produzir qualquer decisão de controle."""
 
@@ -4852,8 +5002,22 @@ def calculate_geometric_centerline_guidance(
         "pathLengthPx": 0.0,
         "lookaheadPoint": None,
         "lookaheadClamped": True,
+        "localLookaheadPoint": None,
+        "dynamicTargetPoint": None,
+        "dynamicLookaheadDistancePx": 0.0,
+        "dynamicLookaheadRequestedPx": LOOKAHEAD_MIN_PX,
+        "curveStrength": 0.0,
+        "farPathSamplePoints": [],
+        "farPathSampleAnglesDeg": [],
+        "farPathAngleDeg": None,
+        "farPathAngleSpreadDeg": None,
+        "farConsensusCandidate": FAR_PATH_CONSENSUS_NONE,
+        "farConsensusDirection": FAR_PATH_CONSENSUS_NONE,
+        "farConsensusConfirmFrames": 0,
+        "farPathTargetDistancePx": None,
         "nearError": None,
         "targetAngleDeg": None,
+        "dynamicTargetAngleDeg": None,
         "tangentAngleDeg": None,
         "aheadPoint": None,
         "aheadClamped": True,
@@ -4918,34 +5082,25 @@ def calculate_geometric_centerline_guidance(
             )
         return points[-1]
 
-    lookahead_distance_px = min(
+    local_lookahead_distance_px = min(
         path_length_px,
-        GEOMETRIC_CENTERLINE_GUIDANCE_LOOKAHEAD_PX,
+        LOOKAHEAD_MIN_PX,
     )
-    lookahead_point = point_at_distance(lookahead_distance_px)
+    local_lookahead_point = point_at_distance(
+        local_lookahead_distance_px
+    )
     start_point = points[0]
     half_frame_width = float(frame_width) / 2.0
     near_error = (
         start_point[0] - half_frame_width
     ) / half_frame_width
 
-    target_delta_x = lookahead_point[0] - start_point[0]
-    target_delta_y = lookahead_point[1] - start_point[1]
-    target_angle_deg = None
-    if math.hypot(target_delta_x, target_delta_y) > 0.0:
-        target_angle_deg = math.degrees(
-            math.atan2(
-                target_delta_x,
-                -target_delta_y,
-            )
-        )
-
     tangent_before_point = point_at_distance(
-        lookahead_distance_px
+        local_lookahead_distance_px
         - GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
     )
     tangent_after_point = point_at_distance(
-        lookahead_distance_px
+        local_lookahead_distance_px
         + GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
     )
     tangent_delta_x = (
@@ -5009,18 +5164,144 @@ def calculate_geometric_centerline_guidance(
             ahead_tangent_angle_deg - tangent_angle_deg + 180.0
         ) % 360.0 - 180.0
 
+    path_ambiguous = (
+        not isinstance(centerline_decisions, list)
+        or any(
+            isinstance(decision, dict)
+            and bool(decision.get("ambiguous", False))
+            for decision in centerline_decisions
+        )
+    )
+    far_path_sample_points = []
+    far_path_sample_angles_deg = []
+    for sample_ratio in FAR_PATH_SAMPLE_RATIOS:
+        sample_point = point_at_distance(path_length_px * sample_ratio)
+        far_path_sample_points.append([
+            sample_point[0],
+            sample_point[1],
+        ])
+        sample_delta_x = sample_point[0] - start_point[0]
+        sample_delta_y = sample_point[1] - start_point[1]
+        if math.hypot(sample_delta_x, sample_delta_y) <= 0.0:
+            far_path_sample_angles_deg.append(None)
+        else:
+            far_path_sample_angles_deg.append(math.degrees(
+                math.atan2(sample_delta_x, -sample_delta_y)
+            ))
+
+    far_path_geometry = evaluate_far_path_angles(
+        far_path_sample_angles_deg,
+        path_ambiguous,
+    )
+    far_consensus_candidate = far_path_geometry["candidateDirection"]
+    far_consensus_direction = FAR_PATH_CONSENSUS_NONE
+    far_consensus_confirm_frames = 0
+    if far_path_consensus_tracker is not None:
+        far_consensus_direction = far_path_consensus_tracker.update(
+            far_consensus_candidate
+        )
+        far_consensus_confirm_frames = (
+            far_path_consensus_tracker.confirmation_frames
+        )
+
+    # As tangentes e o turnAhead acima preservam as distâncias fixas atuais.
+    # Somente depois dessas métricas prontas o target avança sobre o mesmo path.
+    curve_strength = 0.0
+    if turn_ahead_deg is not None:
+        curve_strength = max(
+            0.0,
+            min(
+                1.0,
+                abs(turn_ahead_deg)
+                / LOOKAHEAD_CURVE_FULL_SCALE_DEG,
+            ),
+        )
+    dynamic_requested_px = (
+        LOOKAHEAD_MIN_PX
+        + (LOOKAHEAD_MAX_PX - LOOKAHEAD_MIN_PX) * curve_strength
+    )
+    dynamic_distance_px = min(path_length_px, dynamic_requested_px)
+    far_path_target_distance_px = None
+    if far_consensus_direction in (
+        FAR_PATH_CONSENSUS_LEFT,
+        FAR_PATH_CONSENSUS_RIGHT,
+    ):
+        far_path_angle_deg = far_path_geometry["medianAngleDeg"]
+        extreme_strength = max(
+            0.0,
+            min(
+                1.0,
+                (
+                    abs(far_path_angle_deg)
+                    - FAR_PATH_STRONG_ANGLE_DEG
+                ) / (
+                    FAR_PATH_TARGET_FULL_SCALE_ANGLE_DEG
+                    - FAR_PATH_STRONG_ANGLE_DEG
+                ),
+            ),
+        )
+        far_path_target_limit_px = (
+            path_length_px * FAR_PATH_TARGET_MAX_RATIO
+        )
+        if far_path_target_limit_px > dynamic_distance_px:
+            far_path_target_distance_px = (
+                dynamic_distance_px
+                + (
+                    far_path_target_limit_px - dynamic_distance_px
+                ) * extreme_strength
+            )
+        else:
+            # Em paths curtos, o consenso extremo nunca autoriza o endpoint.
+            far_path_target_distance_px = far_path_target_limit_px
+        dynamic_distance_px = min(
+            far_path_target_limit_px,
+            far_path_target_distance_px,
+        )
+        dynamic_requested_px = dynamic_distance_px
+    dynamic_target_point = point_at_distance(dynamic_distance_px)
+
+    target_delta_x = dynamic_target_point[0] - start_point[0]
+    target_delta_y = dynamic_target_point[1] - start_point[1]
+    target_angle_deg = None
+    if math.hypot(target_delta_x, target_delta_y) > 0.0:
+        target_angle_deg = math.degrees(
+            math.atan2(
+                target_delta_x,
+                -target_delta_y,
+            )
+        )
+
     guidance.update({
         "pathLengthPx": path_length_px,
         "lookaheadPoint": [
-            lookahead_point[0],
-            lookahead_point[1],
+            dynamic_target_point[0],
+            dynamic_target_point[1],
         ],
         "lookaheadClamped": (
-            path_length_px
-            < GEOMETRIC_CENTERLINE_GUIDANCE_LOOKAHEAD_PX
+            path_length_px < dynamic_requested_px
         ),
+        "localLookaheadPoint": [
+            local_lookahead_point[0],
+            local_lookahead_point[1],
+        ],
+        "dynamicTargetPoint": [
+            dynamic_target_point[0],
+            dynamic_target_point[1],
+        ],
+        "dynamicLookaheadDistancePx": dynamic_distance_px,
+        "dynamicLookaheadRequestedPx": dynamic_requested_px,
+        "curveStrength": curve_strength,
+        "farPathSamplePoints": far_path_sample_points,
+        "farPathSampleAnglesDeg": far_path_geometry["anglesDeg"],
+        "farPathAngleDeg": far_path_geometry["medianAngleDeg"],
+        "farPathAngleSpreadDeg": far_path_geometry["spreadDeg"],
+        "farConsensusCandidate": far_consensus_candidate,
+        "farConsensusDirection": far_consensus_direction,
+        "farConsensusConfirmFrames": far_consensus_confirm_frames,
+        "farPathTargetDistancePx": far_path_target_distance_px,
         "nearError": near_error,
         "targetAngleDeg": target_angle_deg,
+        "dynamicTargetAngleDeg": target_angle_deg,
         "tangentAngleDeg": tangent_angle_deg,
         "aheadPoint": [
             ahead_point[0],
@@ -5318,6 +5599,7 @@ def extract_geometric_line_path(processed_line_mask):
 def calculate_geometric_centerline_diagnostics(
     processed_line_mask,
     geometric_guidance,
+    far_path_consensus_tracker=None,
 ):
     """
     Calcula uma vez o path, o guidance e os dados usados pelo overlay.
@@ -5472,6 +5754,8 @@ def calculate_geometric_centerline_diagnostics(
     centerline_guidance = calculate_geometric_centerline_guidance(
         centerline_path,
         processed_line_mask.shape[1],
+        centerline_decisions=branch_debug["decisions"],
+        far_path_consensus_tracker=far_path_consensus_tracker,
     )
 
     return {
@@ -5552,10 +5836,139 @@ def draw_geometric_line_overlay(
             cv2.LINE_AA,
         )
 
+    centerline_guidance = centerline_debug.get("guidance", {})
+
+    def overlay_guidance_point(field_name):
+        """Converte um ponto válido do guidance para coordenadas do overlay."""
+
+        try:
+            point = centerline_guidance[field_name]
+            point_x = float(point[0])
+            point_y = float(point[1])
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+        if not math.isfinite(point_x) or not math.isfinite(point_y):
+            return None
+        return int(round(point_x)), int(round(point_y))
+
+    dynamic_target_pixel = overlay_guidance_point("dynamicTargetPoint")
+    ahead_point_pixel = overlay_guidance_point("aheadPoint")
+
+    if ahead_point_pixel is not None:
+        # O anel laranja mantém o AHEAD POINT visível mesmo quando os dois
+        # alvos coincidem no alcance máximo de uma curva forte.
+        cv2.circle(
+            frame,
+            ahead_point_pixel,
+            11,
+            (0, 165, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "AHEAD POINT",
+            (ahead_point_pixel[0] + 10, ahead_point_pixel[1] + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 165, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    if dynamic_target_pixel is not None:
+        # O ponto vermelho mostra o target realmente usado por targetAngleDeg.
+        cv2.circle(
+            frame,
+            dynamic_target_pixel,
+            7,
+            (0, 0, 255),
+            -1,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "DYNAMIC TARGET",
+            (dynamic_target_pixel[0] + 10, dynamic_target_pixel[1] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    far_path_sample_points = centerline_guidance.get(
+        "farPathSamplePoints",
+        [],
+    )
+    if isinstance(far_path_sample_points, list):
+        for sample_point in far_path_sample_points:
+            try:
+                sample_x = float(sample_point[0])
+                sample_y = float(sample_point[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not math.isfinite(sample_x) or not math.isfinite(sample_y):
+                continue
+            # Pequenos anéis azuis mostram 60%, 75% e 90% sem esconder o path.
+            cv2.circle(
+                frame,
+                (int(round(sample_x)), int(round(sample_y))),
+                4,
+                (255, 128, 0),
+                1,
+                cv2.LINE_AA,
+            )
+
     centerline_pipeline_ms = (
         centerline_debug["skeletonMs"]
         + centerline_debug["pathMs"]
     )
+    curve_intent_state = line_follower_command.get(
+        "curveIntentState",
+        CURVE_INTENT_NONE,
+    )
+    if curve_intent_state not in (
+        CURVE_INTENT_NONE,
+        CURVE_INTENT_LEFT,
+        CURVE_INTENT_RIGHT,
+    ):
+        curve_intent_state = CURVE_INTENT_NONE
+    dynamic_target_angle = finite_virtual_position(
+        line_follower_command.get("dynamicTargetAngleDeg")
+    )
+    curve_intent_overlay = f"CURVE INTENT {curve_intent_state}"
+    if dynamic_target_angle is not None:
+        curve_intent_overlay += f"  TARGET {dynamic_target_angle:+.1f}deg"
+
+    far_path_angle = finite_virtual_position(
+        line_follower_command.get("farPathAngleDeg")
+    )
+    far_path_angle_overlay = "FAR PATH ANGLE --"
+    if far_path_angle is not None:
+        far_path_angle_overlay = f"FAR PATH ANGLE {far_path_angle:+.1f}deg"
+    far_consensus_direction = line_follower_command.get(
+        "farConsensusDirection",
+        FAR_PATH_CONSENSUS_NONE,
+    )
+    if far_consensus_direction not in (
+        FAR_PATH_CONSENSUS_NONE,
+        FAR_PATH_CONSENSUS_LEFT,
+        FAR_PATH_CONSENSUS_RIGHT,
+    ):
+        far_consensus_direction = FAR_PATH_CONSENSUS_NONE
+    try:
+        far_confirm_frames = int(line_follower_command.get(
+            "farConsensusConfirmFrames",
+            0,
+        ))
+    except (TypeError, ValueError):
+        far_confirm_frames = 0
+    far_confirm_frames = max(
+        0,
+        min(FAR_PATH_CONFIRM_FRAMES, far_confirm_frames),
+    )
+
     overlay_texts = (
         f"LINE {centerline_pipeline_ms:.1f}ms",
         (
@@ -5563,8 +5976,14 @@ def draw_geometric_line_overlay(
             f"R {float(line_follower_command['right_power']):.2f}"
         ),
         f"STATE {'GAP' if gap_forward_active else 'LINE'}",
+        curve_intent_overlay,
+        far_path_angle_overlay,
+        (
+            f"FAR CONSENSUS {far_consensus_direction}  "
+            f"FAR CONFIRM {far_confirm_frames}/{FAR_PATH_CONFIRM_FRAMES}"
+        ),
     )
-    overlay_text_start_y = max(22, frame.shape[0] - 50)
+    overlay_text_start_y = max(22, frame.shape[0] - 116)
     for line_index, overlay_text in enumerate(overlay_texts):
         cv2.putText(
             frame,
@@ -5768,6 +6187,13 @@ def read_virtual_line_sensors(
     near_position,
     heading_angle,
 )
+    if direcao_verde_ativa == "NENHUMA":
+        steering_error = protect_virtual_near_direction(
+            near_position,
+            medium_position,
+            heading_angle,
+            steering_error,
+        )
 
     return {
         "farLeft": far_left,
@@ -6084,6 +6510,170 @@ class CenterlineAheadFeedForwardTracker:
         )
 
 
+def curve_intent_geometry(centerline_guidance, centerline_decisions):
+    """Valida a direção do target dinâmico sem alterar o path selecionado."""
+
+    result = {
+        "valid": False,
+        "direction": None,
+        "releaseReady": False,
+        "dynamicTargetAngleDeg": None,
+        "turnAheadDeg": None,
+    }
+    if (
+        not isinstance(centerline_guidance, dict)
+        or not isinstance(centerline_decisions, list)
+        or any(
+            isinstance(decision, dict)
+            and bool(decision.get("ambiguous", False))
+            for decision in centerline_decisions
+        )
+    ):
+        return result
+
+    dynamic_target_angle = centerline_guidance.get(
+        "dynamicTargetAngleDeg",
+        centerline_guidance.get("targetAngleDeg"),
+    )
+    dynamic_target_angle = finite_virtual_position(dynamic_target_angle)
+    turn_ahead_deg = finite_virtual_position(
+        centerline_guidance.get("turnAheadDeg")
+    )
+    if dynamic_target_angle is None or turn_ahead_deg is None:
+        return result
+
+    result.update({
+        "valid": True,
+        "dynamicTargetAngleDeg": dynamic_target_angle,
+        "turnAheadDeg": turn_ahead_deg,
+        "releaseReady": (
+            abs(dynamic_target_angle) <= CURVE_INTENT_EXIT_ANGLE_DEG
+            and abs(turn_ahead_deg) <= CURVE_INTENT_EXIT_ANGLE_DEG
+        ),
+    })
+    if (
+        dynamic_target_angle >= CURVE_INTENT_ENTER_ANGLE_DEG
+        and turn_ahead_deg > 0.0
+    ):
+        result["direction"] = CURVE_INTENT_RIGHT
+    elif (
+        dynamic_target_angle <= -CURVE_INTENT_ENTER_ANGLE_DEG
+        and turn_ahead_deg < 0.0
+    ):
+        result["direction"] = CURVE_INTENT_LEFT
+    return result
+
+
+class CurveIntentTracker:
+    """Confirma a intenção geométrica e aplica histerese sem controlar motores."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Limpa a intenção ao sair do seguimento normal da linha."""
+
+        self.state = CURVE_INTENT_NONE
+        self.candidate = None
+        self.confirmation_frames = 0
+        self.release_frames = 0
+        return self.state
+
+    def update(self, centerline_guidance, centerline_decisions):
+        """Confirma entrada e saída usando somente a geometria não ambígua."""
+
+        geometry = curve_intent_geometry(
+            centerline_guidance,
+            centerline_decisions,
+        )
+        if self.state in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT):
+            self.candidate = None
+            self.confirmation_frames = 0
+            if geometry["valid"] and geometry["releaseReady"]:
+                self.release_frames += 1
+                if self.release_frames >= CURVE_INTENT_RELEASE_FRAMES:
+                    return self.reset()
+            else:
+                self.release_frames = 0
+            return self.state
+
+        self.release_frames = 0
+        direction = geometry["direction"] if geometry["valid"] else None
+        if direction is None:
+            self.candidate = None
+            self.confirmation_frames = 0
+            return self.state
+
+        if direction == self.candidate:
+            self.confirmation_frames += 1
+        else:
+            self.candidate = direction
+            self.confirmation_frames = 1
+
+        if self.confirmation_frames >= CURVE_INTENT_CONFIRM_FRAMES:
+            self.state = direction
+        return self.state
+
+
+def curve_intent_has_current_authority(
+    curve_intent_state,
+    centerline_guidance,
+    centerline_decisions,
+):
+    """Impede que uma intenção antiga atue sem geometria atual compatível."""
+
+    geometry = curve_intent_geometry(
+        centerline_guidance,
+        centerline_decisions,
+    )
+    if (
+        curve_intent_state not in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT)
+        or not geometry["valid"]
+    ):
+        return False
+    if geometry["releaseReady"]:
+        return True
+
+    intent_sign = -1.0 if curve_intent_state == CURVE_INTENT_LEFT else 1.0
+    target_angle = geometry["dynamicTargetAngleDeg"]
+    turn_ahead_deg = geometry["turnAheadDeg"]
+    target_supports_intent = (
+        target_angle * intent_sign > 0.0
+        or abs(target_angle) <= CURVE_INTENT_EXIT_ANGLE_DEG
+    )
+    turn_supports_intent = (
+        turn_ahead_deg * intent_sign > 0.0
+        or abs(turn_ahead_deg) <= CURVE_INTENT_EXIT_ANGLE_DEG
+    )
+    return target_supports_intent and turn_supports_intent
+
+
+def curve_intent_near_allows_authority(curve_intent_state, sensors):
+    """Protege um NEAR forte contrário quando MEDIUM não confirma o intent."""
+
+    if curve_intent_state not in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT):
+        return False
+
+    near_position = finite_virtual_position(sensors.get("nearPosition"))
+    if near_position is None:
+        return False
+
+    intent_sign = -1.0 if curve_intent_state == CURVE_INTENT_LEFT else 1.0
+    near_strongly_contradicts = (
+        abs(near_position) >= CURVE_INTENT_NEAR_CONFLICT_THRESHOLD
+        and near_position * intent_sign < 0.0
+    )
+    if not near_strongly_contradicts:
+        return True
+
+    medium_position = finite_virtual_position(sensors.get("mediumPosition"))
+    return (
+        medium_position is not None
+        and abs(medium_position) >= CURVE_INTENT_NEAR_CONFLICT_THRESHOLD
+        and medium_position * intent_sign > 0.0
+    )
+
+
 def virtual_reorient_direction(sensors):
     """Detecta concordância lateral entre MEDIUM e FAR BAND."""
 
@@ -6377,6 +6967,49 @@ class VirtualTurnStateTracker:
         return self.state
 
 
+class VirtualPivotStateTracker:
+    """Mantém o lado do pivot normal e aplica histerese sem troca direta."""
+
+    def __init__(self):
+        self.state = PIVOT_STATE_NONE
+
+    def reset(self):
+        """Encerra o pivot persistente antes de outro modo assumir."""
+
+        self.state = PIVOT_STATE_NONE
+        return self.state
+
+    def update(self, steering_error):
+        """Atualiza a entrada ou saída do pivot usando o erro do frame atual."""
+
+        steering_error = finite_virtual_position(steering_error)
+        if steering_error is None:
+            return self.reset()
+
+        steering_magnitude = abs(steering_error)
+        if self.state == PIVOT_STATE_RIGHT:
+            if (
+                steering_error <= 0.0
+                or steering_magnitude <= PIVOT_EXIT_THRESHOLD
+            ):
+                return self.reset()
+            return self.state
+
+        if self.state == PIVOT_STATE_LEFT:
+            if (
+                steering_error >= 0.0
+                or steering_magnitude <= PIVOT_EXIT_THRESHOLD
+            ):
+                return self.reset()
+            return self.state
+
+        if steering_error >= PIVOT_ENTER_THRESHOLD:
+            self.state = PIVOT_STATE_RIGHT
+        elif steering_error <= -PIVOT_ENTER_THRESHOLD:
+            self.state = PIVOT_STATE_LEFT
+        return self.state
+
+
 def calculate_hybrid_virtual_steering(
     base_virtual_steering,
     centerline_guidance,
@@ -6464,6 +7097,8 @@ def calculate_line_follower_command(
     centerline_decisions=None,
     ahead_feed_forward_tracker=None,
     virtual_turn_tracker=None,
+    curve_intent_tracker=None,
+    pivot_state_tracker=None,
     virtual_sensors=None,
     line_search_tracker=None,
     blind_search_requested=False,
@@ -6503,12 +7138,17 @@ def calculate_line_follower_command(
     virtual_state = VIRTUAL_STATE_NORMAL
     medium_scan_direction = None
     direct_recovery_direction = None
+    normal_steering_mapper = False
+    curve_intent_state = CURVE_INTENT_NONE
+    curve_intent_applied = False
 
     if direcao_verde_ativa != "NENHUMA":
         if ahead_feed_forward_tracker is not None:
             ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
+        if curve_intent_tracker is not None:
+            curve_intent_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
         steering_error = sensors[
@@ -6526,6 +7166,8 @@ def calculate_line_follower_command(
             ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
+        if curve_intent_tracker is not None:
+            curve_intent_tracker.reset()
         if observed_recovery_direction is not None:
             if line_search_tracker is not None:
                 line_search_tracker.stop()
@@ -6574,14 +7216,57 @@ def calculate_line_follower_command(
             # O seguidor normal recupera autoridade no primeiro frame válido,
             # mesmo enquanto o tracker confirma a saída do REORIENT.
             steering_error = hybrid_control["finalSteering"]
+            normal_steering_mapper = True
+            if curve_intent_tracker is not None:
+                curve_intent_state = curve_intent_tracker.update(
+                    centerline_guidance,
+                    centerline_decisions,
+                )
+                curve_intent_authorized = (
+                    curve_intent_has_current_authority(
+                        curve_intent_state,
+                        centerline_guidance,
+                        centerline_decisions,
+                    )
+                    and curve_intent_near_allows_authority(
+                        curve_intent_state,
+                        sensors,
+                    )
+                )
+                steering_before_intent = steering_error
+                if (
+                    curve_intent_authorized
+                    and curve_intent_state == CURVE_INTENT_RIGHT
+                ):
+                    steering_error = max(
+                        steering_error,
+                        CURVE_INTENT_MIN_STEERING,
+                    )
+                elif (
+                    curve_intent_authorized
+                    and curve_intent_state == CURVE_INTENT_LEFT
+                ):
+                    steering_error = min(
+                        steering_error,
+                        -CURVE_INTENT_MIN_STEERING,
+                    )
+                curve_intent_applied = (
+                    steering_error != steering_before_intent
+                )
             if line_search_tracker is not None:
                 line_search_tracker.stop()
             control_source = (
-                "hybrid"
-                if hybrid_control["hybridSource"] == "HYBRID"
-                else "virtual"
+                "curve-intent"
+                if curve_intent_applied
+                else (
+                    "hybrid"
+                    if hybrid_control["hybridSource"] == "HYBRID"
+                    else "virtual"
+                )
             )
         else:
+            if curve_intent_tracker is not None:
+                curve_intent_tracker.reset()
             if virtual_state == VIRTUAL_STATE_REORIENT_LEFT:
                 steering_error = -1.0
                 control_source = "virtual-reorient"
@@ -6653,26 +7338,47 @@ def calculate_line_follower_command(
     MAX_POWER = 0.75
     NORMAL_INNER_MIN_POWER = 0.66
 
-    # A partir daqui a curva é forte o suficiente
-    # para exigir pivot.
-    PIVOT_THRESHOLD = 0.40
+    # A faixa forte amplia a curva sem reduzir nenhuma roda abaixo de 0,61.
+    STRONG_TURN_OUTER_POWER = 0.85
+    STRONG_TURN_INNER_MIN_POWER = 0.61
+
+    # Verde, GAP e recoveries preservam o limite usado antes da histerese.
+    NON_NORMAL_PIVOT_THRESHOLD = 0.40
 
     # Potência durante pivot.
     PIVOT_OUTER_POWER = 0.75
     PIVOT_INNER_POWER = 0.0
 
+    pivot_state = PIVOT_STATE_NONE
+    if normal_steering_mapper:
+        if pivot_state_tracker is not None:
+            pivot_state = pivot_state_tracker.update(steering_error)
+        elif steering_error is not None:
+            if steering_error >= PIVOT_ENTER_THRESHOLD:
+                pivot_state = PIVOT_STATE_RIGHT
+            elif steering_error <= -PIVOT_ENTER_THRESHOLD:
+                pivot_state = PIVOT_STATE_LEFT
+    else:
+        if pivot_state_tracker is not None:
+            pivot_state_tracker.reset()
+        if steering_error is not None:
+            if steering_error >= NON_NORMAL_PIVOT_THRESHOLD:
+                pivot_state = PIVOT_STATE_RIGHT
+            elif steering_error <= -NON_NORMAL_PIVOT_THRESHOLD:
+                pivot_state = PIVOT_STATE_LEFT
+
     if steering_error is None:
         left_power = 0.0
         right_power = 0.0
 
-    elif steering_error >= PIVOT_THRESHOLD:
+    elif pivot_state == PIVOT_STATE_RIGHT:
         # Curva forte para DIREITA.
         #
         # Esquerda para frente e direita parada.
         left_power = PIVOT_OUTER_POWER
         right_power = PIVOT_INNER_POWER
 
-    elif steering_error <= -PIVOT_THRESHOLD:
+    elif pivot_state == PIVOT_STATE_LEFT:
         # Curva forte para ESQUERDA.
         #
         # Direita para frente e esquerda parada.
@@ -6681,21 +7387,57 @@ def calculate_line_follower_command(
 
     else:
         # Correção normal.
-        steering_strength = min(
-            1.0,
-            abs(steering_error) / PIVOT_THRESHOLD,
-        )
+        steering_magnitude = abs(steering_error)
+        if (
+            normal_steering_mapper
+            and steering_magnitude >= NORMAL_FULL_STEERING_ERROR
+        ):
+            # A progressão quadrática suaviza o início da faixa forte sem
+            # impedir que o diferencial se aproxime do máximo antes do pivot.
+            transition_progress = (
+                steering_magnitude - NORMAL_FULL_STEERING_ERROR
+            ) / (
+                PIVOT_ENTER_THRESHOLD - NORMAL_FULL_STEERING_ERROR
+            )
+            transition_progress = max(
+                0.0,
+                min(1.0, transition_progress),
+            )
+            transition_progress *= transition_progress
+            outer_power = (
+                MAX_POWER
+                + transition_progress
+                * (STRONG_TURN_OUTER_POWER - MAX_POWER)
+            )
+            inner_power = (
+                NORMAL_INNER_MIN_POWER
+                - transition_progress
+                * (
+                    NORMAL_INNER_MIN_POWER
+                    - STRONG_TURN_INNER_MIN_POWER
+                )
+            )
+        else:
+            full_steering_error = (
+                NORMAL_FULL_STEERING_ERROR
+                if normal_steering_mapper
+                else NON_NORMAL_PIVOT_THRESHOLD
+            )
+            steering_strength = min(
+                1.0,
+                steering_magnitude / full_steering_error,
+            )
 
-        outer_power = (
-            BASE_POWER
-            + steering_strength
-            * (MAX_POWER - BASE_POWER)
-        )
-        inner_power = (
-            BASE_POWER
-            - steering_strength
-            * (BASE_POWER - NORMAL_INNER_MIN_POWER)
-        )
+            outer_power = (
+                BASE_POWER
+                + steering_strength
+                * (MAX_POWER - BASE_POWER)
+            )
+            inner_power = (
+                BASE_POWER
+                - steering_strength
+                * (BASE_POWER - NORMAL_INNER_MIN_POWER)
+            )
 
         if steering_error > 0.0:
             # Curva para DIREITA.
@@ -6757,6 +7499,34 @@ def calculate_line_follower_command(
         "finalSteering": hybrid_control["finalSteering"],
         "hybridSource": hybrid_control["hybridSource"],
         "virtualState": virtual_state,
+        "curveIntentState": curve_intent_state,
+        "curveIntentApplied": curve_intent_applied,
+        "dynamicTargetAngleDeg": (
+            centerline_guidance.get(
+                "dynamicTargetAngleDeg",
+                centerline_guidance.get("targetAngleDeg"),
+            )
+            if isinstance(centerline_guidance, dict)
+            else None
+        ),
+        "farPathAngleDeg": (
+            centerline_guidance.get("farPathAngleDeg")
+            if isinstance(centerline_guidance, dict)
+            else None
+        ),
+        "farConsensusDirection": (
+            centerline_guidance.get(
+                "farConsensusDirection",
+                FAR_PATH_CONSENSUS_NONE,
+            )
+            if isinstance(centerline_guidance, dict)
+            else FAR_PATH_CONSENSUS_NONE
+        ),
+        "farConsensusConfirmFrames": (
+            centerline_guidance.get("farConsensusConfirmFrames", 0)
+            if isinstance(centerline_guidance, dict)
+            else 0
+        ),
         "greenDirection": direcao_verde_ativa,
         "geometricNearPosition": (
             centerline_guidance.get("nearError")
@@ -6906,6 +7676,44 @@ def calculate_virtual_steering_error(
     )
 
     return float(steering_error)
+
+
+def protect_virtual_near_direction(
+    near_position,
+    medium_position,
+    heading_angle,
+    steering_error,
+):
+    """Impede que o heading inverta sozinho um NEAR lateral confiável."""
+
+    values = (
+        finite_virtual_position(near_position),
+        finite_virtual_position(heading_angle),
+        finite_virtual_position(steering_error),
+    )
+    near_position, heading_angle, steering_error = values
+    if (
+        near_position is None
+        or heading_angle is None
+        or steering_error is None
+        or abs(near_position)
+        < VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD
+        or near_position * steering_error >= 0.0
+    ):
+        return steering_error
+
+    medium_position = finite_virtual_position(medium_position)
+    medium_confirms_heading = (
+        medium_position is not None
+        and abs(medium_position)
+        >= VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD
+        and medium_position * heading_angle > 0.0
+    )
+    if medium_confirms_heading:
+        return steering_error
+
+    # Sem confirmação à frente, usa somente a posição realmente vista no NEAR.
+    return max(-1.0, min(1.0, near_position))
 
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""
@@ -7125,6 +7933,16 @@ def save_line_status(
             raise ValueError("Comando visual fora da faixa normalizada")
 
         repair_status = specular_repair_status or {}
+        far_consensus_direction = str(line_follower_command.get(
+            "farConsensusDirection",
+            FAR_PATH_CONSENSUS_NONE,
+        ))
+        if far_consensus_direction not in (
+            FAR_PATH_CONSENSUS_NONE,
+            FAR_PATH_CONSENSUS_LEFT,
+            FAR_PATH_CONSENSUS_RIGHT,
+        ):
+            far_consensus_direction = FAR_PATH_CONSENSUS_NONE
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
@@ -7139,6 +7957,32 @@ def save_line_status(
             ),
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")
+            ),
+            "curveIntentState": str(
+                line_follower_command.get(
+                    "curveIntentState",
+                    CURVE_INTENT_NONE,
+                )
+            ),
+            "curveIntentApplied": bool(
+                line_follower_command.get("curveIntentApplied", False)
+            ),
+            "dynamicTargetAngleDeg": finite_virtual_position(
+                line_follower_command.get("dynamicTargetAngleDeg")
+            ),
+            "farPathAngleDeg": finite_virtual_position(
+                line_follower_command.get("farPathAngleDeg")
+            ),
+            "farConsensusDirection": far_consensus_direction,
+            "farConsensusConfirmFrames": max(
+                0,
+                min(
+                    FAR_PATH_CONFIRM_FRAMES,
+                    int(line_follower_command.get(
+                        "farConsensusConfirmFrames",
+                        0,
+                    )),
+                ),
             ),
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
@@ -7363,7 +8207,10 @@ def main():
         centerline_debug = None
         green_tracker = GreenObservationTracker()
         ahead_feed_forward_tracker = CenterlineAheadFeedForwardTracker()
+        far_path_consensus_tracker = FarPathConsensusTracker()
         virtual_turn_tracker = VirtualTurnStateTracker()
+        curve_intent_tracker = CurveIntentTracker()
+        pivot_state_tracker = VirtualPivotStateTracker()
         line_search_tracker = VirtualLineSearchTracker()
 
         # Estado persistente das manobras sinalizadas por verde.
@@ -7670,10 +8517,18 @@ def main():
             centerline_debug = None
             centerline_guidance = None
             if camera_profile["role"] == "down":
+                if (
+                    direcao_verde_ativa != "NENHUMA"
+                    or gap_forward_active
+                ):
+                    far_path_consensus_tracker.reset()
                 centerline_diagnostics = (
                     calculate_geometric_centerline_diagnostics(
                         line_candidate_mask,
                         geometric_guidance,
+                        far_path_consensus_tracker=(
+                            far_path_consensus_tracker
+                        ),
                     )
                 )
                 centerline_debug = centerline_diagnostics["debug"]
@@ -7695,6 +8550,8 @@ def main():
                     ),
                     ahead_feed_forward_tracker=ahead_feed_forward_tracker,
                     virtual_turn_tracker=virtual_turn_tracker,
+                    curve_intent_tracker=curve_intent_tracker,
+                    pivot_state_tracker=pivot_state_tracker,
                     virtual_sensors=virtual_sensors,
                     line_search_tracker=line_search_tracker,
                     blind_search_requested=gap_blind_search_requested,

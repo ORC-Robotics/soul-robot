@@ -370,7 +370,13 @@ class CameraProfilesTest(unittest.TestCase):
             )
             try:
                 camera_line_frame.save_line_status(
-                    {"left_power": 0.0, "right_power": 0.0},
+                    {
+                        "left_power": 0.0,
+                        "right_power": 0.0,
+                        "farPathAngleDeg": 48.0,
+                        "farConsensusDirection": "RIGHT",
+                        "farConsensusConfirmFrames": 2,
+                    },
                     123.0,
                     7,
                     status,
@@ -388,11 +394,23 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
         self.assertFalse(published["lineNearDetected"])
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
+        self.assertEqual(published["curveIntentState"], "NONE")
+        self.assertFalse(published["curveIntentApplied"])
+        self.assertIsNone(published["dynamicTargetAngleDeg"])
+        self.assertEqual(published["farPathAngleDeg"], 48.0)
+        self.assertEqual(published["farConsensusDirection"], "RIGHT")
+        self.assertEqual(published["farConsensusConfirmFrames"], 2)
         expected_keys = set(status) | {
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
             "lineNearDetected",
             "lineControlSource",
+            "curveIntentState",
+            "curveIntentApplied",
+            "dynamicTargetAngleDeg",
+            "farPathAngleDeg",
+            "farConsensusDirection",
+            "farConsensusConfirmFrames",
             "lineTimestamp",
             "lineSequence",
             "specularRepairPixels",
