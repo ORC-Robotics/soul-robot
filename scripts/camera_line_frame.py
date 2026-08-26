@@ -252,6 +252,9 @@ VIRTUAL_HEADING_GAIN = 0.80
 # A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
 # CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.
 VIRTUAL_FINE_CENTER_GAIN = 0.35
+# A deadband elimina ruído perto do centro. O remapeamento contínuo fora dela
+# preserva o alcance completo de -1,0 a +1,0 sem criar um salto no limite.
+VIRTUAL_FINE_CENTER_DEADBAND = 0.03
 VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
 
 # O heading não pode inverter uma leitura lateral clara do NEAR sem que a
@@ -2290,7 +2293,7 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 60
+GREEN_MANEUVER_TIMEOUT_FRAMES = 24
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -4204,6 +4207,18 @@ def finite_virtual_position(value):
     return value if math.isfinite(value) else None
 
 
+def apply_virtual_fine_center_deadband(fine_position):
+    """Remove a trepidação central sem reduzir o alcance da posição fina."""
+
+    if abs(fine_position) <= VIRTUAL_FINE_CENTER_DEADBAND:
+        return 0.0
+    return math.copysign(
+        (abs(fine_position) - VIRTUAL_FINE_CENTER_DEADBAND)
+        / (1.0 - VIRTUAL_FINE_CENTER_DEADBAND),
+        fine_position,
+    )
+
+
 def virtual_recovery_sensor_direction(sensors):
     """Escolhe uma direção lateral RAW na ordem NEAR, MEDIUM e FAR BAND."""
 
@@ -4640,11 +4655,14 @@ def calculate_line_follower_command(
                 and abs(protected_steering_for_fine)
                 <= NORMAL_FULL_STEERING_ERROR
             ):
+                fine = apply_virtual_fine_center_deadband(
+                    near_fine_position
+                )
                 fine_correction = max(
                     -VIRTUAL_FINE_CENTER_MAX_CORRECTION,
                     min(
                         VIRTUAL_FINE_CENTER_MAX_CORRECTION,
-                        near_fine_position * VIRTUAL_FINE_CENTER_GAIN,
+                        fine * VIRTUAL_FINE_CENTER_GAIN,
                     ),
                 )
                 steering_error = max(

@@ -187,6 +187,51 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(math.isclose(sensors["nearPosition"], 0.0))
         self.assertGreater(sensors["nearFinePosition"], 0.10)
 
+    def test_fine_centering_deadband_zeros_small_center_error(self):
+        deadband = camera_line_frame.VIRTUAL_FINE_CENTER_DEADBAND
+        for near_fine_position in (-deadband, -0.02, 0.0, 0.02, deadband):
+            with self.subTest(near_fine_position=near_fine_position):
+                sensors = sensor_values(
+                    steering_error=0.0,
+                    near_fine_position=near_fine_position,
+                )
+
+                result = calculate_command(sensors)
+
+                self.assertEqual(result["fineCorrection"], 0.0)
+                self.assertEqual(result["finalSteering"], 0.0)
+
+    def test_fine_centering_deadband_is_continuous_and_preserves_range(self):
+        deadband = camera_line_frame.VIRTUAL_FINE_CENTER_DEADBAND
+        epsilon = 1e-6
+        expected_fine = epsilon / (1.0 - deadband)
+        for sign in (-1.0, 1.0):
+            near_fine_position = sign * (deadband + epsilon)
+            with self.subTest(near_fine_position=near_fine_position):
+                sensors = sensor_values(
+                    steering_error=0.0,
+                    near_fine_position=near_fine_position,
+                )
+
+                result = calculate_command(sensors)
+
+                self.assertTrue(math.isclose(
+                    result["fineCorrection"],
+                    sign * expected_fine
+                    * camera_line_frame.VIRTUAL_FINE_CENTER_GAIN,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                ))
+
+        self.assertEqual(
+            camera_line_frame.apply_virtual_fine_center_deadband(-1.0),
+            -1.0,
+        )
+        self.assertEqual(
+            camera_line_frame.apply_virtual_fine_center_deadband(1.0),
+            1.0,
+        )
+
     def test_fine_centering_correction_is_limited(self):
         sensors = sensor_values(
             steering_error=0.25,
