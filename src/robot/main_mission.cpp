@@ -67,6 +67,19 @@ double configuredTurnSign()
 }
 }
 
+bool greenTurnAroundImuProgressAllowsVisualSearch(
+    double maximumProgressPercent)
+{
+    if (!std::isfinite(maximumProgressPercent))
+    {
+        return false;
+    }
+    const double minimumProgressPercent =
+        config::kGreenTurnAroundImuMinimumAcceptedDegrees /
+        config::kGreenTurnAroundImuDegrees * 100.0;
+    return maximumProgressPercent >= minimumProgressPercent;
+}
+
 void MainMission::reset()
 {
     turnAroundPhase_ = TurnAroundPhase::Idle;
@@ -75,6 +88,7 @@ void MainMission::reset()
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
+    turnAroundMaximumImuProgressPercent_ = 0.0;
 }
 
 void MainMission::update(
@@ -146,6 +160,7 @@ void MainMission::update(
         forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
         phaseStartedAt_ = now;
         lineReacquireFrames_ = 0;
+        turnAroundMaximumImuProgressPercent_ = 0.0;
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
@@ -268,15 +283,35 @@ void MainMission::update(
     {
         const ImuTurnOutput output =
             turnAroundController_.update(esp32Telemetry);
-        if (output.result == ImuTurnResult::Failed)
+        if (std::isfinite(output.progressPercent))
+        {
+            turnAroundMaximumImuProgressPercent_ = std::max(
+                turnAroundMaximumImuProgressPercent_,
+                output.progressPercent);
+        }
+        const bool visualSearchAllowed =
+            greenTurnAroundImuProgressAllowsVisualSearch(
+                turnAroundMaximumImuProgressPercent_);
+        const bool settlingCanUseVisualSearch =
+            output.result == ImuTurnResult::Running &&
+            output.phase == "turn_settling" && visualSearchAllowed;
+        const bool failureCanUseVisualSearch =
+            output.result == ImuTurnResult::Failed && visualSearchAllowed;
+        if (output.result == ImuTurnResult::Failed &&
+            !failureCanUseVisualSearch)
         {
             robotState.stop();
             robotState.updateAutonomousStatus(makeMainMissionStatus(
                 output.phase, output.action, output.progressPercent));
             return;
         }
-        if (output.result == ImuTurnResult::Completed)
+        if (output.result == ImuTurnResult::Completed ||
+            settlingCanUseVisualSearch || failureCanUseVisualSearch)
         {
+            // Depois de 90°, não é necessário esperar a velocidade angular
+            // estabilizar: a busca visual continua girando no mesmo sentido.
+            // O limite visual separado ainda impede um movimento infinito.
+            turnAroundController_.reset();
             turnAroundPhase_ = TurnAroundPhase::SearchingLine;
             phaseStartedAt_ = now;
             lineReacquireFrames_ = 0;

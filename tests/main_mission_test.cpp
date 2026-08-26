@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -94,6 +95,22 @@ void requireFollowingLine(
         context + ": a fase deve continuar no segue-linha.");
 }
 
+RobotSnapshot startReturnImu(
+    MissionFixture& fixture,
+    const CameraLineSnapshot& returnVision)
+{
+    fixture.update(returnVision);
+    const long long targetCounts = static_cast<long long>(std::ceil(
+        config::kGreenTurnAroundForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = targetCounts;
+    fixture.telemetry.rightEncoderCount = targetCounts;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundForwardSettleMs + 20));
+    return fixture.update(returnVision);
+}
+
 void testNormalLineFollowerCommandsMotors()
 {
     MissionFixture fixture;
@@ -132,6 +149,76 @@ void testReturnWaitsForRequiredSensors()
     require(
         snapshot.autonomousStatus.phase == "turnaround_waiting_sensors",
         "Retorno sem IMU deve aguardar sensores.");
+}
+
+void testImuProgressPolicyRequiresConfiguredMinimum()
+{
+    const double minimumProgressPercent =
+        config::kGreenTurnAroundImuMinimumAcceptedDegrees /
+        config::kGreenTurnAroundImuDegrees * 100.0;
+    require(
+        !greenTurnAroundImuProgressAllowsVisualSearch(
+            minimumProgressPercent - 0.01),
+        "Progresso abaixo de 90 graus ainda deve manter a parada da IMU.");
+    require(
+        greenTurnAroundImuProgressAllowsVisualSearch(minimumProgressPercent),
+        "Noventa graus devem liberar a continuação pela busca visual.");
+    require(
+        greenTurnAroundImuProgressAllowsVisualSearch(100.0),
+        "Progresso acima de 90 graus deve liberar a busca visual.");
+    require(
+        !greenTurnAroundImuProgressAllowsVisualSearch(
+            std::numeric_limits<double>::quiet_NaN()),
+        "Progresso inválido da IMU nunca deve liberar movimento.");
+}
+
+void testImuFailureAfterMinimumProgressStartsVisualSearch()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg =
+        turnSign * config::kGreenTurnAroundImuMinimumAcceptedDegrees;
+    fixture.telemetry.mpuOk = false;
+    const RobotSnapshot snapshot = fixture.update(returnVision);
+
+    require(
+        snapshot.mode == "autonomous" &&
+            snapshot.autonomousStatus.phase ==
+                "turnaround_searching_line" &&
+            closeTo(
+                snapshot.left,
+                turnSign * config::kGreenTurnAroundLineSearchPower) &&
+            closeTo(
+                snapshot.right,
+                -turnSign * config::kGreenTurnAroundLineSearchPower),
+        "Falha da IMU após 90 graus deve continuar pela busca visual.");
+}
+
+void testImuFailureBeforeMinimumProgressStopsReturn()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg = turnSign *
+                               (config::kGreenTurnAroundImuMinimumAcceptedDegrees -
+                                1.0);
+    fixture.telemetry.mpuOk = false;
+    const RobotSnapshot snapshot = fixture.update(returnVision);
+
+    require(
+        snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "turn_imu_lost",
+        "Falha da IMU antes de 90 graus ainda deve parar o retorno.");
 }
 
 void testUnequalEncoderDistancesDoNotInterruptForwardStage()
@@ -219,14 +306,6 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
         expectedTurnSign * config::kGreenTurnAroundImuDegrees;
     snapshot = fixture.update(returnVision);
     require(
-        snapshot.autonomousStatus.phase == "turnaround_imu" &&
-            snapshot.left == 0.0 && snapshot.right == 0.0,
-        "Ao alcançar 150 graus o controlador deve estabilizar o giro.");
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(
-        config::kTurn90SettleMs + 20));
-    snapshot = fixture.update(returnVision);
-    require(
         snapshot.autonomousStatus.phase == "turnaround_searching_line" &&
             closeTo(
                 snapshot.left,
@@ -236,7 +315,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
                 snapshot.right,
                 -expectedTurnSign *
                     config::kGreenTurnAroundLineSearchPower),
-        "Após 150 graus o pivot deve continuar no mesmo sentido.");
+        "Ao alcançar 150 graus o pivot deve buscar a linha sem estabilização.");
 
     CameraLineSnapshot recoveredVision = freshVision(
         GreenInterpretation::None,
@@ -275,6 +354,9 @@ int main()
         testNormalLineFollowerCommandsMotors();
         testNonReturnGreenDoesNotStartSequence();
         testReturnWaitsForRequiredSensors();
+        testImuProgressPolicyRequiresConfiguredMinimum();
+        testImuFailureAfterMinimumProgressStartsVisualSearch();
+        testImuFailureBeforeMinimumProgressStopsReturn();
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
         testMissingEncoderDataStopsAfterConfiguredSecond();
         testReturnRunsConfiguredSequenceAndRestoresFollower();

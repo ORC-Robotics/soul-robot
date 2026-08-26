@@ -73,6 +73,13 @@ ImuTurnOutput ImuTurnController::update(
     }
 
     const auto now = std::chrono::steady_clock::now();
+    const double turnedDegrees = std::isfinite(telemetry.yawZDeg)
+                                     ? angularDistanceDegrees(
+                                           startYawDegrees_, telemetry.yawZDeg)
+                                     : 0.0;
+    const double remainingDegrees = targetDegrees_ - turnedDegrees;
+    const double progressPercent = std::clamp(
+        turnedDegrees / targetDegrees_ * 100.0, 0.0, 100.0);
     const int timeoutMs = targetDegrees_ > config::kTurn90TargetDegrees
                               ? config::kTurn180TimeoutMs
                               : config::kTurn90TimeoutMs;
@@ -83,7 +90,7 @@ ImuTurnOutput ImuTurnController::update(
             ImuTurnResult::Failed,
             "turn_timeout",
             "Giro interrompido pelo tempo limite",
-            0.0);
+            progressPercent);
     }
     if (!imuReady(telemetry))
     {
@@ -92,14 +99,8 @@ ImuTurnOutput ImuTurnController::update(
             ImuTurnResult::Failed,
             "turn_imu_lost",
             "Giro interrompido: MPU6050 sem amostra recente",
-            0.0);
+            progressPercent);
     }
-
-    const double turnedDegrees = angularDistanceDegrees(
-        startYawDegrees_, telemetry.yawZDeg);
-    const double remainingDegrees = targetDegrees_ - turnedDegrees;
-    const double progressPercent = std::clamp(
-        turnedDegrees / targetDegrees_ * 100.0, 0.0, 100.0);
 
     if (phase_ == Phase::Turning)
     {

@@ -300,6 +300,9 @@ constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
 constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
 // Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
 constexpr double kGreenTurnAroundImuDegrees = 150.0;
+// Progresso angular mínimo, em graus, que permite continuar pela busca visual
+// caso a etapa do MPU6050 falhe. Abaixo deste valor, os motores ainda param.
+constexpr double kGreenTurnAroundImuMinimumAcceptedDegrees = 90.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
 constexpr double kGreenTurnAroundImuToleranceDegrees = 5.0;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
@@ -321,6 +324,9 @@ static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
               "O avanço inicial do retorno verde deve permanecer seguro.");
 static_assert(kGreenTurnAroundImuDegrees > 0.0 &&
                   kGreenTurnAroundImuDegrees <= 180.0 &&
+                  kGreenTurnAroundImuMinimumAcceptedDegrees > 0.0 &&
+                  kGreenTurnAroundImuMinimumAcceptedDegrees <
+                      kGreenTurnAroundImuDegrees &&
                   kGreenTurnAroundImuToleranceDegrees > 0.0 &&
                   kGreenTurnAroundImuToleranceDegrees <
                       kGreenTurnAroundImuDegrees &&

@@ -22,6 +22,7 @@ def sensor_values(
     steering_error=0.0,
     medium_position=0.0,
     far_band_position=0.0,
+    near_fine_position=None,
 ):
     """Cria uma leitura completa sem depender da câmera."""
 
@@ -42,6 +43,7 @@ def sensor_values(
         "nearCenter": 0.20,
         "nearRight": 0.10,
         "nearPosition": None if steering_error is None else 0.0,
+        "nearFinePosition": near_fine_position,
         "headingAngle": 0.0,
         "steeringError": steering_error,
     }
@@ -114,6 +116,162 @@ def expected_normal_motor_powers(steering_error):
 
 
 class VirtualSensorRegressionTests(unittest.TestCase):
+    def test_near_fine_position_is_centered(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        near = geometry["near"]
+        mask[near["center"]["y0"]:near["center"]["y1"], 50] = 255
+
+        position = camera_line_frame.calculate_virtual_near_fine_position(
+            mask,
+            near,
+        )
+
+        self.assertTrue(math.isclose(position, 0.0, abs_tol=1e-9))
+
+    def test_near_fine_position_reaches_left(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        near = geometry["near"]
+        mask[near["center"]["y0"]:near["center"]["y1"], 0] = 255
+
+        position = camera_line_frame.calculate_virtual_near_fine_position(
+            mask,
+            near,
+        )
+
+        self.assertTrue(math.isclose(position, -1.0, abs_tol=1e-9))
+
+    def test_near_fine_position_reaches_right(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        near = geometry["near"]
+        mask[near["center"]["y0"]:near["center"]["y1"], 100] = 255
+
+        position = camera_line_frame.calculate_virtual_near_fine_position(
+            mask,
+            near,
+        )
+
+        self.assertTrue(math.isclose(position, 1.0, abs_tol=1e-9))
+
+    def test_near_fine_position_is_invalid_without_line(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+
+        position = camera_line_frame.calculate_virtual_near_fine_position(
+            mask,
+            geometry["near"],
+        )
+
+        self.assertIsNone(position)
+
+    def test_near_fine_preserves_coarse_center_position(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        near = geometry["near"]
+        mask[near["center"]["y0"]:near["center"]["y1"], 57:60] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertTrue(math.isclose(sensors["nearPosition"], 0.0))
+        self.assertGreater(sensors["nearFinePosition"], 0.10)
+
+    def test_fine_centering_correction_is_limited(self):
+        sensors = sensor_values(
+            steering_error=0.25,
+            medium_position=None,
+            far_band_position=None,
+            near_fine_position=1.0,
+        )
+        sensors["nearPosition"] = 0.05
+
+        result = calculate_command(
+            sensors,
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+        )
+
+        self.assertTrue(math.isclose(
+            result["fineCorrection"],
+            camera_line_frame.VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+        ))
+        self.assertTrue(math.isclose(
+            result["finalSteering"],
+            camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+        ))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            expected_normal_motor_powers(
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR
+            ),
+        )
+        self.assertGreater(result["right_power"], 0.0)
+
+    def test_fine_centering_requires_coarse_center_and_weak_steering(self):
+        cases = (
+            (0.20, 0.11),
+            (0.31, 0.00),
+        )
+        for protected_steering, near_position in cases:
+            with self.subTest(
+                protected_steering=protected_steering,
+                near_position=near_position,
+            ):
+                sensors = sensor_values(
+                    steering_error=protected_steering,
+                    near_fine_position=1.0,
+                )
+                sensors["nearPosition"] = near_position
+                result = calculate_command(sensors)
+                self.assertEqual(result["fineCorrection"], 0.0)
+                self.assertEqual(
+                    result["finalSteering"],
+                    protected_steering,
+                )
+
+    def test_fine_centering_does_not_change_green_or_gap(self):
+        sensors = sensor_values(
+            steering_error=0.10,
+            medium_position=None,
+            far_band_position=None,
+            near_fine_position=1.0,
+        )
+        for green_direction, gap_active, expected_source in (
+            ("DIREITA", False, "virtual-green"),
+            ("NENHUMA", True, "gap-forward"),
+        ):
+            with self.subTest(expected_source=expected_source):
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                    gap_active=gap_active,
+                )
+                self.assertEqual(result["fineCorrection"], 0.0)
+                self.assertEqual(result["controlSource"], expected_source)
+
+    def test_virtual_overlay_shows_near_fine_and_correction(self):
+        command = calculate_command(sensor_values(
+            steering_error=0.10,
+            near_fine_position=0.50,
+        ))
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+        with patch.object(camera_line_frame.cv2, "putText") as put_text:
+            camera_line_frame.draw_virtual_sensor_geometry(frame, command)
+
+        texts = [call.args[1] for call in put_text.call_args_list]
+        self.assertIn("NEAR FINE +0.50", texts)
+        self.assertIn("FINE CORR +0.12", texts)
+
     def test_opposite_heading_cannot_invert_near_without_medium(self):
         steering_error = camera_line_frame.protect_virtual_near_direction(
             near_position=0.23,

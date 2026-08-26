@@ -249,6 +249,11 @@ SPECULAR_REPAIR_MAX_SATURATION = 60
 VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
 VIRTUAL_HEADING_GAIN = 0.80
 
+# A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
+# CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.
+VIRTUAL_FINE_CENTER_GAIN = 0.35
+VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
+
 # O heading não pode inverter uma leitura lateral clara do NEAR sem que a
 # banda MEDIUM também confirme o novo lado observado mais à frente.
 VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD = 0.20
@@ -2729,6 +2734,37 @@ def draw_virtual_sensor_geometry(
         cv2.LINE_AA,
     )
 
+    near_fine_position = finite_virtual_position(
+        line_follower_command.get("nearFinePosition")
+    )
+    near_fine_text = (
+        f"NEAR FINE {near_fine_position:+.2f}"
+        if near_fine_position is not None
+        else "NEAR FINE INVALID"
+    )
+    fine_correction = finite_virtual_position(
+        line_follower_command.get("fineCorrection", 0.0)
+    )
+    fine_correction_text = (
+        f"FINE CORR {fine_correction:+.2f}"
+        if fine_correction is not None
+        else "FINE CORR INVALID"
+    )
+    for text_line, text_y in (
+        (near_fine_text, 132),
+        (fine_correction_text, 154),
+    ):
+        cv2.putText(
+            frame,
+            text_line,
+            (8, text_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.50,
+            (0, 220, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
 def find_active_band_segments(processed_line_mask, y):
     """
     Encontra os segmentos horizontais da faixa preta em uma pequena
@@ -3923,6 +3959,28 @@ def calculate_virtual_row_position(
 
     return float(position)
 
+
+def calculate_virtual_near_fine_position(
+    processed_line_mask,
+    near_geometry,
+):
+    """Mede o centro X real dos pixels ativos na faixa vertical do NEAR."""
+
+    near_y0 = near_geometry["center"]["y0"]
+    near_y1 = near_geometry["center"]["y1"]
+    near_roi = processed_line_mask[near_y0:near_y1, :]
+    if near_roi.size == 0 or near_roi.shape[1] <= 1:
+        return None
+
+    _active_y, active_x = np.nonzero(near_roi)
+    if active_x.size == 0:
+        return None
+
+    mean_x = float(np.mean(active_x))
+    maximum_x = float(near_roi.shape[1] - 1)
+    normalized_position = 2.0 * mean_x / maximum_x - 1.0
+    return float(max(-1.0, min(1.0, normalized_position)))
+
 def read_virtual_line_sensors(
     processed_line_mask,
     direcao_verde_ativa="NENHUMA",
@@ -4004,6 +4062,10 @@ def read_virtual_line_sensors(
         near_left,
         near_center,
         near_right,
+    )
+    near_fine_position = calculate_virtual_near_fine_position(
+        processed_line_mask,
+        geometry["near"],
     )
 
     control_far_left = far_left
@@ -4089,6 +4151,7 @@ def read_virtual_line_sensors(
         "nearCenter": near_center,
         "nearRight": near_right,
         "nearPosition": near_position,
+        "nearFinePosition": near_fine_position,
         "rawNearPosition": raw_near_position,
         "headingAngle": heading_angle,
         "steeringError": steering_error,
@@ -4499,6 +4562,7 @@ def calculate_line_follower_command(
     medium_scan_direction = None
     direct_recovery_direction = None
     normal_steering_mapper = False
+    fine_correction = 0.0
     line_state = "LINE"
 
     if direcao_verde_ativa != "NENHUMA":
@@ -4559,6 +4623,37 @@ def calculate_line_follower_command(
             # O seguidor normal recupera autoridade no primeiro frame válido,
             # mesmo enquanto o tracker confirma a saída do REORIENT.
             steering_error = protected_virtual_steering
+            near_position = finite_virtual_position(
+                sensors.get("nearPosition")
+            )
+            near_fine_position = finite_virtual_position(
+                sensors.get("nearFinePosition")
+            )
+            protected_steering_for_fine = finite_virtual_position(
+                protected_virtual_steering
+            )
+            if (
+                near_position is not None
+                and near_fine_position is not None
+                and protected_steering_for_fine is not None
+                and abs(near_position) <= 0.10
+                and abs(protected_steering_for_fine)
+                <= NORMAL_FULL_STEERING_ERROR
+            ):
+                fine_correction = max(
+                    -VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+                    min(
+                        VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+                        near_fine_position * VIRTUAL_FINE_CENTER_GAIN,
+                    ),
+                )
+                steering_error = max(
+                    -NORMAL_FULL_STEERING_ERROR,
+                    min(
+                        NORMAL_FULL_STEERING_ERROR,
+                        protected_steering_for_fine + fine_correction,
+                    ),
+                )
             normal_steering_mapper = True
             if line_search_tracker is not None:
                 line_search_tracker.stop()
@@ -4777,12 +4872,14 @@ def calculate_line_follower_command(
         "nearCenter": sensors["nearCenter"],
         "nearRight": sensors["nearRight"],
         "nearPosition": sensors["nearPosition"],
+        "nearFinePosition": sensors.get("nearFinePosition"),
         "rawNearPosition": sensors.get(
             "rawNearPosition",
             sensors["nearPosition"],
         ),
 
         "headingAngle": sensors["headingAngle"],
+        "fineCorrection": fine_correction,
         "steeringError": steering_error,
         "finalSteering": steering_error,
         "virtualState": virtual_state,

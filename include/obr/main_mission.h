@@ -7,6 +7,11 @@
 
 #include <chrono>
 
+// Permite que o retorno troque a IMU pela busca visual somente depois do
+// progresso angular mínimo configurado. Valores inválidos nunca são aceitos.
+bool greenTurnAroundImuProgressAllowsVisualSearch(
+    double maximumProgressPercent);
+
 // Executa o segue-linha e comportamentos curtos disparados pela visão verde.
 // A classe não acessa hardware diretamente e mantém cada etapa fail-safe.
 class MainMission
@@ -35,5 +40,6 @@ private:
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;
     int lineReacquireFrames_ = 0;
+    double turnAroundMaximumImuProgressPercent_ = 0.0;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
 };
