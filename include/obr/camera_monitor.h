@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 
 enum class GreenInterpretation
@@ -11,6 +12,42 @@ enum class GreenInterpretation
     Left,
     Right,
     TurnAround180
+};
+
+// Transporta métricas já calculadas pela visão apenas para diagnóstico.
+// Nenhum destes campos participa das decisões ou dos comandos de motor.
+struct CameraCurveDiagnostics
+{
+    double farAngle60 = std::numeric_limits<double>::quiet_NaN();
+    double farAngle75 = std::numeric_limits<double>::quiet_NaN();
+    double farAngle90 = std::numeric_limits<double>::quiet_NaN();
+    double farAngleSpread = std::numeric_limits<double>::quiet_NaN();
+    double farPathAngleDeg = std::numeric_limits<double>::quiet_NaN();
+    std::string farConsensus = "NONE";
+    int farConfirmFrames = -1;
+
+    std::string curveIntent = "NONE";
+    int curveIntentConfirmFrames = -1;
+    int curveIntentReleaseFrames = -1;
+
+    double dynamicTargetAngleDeg =
+        std::numeric_limits<double>::quiet_NaN();
+    double dynamicLookaheadPx =
+        std::numeric_limits<double>::quiet_NaN();
+
+    double nearPosition = std::numeric_limits<double>::quiet_NaN();
+    double mediumPosition = std::numeric_limits<double>::quiet_NaN();
+    double farBandPosition = std::numeric_limits<double>::quiet_NaN();
+    double headingAngleDeg = std::numeric_limits<double>::quiet_NaN();
+
+    double baseVirtualSteering =
+        std::numeric_limits<double>::quiet_NaN();
+    double hybridSteering = std::numeric_limits<double>::quiet_NaN();
+    double finalSteering = std::numeric_limits<double>::quiet_NaN();
+
+    std::string pathAmbiguous = "INVALID";
+    std::string virtualState = "INVALID";
+    std::string lineState = "INVALID";
 };
 
 // Resultado tipado do IPC visual. A classificação verde é somente percepção
@@ -31,6 +68,7 @@ struct CameraLineSnapshot
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;
     double ageMs = 0.0;
+    CameraCurveDiagnostics curveDiagnostics;
 };
 
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.

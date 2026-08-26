@@ -373,9 +373,15 @@ class CameraProfilesTest(unittest.TestCase):
                     {
                         "left_power": 0.0,
                         "right_power": 0.0,
+                        "farAngle60": 42.0,
                         "farPathAngleDeg": 48.0,
                         "farConsensusDirection": "RIGHT",
                         "farConsensusConfirmFrames": 2,
+                        "curveIntentConfirmFrames": 1,
+                        "curveIntentReleaseFrames": 0,
+                        "pathAmbiguous": True,
+                        "virtualState": "NORMAL",
+                        "lineState": "LINE",
                     },
                     123.0,
                     7,
@@ -397,9 +403,16 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["curveIntentState"], "NONE")
         self.assertFalse(published["curveIntentApplied"])
         self.assertIsNone(published["dynamicTargetAngleDeg"])
+        self.assertEqual(published["farAngle60"], 42.0)
+        self.assertIsNone(published["farAngle75"])
         self.assertEqual(published["farPathAngleDeg"], 48.0)
         self.assertEqual(published["farConsensusDirection"], "RIGHT")
         self.assertEqual(published["farConsensusConfirmFrames"], 2)
+        self.assertEqual(published["curveIntentConfirmFrames"], 1)
+        self.assertEqual(published["curveIntentReleaseFrames"], 0)
+        self.assertTrue(published["pathAmbiguous"])
+        self.assertEqual(published["vstate"], "NORMAL")
+        self.assertEqual(published["lineState"], "LINE")
         expected_keys = set(status) | {
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
@@ -407,10 +420,27 @@ class CameraProfilesTest(unittest.TestCase):
             "lineControlSource",
             "curveIntentState",
             "curveIntentApplied",
+            "curveIntentConfirmFrames",
+            "curveIntentReleaseFrames",
+            "farAngle60",
+            "farAngle75",
+            "farAngle90",
+            "farAngleSpread",
             "dynamicTargetAngleDeg",
+            "dynamicLookaheadPx",
             "farPathAngleDeg",
             "farConsensusDirection",
             "farConsensusConfirmFrames",
+            "nearPosition",
+            "mediumPosition",
+            "farBandPosition",
+            "headingAngleDeg",
+            "baseVirtualSteering",
+            "hybridSteering",
+            "finalSteering",
+            "pathAmbiguous",
+            "vstate",
+            "lineState",
             "lineTimestamp",
             "lineSequence",
             "specularRepairPixels",

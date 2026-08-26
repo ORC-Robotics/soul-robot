@@ -5011,6 +5011,7 @@ def calculate_geometric_centerline_guidance(
         "farPathSampleAnglesDeg": [],
         "farPathAngleDeg": None,
         "farPathAngleSpreadDeg": None,
+        "pathAmbiguous": None,
         "farConsensusCandidate": FAR_PATH_CONSENSUS_NONE,
         "farConsensusDirection": FAR_PATH_CONSENSUS_NONE,
         "farConsensusConfirmFrames": 0,
@@ -5292,9 +5293,10 @@ def calculate_geometric_centerline_guidance(
         "dynamicLookaheadRequestedPx": dynamic_requested_px,
         "curveStrength": curve_strength,
         "farPathSamplePoints": far_path_sample_points,
-        "farPathSampleAnglesDeg": far_path_geometry["anglesDeg"],
+        "farPathSampleAnglesDeg": far_path_sample_angles_deg,
         "farPathAngleDeg": far_path_geometry["medianAngleDeg"],
         "farPathAngleSpreadDeg": far_path_geometry["spreadDeg"],
+        "pathAmbiguous": path_ambiguous,
         "farConsensusCandidate": far_consensus_candidate,
         "farConsensusDirection": far_consensus_direction,
         "farConsensusConfirmFrames": far_consensus_confirm_frames,
@@ -7135,14 +7137,17 @@ def calculate_line_follower_command(
         centerline_decisions,
         ahead_feed_forward_tracker,
     )
+    hybrid_steering = hybrid_control["finalSteering"]
     virtual_state = VIRTUAL_STATE_NORMAL
     medium_scan_direction = None
     direct_recovery_direction = None
     normal_steering_mapper = False
     curve_intent_state = CURVE_INTENT_NONE
     curve_intent_applied = False
+    line_state = "LINE"
 
     if direcao_verde_ativa != "NENHUMA":
+        line_state = "GREEN"
         if ahead_feed_forward_tracker is not None:
             ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
@@ -7162,6 +7167,7 @@ def calculate_line_follower_command(
         })
 
     elif gap_forward_active:
+        line_state = "GAP"
         if ahead_feed_forward_tracker is not None:
             ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
@@ -7464,6 +7470,20 @@ def calculate_line_follower_command(
         left_power = BASE_POWER
         right_power = 0.0
 
+    far_path_sample_angles = (
+        centerline_guidance.get("farPathSampleAnglesDeg", [])
+        if isinstance(centerline_guidance, dict)
+        else []
+    )
+    if not isinstance(far_path_sample_angles, (list, tuple)):
+        far_path_sample_angles = []
+    diagnostic_far_angles = [
+        finite_virtual_position(far_path_sample_angles[index])
+        if index < len(far_path_sample_angles)
+        else None
+        for index in range(len(FAR_PATH_SAMPLE_RATIOS))
+    ]
+
     return {
         "left_power": left_power,
         "right_power": right_power,
@@ -7495,12 +7515,31 @@ def calculate_line_follower_command(
         "headingAngle": sensors["headingAngle"],
         "steeringError": steering_error,
         "baseVirtualSteering": hybrid_control["baseVirtualSteering"],
+        "hybridSteering": hybrid_steering,
         "aheadFF": hybrid_control["aheadFF"],
         "finalSteering": hybrid_control["finalSteering"],
         "hybridSource": hybrid_control["hybridSource"],
         "virtualState": virtual_state,
         "curveIntentState": curve_intent_state,
         "curveIntentApplied": curve_intent_applied,
+        "curveIntentConfirmFrames": (
+            curve_intent_tracker.confirmation_frames
+            if curve_intent_tracker is not None
+            else 0
+        ),
+        "curveIntentReleaseFrames": (
+            curve_intent_tracker.release_frames
+            if curve_intent_tracker is not None
+            else 0
+        ),
+        "farAngle60": diagnostic_far_angles[0],
+        "farAngle75": diagnostic_far_angles[1],
+        "farAngle90": diagnostic_far_angles[2],
+        "farAngleSpread": (
+            centerline_guidance.get("farPathAngleSpreadDeg")
+            if isinstance(centerline_guidance, dict)
+            else None
+        ),
         "dynamicTargetAngleDeg": (
             centerline_guidance.get(
                 "dynamicTargetAngleDeg",
@@ -7527,6 +7566,17 @@ def calculate_line_follower_command(
             if isinstance(centerline_guidance, dict)
             else 0
         ),
+        "dynamicLookaheadPx": (
+            centerline_guidance.get("dynamicLookaheadDistancePx")
+            if isinstance(centerline_guidance, dict)
+            else None
+        ),
+        "pathAmbiguous": (
+            centerline_guidance.get("pathAmbiguous")
+            if isinstance(centerline_guidance, dict)
+            else None
+        ),
+        "lineState": line_state,
         "greenDirection": direcao_verde_ativa,
         "geometricNearPosition": (
             centerline_guidance.get("nearError")
@@ -7943,6 +7993,9 @@ def save_line_status(
             FAR_PATH_CONSENSUS_RIGHT,
         ):
             far_consensus_direction = FAR_PATH_CONSENSUS_NONE
+        path_ambiguous = line_follower_command.get("pathAmbiguous")
+        if not isinstance(path_ambiguous, bool):
+            path_ambiguous = None
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
@@ -7967,8 +8020,37 @@ def save_line_status(
             "curveIntentApplied": bool(
                 line_follower_command.get("curveIntentApplied", False)
             ),
+            "curveIntentConfirmFrames": max(
+                0,
+                int(line_follower_command.get(
+                    "curveIntentConfirmFrames",
+                    0,
+                )),
+            ),
+            "curveIntentReleaseFrames": max(
+                0,
+                int(line_follower_command.get(
+                    "curveIntentReleaseFrames",
+                    0,
+                )),
+            ),
+            "farAngle60": finite_virtual_position(
+                line_follower_command.get("farAngle60")
+            ),
+            "farAngle75": finite_virtual_position(
+                line_follower_command.get("farAngle75")
+            ),
+            "farAngle90": finite_virtual_position(
+                line_follower_command.get("farAngle90")
+            ),
+            "farAngleSpread": finite_virtual_position(
+                line_follower_command.get("farAngleSpread")
+            ),
             "dynamicTargetAngleDeg": finite_virtual_position(
                 line_follower_command.get("dynamicTargetAngleDeg")
+            ),
+            "dynamicLookaheadPx": finite_virtual_position(
+                line_follower_command.get("dynamicLookaheadPx")
             ),
             "farPathAngleDeg": finite_virtual_position(
                 line_follower_command.get("farPathAngleDeg")
@@ -7983,6 +8065,34 @@ def save_line_status(
                         0,
                     )),
                 ),
+            ),
+            "nearPosition": finite_virtual_position(
+                line_follower_command.get("nearPosition")
+            ),
+            "mediumPosition": finite_virtual_position(
+                line_follower_command.get("mediumPosition")
+            ),
+            "farBandPosition": finite_virtual_position(
+                line_follower_command.get("farBandPosition")
+            ),
+            "headingAngleDeg": finite_virtual_position(
+                line_follower_command.get("headingAngle")
+            ),
+            "baseVirtualSteering": finite_virtual_position(
+                line_follower_command.get("baseVirtualSteering")
+            ),
+            "hybridSteering": finite_virtual_position(
+                line_follower_command.get("hybridSteering")
+            ),
+            "finalSteering": finite_virtual_position(
+                line_follower_command.get("finalSteering")
+            ),
+            "pathAmbiguous": path_ambiguous,
+            "vstate": str(
+                line_follower_command.get("virtualState", "INVALID")
+            ),
+            "lineState": str(
+                line_follower_command.get("lineState", "INVALID")
             ),
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,

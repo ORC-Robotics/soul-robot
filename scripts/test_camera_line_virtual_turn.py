@@ -743,6 +743,60 @@ class CurveIntentTests(unittest.TestCase):
         self.assertEqual(second["curveIntentState"], "RIGHT")
         self.assertTrue(second["curveIntentApplied"])
 
+    def test_curve_diagnostics_expose_existing_values_and_tracker_counts(self):
+        tracker = camera_line_frame.CurveIntentTracker()
+        guidance = self.guidance("RIGHT")
+        guidance.update({
+            "farPathSampleAnglesDeg": [36.0, 48.0, 61.0],
+            "farPathAngleSpreadDeg": 25.0,
+            "farPathAngleDeg": 48.0,
+            "farConsensusDirection": "RIGHT",
+            "farConsensusConfirmFrames": 2,
+            "dynamicLookaheadDistancePx": 72.0,
+            "pathAmbiguous": False,
+        })
+        sensors = sensor_values(0.18, 0.10, 0.20)
+
+        first = calculate_command(
+            sensors,
+            camera_line_frame.VirtualTurnStateTracker(),
+            centerline_guidance=guidance,
+            centerline_decisions=[],
+            curve_intent_tracker=tracker,
+        )
+        second = calculate_command(
+            sensors,
+            camera_line_frame.VirtualTurnStateTracker(),
+            centerline_guidance=guidance,
+            centerline_decisions=[],
+            curve_intent_tracker=tracker,
+        )
+
+        self.assertEqual(
+            (first["farAngle60"], first["farAngle75"], first["farAngle90"]),
+            (36.0, 48.0, 61.0),
+        )
+        self.assertEqual(first["curveIntentConfirmFrames"], 1)
+        self.assertEqual(second["curveIntentConfirmFrames"], 2)
+        self.assertTrue(math.isclose(first["hybridSteering"], 0.18))
+        self.assertTrue(math.isclose(first["finalSteering"], 0.18))
+        self.assertTrue(math.isclose(second["hybridSteering"], 0.18))
+        self.assertTrue(math.isclose(
+            second["finalSteering"],
+            camera_line_frame.CURVE_INTENT_MIN_STEERING,
+        ))
+        self.assertEqual(second["dynamicLookaheadPx"], 72.0)
+        self.assertFalse(second["pathAmbiguous"])
+        self.assertEqual(second["lineState"], "LINE")
+
+    def test_diagnostic_line_state_excludes_green_and_gap(self):
+        sensors = sensor_values(0.18, 0.0, 0.0)
+        green = calculate_command(sensors, green_direction="DIREITA")
+        gap = calculate_command(sensors, gap_active=True)
+
+        self.assertEqual(green["lineState"], "GREEN")
+        self.assertEqual(gap["lineState"], "GAP")
+
     def test_straight_or_ambiguous_path_never_activates(self):
         cases = (
             ("STRAIGHT", self.guidance("RIGHT", 0.0, 0.0), []),

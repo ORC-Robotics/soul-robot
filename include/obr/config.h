@@ -21,6 +21,20 @@ constexpr const char* kCameraStatusPath = "/tmp/obr_camera_status.json";
 // A Missão Principal usa esta fonte para seguir e recuperar a linha.
 constexpr const char* kCameraLineStatusPath = "/dev/shm/obr_line_status.json";
 
+// CSV temporário com um registro por frame do seguimento normal da linha.
+// O arquivo fica fora da RAM compartilhada para continuar disponível após
+// encerrar a missão e poder ser copiado diretamente da Raspberry Pi.
+constexpr const char* kCurveDiagnosticsPath =
+    "/tmp/obr_curve_diagnostics.csv";
+
+// Intervalo máximo, em milissegundos, para a thread auxiliar descarregar o CSV.
+// A escrita fora do loop de controle evita atrasar o envio periódico aos motores.
+constexpr int kCurveDiagnosticsFlushIntervalMs = 1000;
+
+// Quantidade de frames que antecipa um flush antes do intervalo periódico.
+// Um lote pequeno limita perdas em uma queda sem escrever a cada frame.
+constexpr int kCurveDiagnosticsFlushFrames = 30;
+
 // O dashboard altera somente este pequeno IPC para solicitar a câmera inferior.
 // O gerenciador encerra o processo Python e remove a visão publicada quando
 // recebe zero, mantendo a Missão Principal bloqueada com segurança.

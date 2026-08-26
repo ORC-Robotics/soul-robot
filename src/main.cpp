@@ -1,5 +1,6 @@
 #include "obr/config.h"
 #include "obr/camera_monitor.h"
+#include "obr/curve_diagnostics_logger.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
 #include "obr/mission_controller.h"
@@ -101,6 +102,8 @@ int main()
     CameraMonitor cameraMonitor;
     MissionController missionController;
     MotorController motors(esp32);
+    CurveDiagnosticsLogger curveDiagnosticsLogger(
+        config::kCurveDiagnosticsPath);
     StatusLed readyLed(config::kRaspberryReadyLedPin);
     DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
 
@@ -295,6 +298,10 @@ int main()
 
         const MotorSynchronizationSnapshot finalMotorCommand =
             motors.synchronizationSnapshot();
+        curveDiagnosticsLogger.record(
+            cameraLineSnapshot,
+            robotSnapshot,
+            finalMotorCommand);
         const Esp32TelemetrySnapshot finalEsp32Telemetry =
             esp32.telemetrySnapshot();
         const auto motorTraceTime = std::chrono::steady_clock::now();
