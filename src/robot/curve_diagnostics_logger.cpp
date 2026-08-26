@@ -13,13 +13,8 @@ namespace
 {
 constexpr const char* kCsvHeader =
     "timestamp_ms,frame_id,"
-    "farAngle60,farAngle75,farAngle90,farAngleSpread,farPathAngleDeg,"
-    "farConsensus,farConfirmFrames,"
-    "curveIntent,curveIntentConfirmFrames,curveIntentReleaseFrames,"
-    "dynamicTargetAngleDeg,dynamicLookaheadPx,"
     "nearPosition,mediumPosition,farBandPosition,headingAngleDeg,"
-    "baseVirtualSteering,hybridSteering,finalSteering,"
-    "leftMotor,rightMotor,pathAmbiguous,vstate,lineState";
+    "finalSteering,leftMotor,rightMotor,controlSource,vstate,lineState";
 
 std::string diagnosticNumber(double value)
 {
@@ -31,11 +26,6 @@ std::string diagnosticNumber(double value)
     std::ostringstream text;
     text << std::setprecision(10) << value;
     return text.str();
-}
-
-std::string diagnosticFrames(int value)
-{
-    return value >= 0 ? std::to_string(value) : "INVALID";
 }
 
 std::string csvText(const std::string& value)
@@ -127,8 +117,10 @@ bool CurveDiagnosticsLogger::isRelevantLineFrame(
     const CameraLineSnapshot& cameraLineSnapshot,
     const RobotSnapshot& robotSnapshot)
 {
+    const std::string& lineState =
+        cameraLineSnapshot.curveDiagnostics.lineState;
     return cameraLineSnapshot.sourceFresh &&
-           cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+           (lineState == "LINE" || lineState == "GAP") &&
            robotSnapshot.mode == "autonomous" &&
            robotSnapshot.autonomousMission == AutonomousMission::MainMission &&
            robotSnapshot.autonomousStatus.phase == "line_following";
@@ -145,29 +137,15 @@ std::string CurveDiagnosticsLogger::buildCsvRow(
     std::ostringstream row;
     row << diagnosticNumber(timestampMs) << ','
         << cameraLineSnapshot.lineSequence << ','
-        << diagnosticNumber(diagnostics.farAngle60) << ','
-        << diagnosticNumber(diagnostics.farAngle75) << ','
-        << diagnosticNumber(diagnostics.farAngle90) << ','
-        << diagnosticNumber(diagnostics.farAngleSpread) << ','
-        << diagnosticNumber(diagnostics.farPathAngleDeg) << ','
-        << csvText(diagnostics.farConsensus) << ','
-        << diagnosticFrames(diagnostics.farConfirmFrames) << ','
-        << csvText(diagnostics.curveIntent) << ','
-        << diagnosticFrames(diagnostics.curveIntentConfirmFrames) << ','
-        << diagnosticFrames(diagnostics.curveIntentReleaseFrames) << ','
-        << diagnosticNumber(diagnostics.dynamicTargetAngleDeg) << ','
-        << diagnosticNumber(diagnostics.dynamicLookaheadPx) << ','
         << diagnosticNumber(diagnostics.nearPosition) << ','
         << diagnosticNumber(diagnostics.mediumPosition) << ','
         << diagnosticNumber(diagnostics.farBandPosition) << ','
         << diagnosticNumber(diagnostics.headingAngleDeg) << ','
-        << diagnosticNumber(diagnostics.baseVirtualSteering) << ','
-        << diagnosticNumber(diagnostics.hybridSteering) << ','
         << diagnosticNumber(diagnostics.finalSteering) << ','
         // Estes são os valores pós-piso/sincronismo enviados pela Raspberry.
         << diagnosticNumber(finalMotorCommand.correctedLeftPower) << ','
         << diagnosticNumber(finalMotorCommand.correctedRightPower) << ','
-        << csvText(diagnostics.pathAmbiguous) << ','
+        << csvText(cameraLineSnapshot.lineControlSource) << ','
         << csvText(diagnostics.virtualState) << ','
         << csvText(diagnostics.lineState);
     return row.str();

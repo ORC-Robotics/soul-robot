@@ -30,14 +30,13 @@ int main()
         camera.sourceFresh = true;
         camera.lineTimestamp = 123.456;
         camera.lineSequence = 42;
-        camera.curveDiagnostics.farAngle75 = 47.5;
-        camera.curveDiagnostics.farConsensus = "RIGHT";
-        camera.curveDiagnostics.farConfirmFrames = 3;
-        camera.curveDiagnostics.curveIntent = "RIGHT";
-        camera.curveDiagnostics.curveIntentConfirmFrames = 2;
-        camera.curveDiagnostics.curveIntentReleaseFrames = 0;
-        camera.curveDiagnostics.pathAmbiguous = "false";
-        camera.curveDiagnostics.virtualState = "NORMAL";
+        camera.lineControlSource = "virtual-reorient";
+        camera.curveDiagnostics.nearPosition = 0.12;
+        camera.curveDiagnostics.mediumPosition = -0.08;
+        camera.curveDiagnostics.farBandPosition = 0.04;
+        camera.curveDiagnostics.headingAngleDeg = 5.5;
+        camera.curveDiagnostics.finalSteering = 0.18;
+        camera.curveDiagnostics.virtualState = "REORIENT_RIGHT";
         camera.curveDiagnostics.lineState = "LINE";
 
         RobotSnapshot robot;
@@ -52,38 +51,59 @@ int main()
         logger.record(camera, robot, motors);
         logger.record(camera, robot, motors);
 
-        // GAP/verde e outras fases não podem aumentar o CSV de curvas normais.
+        // GAP permanece no baseline para comparar a futura câmera frontal.
         camera.lineSequence = 43;
+        camera.lineTimestamp = 123.5;
+        camera.lineControlSource = "gap-blind-search";
+        camera.curveDiagnostics.finalSteering = -1.0;
+        camera.curveDiagnostics.virtualState = "NORMAL";
         camera.curveDiagnostics.lineState = "GAP";
+        logger.record(camera, robot, motors);
+
+        // Verde, IPC antigo e fases externas ao seguidor não entram no CSV.
+        camera.lineSequence = 44;
+        camera.curveDiagnostics.lineState = "GREEN";
+        logger.record(camera, robot, motors);
+        camera.lineSequence = 45;
+        camera.sourceFresh = false;
+        camera.curveDiagnostics.lineState = "LINE";
+        logger.record(camera, robot, motors);
+        camera.sourceFresh = true;
+        camera.lineSequence = 46;
+        robot.autonomousStatus.phase = "green_maneuver";
         logger.record(camera, robot, motors);
     }
 
     std::ifstream output(outputPath);
     std::string header;
-    std::string row;
+    std::string lineRow;
+    std::string gapRow;
     std::string unexpectedRow;
     std::getline(output, header);
-    std::getline(output, row);
+    std::getline(output, lineRow);
+    std::getline(output, gapRow);
     std::getline(output, unexpectedRow);
 
     bool ok = true;
     ok &= require(
-        header.find("timestamp_ms,frame_id,farAngle60") == 0,
-        "Cabeçalho do diagnóstico não possui os campos iniciais esperados.");
+        header ==
+            "timestamp_ms,frame_id,nearPosition,mediumPosition,"
+            "farBandPosition,headingAngleDeg,finalSteering,leftMotor,"
+            "rightMotor,controlSource,vstate,lineState",
+        "Cabeçalho do baseline visual não corresponde ao contrato esperado.");
     ok &= require(
-        header.find("leftMotor,rightMotor,pathAmbiguous,vstate,lineState") !=
-            std::string::npos,
-        "Cabeçalho do diagnóstico não possui os campos finais esperados.");
+        lineRow ==
+            "123456,42,0.12,-0.08,0.04,5.5,0.18,0.73,0.64,"
+            "\"virtual-reorient\",\"REORIENT_RIGHT\",\"LINE\"",
+        "Frame LINE não preservou baseline, motores, fonte e REORIENT.");
     ok &= require(
-        row.find("123456,42,NaN,47.5") == 0,
-        "A linha não preservou timestamp, frame e métrica inválida.");
-    ok &= require(
-        row.find(",0.73,0.64,\"false\",\"NORMAL\",\"LINE\"") !=
-            std::string::npos,
-        "A linha não contém os comandos finais enviados aos motores.");
+        gapRow ==
+            "123500,43,0.12,-0.08,0.04,5.5,-1,0.73,0.64,"
+            "\"gap-blind-search\",\"NORMAL\",\"GAP\"",
+        "Frame GAP relevante não foi preservado no CSV.");
     ok &= require(
         unexpectedRow.empty(),
-        "Frame duplicado ou fora de LINE foi registrado no CSV.");
+        "Frame duplicado, verde, antigo ou de outra fase foi registrado.");
 
     std::error_code removeError;
     std::filesystem::remove(outputPath, removeError);

@@ -4,7 +4,6 @@ Somente o papel ``down`` publica o ponto de extensão ainda zerado do seguidor.
 """
 
 import argparse
-import heapq
 import json
 import math
 import os
@@ -2302,6 +2301,11 @@ GEOMETRIC_GAP_REACQUIRE_FRAMES = 2
 GEOMETRIC_GAP_SEARCH_STEP_PX = 6
 GEOMETRIC_GAP_MAX_SEARCH_PX = 120
 
+# Mantém por poucos quadros a evidência de que o NEAR RAW estava visível.
+# A memória permite reconhecer o início de um GAP sem depender de uma única
+# amostra geométrica na altura exata usada pelo rastreador preservado.
+GAP_NEAR_HISTORY_FRAMES = 3
+
 # Uma faixa encontrada após o gap precisa continuar também nesta
 # distância para não aceitarmos um pequeno blob isolado como caminho.
 GEOMETRIC_GAP_CONFIRM_OFFSET_PX = 12
@@ -2309,129 +2313,10 @@ GEOMETRIC_GAP_PROJECTION_POINTS = 5
 # Limita quanto o centro da faixa pode mudar entre a primeira
 # detecção após o gap e sua amostra de confirmação.
 GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX = 50
-# Orientação geométrica experimental da faixa.
-#
-# Este método ainda não controla os motores. Ele apenas extrai
-# uma trajetória central da máscara para comparação visual com
-# o seguidor atual por sensores virtuais.
+# Geometria preservada exclusivamente para detectar e reaquistar GAP.
+# Estes parâmetros não antecipam curvas nem alteram o controle LINE normal.
 GEOMETRIC_PATH_BAND_HALF_HEIGHT = 2
 GEOMETRIC_PATH_LOCAL_HEADING_POINTS = 5
-
-# Reduz somente o crop usado pelo diagnóstico de centerline.
-# A segmentação e o controle continuam na resolução original.
-GEOMETRIC_CENTERLINE_SCALE = 0.33
-
-# Quantidade máxima de pontos usada para suavizar as direções na bifurcação.
-GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS = 8
-
-# Diferenças menores ou iguais a este valor encerram o path na bifurcação.
-GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE = 0.05
-
-# Distâncias mínima e máxima, em pixels do frame original, usadas pelo alvo
-# dinâmico. O target continua sempre interpolado sobre a centerline selecionada.
-LOOKAHEAD_MIN_PX = 80.0
-LOOKAHEAD_MAX_PX = 220.0
-
-# Uma diferença de 60° entre as tangentes local e distante usa o alcance
-# máximo. Curvas menores interpolam linearmente entre 80 e 220 pixels.
-LOOKAHEAD_CURVE_FULL_SCALE_DEG = 60.0
-
-# O Curve Intent confirma uma curva indicada pela geometria e aplica somente
-# um piso de steering. Ele não cria comandos de motor nem altera o mapper.
-CURVE_INTENT_ENTER_ANGLE_DEG = 20.0
-CURVE_INTENT_EXIT_ANGLE_DEG = 8.0
-CURVE_INTENT_CONFIRM_FRAMES = 2
-CURVE_INTENT_RELEASE_FRAMES = 2
-CURVE_INTENT_MIN_STEERING = 0.30
-CURVE_INTENT_NEAR_CONFLICT_THRESHOLD = 0.20
-
-CURVE_INTENT_NONE = "NONE"
-CURVE_INTENT_LEFT = "LEFT"
-CURVE_INTENT_RIGHT = "RIGHT"
-
-# O consenso distante usa vários pontos internos do mesmo path para que uma
-# oscilação isolada perto do endpoint não domine a interpretação da curva.
-FAR_PATH_SAMPLE_RATIOS = (0.60, 0.75, 0.90)
-
-# A mediana precisa alcançar 35° para representar uma curva distante forte.
-FAR_PATH_STRONG_ANGLE_DEG = 35.0
-
-# Diferenças maiores que 20° entre amostras indicam geometria instável.
-FAR_PATH_MAX_ANGLE_SPREAD_DEG = 20.0
-
-# Três frames consecutivos impedem que uma oscilação isolada ganhe autoridade.
-FAR_PATH_CONFIRM_FRAMES = 2
-
-# O alvo extremo para em 90% do path e nunca usa automaticamente o endpoint.
-FAR_PATH_TARGET_MAX_RATIO = 0.90
-
-# Acima de 90°, o avanço adicional já alcançou seu limite conservador.
-# Entre 35° e 90°, o alcance cresce progressivamente com a curva observada.
-FAR_PATH_TARGET_FULL_SCALE_ANGLE_DEG = 90.0
-
-FAR_PATH_CONSENSUS_NONE = "NONE"
-FAR_PATH_CONSENSUS_LEFT = "LEFT"
-FAR_PATH_CONSENSUS_RIGHT = "RIGHT"
-
-# Distância geodésica usada para antecipar curvas com a centerline selecionada.
-# O ponto continua sendo calculado uma única vez pelo pipeline geométrico.
-GEOMETRIC_CENTERLINE_GUIDANCE_AHEAD_PX = LOOKAHEAD_MAX_PX
-
-# Distância geodésica aproximada antes e depois do alvo usada para medir
-# somente a tangente diagnóstica local da centerline selecionada.
-GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX = 20.0
-
-# Ganho máximo do feed-forward da centerline somado ao steering virtual.
-# O seguidor validado de seis sensores sempre permanece como controle base.
-GEOMETRIC_CENTERLINE_AHEAD_FEED_FORWARD_GAIN = 0.20
-
-# Exige o mesmo sinal por três frames antes de confiar na antecipação.
-# Uma troca de direção reinicia a confirmação e devolve autoridade ao virtual.
-GEOMETRIC_CENTERLINE_AHEAD_STABLE_FRAMES = 3
-
-# Acima deste erro virtual, uma antecipação contrária nunca pode disputar
-# autoridade com o seguidor base já validado.
-VIRTUAL_CENTERLINE_CONFLICT_THRESHOLD = 0.15
-
-# Em decisões já ambíguas, identifica somente ramos cuja largura terminal
-# praticamente desapareceu em relação à largura local após a junção.
-GEOMETRIC_CENTERLINE_COLLAPSED_TERMINAL_WIDTH_RATIO = 0.20
-
-# Exige outro ramo claramente preservado antes de remover um spur colapsado.
-GEOMETRIC_CENTERLINE_VALID_TERMINAL_WIDTH_RATIO = 0.80
-
-# Um terminal interior muito estreito pode ser um spur do skeleton quando a
-# mesma decisão também possui uma saída larga que realmente alcança a borda.
-GEOMETRIC_CENTERLINE_INTERIOR_SPUR_MAX_TERMINAL_WIDTH_RATIO = 0.35
-GEOMETRIC_CENTERLINE_BORDER_MIN_TERMINAL_WIDTH_RATIO = 0.70
-
-# Limita somente a telemetria das bifurcações. O algoritmo continua
-# percorrendo o path normalmente quando existem mais decisões no mesmo frame.
-GEOMETRIC_CENTERLINE_DEBUG_MAX_DECISIONS = 4
-
-# Comprimento geodésico máximo, em pixels do frame original, para que um
-# caminho curto na entrada possa ser descartado como cap local do skeleton.
-GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_LENGTH_PX = 50.0
-
-# Progresso máximo, em pixels do frame original, que ainda caracteriza um cap.
-# Acima deste valor, o caminho pode representar uma entrada válida da pista.
-GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_FORWARD_PX = 12.0
-
-# Progresso mínimo, em pixels do frame original, exigido de outra rota antes
-# de remover um cap. Sem essa alternativa clara, todos os paths são preservados.
-GEOMETRIC_CENTERLINE_ENTRY_MIN_ALTERNATIVE_FORWARD_PX = 30.0
-
-# Distância geodésica máxima, em pixels do frame original, na qual
-# bifurcações locais da entrada podem ser resolvidas pelo progresso frontal.
-GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX = 28.0
-
-# Vantagem mínima, em pixels do frame original, para o entry lock escolher
-# um ramo. Diferenças menores preservam a seleção normal por alinhamento.
-GEOMETRIC_CENTERLINE_ENTRY_LOCK_FORWARD_TIE_PX = 3.0
-
-# Margem do frame original que identifica terminais reais da centerline.
-GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX = 6.0
-
 
 # Distância aproximada entre pontos consecutivos da trajetória.
 GEOMETRIC_TRACE_STEP_PX = 10.0
@@ -3146,12 +3031,7 @@ def find_geometric_gap_start(
                 float(search_y),
             )
 
-            return {
-                "point": start_point,
-                "gapDistancePx": float(
-                    near_y - search_y
-                ),
-            }
+            return start_point
 
         search_y -= (
             GEOMETRIC_GAP_SEARCH_STEP_PX
@@ -3696,1633 +3576,9 @@ def calculate_geometric_far_heading(path_points):
         )
     )
 
-def build_geometric_centerline_mask(
-    processed_line_mask,
-    start_point,
-):
-    """
-    Extrai, em resolução reduzida, o eixo central do componente
-    preto conectado ao ponto inicial da trajetória.
-
-    O thinning é executado somente no bounding box do
-    componente. Os metadados retornados permitem converter
-    coordenadas entre o crop reduzido e o frame original.
-    """
-
-    empty_centerline = np.zeros(
-        (0, 0),
-        dtype=np.uint8,
-    )
-
-    if start_point is None:
-        return empty_centerline, None
-
-    binary_mask = (
-        processed_line_mask > 0
-    ).astype(np.uint8)
-
-    _, labels = cv2.connectedComponents(
-        binary_mask,
-        connectivity=8,
-    )
-
-    height, width = processed_line_mask.shape[:2]
-
-    start_x = max(
-        0,
-        min(
-            width - 1,
-            int(round(start_point[0])),
-        ),
-    )
-
-    start_y = max(
-        0,
-        min(
-            height - 1,
-            int(round(start_point[1])),
-        ),
-    )
-
-    component_label = int(
-        labels[start_y, start_x]
-    )
-
-    # O startPoint é uma referência geométrica e pode cair
-    # alguns pixels fora da máscara por arredondamento,
-    # perspectiva ou pequenas variações da segmentação.
-    # Se isso acontecer, procura o pixel ativo mais próximo
-    # dentro de uma vizinhança pequena.
-    if component_label == 0:
-        search_radius = 8
-
-        search_x0 = max(
-            0,
-            start_x - search_radius,
-        )
-
-        search_y0 = max(
-            0,
-            start_y - search_radius,
-        )
-
-        search_x1 = min(
-            width,
-            start_x + search_radius + 1,
-        )
-
-        search_y1 = min(
-            height,
-            start_y + search_radius + 1,
-        )
-
-        local_labels = labels[
-            search_y0:search_y1,
-            search_x0:search_x1,
-        ]
-
-        active_local_y, active_local_x = np.nonzero(
-            local_labels
-        )
-
-        if active_local_x.size == 0:
-            return empty_centerline, None
-
-        global_x = (
-            active_local_x
-            + search_x0
-        )
-
-        global_y = (
-            active_local_y
-            + search_y0
-        )
-
-        nearest_index = int(
-            np.argmin(
-                (global_x - start_x) ** 2
-                + (global_y - start_y) ** 2
-            )
-        )
-
-        nearest_x = int(
-            global_x[nearest_index]
-        )
-
-        nearest_y = int(
-            global_y[nearest_index]
-        )
-
-        component_label = int(
-            labels[nearest_y, nearest_x]
-        )
-
-    component_mask = np.zeros(
-        processed_line_mask.shape,
-        dtype=np.uint8,
-    )
-
-    component_mask[
-        labels == component_label
-    ] = 255
-
-    x, y, box_width, box_height = cv2.boundingRect(
-        component_mask
-    )
-
-    if box_width <= 0 or box_height <= 0:
-        return empty_centerline, None
-
-    # Pequena margem preserva fundo ao redor do componente
-    # para o thinning se comportar como no frame completo.
-    crop_margin = 2
-
-    x0 = max(
-        0,
-        x - crop_margin,
-    )
-
-    y0 = max(
-        0,
-        y - crop_margin,
-    )
-
-    x1 = min(
-        width,
-        x + box_width + crop_margin,
-    )
-
-    y1 = min(
-        height,
-        y + box_height + crop_margin,
-    )
-
-    component_crop = component_mask[
-        y0:y1,
-        x0:x1,
-    ].copy()
-
-    crop_height, crop_width = component_crop.shape[:2]
-    reduced_width = max(
-        1,
-        int(round(
-            crop_width * GEOMETRIC_CENTERLINE_SCALE
-        )),
-    )
-    reduced_height = max(
-        1,
-        int(round(
-            crop_height * GEOMETRIC_CENTERLINE_SCALE
-        )),
-    )
-
-    reduced_component_crop = cv2.resize(
-        component_crop,
-        (reduced_width, reduced_height),
-        interpolation=cv2.INTER_NEAREST,
-    )
-
-    reduced_centerline = cv2.ximgproc.thinning(
-        reduced_component_crop,
-        thinningType=cv2.ximgproc.THINNING_ZHANGSUEN,
-    )
-
-    transform = {
-        "cropX0": x0,
-        "cropY0": y0,
-        "cropWidth": crop_width,
-        "cropHeight": crop_height,
-        "frameWidth": width,
-        "reducedWidth": reduced_width,
-        "reducedHeight": reduced_height,
-        "scaleX": float(reduced_width) / float(crop_width),
-        "scaleY": float(reduced_height) / float(crop_height),
-    }
-
-    return reduced_centerline, transform
-
-
-def filter_geometric_centerline_entry_caps(
-    candidate_paths,
-    initial_direction,
-    centerline_transform,
-    entry_filter_debug=None,
-):
-    """Remove somente dead-ends curtos da entrada quando há uma rota melhor."""
-
-    debug_enabled = isinstance(entry_filter_debug, dict)
-    if debug_enabled:
-        entry_filter_debug.clear()
-        entry_filter_debug.update({
-            "before": len(candidate_paths),
-            "after": len(candidate_paths),
-            "bestForwardPx": None,
-            "candidates": [],
-        })
-
-    if (
-        len(candidate_paths) < 2
-        or initial_direction is None
-        or centerline_transform is None
-        or any(len(path) < 2 for path in candidate_paths)
-    ):
-        return candidate_paths
-
-    start_pixel = candidate_paths[0][0]
-    if any(path[0] != start_pixel for path in candidate_paths[1:]):
-        return candidate_paths
-
-    # Se todos seguem pelo mesmo segundo pixel, a primeira decisão acontece
-    # depois da entrada e usa o próprio path como incoming, não a direção inicial.
-    first_step = candidate_paths[0][1]
-    if all(path[1] == first_step for path in candidate_paths[1:]):
-        return candidate_paths
-
-    scale_x = float(centerline_transform["scaleX"])
-    scale_y = float(centerline_transform["scaleY"])
-    if scale_x <= 0.0 or scale_y <= 0.0:
-        return candidate_paths
-
-    # O D0 recebe a direção normalizada no espaço reduzido. Dividir cada
-    # componente pela escala recupera a mesma orientação no frame original.
-    full_direction_x = float(initial_direction[0]) / scale_x
-    full_direction_y = float(initial_direction[1]) / scale_y
-    full_direction_length = math.hypot(
-        full_direction_x,
-        full_direction_y,
-    )
-    if full_direction_length <= 0.0:
-        return candidate_paths
-
-    full_direction_x /= full_direction_length
-    full_direction_y /= full_direction_length
-
-    path_metrics = []
-    for path in candidate_paths:
-        if not path:
-            path_metrics.append((path, 0.0, 0.0))
-            continue
-
-        start_x = float(path[0][0])
-        start_y = float(path[0][1])
-        previous_x = start_x
-        previous_y = start_y
-        geodesic_length_px = 0.0
-        maximum_forward_progress_px = 0.0
-
-        for point_x, point_y in path[1:]:
-            point_x = float(point_x)
-            point_y = float(point_y)
-            step_x_full = (point_x - previous_x) / scale_x
-            step_y_full = (point_y - previous_y) / scale_y
-            geodesic_length_px += math.hypot(
-                step_x_full,
-                step_y_full,
-            )
-
-            delta_x_full = (point_x - start_x) / scale_x
-            delta_y_full = (point_y - start_y) / scale_y
-            forward_progress_px = (
-                delta_x_full * full_direction_x
-                + delta_y_full * full_direction_y
-            )
-            maximum_forward_progress_px = max(
-                maximum_forward_progress_px,
-                forward_progress_px,
-            )
-            previous_x = point_x
-            previous_y = point_y
-
-        path_metrics.append((
-            path,
-            geodesic_length_px,
-            maximum_forward_progress_px,
-        ))
-        if debug_enabled:
-            entry_filter_debug["candidates"].append({
-                "lengthPx": geodesic_length_px,
-                "forwardPx": maximum_forward_progress_px,
-                "filtered": False,
-            })
-
-    best_forward_progress_px = max(
-        metrics[2]
-        for metrics in path_metrics
-    )
-    if debug_enabled:
-        entry_filter_debug["bestForwardPx"] = best_forward_progress_px
-    if (
-        best_forward_progress_px
-        < GEOMETRIC_CENTERLINE_ENTRY_MIN_ALTERNATIVE_FORWARD_PX
-    ):
-        return candidate_paths
-
-    remaining_paths = []
-    for index, (
-        path,
-        geodesic_length_px,
-        maximum_forward_progress_px,
-    ) in enumerate(path_metrics):
-        filtered = (
-            geodesic_length_px
-            <= GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_LENGTH_PX
-            and maximum_forward_progress_px
-            <= GEOMETRIC_CENTERLINE_ENTRY_CAP_MAX_FORWARD_PX
-        )
-        if debug_enabled:
-            entry_filter_debug["candidates"][index]["filtered"] = filtered
-        if not filtered:
-            remaining_paths.append(path)
-
-    # O fallback preserva a geometria original se uma entrada inesperada fizer
-    # todos os candidatos parecerem caps ao mesmo tempo.
-    if not remaining_paths:
-        if debug_enabled:
-            for candidate_debug in entry_filter_debug["candidates"]:
-                candidate_debug["filtered"] = False
-        return candidate_paths
-
-    if debug_enabled:
-        entry_filter_debug["after"] = len(remaining_paths)
-    return remaining_paths
-
-
-def select_geometric_centerline_branch_path(
-    candidate_paths,
-    initial_direction=None,
-    branch_debug=None,
-    centerline_transform=None,
-    distance_map=None,
-):
-    """Seleciona bifurcações pela continuidade da direção de chegada."""
-
-    debug_decisions = None
-    if branch_debug is not None:
-        debug_decisions = branch_debug.setdefault("decisions", [])
-
-    while len(candidate_paths) > 1:
-        shortest_length = min(len(path) for path in candidate_paths)
-        common_length = 0
-        for index in range(shortest_length):
-            reference_point = candidate_paths[0][index]
-            if any(path[index] != reference_point for path in candidate_paths[1:]):
-                break
-            common_length += 1
-
-        if common_length == 0:
-            return []
-
-        junction_index = common_length - 1
-        junction = candidate_paths[0][junction_index]
-        path_to_junction = candidate_paths[0][:common_length]
-
-        if common_length >= shortest_length:
-            return path_to_junction
-
-        previous_index = max(
-            0, junction_index - GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS,
-        )
-        previous_point = candidate_paths[0][previous_index]
-        incoming_x = float(junction[0] - previous_point[0])
-        incoming_y = float(junction[1] - previous_point[1])
-        incoming_length = math.hypot(incoming_x, incoming_y)
-        used_initial = False
-
-        # A primeira divergência pode coincidir com o início do path e ainda
-        # não possuir histórico. Nesse único caso, usa a direção local do NEAR.
-        if (
-            incoming_length <= 0.0
-            and junction_index == 0
-            and initial_direction is not None
-        ):
-            incoming_x = float(initial_direction[0])
-            incoming_y = float(initial_direction[1])
-            incoming_length = math.hypot(incoming_x, incoming_y)
-            used_initial = True
-
-        if incoming_length <= 0.0:
-            return path_to_junction
-
-        branch_groups = {}
-        for path in candidate_paths:
-            branch_groups.setdefault(path[common_length], []).append(path)
-
-        capture_branch_debug = (
-            debug_decisions is not None
-            and len(debug_decisions)
-            < GEOMETRIC_CENTERLINE_DEBUG_MAX_DECISIONS
-        )
-        entry_lock_active = False
-        junction_distance_px = None
-        full_direction_x = 0.0
-        full_direction_y = 0.0
-        if centerline_transform is not None:
-            scale_x = float(centerline_transform["scaleX"])
-            scale_y = float(centerline_transform["scaleY"])
-            if scale_x > 0.0 and scale_y > 0.0:
-                # A mesma soma governa o lock e alimenta a telemetria. Fora dos
-                # quatro slots de debug, ela pode parar assim que ultrapassa 28 px.
-                junction_distance_px = 0.0
-                for point_index in range(1, len(path_to_junction)):
-                    previous_path_point = path_to_junction[point_index - 1]
-                    current_path_point = path_to_junction[point_index]
-                    junction_distance_px += math.hypot(
-                        (
-                            float(current_path_point[0])
-                            - float(previous_path_point[0])
-                        ) / scale_x,
-                        (
-                            float(current_path_point[1])
-                            - float(previous_path_point[1])
-                        ) / scale_y,
-                    )
-                    if (
-                        not capture_branch_debug
-                        and junction_distance_px
-                        >= GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
-                    ):
-                        break
-
-                if (
-                    initial_direction is not None
-                    and junction_distance_px
-                    < GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
-                ):
-                    full_direction_x = float(initial_direction[0]) / scale_x
-                    full_direction_y = float(initial_direction[1]) / scale_y
-                    full_direction_length = math.hypot(
-                        full_direction_x,
-                        full_direction_y,
-                    )
-                    if full_direction_length > 0.0:
-                        full_direction_x /= full_direction_length
-                        full_direction_y /= full_direction_length
-                        entry_lock_active = True
-
-        entry_lock_ranked_groups = []
-        entry_lock_group_forward_progress = {}
-        entry_lock_has_clear_winner = False
-        if entry_lock_active:
-            for group_paths in branch_groups.values():
-                group_forward_progress_px = 0.0
-                for path in group_paths:
-                    start_x = float(path[0][0])
-                    start_y = float(path[0][1])
-                    previous_x = start_x
-                    previous_y = start_y
-                    path_distance_px = 0.0
-                    maximum_forward_progress_px = 0.0
-
-                    for point_x, point_y in path[1:]:
-                        point_x = float(point_x)
-                        point_y = float(point_y)
-                        step_x_full = (point_x - previous_x) / scale_x
-                        step_y_full = (point_y - previous_y) / scale_y
-                        step_length_px = math.hypot(
-                            step_x_full,
-                            step_y_full,
-                        )
-
-                        limited_x = point_x
-                        limited_y = point_y
-                        reaches_horizon = (
-                            path_distance_px + step_length_px
-                            >= GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
-                        )
-                        # Interpola o último segmento para comparar todos os
-                        # candidatos no mesmo horizonte full-resolution.
-                        if reaches_horizon and step_length_px > 0.0:
-                            remaining_distance_px = max(
-                                0.0,
-                                GEOMETRIC_CENTERLINE_ENTRY_LOCK_DISTANCE_PX
-                                - path_distance_px,
-                            )
-                            step_fraction = (
-                                remaining_distance_px / step_length_px
-                            )
-                            limited_x = previous_x + (
-                                point_x - previous_x
-                            ) * step_fraction
-                            limited_y = previous_y + (
-                                point_y - previous_y
-                            ) * step_fraction
-
-                        delta_x_full = (limited_x - start_x) / scale_x
-                        delta_y_full = (limited_y - start_y) / scale_y
-                        forward_progress_px = (
-                            delta_x_full * full_direction_x
-                            + delta_y_full * full_direction_y
-                        )
-                        maximum_forward_progress_px = max(
-                            maximum_forward_progress_px,
-                            forward_progress_px,
-                        )
-
-                        path_distance_px += step_length_px
-                        previous_x = point_x
-                        previous_y = point_y
-                        if reaches_horizon:
-                            break
-
-                    group_forward_progress_px = max(
-                        group_forward_progress_px,
-                        maximum_forward_progress_px,
-                    )
-
-                entry_lock_ranked_groups.append((
-                    group_forward_progress_px,
-                    group_paths,
-                ))
-                entry_lock_group_forward_progress[id(group_paths)] = (
-                    group_forward_progress_px
-                )
-
-            entry_lock_ranked_groups.sort(
-                key=lambda item: item[0],
-                reverse=True,
-            )
-            entry_lock_has_clear_winner = (
-                len(entry_lock_ranked_groups) >= 2
-                and entry_lock_ranked_groups[0][0]
-                - entry_lock_ranked_groups[1][0]
-                > GEOMETRIC_CENTERLINE_ENTRY_LOCK_FORWARD_TIE_PX
-            )
-
-            # Sem slot de telemetria, mantém o atalho original do entry lock e
-            # evita calcular alinhamentos que não participam da seleção.
-            if entry_lock_has_clear_winner and not capture_branch_debug:
-                candidate_paths = entry_lock_ranked_groups[0][1]
-                continue
-
-        ranked_groups = []
-        debug_branch_groups = []
-        branch_future_points = {}
-        branch_debug_values_by_group_id = {}
-        for group_paths in branch_groups.values():
-            branch_common_length = common_length
-            branch_shortest_length = min(len(path) for path in group_paths)
-            while branch_common_length < branch_shortest_length:
-                reference_point = group_paths[0][branch_common_length]
-                if any(
-                    path[branch_common_length] != reference_point
-                    for path in group_paths[1:]
-                ):
-                    break
-                branch_common_length += 1
-
-            future_index = min(
-                junction_index + GEOMETRIC_CENTERLINE_BRANCH_DIRECTION_POINTS,
-                branch_common_length - 1,
-            )
-            future_point = group_paths[0][future_index]
-            branch_future_points[id(group_paths)] = future_point
-            outgoing_x = float(future_point[0] - junction[0])
-            outgoing_y = float(future_point[1] - junction[1])
-            outgoing_length = math.hypot(outgoing_x, outgoing_y)
-            alignment = (
-                (incoming_x * outgoing_x + incoming_y * outgoing_y)
-                / (incoming_length * outgoing_length)
-                if outgoing_length > 0.0
-                else -1.0
-            )
-            ranked_groups.append((alignment, group_paths))
-
-            if capture_branch_debug:
-                terminal_metrics = (
-                    measure_geometric_centerline_branch_terminal_metrics(
-                        group_paths,
-                        junction_index,
-                        centerline_transform,
-                        distance_map,
-                    )
-                )
-                group_remaining_length_px = terminal_metrics[
-                    "remainingLengthPx"
-                ]
-                branch_debug_values = {
-                    "alignment": alignment,
-                    "remainingLengthPx": group_remaining_length_px,
-                    "terminalType": terminal_metrics["terminalType"],
-                }
-                local_width_px = measure_geometric_centerline_local_width(
-                    future_point,
-                    centerline_transform,
-                    distance_map,
-                )
-                branch_debug_values["localWidthPx"] = local_width_px
-                branch_debug_values["survivalWidths"] = (
-                    group_remaining_length_px / local_width_px
-                    if local_width_px is not None and local_width_px > 0.0
-                    else None
-                )
-                terminal_width_px = terminal_metrics["terminalWidthPx"]
-                branch_debug_values["terminalWidthPx"] = terminal_width_px
-                branch_debug_values["terminalWidthRatio"] = (
-                    terminal_width_px / local_width_px
-                    if (
-                        terminal_width_px is not None
-                        and local_width_px is not None
-                        and local_width_px > 0.0
-                    )
-                    else None
-                )
-                if entry_lock_active:
-                    branch_debug_values["forwardPx"] = (
-                        entry_lock_group_forward_progress[id(group_paths)]
-                    )
-                debug_branch_groups.append((
-                    group_paths,
-                    branch_debug_values,
-                ))
-                branch_debug_values_by_group_id[id(group_paths)] = (
-                    branch_debug_values
-                )
-
-        missing_tw_spur_filter = False
-        if len(ranked_groups) > 1 and not entry_lock_has_clear_winner:
-            terminal_values_by_group_id = {}
-            for _alignment, group_paths in ranked_groups:
-                debug_values = branch_debug_values_by_group_id.get(
-                    id(group_paths)
-                )
-                if debug_values is not None:
-                    terminal_values_by_group_id[id(group_paths)] = {
-                        "terminalType": debug_values["terminalType"],
-                        "terminalWidthPx": debug_values["terminalWidthPx"],
-                        "terminalWidthRatio": debug_values[
-                            "terminalWidthRatio"
-                        ],
-                    }
-                else:
-                    terminal_metrics = (
-                        measure_geometric_centerline_branch_terminal_metrics(
-                            group_paths,
-                            junction_index,
-                            centerline_transform,
-                            distance_map,
-                        )
-                    )
-                    local_width_px = measure_geometric_centerline_local_width(
-                        branch_future_points[id(group_paths)],
-                        centerline_transform,
-                        distance_map,
-                    )
-                    terminal_width_px = terminal_metrics["terminalWidthPx"]
-                    terminal_metrics["terminalWidthRatio"] = (
-                        terminal_width_px / local_width_px
-                        if (
-                            terminal_width_px is not None
-                            and local_width_px is not None
-                            and local_width_px > 0.0
-                        )
-                        else None
-                    )
-                    terminal_values_by_group_id[id(group_paths)] = (
-                        terminal_metrics
-                    )
-
-            has_valid_terminal_width = any(
-                values["terminalWidthPx"] is not None
-                for values in terminal_values_by_group_id.values()
-            )
-            if has_valid_terminal_width:
-                surviving_ranked_groups = [
-                    (alignment, group_paths)
-                    for alignment, group_paths in ranked_groups
-                    if not (
-                        terminal_values_by_group_id[
-                            id(group_paths)
-                        ]["terminalType"] == "INTERIOR"
-                        and terminal_values_by_group_id[
-                            id(group_paths)
-                        ]["terminalWidthPx"] is None
-                    )
-                ]
-                if (
-                    surviving_ranked_groups
-                    and len(surviving_ranked_groups) < len(ranked_groups)
-                ):
-                    ranked_groups = surviving_ranked_groups
-                    missing_tw_spur_filter = True
-
-        terminal_ratio_spur_filter = False
-        if len(ranked_groups) > 1 and not entry_lock_has_clear_winner:
-            has_valid_border_branch = any(
-                terminal_values_by_group_id[id(group_paths)][
-                    "terminalType"
-                ] == "BORDER"
-                and terminal_values_by_group_id[id(group_paths)][
-                    "terminalWidthRatio"
-                ] is not None
-                and terminal_values_by_group_id[id(group_paths)][
-                    "terminalWidthRatio"
-                ] >= GEOMETRIC_CENTERLINE_BORDER_MIN_TERMINAL_WIDTH_RATIO
-                for _alignment, group_paths in ranked_groups
-            )
-            if has_valid_border_branch:
-                surviving_ranked_groups = [
-                    (alignment, group_paths)
-                    for alignment, group_paths in ranked_groups
-                    if not (
-                        terminal_values_by_group_id[id(group_paths)][
-                            "terminalType"
-                        ] == "INTERIOR"
-                        and terminal_values_by_group_id[id(group_paths)][
-                            "terminalWidthRatio"
-                        ] is not None
-                        and terminal_values_by_group_id[id(group_paths)][
-                            "terminalWidthRatio"
-                        ]
-                        <= GEOMETRIC_CENTERLINE_INTERIOR_SPUR_MAX_TERMINAL_WIDTH_RATIO
-                    )
-                ]
-                if (
-                    surviving_ranked_groups
-                    and len(surviving_ranked_groups) < len(ranked_groups)
-                ):
-                    ranked_groups = surviving_ranked_groups
-                    terminal_ratio_spur_filter = True
-
-        ranked_groups.sort(key=lambda item: item[0], reverse=True)
-        if not ranked_groups:
-            return path_to_junction
-        ambiguous = (
-            len(ranked_groups) >= 2
-            and ranked_groups[0][0] - ranked_groups[1][0]
-            <= GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE
-        )
-        spur_tie_fallback = False
-        if ambiguous and not entry_lock_has_clear_winner:
-            terminal_width_ratios = {}
-            for _alignment, group_paths in ranked_groups:
-                debug_values = branch_debug_values_by_group_id.get(
-                    id(group_paths)
-                )
-                terminal_width_ratio = (
-                    debug_values.get("terminalWidthRatio")
-                    if debug_values is not None
-                    else measure_geometric_centerline_terminal_width_ratio(
-                        group_paths,
-                        junction_index,
-                        branch_future_points[id(group_paths)],
-                        centerline_transform,
-                        distance_map,
-                    )
-                )
-                terminal_width_ratios[id(group_paths)] = terminal_width_ratio
-
-            has_valid_surviving_branch = any(
-                ratio is not None
-                and ratio >= GEOMETRIC_CENTERLINE_VALID_TERMINAL_WIDTH_RATIO
-                for ratio in terminal_width_ratios.values()
-            )
-            if has_valid_surviving_branch:
-                surviving_ranked_groups = [
-                    (alignment, group_paths)
-                    for alignment, group_paths in ranked_groups
-                    if not (
-                        terminal_width_ratios[id(group_paths)] is not None
-                        and terminal_width_ratios[id(group_paths)]
-                        <= GEOMETRIC_CENTERLINE_COLLAPSED_TERMINAL_WIDTH_RATIO
-                    )
-                ]
-                if len(surviving_ranked_groups) < len(ranked_groups):
-                    spur_tie_fallback = True
-                    ranked_groups = surviving_ranked_groups
-                    ambiguous = (
-                        len(ranked_groups) >= 2
-                        and ranked_groups[0][0] - ranked_groups[1][0]
-                        <= GEOMETRIC_CENTERLINE_BRANCH_ALIGNMENT_TIE
-                    )
-        if entry_lock_has_clear_winner:
-            decision_mode = "ENTRY_LOCK"
-            decision_ambiguous = False
-            selected_group = entry_lock_ranked_groups[0][1]
-        else:
-            decision_mode = (
-                "ENTRY_FALLBACK" if entry_lock_active else "PATH"
-            )
-            decision_ambiguous = ambiguous
-            selected_group = None if ambiguous else ranked_groups[0][1]
-
-        if capture_branch_debug:
-            debug_decisions.append({
-                "junctionIndex": junction_index,
-                "mode": decision_mode,
-                "junctionDistancePx": junction_distance_px,
-                "entryLockActive": entry_lock_active,
-                "usedInitial": used_initial,
-                "incoming": (
-                    incoming_x / incoming_length,
-                    incoming_y / incoming_length,
-                ),
-                "ambiguous": decision_ambiguous,
-                "missingTwSpurFilter": missing_tw_spur_filter,
-                "terminalRatioSpurFilter": terminal_ratio_spur_filter,
-                "spurTieFallback": spur_tie_fallback,
-                "branches": [
-                    dict(values, selected=group_paths is selected_group)
-                    for group_paths, values in debug_branch_groups
-                ],
-            })
-
-        if entry_lock_has_clear_winner:
-            candidate_paths = selected_group
-            continue
-
-        if ambiguous:
-            return path_to_junction
-
-        candidate_paths = ranked_groups[0][1]
-
-    return candidate_paths[0] if candidate_paths else []
-
-
-def measure_geometric_centerline_branch_terminal_metrics(
-    group_paths,
-    junction_index,
-    transform,
-    distance_map,
-):
-    """Mede REM, tipo terminal e TW usando o mesmo path mais longo."""
-
-    metrics = {
-        "remainingLengthPx": 0.0,
-        "terminalType": "INTERIOR",
-        "terminalWidthPx": None,
-    }
-    if transform is None:
-        return metrics
-
-    try:
-        scale_x = float(transform["scaleX"])
-        scale_y = float(transform["scaleY"])
-    except (KeyError, TypeError, ValueError):
-        return metrics
-    if scale_x <= 0.0 or scale_y <= 0.0:
-        return metrics
-
-    metrics["terminalType"] = (
-        "BORDER"
-        if any(
-            path
-            and is_geometric_centerline_terminal_border_point(
-                path[-1],
-                transform,
-                GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX,
-            )
-            for path in group_paths
-        )
-        else "INTERIOR"
-    )
-
-    longest_path = None
-    longest_length_px = 0.0
-    for path in group_paths:
-        length_px = 0.0
-        previous_point = path[junction_index]
-        for current_point in path[junction_index + 1:]:
-            length_px += math.hypot(
-                (float(current_point[0]) - float(previous_point[0])) / scale_x,
-                (float(current_point[1]) - float(previous_point[1])) / scale_y,
-            )
-            previous_point = current_point
-
-        # O teste estrito preserva o primeiro path quando o REM empata.
-        if longest_path is None or length_px > longest_length_px:
-            longest_path = path
-            longest_length_px = length_px
-
-    metrics["remainingLengthPx"] = longest_length_px
-    if longest_path:
-        metrics["terminalWidthPx"] = (
-            measure_geometric_centerline_local_width(
-                longest_path[-1],
-                transform,
-                distance_map,
-            )
-        )
-    return metrics
-
-
-def measure_geometric_centerline_terminal_width_ratio(
-    group_paths,
-    junction_index,
-    future_point,
-    transform,
-    distance_map,
-):
-    """Mede TR sob demanda somente para resolver um empate já existente."""
-
-    terminal_metrics = measure_geometric_centerline_branch_terminal_metrics(
-        group_paths,
-        junction_index,
-        transform,
-        distance_map,
-    )
-    local_width_px = measure_geometric_centerline_local_width(
-        future_point,
-        transform,
-        distance_map,
-    )
-    terminal_width_px = terminal_metrics["terminalWidthPx"]
-    if local_width_px is None or terminal_width_px is None:
-        return None
-    return terminal_width_px / local_width_px
-
-
-def measure_geometric_centerline_local_width(
-    point,
-    transform,
-    distance_map,
-):
-    """Estima a largura local usando o distance transform já calculado."""
-
-    if (
-        transform is None
-        or distance_map is None
-        or getattr(distance_map, "ndim", 0) < 2
-    ):
-        return None
-
-    try:
-        crop_x0 = float(transform["cropX0"])
-        crop_y0 = float(transform["cropY0"])
-        scale_x = float(transform["scaleX"])
-        scale_y = float(transform["scaleY"])
-        reduced_x = float(point[0])
-        reduced_y = float(point[1])
-    except (KeyError, TypeError, ValueError, IndexError):
-        return None
-
-    transform_values = (
-        crop_x0,
-        crop_y0,
-        scale_x,
-        scale_y,
-        reduced_x,
-        reduced_y,
-    )
-    if (
-        not all(math.isfinite(value) for value in transform_values)
-        or scale_x <= 0.0
-        or scale_y <= 0.0
-    ):
-        return None
-
-    full_x = crop_x0 + reduced_x / scale_x
-    full_y = crop_y0 + reduced_y / scale_y
-    if not math.isfinite(full_x) or not math.isfinite(full_y):
-        return None
-
-    map_height, map_width = distance_map.shape[:2]
-    if map_width <= 0 or map_height <= 0:
-        return None
-
-    # O arredondamento leva o future point ao pixel full-resolution mais
-    # próximo. O clamp protege somente contra os limites reais da matriz.
-    pixel_x = max(0, min(map_width - 1, int(round(full_x))))
-    pixel_y = max(0, min(map_height - 1, int(round(full_y))))
-    distance_value = float(distance_map[pixel_y, pixel_x])
-    if not math.isfinite(distance_value) or distance_value <= 0.0:
-        return None
-
-    # O distance transform mede o raio até a borda mais próxima da faixa.
-    # O dobro desse raio fornece a estimativa diagnóstica de largura local.
-    return 2.0 * distance_value
-
-
-def is_geometric_centerline_terminal_border_point(
-    point,
-    transform,
-    frame_border_margin_px,
-):
-    """Indica se o ponto alcançou uma borda terminal válida do frame."""
-
-    if transform is None:
-        return False
-
-    reduced_x, reduced_y = point
-    crop_x0 = float(transform["cropX0"])
-    crop_y0 = float(transform["cropY0"])
-    scale_x = float(transform["scaleX"])
-    scale_y = float(transform["scaleY"])
-    frame_width = float(transform["frameWidth"])
-    full_x = crop_x0 + float(reduced_x) / scale_x
-    full_y = crop_y0 + float(reduced_y) / scale_y
-
-    # Somente topo, esquerda e direita encerram um path FAR. A borda inferior
-    # representa a entrada próxima do robô e, portanto, não é terminal.
-    return (
-        full_y <= frame_border_margin_px
-        or full_x <= frame_border_margin_px
-        or full_x >= frame_width - 1.0 - frame_border_margin_px
-    )
-
-
-def truncate_centerline_path_at_frame_border(
-    path_points,
-    transform,
-    frame_border_margin_px,
-):
-    """Encerra o path no primeiro contato com uma borda terminal do frame."""
-
-    if transform is None:
-        return path_points
-
-    for index, point in enumerate(path_points):
-        if is_geometric_centerline_terminal_border_point(
-            point,
-            transform,
-            frame_border_margin_px,
-        ):
-            return path_points[:index + 1]
-
-    return path_points
-
-
-def find_geometric_centerline_path(
-    centerline_mask,
-    start_point,
-    centerline_transform=None,
-    initial_direction=None,
-    branch_debug=None,
-    entry_filter_debug=None,
-    distance_map=None,
-):
-    """
-    Encontra uma rota contínua entre os endpoints da centerline.
-
-    O resultado é usado somente pelo overlay e pela telemetria de diagnóstico.
-    """
-
-    if start_point is None:
-        return []
-
-    active_y, active_x = np.nonzero(centerline_mask)
-    if active_x.size == 0:
-        return []
-
-    start_x = float(start_point[0])
-    start_y = float(start_point[1])
-    nearest_index = int(
-        np.argmin(
-            (active_x - start_x) ** 2 + (active_y - start_y) ** 2
-        )
-    )
-    start_pixel = (
-        int(active_x[nearest_index]),
-        int(active_y[nearest_index]),
-    )
-
-    active_pixels = set(zip(active_x.tolist(), active_y.tolist()))
-    distances = {start_pixel: 0.0}
-    parents = {start_pixel: None}
-    pending = [(0.0, start_pixel)]
-    visited = set()
-    farthest_pixel = start_pixel
-    farthest_distance = 0.0
-    diagonal_cost = math.sqrt(2.0)
-
-    while pending:
-        current_distance, current_pixel = heapq.heappop(pending)
-        if current_pixel in visited:
-            continue
-        visited.add(current_pixel)
-
-        if current_distance > farthest_distance:
-            farthest_pixel = current_pixel
-            farthest_distance = current_distance
-
-        current_x, current_y = current_pixel
-
-        for delta_y in (-1, 0, 1):
-            for delta_x in (-1, 0, 1):
-                if delta_x == 0 and delta_y == 0:
-                    continue
-
-                neighbor = (current_x + delta_x, current_y + delta_y)
-                if (
-                    neighbor not in active_pixels
-                    or neighbor in visited
-                ):
-                    continue
-
-                step_cost = (
-                    diagonal_cost
-                    if delta_x != 0 and delta_y != 0
-                    else 1.0
-                )
-                candidate_distance = current_distance + step_cost
-
-                if candidate_distance >= distances.get(
-                    neighbor,
-                    math.inf,
-                ):
-                    continue
-
-                distances[neighbor] = candidate_distance
-                parents[neighbor] = current_pixel
-                heapq.heappush(pending, (candidate_distance, neighbor))
-
-    endpoint_pixels = []
-    for current_x, current_y in visited:
-        current_pixel = (current_x, current_y)
-        if current_pixel == start_pixel:
-            continue
-
-        connection_count = 0
-        for delta_y in (-1, 0, 1):
-            for delta_x in (-1, 0, 1):
-                if delta_x == 0 and delta_y == 0:
-                    continue
-                neighbor = (current_x + delta_x, current_y + delta_y)
-                if neighbor in visited:
-                    connection_count += 1
-
-        if connection_count == 1:
-            endpoint_pixels.append(current_pixel)
-
-    endpoint_paths = []
-    endpoint_path_keys = set()
-    for endpoint_pixel in endpoint_pixels:
-        endpoint_path = []
-        current_pixel = endpoint_pixel
-        while current_pixel is not None:
-            endpoint_path.append(current_pixel)
-            current_pixel = parents[current_pixel]
-        endpoint_path.reverse()
-        endpoint_path = truncate_centerline_path_at_frame_border(
-            endpoint_path,
-            centerline_transform,
-            GEOMETRIC_CENTERLINE_FRAME_BORDER_MARGIN_PX,
-        )
-        endpoint_path_key = tuple(endpoint_path)
-
-        if endpoint_path_key not in endpoint_path_keys:
-            endpoint_path_keys.add(endpoint_path_key)
-            endpoint_paths.append(endpoint_path)
-
-    if endpoint_paths:
-        endpoint_paths = filter_geometric_centerline_entry_caps(
-            endpoint_paths,
-            initial_direction,
-            centerline_transform,
-            entry_filter_debug=entry_filter_debug,
-        )
-        return select_geometric_centerline_branch_path(
-            endpoint_paths,
-            initial_direction=initial_direction,
-            branch_debug=branch_debug,
-            centerline_transform=centerline_transform,
-            distance_map=distance_map,
-        )
-
-    # Ciclos sem endpoint preservam o fallback geodésico anterior.
-    path = []
-    current_pixel = farthest_pixel
-
-    while current_pixel is not None:
-        path.append(current_pixel)
-        current_pixel = parents[current_pixel]
-
-    path.reverse()
-    return path
-
-def sample_centerline_extremes(path_points):
-    """Retorna os extremos NEAR e FAR do caminho geodésico."""
-
-    if not path_points:
-        return None, None
-
-    return (
-        path_points[0],
-        path_points[-1],
-    )
-
-
-def evaluate_far_path_angles(sample_angles_deg, path_ambiguous):
-    """Calcula mediana, dispersão e lado confiável dos três ângulos internos."""
-
-    result = {
-        "anglesDeg": [],
-        "medianAngleDeg": None,
-        "spreadDeg": None,
-        "candidateDirection": FAR_PATH_CONSENSUS_NONE,
-        "valid": False,
-    }
-    if len(sample_angles_deg) != len(FAR_PATH_SAMPLE_RATIOS):
-        return result
-
-    try:
-        angles_deg = [float(angle) for angle in sample_angles_deg]
-    except (TypeError, ValueError):
-        return result
-    if not all(math.isfinite(angle) for angle in angles_deg):
-        return result
-
-    ordered_angles = sorted(angles_deg)
-    median_angle_deg = ordered_angles[len(ordered_angles) // 2]
-    spread_deg = ordered_angles[-1] - ordered_angles[0]
-    result.update({
-        "anglesDeg": angles_deg,
-        "medianAngleDeg": median_angle_deg,
-        "spreadDeg": spread_deg,
-    })
-
-    all_right = all(angle > 0.0 for angle in angles_deg)
-    all_left = all(angle < 0.0 for angle in angles_deg)
-    if (
-        path_ambiguous
-        or not (all_left or all_right)
-        or abs(median_angle_deg) < FAR_PATH_STRONG_ANGLE_DEG
-        or spread_deg > FAR_PATH_MAX_ANGLE_SPREAD_DEG
-    ):
-        return result
-
-    result["candidateDirection"] = (
-        FAR_PATH_CONSENSUS_LEFT
-        if all_left
-        else FAR_PATH_CONSENSUS_RIGHT
-    )
-    result["valid"] = True
-    return result
-
-
-class FarPathConsensusTracker:
-    """Confirma o mesmo consenso distante sem trocar de lado por um frame."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """Apaga confirmações ao sair do seguimento normal da centerline."""
-
-        self.active_direction = FAR_PATH_CONSENSUS_NONE
-        self.candidate_direction = FAR_PATH_CONSENSUS_NONE
-        self.confirmation_frames = 0
-        return self.active_direction
-
-    def update(self, candidate_direction):
-        """Exige três frames consecutivos antes de liberar qualquer lado."""
-
-        self.active_direction = FAR_PATH_CONSENSUS_NONE
-        if candidate_direction not in (
-            FAR_PATH_CONSENSUS_LEFT,
-            FAR_PATH_CONSENSUS_RIGHT,
-        ):
-            # Um frame inválido não recebe autoridade e interrompe a sequência.
-            self.candidate_direction = FAR_PATH_CONSENSUS_NONE
-            self.confirmation_frames = 0
-            return self.active_direction
-
-        if candidate_direction == self.candidate_direction:
-            self.confirmation_frames = min(
-                FAR_PATH_CONFIRM_FRAMES,
-                self.confirmation_frames + 1,
-            )
-        else:
-            self.candidate_direction = candidate_direction
-            self.confirmation_frames = 1
-
-        if self.confirmation_frames >= FAR_PATH_CONFIRM_FRAMES:
-            self.active_direction = candidate_direction
-        return self.active_direction
-
-
-def calculate_geometric_centerline_guidance(
-    centerline_path,
-    frame_width,
-    centerline_decisions=None,
-    far_path_consensus_tracker=None,
-):
-    """Resume o path selecionado sem produzir qualquer decisão de controle."""
-
-    guidance = {
-        "pathLengthPx": 0.0,
-        "lookaheadPoint": None,
-        "lookaheadClamped": True,
-        "localLookaheadPoint": None,
-        "dynamicTargetPoint": None,
-        "dynamicLookaheadDistancePx": 0.0,
-        "dynamicLookaheadRequestedPx": LOOKAHEAD_MIN_PX,
-        "curveStrength": 0.0,
-        "farPathSamplePoints": [],
-        "farPathSampleAnglesDeg": [],
-        "farPathAngleDeg": None,
-        "farPathAngleSpreadDeg": None,
-        "pathAmbiguous": None,
-        "farConsensusCandidate": FAR_PATH_CONSENSUS_NONE,
-        "farConsensusDirection": FAR_PATH_CONSENSUS_NONE,
-        "farConsensusConfirmFrames": 0,
-        "farPathTargetDistancePx": None,
-        "nearError": None,
-        "targetAngleDeg": None,
-        "dynamicTargetAngleDeg": None,
-        "tangentAngleDeg": None,
-        "aheadPoint": None,
-        "aheadClamped": True,
-        "aheadAngleDeg": None,
-        "aheadTangentAngleDeg": None,
-        "turnAheadDeg": None,
-        "nearTerm": None,
-        "headingTerm": None,
-        "aheadTerm": None,
-        "steeringError": None,
-        "baseVirtualSteering": None,
-        "aheadFF": 0.0,
-        "finalSteering": None,
-        "hybridSource": "VIRTUAL",
-    }
-    if not centerline_path or frame_width <= 0:
-        return guidance
-
-    points = [
-        (float(point[0]), float(point[1]))
-        for point in centerline_path
-    ]
-    cumulative_lengths = [0.0]
-    for previous_point, current_point in zip(points, points[1:]):
-        cumulative_lengths.append(
-            cumulative_lengths[-1]
-            + math.hypot(
-                current_point[0] - previous_point[0],
-                current_point[1] - previous_point[1],
-            )
-        )
-
-    path_length_px = cumulative_lengths[-1]
-
-    def point_at_distance(target_distance_px):
-        """Interpola um ponto pela distância geodésica acumulada."""
-
-        bounded_distance_px = max(
-            0.0,
-            min(path_length_px, float(target_distance_px)),
-        )
-        for point_index in range(1, len(points)):
-            segment_end_px = cumulative_lengths[point_index]
-            if bounded_distance_px > segment_end_px:
-                continue
-
-            segment_start_px = cumulative_lengths[point_index - 1]
-            segment_length_px = segment_end_px - segment_start_px
-            if segment_length_px <= 0.0:
-                return points[point_index]
-
-            fraction = (
-                bounded_distance_px - segment_start_px
-            ) / segment_length_px
-            previous_point = points[point_index - 1]
-            current_point = points[point_index]
-            return (
-                previous_point[0]
-                + (current_point[0] - previous_point[0]) * fraction,
-                previous_point[1]
-                + (current_point[1] - previous_point[1]) * fraction,
-            )
-        return points[-1]
-
-    local_lookahead_distance_px = min(
-        path_length_px,
-        LOOKAHEAD_MIN_PX,
-    )
-    local_lookahead_point = point_at_distance(
-        local_lookahead_distance_px
-    )
-    start_point = points[0]
-    half_frame_width = float(frame_width) / 2.0
-    near_error = (
-        start_point[0] - half_frame_width
-    ) / half_frame_width
-
-    tangent_before_point = point_at_distance(
-        local_lookahead_distance_px
-        - GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
-    )
-    tangent_after_point = point_at_distance(
-        local_lookahead_distance_px
-        + GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
-    )
-    tangent_delta_x = (
-        tangent_after_point[0] - tangent_before_point[0]
-    )
-    tangent_delta_y = (
-        tangent_after_point[1] - tangent_before_point[1]
-    )
-    tangent_angle_deg = None
-    if math.hypot(tangent_delta_x, tangent_delta_y) > 0.0:
-        tangent_angle_deg = math.degrees(
-            math.atan2(
-                tangent_delta_x,
-                -tangent_delta_y,
-            )
-        )
-
-    ahead_distance_px = min(
-        path_length_px,
-        GEOMETRIC_CENTERLINE_GUIDANCE_AHEAD_PX,
-    )
-    ahead_point = point_at_distance(ahead_distance_px)
-    ahead_delta_x = ahead_point[0] - start_point[0]
-    ahead_delta_y = ahead_point[1] - start_point[1]
-    ahead_angle_deg = None
-    if math.hypot(ahead_delta_x, ahead_delta_y) > 0.0:
-        ahead_angle_deg = math.degrees(
-            math.atan2(
-                ahead_delta_x,
-                -ahead_delta_y,
-            )
-        )
-
-    ahead_tangent_before_point = point_at_distance(
-        ahead_distance_px
-        - GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
-    )
-    ahead_tangent_after_point = point_at_distance(
-        ahead_distance_px
-        + GEOMETRIC_CENTERLINE_GUIDANCE_TANGENT_SPAN_PX
-    )
-    ahead_tangent_delta_x = (
-        ahead_tangent_after_point[0] - ahead_tangent_before_point[0]
-    )
-    ahead_tangent_delta_y = (
-        ahead_tangent_after_point[1] - ahead_tangent_before_point[1]
-    )
-    ahead_tangent_angle_deg = None
-    if math.hypot(ahead_tangent_delta_x, ahead_tangent_delta_y) > 0.0:
-        ahead_tangent_angle_deg = math.degrees(
-            math.atan2(
-                ahead_tangent_delta_x,
-                -ahead_tangent_delta_y,
-            )
-        )
-
-    turn_ahead_deg = None
-    if ahead_tangent_angle_deg is not None and tangent_angle_deg is not None:
-        # O módulo preserva o menor giro assinado entre as duas tangentes.
-        turn_ahead_deg = (
-            ahead_tangent_angle_deg - tangent_angle_deg + 180.0
-        ) % 360.0 - 180.0
-
-    path_ambiguous = (
-        not isinstance(centerline_decisions, list)
-        or any(
-            isinstance(decision, dict)
-            and bool(decision.get("ambiguous", False))
-            for decision in centerline_decisions
-        )
-    )
-    far_path_sample_points = []
-    far_path_sample_angles_deg = []
-    for sample_ratio in FAR_PATH_SAMPLE_RATIOS:
-        sample_point = point_at_distance(path_length_px * sample_ratio)
-        far_path_sample_points.append([
-            sample_point[0],
-            sample_point[1],
-        ])
-        sample_delta_x = sample_point[0] - start_point[0]
-        sample_delta_y = sample_point[1] - start_point[1]
-        if math.hypot(sample_delta_x, sample_delta_y) <= 0.0:
-            far_path_sample_angles_deg.append(None)
-        else:
-            far_path_sample_angles_deg.append(math.degrees(
-                math.atan2(sample_delta_x, -sample_delta_y)
-            ))
-
-    far_path_geometry = evaluate_far_path_angles(
-        far_path_sample_angles_deg,
-        path_ambiguous,
-    )
-    far_consensus_candidate = far_path_geometry["candidateDirection"]
-    far_consensus_direction = FAR_PATH_CONSENSUS_NONE
-    far_consensus_confirm_frames = 0
-    if far_path_consensus_tracker is not None:
-        far_consensus_direction = far_path_consensus_tracker.update(
-            far_consensus_candidate
-        )
-        far_consensus_confirm_frames = (
-            far_path_consensus_tracker.confirmation_frames
-        )
-
-    # As tangentes e o turnAhead acima preservam as distâncias fixas atuais.
-    # Somente depois dessas métricas prontas o target avança sobre o mesmo path.
-    curve_strength = 0.0
-    if turn_ahead_deg is not None:
-        curve_strength = max(
-            0.0,
-            min(
-                1.0,
-                abs(turn_ahead_deg)
-                / LOOKAHEAD_CURVE_FULL_SCALE_DEG,
-            ),
-        )
-    dynamic_requested_px = (
-        LOOKAHEAD_MIN_PX
-        + (LOOKAHEAD_MAX_PX - LOOKAHEAD_MIN_PX) * curve_strength
-    )
-    dynamic_distance_px = min(path_length_px, dynamic_requested_px)
-    far_path_target_distance_px = None
-    if far_consensus_direction in (
-        FAR_PATH_CONSENSUS_LEFT,
-        FAR_PATH_CONSENSUS_RIGHT,
-    ):
-        far_path_angle_deg = far_path_geometry["medianAngleDeg"]
-        extreme_strength = max(
-            0.0,
-            min(
-                1.0,
-                (
-                    abs(far_path_angle_deg)
-                    - FAR_PATH_STRONG_ANGLE_DEG
-                ) / (
-                    FAR_PATH_TARGET_FULL_SCALE_ANGLE_DEG
-                    - FAR_PATH_STRONG_ANGLE_DEG
-                ),
-            ),
-        )
-        far_path_target_limit_px = (
-            path_length_px * FAR_PATH_TARGET_MAX_RATIO
-        )
-        if far_path_target_limit_px > dynamic_distance_px:
-            far_path_target_distance_px = (
-                dynamic_distance_px
-                + (
-                    far_path_target_limit_px - dynamic_distance_px
-                ) * extreme_strength
-            )
-        else:
-            # Em paths curtos, o consenso extremo nunca autoriza o endpoint.
-            far_path_target_distance_px = far_path_target_limit_px
-        dynamic_distance_px = min(
-            far_path_target_limit_px,
-            far_path_target_distance_px,
-        )
-        dynamic_requested_px = dynamic_distance_px
-    dynamic_target_point = point_at_distance(dynamic_distance_px)
-
-    target_delta_x = dynamic_target_point[0] - start_point[0]
-    target_delta_y = dynamic_target_point[1] - start_point[1]
-    target_angle_deg = None
-    if math.hypot(target_delta_x, target_delta_y) > 0.0:
-        target_angle_deg = math.degrees(
-            math.atan2(
-                target_delta_x,
-                -target_delta_y,
-            )
-        )
-
-    guidance.update({
-        "pathLengthPx": path_length_px,
-        "lookaheadPoint": [
-            dynamic_target_point[0],
-            dynamic_target_point[1],
-        ],
-        "lookaheadClamped": (
-            path_length_px < dynamic_requested_px
-        ),
-        "localLookaheadPoint": [
-            local_lookahead_point[0],
-            local_lookahead_point[1],
-        ],
-        "dynamicTargetPoint": [
-            dynamic_target_point[0],
-            dynamic_target_point[1],
-        ],
-        "dynamicLookaheadDistancePx": dynamic_distance_px,
-        "dynamicLookaheadRequestedPx": dynamic_requested_px,
-        "curveStrength": curve_strength,
-        "farPathSamplePoints": far_path_sample_points,
-        "farPathSampleAnglesDeg": far_path_sample_angles_deg,
-        "farPathAngleDeg": far_path_geometry["medianAngleDeg"],
-        "farPathAngleSpreadDeg": far_path_geometry["spreadDeg"],
-        "pathAmbiguous": path_ambiguous,
-        "farConsensusCandidate": far_consensus_candidate,
-        "farConsensusDirection": far_consensus_direction,
-        "farConsensusConfirmFrames": far_consensus_confirm_frames,
-        "farPathTargetDistancePx": far_path_target_distance_px,
-        "nearError": near_error,
-        "targetAngleDeg": target_angle_deg,
-        "dynamicTargetAngleDeg": target_angle_deg,
-        "tangentAngleDeg": tangent_angle_deg,
-        "aheadPoint": [
-            ahead_point[0],
-            ahead_point[1],
-        ],
-        "aheadClamped": (
-            path_length_px
-            < GEOMETRIC_CENTERLINE_GUIDANCE_AHEAD_PX
-        ),
-        "aheadAngleDeg": ahead_angle_deg,
-        "aheadTangentAngleDeg": ahead_tangent_angle_deg,
-        "turnAheadDeg": turn_ahead_deg,
-    })
-    return guidance
-
-
 def extract_geometric_line_path(processed_line_mask):
     """
-    Rastreia geometricamente o centro da faixa do NEAR ao FAR.
+    Rastreia a faixa somente para travessia e reaquisição de GAP.
 
     Diferentemente da versão baseada em bandas horizontais,
     os pontos intermediários não possuem Y fixo. O caminho pode
@@ -5364,8 +3620,6 @@ def extract_geometric_line_path(processed_line_mask):
     )
 
     gap_reacquired = False
-    gap_distance_px = None
-
     if near_segments:
         near_segment = min(
             near_segments,
@@ -5391,25 +3645,13 @@ def extract_geometric_line_path(processed_line_mask):
 
         if gap_start is None:
             return {
-                "points": [],
-                "startPoint": None,
                 "nearPoint": None,
-                "farPoint": None,
                 "farHeadingDeg": None,
-                "gapReacquired": False,
-                "gapDistancePx": None,
                 "virtualNearPoint": None,
                 "lateralExitTarget": None,
-                "distanceMap": None,
             }
 
-        start_point = (
-            gap_start["point"]
-        )
-
-        gap_distance_px = (
-            gap_start["gapDistancePx"]
-        )
+        start_point = gap_start
 
         gap_reacquired = True
 
@@ -5438,15 +3680,13 @@ def extract_geometric_line_path(processed_line_mask):
 
     current_point = start_point
 
-# A direção inicial é medida na própria geometria da faixa.
-# Depois do primeiro passo, o rastreador continua atualizando
-# a direção normalmente pelos pontos encontrados.
+    # A direção inicial é medida na própria geometria da faixa.
+    # Depois do primeiro passo, o rastreador continua atualizando
+    # a direção normalmente pelos pontos encontrados.
     direction = estimate_geometric_initial_direction(
         processed_line_mask,
         start_point,
     )
-
-    far_point = None    
 
     maximum_step = (
         GEOMETRIC_TRACE_STEP_PX
@@ -5454,7 +3694,7 @@ def extract_geometric_line_path(processed_line_mask):
     )
 
     virtual_near_point = None
-    
+
     for _ in range(
         GEOMETRIC_TRACE_MAX_POINTS - 1
     ):
@@ -5527,13 +3767,9 @@ def extract_geometric_line_path(processed_line_mask):
                 if distance_to_far <= (
                     maximum_step * 2.0
                 ):
-                    far_point = (
-                        candidate_far_point
-                    )
-
                     if distance_to_far > 1.0:
                         path_points.append(
-                            far_point
+                            candidate_far_point
                         )
 
                     break
@@ -5566,8 +3802,6 @@ def extract_geometric_line_path(processed_line_mask):
             next_direction
         )
 
-       
-
     if gap_reacquired:
         virtual_near_point = (
             project_geometric_gap_to_near(
@@ -5577,415 +3811,51 @@ def extract_geometric_line_path(processed_line_mask):
             )
         )
 
-    far_heading = (
-    calculate_geometric_far_heading(
-        path_points
+    far_heading = calculate_geometric_far_heading(
+        path_points,
     )
-)
 
     return {
-        "points": path_points,
-        "startPoint": start_point,
         "nearPoint": near_point,
-        "farPoint": far_point,
         "farHeadingDeg": far_heading,
-        "gapReacquired": gap_reacquired,
-        "gapDistancePx": gap_distance_px,
         "virtualNearPoint": virtual_near_point,
-         "lateralExitTarget": lateral_exit_target,
-        # Compartilha a mesma matriz numpy somente pelo fluxo interno de
-        # diagnóstico. Os IPCs publicam centerlineDebug, não este dicionário.
-        "distanceMap": distance_map,
-}
-
-def calculate_geometric_centerline_diagnostics(
-    processed_line_mask,
-    geometric_guidance,
-    far_path_consensus_tracker=None,
-):
-    """
-    Calcula uma vez o path, o guidance e os dados usados pelo overlay.
-
-    O resultado permanece no frame atual para que controle, IPC e desenho
-    reutilizem exatamente a mesma centerline selecionada.
-    """
-
-    centerline_started = time.perf_counter()
-
-    reduced_centerline_mask, centerline_transform = (
-        build_geometric_centerline_mask(
-            processed_line_mask,
-            geometric_guidance.get(
-                "startPoint"
-            ),
-        )
-    )
-
-    # Reconstrói o skeleton no tamanho do crop original somente
-    # para preservar o overlay amarelo. O Dijkstra nunca usa esta máscara.
-    centerline_display = np.zeros_like(
-        processed_line_mask
-    )
-
-    if centerline_transform is not None:
-        crop_x0 = centerline_transform["cropX0"]
-        crop_y0 = centerline_transform["cropY0"]
-        crop_width = centerline_transform["cropWidth"]
-        crop_height = centerline_transform["cropHeight"]
-
-        restored_centerline_crop = cv2.resize(
-            reduced_centerline_mask,
-            (crop_width, crop_height),
-            interpolation=cv2.INTER_NEAREST,
-        )
-        centerline_display[
-            crop_y0:crop_y0 + crop_height,
-            crop_x0:crop_x0 + crop_width,
-        ] = restored_centerline_crop
-
-    # Engrossa somente a visualização para que a centerline
-    # seja fácil de enxergar no stream.
-    centerline_display = cv2.dilate(
-        centerline_display,
-        np.ones(
-            (3, 3),
-            dtype=np.uint8,
-        ),
-    )
-
-    centerline_ms = (
-        time.perf_counter()
-        - centerline_started
-    ) * 1000.0
-
-    centerline_path_started = time.perf_counter()
-
-    centerline_path = []
-    branch_debug = {
-        "decisions": [],
-    }
-    entry_filter_debug = {
-        "before": 0,
-        "after": 0,
-        "bestForwardPx": None,
-        "candidates": [],
+        "lateralExitTarget": lateral_exit_target,
     }
 
-    if centerline_transform is not None:
-        start_point = geometric_guidance.get(
-            "startPoint"
-        )
-        scale_x = centerline_transform["scaleX"]
-        scale_y = centerline_transform["scaleY"]
-        reduced_width = centerline_transform["reducedWidth"]
-        reduced_height = centerline_transform["reducedHeight"]
+def draw_line_control_overlay(frame, line_follower_command):
+    """Desenha somente o comando e os estados usados pelo controle atual."""
 
-        reduced_start_point = (
-            max(
-                0.0,
-                min(
-                    float(reduced_width - 1),
-                    (float(start_point[0]) - crop_x0) * scale_x,
-                ),
-            ),
-            max(
-                0.0,
-                min(
-                    float(reduced_height - 1),
-                    (float(start_point[1]) - crop_y0) * scale_y,
-                ),
-            ),
-        )
-
-        initial_direction = estimate_geometric_initial_direction(
-            processed_line_mask,
-            start_point,
-        )
-
-        # Converte o vetor do frame para as coordenadas do skeleton reduzido.
-        reduced_direction_x = float(initial_direction[0]) * scale_x
-        reduced_direction_y = float(initial_direction[1]) * scale_y
-        reduced_direction_length = math.hypot(
-            reduced_direction_x,
-            reduced_direction_y,
-        )
-        reduced_initial_direction = None
-        if reduced_direction_length > 0.0:
-            reduced_initial_direction = (
-                reduced_direction_x / reduced_direction_length,
-                reduced_direction_y / reduced_direction_length,
-            )
-
-        reduced_centerline_path = find_geometric_centerline_path(
-            reduced_centerline_mask,
-            reduced_start_point,
-            centerline_transform,
-            initial_direction=reduced_initial_direction,
-            branch_debug=branch_debug,
-            entry_filter_debug=entry_filter_debug,
-            distance_map=geometric_guidance.get("distanceMap"),
-        )
-
-        crop_max_x = float(crop_x0 + crop_width - 1)
-        crop_max_y = float(crop_y0 + crop_height - 1)
-        centerline_path = [
-            (
-                max(
-                    float(crop_x0),
-                    min(
-                        crop_max_x,
-                        crop_x0 + reduced_x / scale_x,
-                    ),
-                ),
-                max(
-                    float(crop_y0),
-                    min(
-                        crop_max_y,
-                        crop_y0 + reduced_y / scale_y,
-                    ),
-                ),
-            )
-            for reduced_x, reduced_y in reduced_centerline_path
-        ]
-
-    centerline_path_ms = (
-        time.perf_counter()
-        - centerline_path_started
-    ) * 1000.0
-
-    centerline_guidance = calculate_geometric_centerline_guidance(
-        centerline_path,
-        processed_line_mask.shape[1],
-        centerline_decisions=branch_debug["decisions"],
-        far_path_consensus_tracker=far_path_consensus_tracker,
+    processing_ms = finite_virtual_position(
+        line_follower_command.get("lineProcessingMs")
     )
-
-    return {
-        "displayMask": centerline_display,
-        "path": centerline_path,
-        "debug": {
-            "pathPointCount": len(centerline_path),
-            "skeletonMs": centerline_ms,
-            "pathMs": centerline_path_ms,
-            "guidance": centerline_guidance,
-            "entryFilter": entry_filter_debug,
-            "decisions": branch_debug["decisions"],
-        },
-    }
-
-
-def draw_geometric_line_overlay(
-    frame,
-    centerline_diagnostics,
-    line_follower_command,
-    gap_forward_active,
-):
-    """Desenha a centerline já calculada e o comando realmente aplicado."""
-
-    centerline_display = centerline_diagnostics["displayMask"]
-    centerline_path = centerline_diagnostics["path"]
-    centerline_debug = centerline_diagnostics["debug"]
-
-    frame[centerline_display > 0] = (0, 255, 255)
-
-    if len(centerline_path) >= 2:
-        centerline_polyline = np.asarray(
-            [
-                (
-                    int(round(x)),
-                    int(round(y)),
-                )
-                for x, y in centerline_path
-            ],
-            dtype=np.int32,
-        ).reshape(-1, 1, 2)
-        cv2.polylines(
-            frame,
-            [centerline_polyline],
-            False,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
-
-    if centerline_path:
-        current_pixel = tuple(
-            int(round(value))
-            for value in centerline_path[0]
-        )
-        direction_pixel = tuple(
-            int(round(value))
-            for value in centerline_path[-1]
-        )
-
-        # Ciano marca exclusivamente o primeiro ponto do path selecionado.
-        cv2.circle(
-            frame,
-            current_pixel,
-            8,
-            (255, 255, 0),
-            -1,
-            cv2.LINE_AA,
-        )
-
-        # Magenta marca exclusivamente o endpoint do path selecionado.
-        cv2.circle(
-            frame,
-            direction_pixel,
-            8,
-            (255, 0, 255),
-            -1,
-            cv2.LINE_AA,
-        )
-
-    centerline_guidance = centerline_debug.get("guidance", {})
-
-    def overlay_guidance_point(field_name):
-        """Converte um ponto válido do guidance para coordenadas do overlay."""
-
-        try:
-            point = centerline_guidance[field_name]
-            point_x = float(point[0])
-            point_y = float(point[1])
-        except (KeyError, TypeError, ValueError, IndexError):
-            return None
-        if not math.isfinite(point_x) or not math.isfinite(point_y):
-            return None
-        return int(round(point_x)), int(round(point_y))
-
-    dynamic_target_pixel = overlay_guidance_point("dynamicTargetPoint")
-    ahead_point_pixel = overlay_guidance_point("aheadPoint")
-
-    if ahead_point_pixel is not None:
-        # O anel laranja mantém o AHEAD POINT visível mesmo quando os dois
-        # alvos coincidem no alcance máximo de uma curva forte.
-        cv2.circle(
-            frame,
-            ahead_point_pixel,
-            11,
-            (0, 165, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            "AHEAD POINT",
-            (ahead_point_pixel[0] + 10, ahead_point_pixel[1] + 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (0, 165, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
-    if dynamic_target_pixel is not None:
-        # O ponto vermelho mostra o target realmente usado por targetAngleDeg.
-        cv2.circle(
-            frame,
-            dynamic_target_pixel,
-            7,
-            (0, 0, 255),
-            -1,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            "DYNAMIC TARGET",
-            (dynamic_target_pixel[0] + 10, dynamic_target_pixel[1] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (0, 0, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
-    far_path_sample_points = centerline_guidance.get(
-        "farPathSamplePoints",
-        [],
+    processing_text = (
+        f"LINE {processing_ms:.1f}ms"
+        if processing_ms is not None
+        else "LINE --ms"
     )
-    if isinstance(far_path_sample_points, list):
-        for sample_point in far_path_sample_points:
-            try:
-                sample_x = float(sample_point[0])
-                sample_y = float(sample_point[1])
-            except (TypeError, ValueError, IndexError):
-                continue
-            if not math.isfinite(sample_x) or not math.isfinite(sample_y):
-                continue
-            # Pequenos anéis azuis mostram 60%, 75% e 90% sem esconder o path.
-            cv2.circle(
-                frame,
-                (int(round(sample_x)), int(round(sample_y))),
-                4,
-                (255, 128, 0),
-                1,
-                cv2.LINE_AA,
-            )
-
-    centerline_pipeline_ms = (
-        centerline_debug["skeletonMs"]
-        + centerline_debug["pathMs"]
-    )
-    curve_intent_state = line_follower_command.get(
-        "curveIntentState",
-        CURVE_INTENT_NONE,
-    )
-    if curve_intent_state not in (
-        CURVE_INTENT_NONE,
-        CURVE_INTENT_LEFT,
-        CURVE_INTENT_RIGHT,
-    ):
-        curve_intent_state = CURVE_INTENT_NONE
-    dynamic_target_angle = finite_virtual_position(
-        line_follower_command.get("dynamicTargetAngleDeg")
-    )
-    curve_intent_overlay = f"CURVE INTENT {curve_intent_state}"
-    if dynamic_target_angle is not None:
-        curve_intent_overlay += f"  TARGET {dynamic_target_angle:+.1f}deg"
-
-    far_path_angle = finite_virtual_position(
-        line_follower_command.get("farPathAngleDeg")
-    )
-    far_path_angle_overlay = "FAR PATH ANGLE --"
-    if far_path_angle is not None:
-        far_path_angle_overlay = f"FAR PATH ANGLE {far_path_angle:+.1f}deg"
-    far_consensus_direction = line_follower_command.get(
-        "farConsensusDirection",
-        FAR_PATH_CONSENSUS_NONE,
-    )
-    if far_consensus_direction not in (
-        FAR_PATH_CONSENSUS_NONE,
-        FAR_PATH_CONSENSUS_LEFT,
-        FAR_PATH_CONSENSUS_RIGHT,
-    ):
-        far_consensus_direction = FAR_PATH_CONSENSUS_NONE
-    try:
-        far_confirm_frames = int(line_follower_command.get(
-            "farConsensusConfirmFrames",
-            0,
-        ))
-    except (TypeError, ValueError):
-        far_confirm_frames = 0
-    far_confirm_frames = max(
-        0,
-        min(FAR_PATH_CONFIRM_FRAMES, far_confirm_frames),
-    )
+    control_source = str(
+        line_follower_command.get("controlSource", "unknown")
+    ).strip().upper() or "UNKNOWN"
+    line_state = str(
+        line_follower_command.get("lineState", "INVALID")
+    ).strip().upper() or "INVALID"
+    virtual_state = str(
+        line_follower_command.get("virtualState", "INVALID")
+    ).strip().upper() or "INVALID"
 
     overlay_texts = (
-        f"LINE {centerline_pipeline_ms:.1f}ms",
+        processing_text,
         (
             f"L {float(line_follower_command['left_power']):.2f}  "
             f"R {float(line_follower_command['right_power']):.2f}"
         ),
-        f"STATE {'GAP' if gap_forward_active else 'LINE'}",
-        curve_intent_overlay,
-        far_path_angle_overlay,
-        (
-            f"FAR CONSENSUS {far_consensus_direction}  "
-            f"FAR CONFIRM {far_confirm_frames}/{FAR_PATH_CONFIRM_FRAMES}"
-        ),
+        f"STATE {line_state}  VSTATE {virtual_state}",
+        f"CONTROL SOURCE: {control_source}",
     )
-    overlay_text_start_y = max(22, frame.shape[0] - 116)
+    overlay_text_start_y = max(
+        22,
+        frame.shape[0] - (len(overlay_texts) - 1) * 22 - 6,
+    )
     for line_index, overlay_text in enumerate(overlay_texts):
         cv2.putText(
             frame,
@@ -5997,6 +3867,7 @@ def draw_geometric_line_overlay(
             1,
             cv2.LINE_AA,
         )
+
 
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
@@ -6223,459 +4094,6 @@ def read_virtual_line_sensors(
         "steeringError": steering_error,
     }
 
-def calculate_geometric_steering_error(
-    geometric_guidance,
-    frame_width,
-):
-    """
-    Converte a trajetória geométrica em erro de direção normalizado.
-
-    Usa o NEAR realmente observado quando disponível.
-    Durante um gap, usa o NEAR projetado geometricamente.
-
-    Uma saída lateral inequívoca possui prioridade sobre o
-    heading local para antecipar curvas fortes de 90 graus.
-    """
-
-    near_point = geometric_guidance.get(
-        "nearPoint"
-    )
-
-    if near_point is None:
-        near_point = geometric_guidance.get(
-            "virtualNearPoint"
-        )
-
-    lateral_exit_target = geometric_guidance.get(
-        "lateralExitTarget"
-    )
-
-    center_x = (
-        float(frame_width - 1) / 2.0
-    )
-
-    # Se existe uma saída lateral inequívoca, ela é uma
-    # indicação mais forte da direção da curva que o heading local.
-    # Isso também permite iniciar a curva mesmo se o NEAR
-    # desaparecer naquele frame.
-    if lateral_exit_target is not None:
-        exit_x = float(
-            lateral_exit_target[0]
-        )
-
-        if exit_x < center_x:
-            steering_error = -1.0
-        else:
-            steering_error = 1.0
-
-        heading_angle = geometric_guidance.get(
-            "farHeadingDeg"
-        )
-
-        if near_point is not None:
-            half_width = max(
-                1.0,
-                center_x,
-            )
-
-            near_position = (
-                float(near_point[0])
-                - center_x
-            ) / half_width
-
-            near_position = max(
-                -1.0,
-                min(1.0, near_position),
-            )
-
-        else:
-            near_position = None
-
-        return {
-            "nearPosition": (
-                float(near_position)
-                if near_position is not None
-                else None
-            ),
-            "headingAngle": (
-                float(heading_angle)
-                if heading_angle is not None
-                else None
-            ),
-            "steeringError": float(
-                steering_error
-            ),
-        }
-
-    # Sem saída lateral, precisamos de NEAR real ou projetado.
-    if near_point is None:
-        return {
-            "nearPosition": None,
-            "headingAngle": None,
-            "steeringError": None,
-        }
-
-    half_width = max(
-        1.0,
-        center_x,
-    )
-
-    near_position = (
-        float(near_point[0])
-        - center_x
-    ) / half_width
-
-    near_position = max(
-        -1.0,
-        min(1.0, near_position),
-    )
-
-    heading_angle = geometric_guidance.get(
-        "farHeadingDeg"
-    )
-
-    if heading_angle is None:
-        steering_error = near_position
-
-    else:
-        heading_normalized = (
-            float(heading_angle)
-            / VIRTUAL_HEADING_FULL_SCALE_DEG
-        )
-
-        heading_normalized = max(
-            -1.0,
-            min(1.0, heading_normalized),
-        )
-
-        steering_error = (
-            near_position
-            + VIRTUAL_HEADING_GAIN
-            * heading_normalized
-        )
-
-    steering_error = max(
-        -1.0,
-        min(1.0, steering_error),
-    )
-
-    return {
-        "nearPosition": float(
-            near_position
-        ),
-        "headingAngle": (
-            float(heading_angle)
-            if heading_angle is not None
-            else None
-        ),
-        "steeringError": float(
-            steering_error
-        ),
-    }
-
-
-def calculate_centerline_guidance_steering(centerline_guidance):
-    """Combina somente os termos solicitados do guidance já calculado."""
-
-    result = {
-        "nearTerm": None,
-        "headingTerm": None,
-        "aheadTerm": None,
-        "steeringError": None,
-    }
-    if not isinstance(centerline_guidance, dict):
-        return result
-
-    try:
-        near_error = float(centerline_guidance["nearError"])
-        tangent_angle_deg = float(centerline_guidance["tangentAngleDeg"])
-        turn_ahead_deg = float(centerline_guidance["turnAheadDeg"])
-    except (KeyError, TypeError, ValueError):
-        return result
-
-    if not all(math.isfinite(value) for value in (
-        near_error,
-        tangent_angle_deg,
-        turn_ahead_deg,
-    )):
-        return result
-
-    near_term = 0.30 * near_error
-    heading_term = 0.45 * max(
-        -1.0,
-        min(1.0, tangent_angle_deg / 90.0),
-    )
-    ahead_term = 0.30 * max(
-        -1.0,
-        min(1.0, turn_ahead_deg / 90.0),
-    )
-    steering_error = max(
-        -1.0,
-        min(1.0, near_term + heading_term + ahead_term),
-    )
-    result.update({
-        "nearTerm": near_term,
-        "headingTerm": heading_term,
-        "aheadTerm": ahead_term,
-        "steeringError": steering_error,
-    })
-    return result
-
-
-def centerline_guidance_allows_ahead_feed_forward(
-    centerline_guidance,
-    centerline_decisions,
-):
-    """Valida somente os dados necessários para liberar a antecipação."""
-
-    if (
-        not isinstance(centerline_guidance, dict)
-        or not isinstance(centerline_decisions, list)
-        or centerline_guidance.get("aheadClamped") is not False
-    ):
-        return False
-
-    if any(
-        isinstance(decision, dict)
-        and bool(decision.get("ambiguous", False))
-        for decision in centerline_decisions
-    ):
-        return False
-
-    try:
-        path_length_px = float(centerline_guidance["pathLengthPx"])
-        tangent_angle_deg = float(centerline_guidance["tangentAngleDeg"])
-        ahead_tangent_angle_deg = float(
-            centerline_guidance["aheadTangentAngleDeg"]
-        )
-        turn_ahead_deg = float(centerline_guidance["turnAheadDeg"])
-        lookahead_point = centerline_guidance["lookaheadPoint"]
-        ahead_point = centerline_guidance["aheadPoint"]
-        point_values = (
-            float(lookahead_point[0]),
-            float(lookahead_point[1]),
-            float(ahead_point[0]),
-            float(ahead_point[1]),
-        )
-    except (KeyError, TypeError, ValueError, IndexError):
-        return False
-
-    return (
-        path_length_px > 0.0
-        and all(math.isfinite(value) for value in (
-            path_length_px,
-            tangent_angle_deg,
-            ahead_tangent_angle_deg,
-            turn_ahead_deg,
-            *point_values,
-        ))
-    )
-
-
-class CenterlineAheadFeedForwardTracker:
-    """Confirma o sinal da antecipação antes de permitir feed-forward."""
-
-    def __init__(self):
-        self.turn_sign = None
-        self.consecutive_frames = 0
-
-    def reset(self):
-        """Remove imediatamente uma confirmação antiga ou inválida."""
-
-        self.turn_sign = None
-        self.consecutive_frames = 0
-
-    def update(self, turn_ahead_deg, valid):
-        """Retorna verdadeiro após três frames válidos com o mesmo sinal."""
-
-        if not valid:
-            self.reset()
-            return False
-
-        turn_sign = (
-            1 if turn_ahead_deg > 0.0
-            else -1 if turn_ahead_deg < 0.0
-            else 0
-        )
-        if turn_sign == self.turn_sign:
-            self.consecutive_frames = min(
-                GEOMETRIC_CENTERLINE_AHEAD_STABLE_FRAMES,
-                self.consecutive_frames + 1,
-            )
-        else:
-            self.turn_sign = turn_sign
-            self.consecutive_frames = 1
-
-        return (
-            self.consecutive_frames
-            >= GEOMETRIC_CENTERLINE_AHEAD_STABLE_FRAMES
-        )
-
-
-def curve_intent_geometry(centerline_guidance, centerline_decisions):
-    """Valida a direção do target dinâmico sem alterar o path selecionado."""
-
-    result = {
-        "valid": False,
-        "direction": None,
-        "releaseReady": False,
-        "dynamicTargetAngleDeg": None,
-        "turnAheadDeg": None,
-    }
-    if (
-        not isinstance(centerline_guidance, dict)
-        or not isinstance(centerline_decisions, list)
-        or any(
-            isinstance(decision, dict)
-            and bool(decision.get("ambiguous", False))
-            for decision in centerline_decisions
-        )
-    ):
-        return result
-
-    dynamic_target_angle = centerline_guidance.get(
-        "dynamicTargetAngleDeg",
-        centerline_guidance.get("targetAngleDeg"),
-    )
-    dynamic_target_angle = finite_virtual_position(dynamic_target_angle)
-    turn_ahead_deg = finite_virtual_position(
-        centerline_guidance.get("turnAheadDeg")
-    )
-    if dynamic_target_angle is None or turn_ahead_deg is None:
-        return result
-
-    result.update({
-        "valid": True,
-        "dynamicTargetAngleDeg": dynamic_target_angle,
-        "turnAheadDeg": turn_ahead_deg,
-        "releaseReady": (
-            abs(dynamic_target_angle) <= CURVE_INTENT_EXIT_ANGLE_DEG
-            and abs(turn_ahead_deg) <= CURVE_INTENT_EXIT_ANGLE_DEG
-        ),
-    })
-    if (
-        dynamic_target_angle >= CURVE_INTENT_ENTER_ANGLE_DEG
-        and turn_ahead_deg > 0.0
-    ):
-        result["direction"] = CURVE_INTENT_RIGHT
-    elif (
-        dynamic_target_angle <= -CURVE_INTENT_ENTER_ANGLE_DEG
-        and turn_ahead_deg < 0.0
-    ):
-        result["direction"] = CURVE_INTENT_LEFT
-    return result
-
-
-class CurveIntentTracker:
-    """Confirma a intenção geométrica e aplica histerese sem controlar motores."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """Limpa a intenção ao sair do seguimento normal da linha."""
-
-        self.state = CURVE_INTENT_NONE
-        self.candidate = None
-        self.confirmation_frames = 0
-        self.release_frames = 0
-        return self.state
-
-    def update(self, centerline_guidance, centerline_decisions):
-        """Confirma entrada e saída usando somente a geometria não ambígua."""
-
-        geometry = curve_intent_geometry(
-            centerline_guidance,
-            centerline_decisions,
-        )
-        if self.state in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT):
-            self.candidate = None
-            self.confirmation_frames = 0
-            if geometry["valid"] and geometry["releaseReady"]:
-                self.release_frames += 1
-                if self.release_frames >= CURVE_INTENT_RELEASE_FRAMES:
-                    return self.reset()
-            else:
-                self.release_frames = 0
-            return self.state
-
-        self.release_frames = 0
-        direction = geometry["direction"] if geometry["valid"] else None
-        if direction is None:
-            self.candidate = None
-            self.confirmation_frames = 0
-            return self.state
-
-        if direction == self.candidate:
-            self.confirmation_frames += 1
-        else:
-            self.candidate = direction
-            self.confirmation_frames = 1
-
-        if self.confirmation_frames >= CURVE_INTENT_CONFIRM_FRAMES:
-            self.state = direction
-        return self.state
-
-
-def curve_intent_has_current_authority(
-    curve_intent_state,
-    centerline_guidance,
-    centerline_decisions,
-):
-    """Impede que uma intenção antiga atue sem geometria atual compatível."""
-
-    geometry = curve_intent_geometry(
-        centerline_guidance,
-        centerline_decisions,
-    )
-    if (
-        curve_intent_state not in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT)
-        or not geometry["valid"]
-    ):
-        return False
-    if geometry["releaseReady"]:
-        return True
-
-    intent_sign = -1.0 if curve_intent_state == CURVE_INTENT_LEFT else 1.0
-    target_angle = geometry["dynamicTargetAngleDeg"]
-    turn_ahead_deg = geometry["turnAheadDeg"]
-    target_supports_intent = (
-        target_angle * intent_sign > 0.0
-        or abs(target_angle) <= CURVE_INTENT_EXIT_ANGLE_DEG
-    )
-    turn_supports_intent = (
-        turn_ahead_deg * intent_sign > 0.0
-        or abs(turn_ahead_deg) <= CURVE_INTENT_EXIT_ANGLE_DEG
-    )
-    return target_supports_intent and turn_supports_intent
-
-
-def curve_intent_near_allows_authority(curve_intent_state, sensors):
-    """Protege um NEAR forte contrário quando MEDIUM não confirma o intent."""
-
-    if curve_intent_state not in (CURVE_INTENT_LEFT, CURVE_INTENT_RIGHT):
-        return False
-
-    near_position = finite_virtual_position(sensors.get("nearPosition"))
-    if near_position is None:
-        return False
-
-    intent_sign = -1.0 if curve_intent_state == CURVE_INTENT_LEFT else 1.0
-    near_strongly_contradicts = (
-        abs(near_position) >= CURVE_INTENT_NEAR_CONFLICT_THRESHOLD
-        and near_position * intent_sign < 0.0
-    )
-    if not near_strongly_contradicts:
-        return True
-
-    medium_position = finite_virtual_position(sensors.get("mediumPosition"))
-    return (
-        medium_position is not None
-        and abs(medium_position) >= CURVE_INTENT_NEAR_CONFLICT_THRESHOLD
-        and medium_position * intent_sign > 0.0
-    )
-
-
 def virtual_reorient_direction(sensors):
     """Detecta concordância lateral entre MEDIUM e FAR BAND."""
 
@@ -6751,6 +4169,36 @@ def virtual_raw_line_is_visible(sensors):
         sensors.get("farBandPosition"),
     )
     return any(finite_virtual_position(position) is not None for position in positions)
+
+
+def update_gap_recent_near_frames(recent_near_frames, raw_near_visible):
+    """Atualiza a memória curta de uma observação real no NEAR RAW."""
+
+    if raw_near_visible:
+        return GAP_NEAR_HISTORY_FRAMES
+    return max(0, int(recent_near_frames) - 1)
+
+
+def gap_entry_is_required(
+    gap_forward_active,
+    green_direction,
+    recent_near_frames,
+    raw_near_visible,
+    real_near_point,
+    virtual_near_point,
+    lateral_exit_target,
+):
+    """Reconhece a perda recente do NEAR sem disputar prioridade com verde."""
+
+    return (
+        not gap_forward_active
+        and green_direction == "NENHUMA"
+        and recent_near_frames > 0
+        and not raw_near_visible
+        and real_near_point is None
+        and virtual_near_point is None
+        and lateral_exit_target is None
+    )
 
 
 class VirtualLineSearchTracker:
@@ -7012,94 +4460,12 @@ class VirtualPivotStateTracker:
         return self.state
 
 
-def calculate_hybrid_virtual_steering(
-    base_virtual_steering,
-    centerline_guidance,
-    centerline_decisions,
-    ahead_feed_forward_tracker,
-):
-    """Soma antecipação confirmada ao steering virtual sem retirar sua prioridade."""
-
-    result = {
-        "baseVirtualSteering": None,
-        "aheadFF": 0.0,
-        "finalSteering": None,
-        "hybridSource": "VIRTUAL",
-    }
-    try:
-        base_virtual_steering = float(base_virtual_steering)
-    except (TypeError, ValueError):
-        if ahead_feed_forward_tracker is not None:
-            ahead_feed_forward_tracker.reset()
-        return result
-
-    if not math.isfinite(base_virtual_steering):
-        if ahead_feed_forward_tracker is not None:
-            ahead_feed_forward_tracker.reset()
-        return result
-
-    base_virtual_steering = max(
-        -1.0,
-        min(1.0, base_virtual_steering),
-    )
-    result["baseVirtualSteering"] = base_virtual_steering
-    result["finalSteering"] = base_virtual_steering
-
-    guidance_valid = centerline_guidance_allows_ahead_feed_forward(
-        centerline_guidance,
-        centerline_decisions,
-    )
-    turn_ahead_deg = 0.0
-    if guidance_valid:
-        turn_ahead_deg = float(centerline_guidance["turnAheadDeg"])
-
-    stable = (
-        ahead_feed_forward_tracker.update(
-            turn_ahead_deg,
-            guidance_valid,
-        )
-        if ahead_feed_forward_tracker is not None
-        else False
-    )
-    if not stable:
-        return result
-
-    ahead_feed_forward = (
-        GEOMETRIC_CENTERLINE_AHEAD_FEED_FORWARD_GAIN
-        * max(-1.0, min(1.0, turn_ahead_deg / 90.0))
-    )
-
-    # Um erro virtual já relevante sempre vence uma indicação contrária.
-    if (
-        abs(base_virtual_steering) > VIRTUAL_CENTERLINE_CONFLICT_THRESHOLD
-        and base_virtual_steering * ahead_feed_forward < 0.0
-    ):
-        return result
-
-    final_steering = max(
-        -1.0,
-        min(1.0, base_virtual_steering + ahead_feed_forward),
-    )
-    result.update({
-        "aheadFF": ahead_feed_forward,
-        "finalSteering": final_steering,
-        "hybridSource": (
-            "HYBRID" if ahead_feed_forward != 0.0 else "VIRTUAL"
-        ),
-    })
-    return result
-
-
 def calculate_line_follower_command(
     processed_line_mask,
     green_detection_result,
-    centerline_guidance,
     direcao_verde_ativa="NENHUMA",
     gap_forward_active=False,
-    centerline_decisions=None,
-    ahead_feed_forward_tracker=None,
     virtual_turn_tracker=None,
-    curve_intent_tracker=None,
     pivot_state_tracker=None,
     virtual_sensors=None,
     line_search_tracker=None,
@@ -7107,10 +4473,10 @@ def calculate_line_follower_command(
     sensor_recovery_requested=False,
 ):
     """
-    Aplica o seguidor virtual validado e uma antecipação geométrica opcional.
+    Aplica o seguidor virtual validado pela câmera inferior.
 
-    Verde e gap mantêm prioridade. No modo normal, a centerline nunca
-    substitui o steering dos seis sensores e atua somente como feed-forward.
+    Verde e gap mantêm prioridade. No modo normal, somente o steering dos nove
+    sensores virtuais, já protegido por NEAR/MEDIUM, chega ao mapper.
     """
 
     _ = green_detection_result
@@ -7128,52 +4494,28 @@ def calculate_line_follower_command(
     if line_search_tracker is not None:
         line_search_tracker.remember(observed_recovery_direction)
 
-    centerline_control = calculate_centerline_guidance_steering(
-        centerline_guidance
-    )
-    hybrid_control = calculate_hybrid_virtual_steering(
-        sensors["steeringError"],
-        centerline_guidance,
-        centerline_decisions,
-        ahead_feed_forward_tracker,
-    )
-    hybrid_steering = hybrid_control["finalSteering"]
+    protected_virtual_steering = sensors["steeringError"]
     virtual_state = VIRTUAL_STATE_NORMAL
     medium_scan_direction = None
     direct_recovery_direction = None
     normal_steering_mapper = False
-    curve_intent_state = CURVE_INTENT_NONE
-    curve_intent_applied = False
     line_state = "LINE"
 
     if direcao_verde_ativa != "NENHUMA":
         line_state = "GREEN"
-        if ahead_feed_forward_tracker is not None:
-            ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
-        if curve_intent_tracker is not None:
-            curve_intent_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
         steering_error = sensors[
             "steeringError"
         ]
         control_source = "virtual-green"
-        hybrid_control.update({
-            "aheadFF": 0.0,
-            "finalSteering": steering_error,
-            "hybridSource": "VIRTUAL",
-        })
 
     elif gap_forward_active:
         line_state = "GAP"
-        if ahead_feed_forward_tracker is not None:
-            ahead_feed_forward_tracker.reset()
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
-        if curve_intent_tracker is not None:
-            curve_intent_tracker.reset()
         if observed_recovery_direction is not None:
             if line_search_tracker is not None:
                 line_search_tracker.stop()
@@ -7204,14 +4546,9 @@ def calculate_line_follower_command(
             else:
                 steering_error = 0.0
                 control_source = "gap-forward"
-        hybrid_control.update({
-            "aheadFF": 0.0,
-            "finalSteering": steering_error,
-            "hybridSource": "VIRTUAL",
-        })
 
     else:
-        normal_steering_valid = sensors["steeringError"] is not None
+        normal_steering_valid = protected_virtual_steering is not None
         if virtual_turn_tracker is not None:
             virtual_state = virtual_turn_tracker.update(
                 sensors,
@@ -7221,58 +4558,12 @@ def calculate_line_follower_command(
         if normal_steering_valid:
             # O seguidor normal recupera autoridade no primeiro frame válido,
             # mesmo enquanto o tracker confirma a saída do REORIENT.
-            steering_error = hybrid_control["finalSteering"]
+            steering_error = protected_virtual_steering
             normal_steering_mapper = True
-            if curve_intent_tracker is not None:
-                curve_intent_state = curve_intent_tracker.update(
-                    centerline_guidance,
-                    centerline_decisions,
-                )
-                curve_intent_authorized = (
-                    curve_intent_has_current_authority(
-                        curve_intent_state,
-                        centerline_guidance,
-                        centerline_decisions,
-                    )
-                    and curve_intent_near_allows_authority(
-                        curve_intent_state,
-                        sensors,
-                    )
-                )
-                steering_before_intent = steering_error
-                if (
-                    curve_intent_authorized
-                    and curve_intent_state == CURVE_INTENT_RIGHT
-                ):
-                    steering_error = max(
-                        steering_error,
-                        CURVE_INTENT_MIN_STEERING,
-                    )
-                elif (
-                    curve_intent_authorized
-                    and curve_intent_state == CURVE_INTENT_LEFT
-                ):
-                    steering_error = min(
-                        steering_error,
-                        -CURVE_INTENT_MIN_STEERING,
-                    )
-                curve_intent_applied = (
-                    steering_error != steering_before_intent
-                )
             if line_search_tracker is not None:
                 line_search_tracker.stop()
-            control_source = (
-                "curve-intent"
-                if curve_intent_applied
-                else (
-                    "hybrid"
-                    if hybrid_control["hybridSource"] == "HYBRID"
-                    else "virtual"
-                )
-            )
+            control_source = "virtual"
         else:
-            if curve_intent_tracker is not None:
-                curve_intent_tracker.reset()
             if virtual_state == VIRTUAL_STATE_REORIENT_LEFT:
                 steering_error = -1.0
                 control_source = "virtual-reorient"
@@ -7328,13 +4619,6 @@ def calculate_line_follower_command(
                         control_source = "virtual-blind-search"
                     else:
                         control_source = "virtual-no-line"
-
-    # FINAL representa o steering efetivamente entregue ao mapper existente.
-    hybrid_control["finalSteering"] = steering_error
-
-    if isinstance(centerline_guidance, dict):
-        centerline_guidance.update(centerline_control)
-        centerline_guidance.update(hybrid_control)
 
     # --------------------------------------------------------
     # CONTROLE DE MOTORES
@@ -7470,20 +4754,6 @@ def calculate_line_follower_command(
         left_power = BASE_POWER
         right_power = 0.0
 
-    far_path_sample_angles = (
-        centerline_guidance.get("farPathSampleAnglesDeg", [])
-        if isinstance(centerline_guidance, dict)
-        else []
-    )
-    if not isinstance(far_path_sample_angles, (list, tuple)):
-        far_path_sample_angles = []
-    diagnostic_far_angles = [
-        finite_virtual_position(far_path_sample_angles[index])
-        if index < len(far_path_sample_angles)
-        else None
-        for index in range(len(FAR_PATH_SAMPLE_RATIOS))
-    ]
-
     return {
         "left_power": left_power,
         "right_power": right_power,
@@ -7514,83 +4784,10 @@ def calculate_line_follower_command(
 
         "headingAngle": sensors["headingAngle"],
         "steeringError": steering_error,
-        "baseVirtualSteering": hybrid_control["baseVirtualSteering"],
-        "hybridSteering": hybrid_steering,
-        "aheadFF": hybrid_control["aheadFF"],
-        "finalSteering": hybrid_control["finalSteering"],
-        "hybridSource": hybrid_control["hybridSource"],
+        "finalSteering": steering_error,
         "virtualState": virtual_state,
-        "curveIntentState": curve_intent_state,
-        "curveIntentApplied": curve_intent_applied,
-        "curveIntentConfirmFrames": (
-            curve_intent_tracker.confirmation_frames
-            if curve_intent_tracker is not None
-            else 0
-        ),
-        "curveIntentReleaseFrames": (
-            curve_intent_tracker.release_frames
-            if curve_intent_tracker is not None
-            else 0
-        ),
-        "farAngle60": diagnostic_far_angles[0],
-        "farAngle75": diagnostic_far_angles[1],
-        "farAngle90": diagnostic_far_angles[2],
-        "farAngleSpread": (
-            centerline_guidance.get("farPathAngleSpreadDeg")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "dynamicTargetAngleDeg": (
-            centerline_guidance.get(
-                "dynamicTargetAngleDeg",
-                centerline_guidance.get("targetAngleDeg"),
-            )
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "farPathAngleDeg": (
-            centerline_guidance.get("farPathAngleDeg")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "farConsensusDirection": (
-            centerline_guidance.get(
-                "farConsensusDirection",
-                FAR_PATH_CONSENSUS_NONE,
-            )
-            if isinstance(centerline_guidance, dict)
-            else FAR_PATH_CONSENSUS_NONE
-        ),
-        "farConsensusConfirmFrames": (
-            centerline_guidance.get("farConsensusConfirmFrames", 0)
-            if isinstance(centerline_guidance, dict)
-            else 0
-        ),
-        "dynamicLookaheadPx": (
-            centerline_guidance.get("dynamicLookaheadDistancePx")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "pathAmbiguous": (
-            centerline_guidance.get("pathAmbiguous")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
         "lineState": line_state,
         "greenDirection": direcao_verde_ativa,
-        "geometricNearPosition": (
-            centerline_guidance.get("nearError")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "geometricHeadingAngle": (
-            centerline_guidance.get("tangentAngleDeg")
-            if isinstance(centerline_guidance, dict)
-            else None
-        ),
-        "geometricSteeringError": centerline_control[
-            "steeringError"
-        ],
         "controlSource": control_source,
     }
 
@@ -7959,7 +5156,6 @@ def save_line_status(
     line_sequence,
     green_status,
     specular_repair_status=None,
-    centerline_debug=None,
 ):
     """Publica controle visual e telemetria leve no IPC rápido da linha."""
 
@@ -7983,19 +5179,6 @@ def save_line_status(
             raise ValueError("Comando visual fora da faixa normalizada")
 
         repair_status = specular_repair_status or {}
-        far_consensus_direction = str(line_follower_command.get(
-            "farConsensusDirection",
-            FAR_PATH_CONSENSUS_NONE,
-        ))
-        if far_consensus_direction not in (
-            FAR_PATH_CONSENSUS_NONE,
-            FAR_PATH_CONSENSUS_LEFT,
-            FAR_PATH_CONSENSUS_RIGHT,
-        ):
-            far_consensus_direction = FAR_PATH_CONSENSUS_NONE
-        path_ambiguous = line_follower_command.get("pathAmbiguous")
-        if not isinstance(path_ambiguous, bool):
-            path_ambiguous = None
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
@@ -8011,61 +5194,6 @@ def save_line_status(
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")
             ),
-            "curveIntentState": str(
-                line_follower_command.get(
-                    "curveIntentState",
-                    CURVE_INTENT_NONE,
-                )
-            ),
-            "curveIntentApplied": bool(
-                line_follower_command.get("curveIntentApplied", False)
-            ),
-            "curveIntentConfirmFrames": max(
-                0,
-                int(line_follower_command.get(
-                    "curveIntentConfirmFrames",
-                    0,
-                )),
-            ),
-            "curveIntentReleaseFrames": max(
-                0,
-                int(line_follower_command.get(
-                    "curveIntentReleaseFrames",
-                    0,
-                )),
-            ),
-            "farAngle60": finite_virtual_position(
-                line_follower_command.get("farAngle60")
-            ),
-            "farAngle75": finite_virtual_position(
-                line_follower_command.get("farAngle75")
-            ),
-            "farAngle90": finite_virtual_position(
-                line_follower_command.get("farAngle90")
-            ),
-            "farAngleSpread": finite_virtual_position(
-                line_follower_command.get("farAngleSpread")
-            ),
-            "dynamicTargetAngleDeg": finite_virtual_position(
-                line_follower_command.get("dynamicTargetAngleDeg")
-            ),
-            "dynamicLookaheadPx": finite_virtual_position(
-                line_follower_command.get("dynamicLookaheadPx")
-            ),
-            "farPathAngleDeg": finite_virtual_position(
-                line_follower_command.get("farPathAngleDeg")
-            ),
-            "farConsensusDirection": far_consensus_direction,
-            "farConsensusConfirmFrames": max(
-                0,
-                min(
-                    FAR_PATH_CONFIRM_FRAMES,
-                    int(line_follower_command.get(
-                        "farConsensusConfirmFrames",
-                        0,
-                    )),
-                ),
-            ),
             "nearPosition": finite_virtual_position(
                 line_follower_command.get("nearPosition")
             ),
@@ -8078,16 +5206,9 @@ def save_line_status(
             "headingAngleDeg": finite_virtual_position(
                 line_follower_command.get("headingAngle")
             ),
-            "baseVirtualSteering": finite_virtual_position(
-                line_follower_command.get("baseVirtualSteering")
-            ),
-            "hybridSteering": finite_virtual_position(
-                line_follower_command.get("hybridSteering")
-            ),
             "finalSteering": finite_virtual_position(
                 line_follower_command.get("finalSteering")
             ),
-            "pathAmbiguous": path_ambiguous,
             "vstate": str(
                 line_follower_command.get("virtualState", "INVALID")
             ),
@@ -8104,8 +5225,6 @@ def save_line_status(
             ),
         }
         line_status.update(green_status)
-        if isinstance(centerline_debug, dict):
-            line_status["centerlineDebug"] = centerline_debug
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
         os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
@@ -8128,7 +5247,6 @@ def save_status(
     specular_repair_status=None,
     green_status=None,
     line_timings=None,
-    centerline_debug=None,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -8234,8 +5352,6 @@ def save_status(
         "contoursMs": safe_line_timings["contoursMs"],
     }
     status.update(green_status or empty_green_status())
-    if isinstance(centerline_debug, dict):
-        status["centerlineDebug"] = centerline_debug
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -8314,12 +5430,8 @@ def main():
         last_status_time = 0.0
         smoothed_fps = 0.0
         line_sequence = 0
-        centerline_debug = None
         green_tracker = GreenObservationTracker()
-        ahead_feed_forward_tracker = CenterlineAheadFeedForwardTracker()
-        far_path_consensus_tracker = FarPathConsensusTracker()
         virtual_turn_tracker = VirtualTurnStateTracker()
-        curve_intent_tracker = CurveIntentTracker()
         pivot_state_tracker = VirtualPivotStateTracker()
         line_search_tracker = VirtualLineSearchTracker()
 
@@ -8334,7 +5446,7 @@ def main():
         gap_forward_frames = 0
         gap_reacquire_frames = 0
         gap_line_lost_seen = False
-        gap_had_real_line = False
+        gap_recent_near_frames = 0
 
         # Impede que o mesmo marcador verde seja aceito novamente.
         verde_armado = True
@@ -8545,6 +5657,16 @@ def main():
                 line_candidate_mask,
                 direcao_verde_ativa,
             )
+            raw_near_visible = (
+                finite_virtual_position(
+                    virtual_sensors.get("rawNearPosition")
+                )
+                is not None
+            )
+            gap_recent_near_frames = update_gap_recent_near_frames(
+                gap_recent_near_frames,
+                raw_near_visible,
+            )
             raw_line_visible = virtual_raw_line_is_visible(
                 virtual_sensors
             )
@@ -8573,13 +5695,14 @@ def main():
                 direcao_verde_ativa = green_timeout_state["direction"]
                 quadros_verde_ativo = green_timeout_state["activeFrames"]
 
-            if (
-                not gap_forward_active
-                and direcao_verde_ativa == "NENHUMA"
-                and gap_had_real_line
-                and real_near_point is None
-                and virtual_near_point is None
-                and lateral_exit_target is None
+            if gap_entry_is_required(
+                gap_forward_active,
+                direcao_verde_ativa,
+                gap_recent_near_frames,
+                raw_near_visible,
+                real_near_point,
+                virtual_near_point,
+                lateral_exit_target,
             ):
                 gap_forward_active = True
                 gap_forward_frames = 0
@@ -8619,48 +5742,15 @@ def main():
                 if not gap_forward_active:
                     line_search_tracker.stop()
 
-            gap_had_real_line = (
-                real_near_point is not None
-            )
-
-            centerline_diagnostics = None
-            centerline_debug = None
-            centerline_guidance = None
-            if camera_profile["role"] == "down":
-                if (
-                    direcao_verde_ativa != "NENHUMA"
-                    or gap_forward_active
-                ):
-                    far_path_consensus_tracker.reset()
-                centerline_diagnostics = (
-                    calculate_geometric_centerline_diagnostics(
-                        line_candidate_mask,
-                        geometric_guidance,
-                        far_path_consensus_tracker=(
-                            far_path_consensus_tracker
-                        ),
-                    )
-                )
-                centerline_debug = centerline_diagnostics["debug"]
-                centerline_guidance = centerline_debug["guidance"]
-
             line_control_started = time.perf_counter()
 
             line_follower_command = (
                 calculate_line_follower_command(
                     line_candidate_mask,
                     green_status,
-                    centerline_guidance,
                     direcao_verde_ativa,
                     gap_forward_active,
-                    centerline_decisions=(
-                        centerline_debug["decisions"]
-                        if centerline_debug is not None
-                        else None
-                    ),
-                    ahead_feed_forward_tracker=ahead_feed_forward_tracker,
                     virtual_turn_tracker=virtual_turn_tracker,
-                    curve_intent_tracker=curve_intent_tracker,
                     pivot_state_tracker=pivot_state_tracker,
                     virtual_sensors=virtual_sensors,
                     line_search_tracker=line_search_tracker,
@@ -8740,12 +5830,6 @@ def main():
             line_follower_command["lineProcessingMs"] = (
                 line_vision_ms
                 + geometric_guidance["processingMs"]
-                + (
-                    centerline_debug["skeletonMs"]
-                    + centerline_debug["pathMs"]
-                    if centerline_debug is not None
-                    else 0.0
-                )
                 + line_control_ms
             )
 
@@ -8761,7 +5845,6 @@ def main():
                     line_sequence,
                     green_status,
                     specular_repair_status=specular_repair_status,
-                    centerline_debug=centerline_debug,
                 )
 
             if green_capture_requested:
@@ -8806,20 +5889,14 @@ def main():
             )
 
             if camera_profile["role"] == "down":
-                draw_geometric_line_overlay(
-                    frame,
-                    centerline_diagnostics,
-                    line_follower_command,
-                    gap_forward_active,
-                )
+                draw_line_control_overlay(frame, line_follower_command)
                 draw_virtual_sensor_geometry(
                     frame,
                     line_follower_command,
                 )
 
-            # A câmera inferior mantém os overlays da centerline e dos nove
-            # sensores virtuais. As linhas estruturais antigas permanecem
-            # restritas às outras câmeras.
+            # A câmera inferior mantém o controle e os nove sensores virtuais.
+            # As linhas estruturais antigas permanecem nas outras câmeras.
             if camera_profile["role"] != "down":
                 cv2.line(
                     frame,
@@ -8906,7 +5983,6 @@ def main():
                     specular_repair_status=specular_repair_status,
                     green_status=green_status,
                     line_timings=line_timings,
-                    centerline_debug=centerline_debug,
                 )
                 last_status_time = now
     except Exception as error:

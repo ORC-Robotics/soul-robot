@@ -341,26 +341,9 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lineControlSource = lineControlSource;
         }
 
-        // As métricas abaixo são opcionais e nunca invalidam o comando visual.
+        // O baseline abaixo é opcional e nunca invalida o comando visual.
         // Ausência ou valor inválido permanece como NaN/INVALID no CSV.
         CameraCurveDiagnostics& diagnostics = candidate.curveDiagnostics;
-        tryGetJsonNumber(json, "farAngle60", diagnostics.farAngle60);
-        tryGetJsonNumber(json, "farAngle75", diagnostics.farAngle75);
-        tryGetJsonNumber(json, "farAngle90", diagnostics.farAngle90);
-        tryGetJsonNumber(
-            json, "farAngleSpread", diagnostics.farAngleSpread);
-        tryGetJsonNumber(
-            json, "farPathAngleDeg", diagnostics.farPathAngleDeg);
-        tryGetJsonString(
-            json, "farConsensusDirection", diagnostics.farConsensus);
-        tryGetJsonString(
-            json, "curveIntentState", diagnostics.curveIntent);
-        tryGetJsonNumber(
-            json,
-            "dynamicTargetAngleDeg",
-            diagnostics.dynamicTargetAngleDeg);
-        tryGetJsonNumber(
-            json, "dynamicLookaheadPx", diagnostics.dynamicLookaheadPx);
         tryGetJsonNumber(
             json, "nearPosition", diagnostics.nearPosition);
         tryGetJsonNumber(
@@ -370,47 +353,9 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         tryGetJsonNumber(
             json, "headingAngleDeg", diagnostics.headingAngleDeg);
         tryGetJsonNumber(
-            json,
-            "baseVirtualSteering",
-            diagnostics.baseVirtualSteering);
-        tryGetJsonNumber(
-            json, "hybridSteering", diagnostics.hybridSteering);
-        tryGetJsonNumber(
             json, "finalSteering", diagnostics.finalSteering);
         tryGetJsonString(json, "vstate", diagnostics.virtualState);
         tryGetJsonString(json, "lineState", diagnostics.lineState);
-
-        bool pathAmbiguous = false;
-        if (tryGetJsonBool(json, "pathAmbiguous", pathAmbiguous))
-        {
-            diagnostics.pathAmbiguous = pathAmbiguous ? "true" : "false";
-        }
-
-        std::uint64_t diagnosticFrames = 0;
-        if (tryGetJsonUnsignedInteger(
-                json, "farConsensusConfirmFrames", diagnosticFrames) &&
-            diagnosticFrames <=
-                static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
-        {
-            diagnostics.farConfirmFrames =
-                static_cast<int>(diagnosticFrames);
-        }
-        if (tryGetJsonUnsignedInteger(
-                json, "curveIntentConfirmFrames", diagnosticFrames) &&
-            diagnosticFrames <=
-                static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
-        {
-            diagnostics.curveIntentConfirmFrames =
-                static_cast<int>(diagnosticFrames);
-        }
-        if (tryGetJsonUnsignedInteger(
-                json, "curveIntentReleaseFrames", diagnosticFrames) &&
-            diagnosticFrames <=
-                static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
-        {
-            diagnostics.curveIntentReleaseFrames =
-                static_cast<int>(diagnosticFrames);
-        }
 
         const bool valuesValid =
             isNormalizedValue(candidate.lineFollowerLeftPower) &&

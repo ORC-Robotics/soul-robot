@@ -148,11 +148,54 @@ class CameraProfilesTest(unittest.TestCase):
             structural,
         )
         self.assertTrue(np.any(display != 0))
+        self.assertTrue(np.array_equal(display[50, 80], (0, 255, 0)))
         for current, original in zip(
             (raw, structural, candidates, green),
             originals,
         ):
             self.assertTrue(np.array_equal(current, original))
+
+    def test_green_overlays_preserve_candidates_decisions_and_rois(self):
+        contour = rectangle_contour(45, 35, 75, 65)
+        candidate = {
+            "contour": contour,
+            "centroid": (60.0, 50.0),
+        }
+        rejected_frame = np.zeros((100, 120, 3), dtype=np.uint8)
+        accepted_frame = np.zeros_like(rejected_frame)
+        line_mode_frame = np.zeros_like(rejected_frame)
+
+        camera_line_frame.draw_green_candidate_overlays(
+            rejected_frame,
+            [candidate],
+            "DIREITA",
+            False,
+        )
+        camera_line_frame.draw_green_candidate_overlays(
+            accepted_frame,
+            [candidate],
+            "DIREITA",
+            True,
+        )
+        camera_line_frame.draw_line_mode_green_overlays(
+            line_mode_frame,
+            [candidate],
+            "DIREITA",
+            True,
+        )
+        roi_interpretation = camera_line_frame.analyze_green_marker_contours(
+            [contour],
+            np.zeros((100, 120), dtype=np.uint8),
+        )
+        camera_line_frame.draw_green_roi_overlays(
+            line_mode_frame,
+            roi_interpretation,
+        )
+
+        self.assertGreater(np.count_nonzero(rejected_frame), 0)
+        self.assertGreater(np.count_nonzero(accepted_frame), 0)
+        self.assertGreater(np.count_nonzero(line_mode_frame), 0)
+        self.assertFalse(np.array_equal(rejected_frame, accepted_frame))
 
     def test_green_hsv_rejects_non_green_colors(self):
         green_pixel = camera_line_frame.rgb_pixel_to_camera_array(0, 180, 0)
@@ -342,14 +385,23 @@ class CameraProfilesTest(unittest.TestCase):
         result = tracker.update(2, "AMBIGUO", 1.1)
         self.assertEqual(result, ("AMBIGUO", False, 2))
 
-    def test_line_follower_extension_stays_stopped(self):
-        result = camera_line_frame.calculate_line_follower_command(
-            np.full((40, 60), 255, dtype=np.uint8),
+    def test_green_classification_does_not_override_line_follower_directly(self):
+        mask = np.full((40, 60), 255, dtype=np.uint8)
+        baseline = camera_line_frame.calculate_line_follower_command(
+            mask,
+            {},
+        )
+        classified = camera_line_frame.calculate_line_follower_command(
+            mask,
             {"greenInterpretation": "RETORNO_180"},
         )
-        self.assertEqual(result, {"left_power": 0.0, "right_power": 0.0})
+        self.assertEqual(
+            (classified["left_power"], classified["right_power"]),
+            (baseline["left_power"], baseline["right_power"]),
+        )
+        self.assertEqual(classified["controlSource"], "virtual")
 
-    def test_fast_status_has_no_legacy_control_fields(self):
+    def test_fast_status_preserves_virtual_baseline_and_green_fields(self):
         status = camera_line_frame.empty_green_status()
         status.update({
             "greenInterpretation": "ESQUERDA",
@@ -373,13 +425,13 @@ class CameraProfilesTest(unittest.TestCase):
                     {
                         "left_power": 0.0,
                         "right_power": 0.0,
-                        "farAngle60": 42.0,
-                        "farPathAngleDeg": 48.0,
-                        "farConsensusDirection": "RIGHT",
-                        "farConsensusConfirmFrames": 2,
-                        "curveIntentConfirmFrames": 1,
-                        "curveIntentReleaseFrames": 0,
-                        "pathAmbiguous": True,
+                        "controlSource": "virtual",
+                        "nearPosition": 0.12,
+                        "rawNearPosition": 0.12,
+                        "mediumPosition": 0.08,
+                        "farBandPosition": -0.04,
+                        "headingAngle": 5.5,
+                        "finalSteering": 0.18,
                         "virtualState": "NORMAL",
                         "lineState": "LINE",
                     },
@@ -398,19 +450,14 @@ class CameraProfilesTest(unittest.TestCase):
 
         self.assertEqual(published["lineFollowerLeftPower"], 0.0)
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
-        self.assertFalse(published["lineNearDetected"])
+        self.assertTrue(published["lineNearDetected"])
+        self.assertEqual(published["lineControlSource"], "virtual")
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
-        self.assertEqual(published["curveIntentState"], "NONE")
-        self.assertFalse(published["curveIntentApplied"])
-        self.assertIsNone(published["dynamicTargetAngleDeg"])
-        self.assertEqual(published["farAngle60"], 42.0)
-        self.assertIsNone(published["farAngle75"])
-        self.assertEqual(published["farPathAngleDeg"], 48.0)
-        self.assertEqual(published["farConsensusDirection"], "RIGHT")
-        self.assertEqual(published["farConsensusConfirmFrames"], 2)
-        self.assertEqual(published["curveIntentConfirmFrames"], 1)
-        self.assertEqual(published["curveIntentReleaseFrames"], 0)
-        self.assertTrue(published["pathAmbiguous"])
+        self.assertEqual(published["nearPosition"], 0.12)
+        self.assertEqual(published["mediumPosition"], 0.08)
+        self.assertEqual(published["farBandPosition"], -0.04)
+        self.assertEqual(published["headingAngleDeg"], 5.5)
+        self.assertEqual(published["finalSteering"], 0.18)
         self.assertEqual(published["vstate"], "NORMAL")
         self.assertEqual(published["lineState"], "LINE")
         expected_keys = set(status) | {
@@ -418,27 +465,11 @@ class CameraProfilesTest(unittest.TestCase):
             "lineFollowerRightPower",
             "lineNearDetected",
             "lineControlSource",
-            "curveIntentState",
-            "curveIntentApplied",
-            "curveIntentConfirmFrames",
-            "curveIntentReleaseFrames",
-            "farAngle60",
-            "farAngle75",
-            "farAngle90",
-            "farAngleSpread",
-            "dynamicTargetAngleDeg",
-            "dynamicLookaheadPx",
-            "farPathAngleDeg",
-            "farConsensusDirection",
-            "farConsensusConfirmFrames",
             "nearPosition",
             "mediumPosition",
             "farBandPosition",
             "headingAngleDeg",
-            "baseVirtualSteering",
-            "hybridSteering",
             "finalSteering",
-            "pathAmbiguous",
             "vstate",
             "lineState",
             "lineTimestamp",
