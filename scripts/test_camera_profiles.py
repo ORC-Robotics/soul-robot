@@ -98,11 +98,23 @@ class CameraProfilesTest(unittest.TestCase):
     def test_down_geometry_contains_only_structural_limit(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         geometry = camera_line_frame.resolve_vision_geometry(360, profile)
-        self.assertEqual(geometry["structural_end_y"], 319)
-        self.assertEqual(geometry["ignored_start_y"], 319)
+        self.assertEqual(geometry["structural_end_y"], 360)
+        self.assertEqual(geometry["green_end_y"], 300)
+        self.assertEqual(geometry["ignored_start_y"], 360)
         self.assertEqual(
             set(geometry),
-            {"structural_end_y", "ignored_start_y", "pixel_scale"},
+            {
+                "structural_end_y",
+                "green_end_y",
+                "ignored_start_y",
+                "pixel_scale",
+            },
+        )
+
+    def test_green_minimum_area_preserves_calibrated_roi(self):
+        self.assertAlmostEqual(
+            camera_line_frame.green_minimum_area(480, 300),
+            6750.0,
         )
 
     def test_black_mask_keeps_dark_tape_and_rejects_white_floor(self):
@@ -118,6 +130,17 @@ class CameraProfilesTest(unittest.TestCase):
         result = camera_line_frame.create_structural_line_mask(source, 0, 70)
         self.assertTrue(np.all(result[:70] == 255))
         self.assertTrue(np.all(result[70:] == 0))
+
+    def test_structural_mask_removes_dead_zone_above_far(self):
+        source = np.full((100, 80), 255, dtype=np.uint8)
+        result = camera_line_frame.create_structural_line_mask(
+            source,
+            0,
+            100,
+            structural_start_y=20,
+        )
+        self.assertTrue(np.all(result[:20] == 0))
+        self.assertTrue(np.all(result[20:] == 255))
 
     def test_line_candidate_mask_rejects_giant_dark_component(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
@@ -212,6 +235,17 @@ class CameraProfilesTest(unittest.TestCase):
         mask = camera_line_frame.create_green_mask(frame, 40)
         self.assertGreater(np.count_nonzero(mask[:, 0:20]), 0)
         self.assertEqual(np.count_nonzero(mask[:, 20:]), 0)
+
+    def test_green_mask_ignores_dead_zone_above_far(self):
+        green_pixel = camera_line_frame.rgb_pixel_to_camera_array(0, 180, 0)
+        frame = np.full((40, 60, 3), green_pixel, dtype=np.uint8)
+        mask = camera_line_frame.create_green_mask(
+            frame,
+            40,
+            green_start_y=10,
+        )
+        self.assertEqual(np.count_nonzero(mask[:10]), 0)
+        self.assertGreater(np.count_nonzero(mask[10:]), 0)
 
     def test_green_fragments_merge_into_one_candidate(self):
         contours = [
@@ -426,8 +460,8 @@ class CameraProfilesTest(unittest.TestCase):
                         "left_power": 0.0,
                         "right_power": 0.0,
                         "controlSource": "virtual",
-                        "nearPosition": 0.12,
-                        "rawNearPosition": 0.12,
+                        "nearCenter": 0.20,
+                        "nearFinePosition": 0.12,
                         "mediumPosition": 0.08,
                         "farBandPosition": -0.04,
                         "headingAngle": 5.5,
@@ -453,7 +487,7 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertTrue(published["lineNearDetected"])
         self.assertEqual(published["lineControlSource"], "virtual")
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
-        self.assertEqual(published["nearPosition"], 0.12)
+        self.assertEqual(published["nearFinePosition"], 0.12)
         self.assertEqual(published["mediumPosition"], 0.08)
         self.assertEqual(published["farBandPosition"], -0.04)
         self.assertEqual(published["headingAngleDeg"], 5.5)
@@ -465,7 +499,7 @@ class CameraProfilesTest(unittest.TestCase):
             "lineFollowerRightPower",
             "lineNearDetected",
             "lineControlSource",
-            "nearPosition",
+            "nearFinePosition",
             "mediumPosition",
             "farBandPosition",
             "headingAngleDeg",

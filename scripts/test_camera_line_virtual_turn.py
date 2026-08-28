@@ -39,12 +39,8 @@ def sensor_values(
         "mediumCenter": 0.20,
         "mediumRight": 0.10,
         "mediumPosition": medium_position,
-        "nearLeft": 0.10,
-        "nearCenter": 0.20,
-        "nearRight": 0.10,
-        "nearPosition": None if steering_error is None else 0.0,
+        "nearCenter": 0.0 if steering_error is None else 0.20,
         "nearFinePosition": near_fine_position,
-        "rawNearPosition": None if steering_error is None else 0.0,
         "headingAngle": 0.0,
         "steeringError": steering_error,
     }
@@ -213,7 +209,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
         self.assertIsNone(position)
 
-    def test_near_fine_preserves_coarse_center_position(self):
+    def test_near_fine_is_published_when_near_center_is_active(self):
         mask = np.zeros((101, 101), dtype=np.uint8)
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(
             mask.shape
@@ -223,8 +219,296 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
         sensors = camera_line_frame.read_virtual_line_sensors(mask)
 
-        self.assertTrue(math.isclose(sensors["nearPosition"], 0.0))
+        self.assertGreater(sensors["nearCenter"], 0.0)
         self.assertGreater(sensors["nearFinePosition"], 0.10)
+
+    def test_pixels_outside_near_center_do_not_create_local_detection(self):
+        mask = np.zeros((101, 101), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        near_position = geometry["near"]["position"]
+        center_x0 = geometry["near"]["center"]["x0"]
+        mask[
+            near_position["y0"]:near_position["y1"],
+            near_position["x0"]:center_x0,
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertEqual(sensors["nearCenter"], 0.0)
+        self.assertIsNone(sensors["nearFinePosition"])
+        self.assertIsNone(sensors["steeringError"])
+
+    def test_heading_keeps_far_as_primary_lookahead(self):
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            (360, 480)
+        )
+        expected = camera_line_frame.calculate_virtual_heading_angle(
+            far_position=-0.40,
+            near_fine_position=0.20,
+            geometry=geometry,
+        )
+
+        actual = camera_line_frame.calculate_virtual_heading_angle(
+            far_position=-0.40,
+            near_fine_position=0.20,
+            geometry=geometry,
+            medium_position=1.0,
+        )
+
+        self.assertTrue(math.isclose(actual, expected))
+
+    def test_heading_uses_physical_medium_geometry_when_far_is_invalid(self):
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            (360, 480)
+        )
+        medium_position = 1.0
+        near_fine_position = -1.0
+        medium_point = camera_line_frame.virtual_row_position_to_point(
+            medium_position,
+            geometry["medium"],
+        )
+        near_point = camera_line_frame.virtual_fine_position_to_point(
+            near_fine_position,
+            geometry["near"]["position"],
+        )
+        expected = math.degrees(math.atan2(
+            medium_point[0] - near_point[0],
+            near_point[1] - medium_point[1],
+        ))
+
+        actual = camera_line_frame.calculate_virtual_heading_angle(
+            far_position=None,
+            near_fine_position=near_fine_position,
+            geometry=geometry,
+            medium_position=medium_position,
+        )
+
+        self.assertTrue(math.isclose(actual, expected))
+
+    def test_sensor_reading_uses_medium_heading_fallback(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        medium_right = geometry["medium"]["right"]
+        near_center = geometry["near"]["center"]
+        mask[
+            medium_right["y0"]:medium_right["y1"],
+            medium_right["x0"]:medium_right["x1"],
+        ] = 255
+        mask[
+            near_center["y0"]:near_center["y1"],
+            near_center["x0"]:near_center["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        expected = camera_line_frame.calculate_virtual_heading_angle(
+            far_position=None,
+            near_fine_position=sensors["nearFinePosition"],
+            geometry=geometry,
+            medium_position=sensors["mediumPosition"],
+        )
+
+        self.assertIsNone(sensors["farPosition"])
+        self.assertIsNotNone(sensors["mediumPosition"])
+        self.assertGreater(sensors["nearCenter"], 0.0)
+        self.assertIsNotNone(sensors["nearFinePosition"])
+        self.assertTrue(math.isclose(sensors["headingAngle"], expected))
+
+    def test_far_medium_diagonal_steers_without_near_center(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        far_right = geometry["far"]["right"]
+        medium_left = geometry["medium"]["left"]
+        mask[
+            far_right["y0"]:far_right["y1"],
+            far_right["x0"]:far_right["x1"],
+        ] = 255
+        mask[
+            medium_left["y0"]:medium_left["y1"],
+            medium_left["x0"]:medium_left["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        command = calculate_command(sensors, mask=mask)
+
+        self.assertEqual(sensors["nearCenter"], 0.0)
+        self.assertIsNone(sensors["nearFinePosition"])
+        self.assertGreater(sensors["farPosition"], 0.0)
+        self.assertLess(sensors["mediumPosition"], 0.0)
+        self.assertGreater(sensors["headingAngle"], 0.0)
+        self.assertGreater(sensors["steeringError"], 0.0)
+        self.assertNotEqual(
+            (command["left_power"], command["right_power"]),
+            (0.0, 0.0),
+        )
+
+    def test_far_medium_left_offset_uses_medium_lateral_correction(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        far_left = geometry["far"]["left"]
+        medium_left = geometry["medium"]["left"]
+        mask[
+            far_left["y0"]:far_left["y1"],
+            far_left["x0"]:far_left["x1"],
+        ] = 255
+        mask[
+            medium_left["y0"]:medium_left["y1"],
+            medium_left["x0"]:medium_left["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        command = calculate_command(sensors, mask=mask)
+        heading_normalized = max(
+            -1.0,
+            min(
+                1.0,
+                sensors["headingAngle"]
+                / camera_line_frame.VIRTUAL_HEADING_FULL_SCALE_DEG,
+            ),
+        )
+        expected_steering = max(
+            -1.0,
+            min(
+                1.0,
+                0.60 * sensors["mediumPosition"]
+                + camera_line_frame.VIRTUAL_HEADING_GAIN
+                * heading_normalized,
+            ),
+        )
+
+        self.assertIsNone(sensors["nearFinePosition"])
+        self.assertTrue(math.isclose(sensors["farPosition"], -1.0))
+        self.assertTrue(math.isclose(sensors["mediumPosition"], -1.0))
+        self.assertTrue(math.isclose(
+            sensors["steeringError"],
+            expected_steering,
+        ))
+        self.assertLess(sensors["steeringError"], -0.60)
+        self.assertLess(command["finalSteering"], -0.60)
+        self.assertNotEqual(
+            (command["left_power"], command["right_power"]),
+            (0.0, 0.0),
+        )
+
+    def test_medium_left_keeps_authority_without_near_or_far(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        medium_left = geometry["medium"]["left"]
+        mask[
+            medium_left["y0"]:medium_left["y1"],
+            medium_left["x0"]:medium_left["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        command = calculate_command(sensors, mask=mask)
+
+        self.assertIsNone(sensors["farPosition"])
+        self.assertTrue(math.isclose(sensors["mediumPosition"], -1.0))
+        self.assertIsNone(sensors["nearFinePosition"])
+        self.assertIsNone(sensors["headingAngle"])
+        self.assertTrue(math.isclose(sensors["steeringError"], -0.60))
+        self.assertEqual(command["controlSource"], "virtual")
+        self.assertNotEqual(
+            (command["left_power"], command["right_power"]),
+            (0.0, 0.0),
+        )
+
+    def test_far_right_keeps_authority_without_near_or_medium(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        far_right = geometry["far"]["right"]
+        mask[
+            far_right["y0"]:far_right["y1"],
+            far_right["x0"]:far_right["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        command = calculate_command(sensors, mask=mask)
+
+        self.assertTrue(math.isclose(sensors["farPosition"], 1.0))
+        self.assertIsNone(sensors["mediumPosition"])
+        self.assertIsNone(sensors["nearFinePosition"])
+        self.assertIsNone(sensors["headingAngle"])
+        self.assertTrue(math.isclose(
+            sensors["steeringError"],
+            camera_line_frame.VIRTUAL_HEADING_GAIN,
+        ))
+        self.assertEqual(command["controlSource"], "virtual")
+        self.assertNotEqual(
+            (command["left_power"], command["right_power"]),
+            (0.0, 0.0),
+        )
+
+    def test_green_does_not_enable_medium_only_authority_gate(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+        medium_left = geometry["medium"]["left"]
+        mask[
+            medium_left["y0"]:medium_left["y1"],
+            medium_left["x0"]:medium_left["x1"],
+        ] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(
+            mask,
+            "DIREITA",
+        )
+
+        self.assertIsNone(sensors["steeringError"])
+
+    def test_single_forward_sensor_does_not_create_gate_heading(self):
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            (360, 480)
+        )
+        cases = (
+            (1.0, None),
+            (None, -1.0),
+        )
+        for far_position, medium_position in cases:
+            with self.subTest(
+                far_position=far_position,
+                medium_position=medium_position,
+            ):
+                heading_angle = (
+                    camera_line_frame.calculate_virtual_heading_angle(
+                        far_position=far_position,
+                        near_fine_position=None,
+                        geometry=geometry,
+                        medium_position=medium_position,
+                    )
+                )
+                self.assertIsNone(heading_angle)
+
+    def test_near_center_without_lookahead_keeps_straight_steering(self):
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            (360, 480)
+        )
+        heading_angle = camera_line_frame.calculate_virtual_heading_angle(
+            far_position=None,
+            near_fine_position=0.35,
+            geometry=geometry,
+            medium_position=None,
+        )
+
+        steering_error = camera_line_frame.calculate_virtual_steering_error(
+            near_fine_position_valid=True,
+            heading_angle=heading_angle,
+        )
+
+        self.assertIsNone(heading_angle)
+        self.assertEqual(steering_error, 0.0)
 
     def test_fine_centering_deadband_zeros_small_center_error(self):
         deadband = camera_line_frame.VIRTUAL_FINE_CENTER_DEADBAND
@@ -278,7 +562,6 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             far_band_position=None,
             near_fine_position=1.0,
         )
-        sensors["nearPosition"] = 0.05
 
         result = calculate_command(
             sensors,
@@ -301,21 +584,21 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         )
         self.assertGreater(result["right_power"], 0.0)
 
-    def test_fine_centering_requires_coarse_center_and_weak_steering(self):
+    def test_fine_centering_requires_near_center_and_weak_steering(self):
         cases = (
-            (0.20, 0.11),
-            (0.31, 0.00),
+            (0.20, 0.0),
+            (0.31, 0.20),
         )
-        for protected_steering, near_position in cases:
+        for protected_steering, near_center in cases:
             with self.subTest(
                 protected_steering=protected_steering,
-                near_position=near_position,
+                near_center=near_center,
             ):
                 sensors = sensor_values(
                     steering_error=protected_steering,
                     near_fine_position=1.0,
                 )
-                sensors["nearPosition"] = near_position
+                sensors["nearCenter"] = near_center
                 result = calculate_command(sensors)
                 self.assertEqual(result["fineCorrection"], 0.0)
                 self.assertEqual(
@@ -355,40 +638,44 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             patch.object(camera_line_frame.cv2, "line") as line,
             patch.object(camera_line_frame.cv2, "circle") as circle,
         ):
-            camera_line_frame.draw_virtual_sensor_geometry(frame, command)
+            camera_line_frame.draw_virtual_sensor_geometry(
+                frame,
+                command,
+                show_debug_details=False,
+            )
 
         put_text.assert_not_called()
         rectangle.assert_not_called()
         line.assert_called_once()
         self.assertEqual(circle.call_count, 2)
 
-    def test_opposite_heading_cannot_invert_near_without_medium(self):
-        steering_error = camera_line_frame.protect_virtual_near_direction(
-            near_position=0.23,
-            medium_position=-0.06,
-            heading_angle=-14.7,
-            steering_error=-0.26,
-        )
-        self.assertTrue(math.isclose(steering_error, 0.60 * 0.23))
+    def test_virtual_debug_overlay_draws_only_near_center(self):
+        command = calculate_command(sensor_values(
+            steering_error=0.10,
+            near_fine_position=0.0,
+        ))
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+        with (
+            patch.object(camera_line_frame.cv2, "putText") as put_text,
+            patch.object(camera_line_frame.cv2, "rectangle"),
+            patch.object(camera_line_frame.cv2, "line"),
+            patch.object(camera_line_frame.cv2, "circle"),
+        ):
+            camera_line_frame.draw_virtual_sensor_geometry(frame, command)
 
-    def test_strong_medium_allows_heading_to_invert_near(self):
-        steering_error = camera_line_frame.protect_virtual_near_direction(
-            near_position=0.23,
-            medium_position=-0.25,
-            heading_angle=-14.7,
-            steering_error=-0.26,
-        )
-        self.assertTrue(math.isclose(steering_error, -0.26))
+        near_texts = [
+            call.args[1]
+            for call in put_text.call_args_list
+            if call.args[1].startswith("NEAR")
+        ]
+        self.assertEqual(len(near_texts), 2)
+        self.assertTrue(near_texts[0].startswith("NEAR-C "))
+        self.assertTrue(near_texts[1].startswith("NEAR FINE POS "))
 
-    def test_protected_near_steering_reaches_mapper_unchanged(self):
-        protected_steering = camera_line_frame.protect_virtual_near_direction(
-            near_position=0.23,
-            medium_position=-0.06,
-            heading_angle=-14.7,
-            steering_error=-0.26,
-        )
-        sensors = sensor_values(protected_steering, -0.06, 0.0)
-        sensors["nearPosition"] = 0.23
+    def test_forward_heading_reaches_mapper_without_near_direction_veto(self):
+        forward_steering = -0.26
+        sensors = sensor_values(forward_steering, -0.06, 0.0)
+        sensors["nearFinePosition"] = 0.23
         sensors["headingAngle"] = -14.7
 
         result = calculate_command(
@@ -396,11 +683,11 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             camera_line_frame.VirtualTurnStateTracker(),
         )
         expected_left, expected_right = expected_normal_motor_powers(
-            protected_steering
+            forward_steering
         )
         self.assertTrue(math.isclose(
             result["finalSteering"],
-            protected_steering,
+            forward_steering,
         ))
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
@@ -453,17 +740,22 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             round(101 * camera_line_frame.VIRTUAL_FAR_Y1),
         )
         self.assertEqual(
-            geometry["near"]["left"]["y0"],
+            geometry["near"]["center"]["y0"],
             round(101 * camera_line_frame.VIRTUAL_NEAR_Y0),
         )
         self.assertEqual(
-            geometry["near"]["left"]["y1"],
+            geometry["near"]["center"]["y1"],
             round(101 * camera_line_frame.VIRTUAL_NEAR_Y1),
         )
+        self.assertNotIn("left", geometry["near"])
+        self.assertNotIn("right", geometry["near"])
         self.assertEqual(geometry["farBand"]["left"]["y1"], round(101 * 0.27))
-        self.assertEqual(geometry["medium"]["left"]["y0"], round(101 * 0.27))
+        self.assertEqual(
+            geometry["medium"]["left"]["y0"],
+            round(101 * camera_line_frame.VIRTUAL_MEDIUM_Y0),
+        )
 
-    def test_legacy_outputs_match_direct_six_sensor_reference(self):
+    def test_sensor_outputs_match_direct_near_center_reference(self):
         random_generator = np.random.default_rng(2026)
         mask = (
             random_generator.random((101, 203)) > 0.72
@@ -484,50 +776,65 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             far_right = camera_line_frame.read_virtual_sensor(
                 mask, geometry["far"]["right"]
             )
-            near_left = camera_line_frame.read_virtual_sensor(
-                mask, geometry["near"]["left"]
-            )
             near_center = camera_line_frame.read_virtual_sensor(
                 mask, geometry["near"]["center"]
             )
-            near_right = camera_line_frame.read_virtual_sensor(
-                mask, geometry["near"]["right"]
-            )
             raw_far = (far_left, far_center, far_right)
-            raw_near = (near_left, near_center, near_right)
             if green_direction == "ESQUERDA":
                 far_center = 0.0
                 far_right = 0.0
-                near_right = 0.0
             elif green_direction == "DIREITA":
                 far_left = 0.0
                 far_center = 0.0
-                near_left = 0.0
 
             far_position = camera_line_frame.calculate_virtual_row_position(
                 far_left, far_center, far_right
             )
-            near_position = camera_line_frame.calculate_virtual_row_position(
-                near_left, near_center, near_right
+            near_center_visible = camera_line_frame.virtual_sensor_is_active(
+                near_center
             )
+            near_fine_position = None
+            if near_center_visible:
+                near_fine_position = (
+                    camera_line_frame.calculate_virtual_near_fine_position(
+                        mask,
+                        geometry["near"],
+                    )
+                )
+            medium_position = actual["mediumPosition"]
             heading_angle = camera_line_frame.calculate_virtual_heading_angle(
                 far_position,
-                near_position,
+                near_fine_position,
                 geometry,
+                medium_position=(
+                    medium_position
+                    if green_direction == "NENHUMA"
+                    else None
+                ),
             )
             steering_error = camera_line_frame.calculate_virtual_steering_error(
-                near_position,
+                near_fine_position is not None,
                 heading_angle,
+                fallback_medium_position=(
+                    medium_position
+                    if near_fine_position is None
+                    and green_direction == "NENHUMA"
+                    else None
+                ),
+                fallback_far_position=(
+                    far_position
+                    if near_fine_position is None
+                    and green_direction == "NENHUMA"
+                    else None
+                ),
             )
             expected = {
                 "farLeft": raw_far[0],
                 "farCenter": raw_far[1],
                 "farRight": raw_far[2],
                 "farPosition": far_position,
-                "nearLeft": raw_near[0],
-                "nearCenter": raw_near[1],
-                "nearRight": raw_near[2],
-                "nearPosition": near_position,
+                "nearCenter": near_center,
+                "nearFinePosition": near_fine_position,
                 "headingAngle": heading_angle,
                 "steeringError": steering_error,
             }
@@ -543,7 +850,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
 
 class VirtualRecoveryTests(unittest.TestCase):
-    def test_normal_line_with_raw_near_skips_gap_geometry(self):
+    def test_active_near_center_skips_gap_geometry(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         with patch.object(
             camera_line_frame,
@@ -553,7 +860,7 @@ class VirtualRecoveryTests(unittest.TestCase):
                 mask,
                 gap_forward_active=False,
                 green_direction="NENHUMA",
-                raw_near_visible=True,
+                near_center_visible=True,
             )
 
         extract_path.assert_not_called()
@@ -575,7 +882,7 @@ class VirtualRecoveryTests(unittest.TestCase):
                 mask,
                 gap_forward_active=False,
                 green_direction="ESQUERDA",
-                raw_near_visible=False,
+                near_center_visible=False,
             )
 
         extract_path.assert_not_called()
@@ -593,11 +900,11 @@ class VirtualRecoveryTests(unittest.TestCase):
             (False, "NENHUMA", False),
             (True, "DIREITA", True),
         )
-        for gap_active, green_direction, raw_near_visible in required_cases:
+        for gap_active, green_direction, near_center_visible in required_cases:
             with self.subTest(
                 gap_active=gap_active,
                 green_direction=green_direction,
-                raw_near_visible=raw_near_visible,
+                near_center_visible=near_center_visible,
             ):
                 with patch.object(
                     camera_line_frame,
@@ -609,7 +916,7 @@ class VirtualRecoveryTests(unittest.TestCase):
                             mask,
                             gap_forward_active=gap_active,
                             green_direction=green_direction,
-                            raw_near_visible=raw_near_visible,
+                            near_center_visible=near_center_visible,
                         )
                     )
 
@@ -638,10 +945,10 @@ class VirtualRecoveryTests(unittest.TestCase):
         self.assertIsNotNone(guidance["virtualNearPoint"])
         self.assertLess(abs(guidance["farHeadingDeg"]), 1.0)
 
-    def test_valid_raw_near_then_lost_near_requests_gap(self):
+    def test_valid_near_center_then_lost_near_requests_gap(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
-            raw_near_visible=True,
+            near_center_visible=True,
         )
         self.assertEqual(
             recent_near_frames,
@@ -650,7 +957,7 @@ class VirtualRecoveryTests(unittest.TestCase):
 
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
         )
 
         self.assertEqual(
@@ -661,7 +968,7 @@ class VirtualRecoveryTests(unittest.TestCase):
             gap_forward_active=False,
             green_direction="NENHUMA",
             recent_near_frames=recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
             real_near_point=None,
             virtual_near_point=None,
             lateral_exit_target=None,
@@ -670,11 +977,11 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_recent_near_loss_uses_far_left_gap_recovery(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
-            raw_near_visible=True,
+            near_center_visible=True,
         )
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
         )
         gap_active = camera_line_frame.gap_entry_is_required(
             False,
@@ -686,8 +993,6 @@ class VirtualRecoveryTests(unittest.TestCase):
             None,
         )
         sensors = sensor_values(None, None, -0.80)
-        sensors["rawNearPosition"] = None
-
         result = calculate_command(sensors, gap_active=gap_active)
 
         self.assertEqual(result["lineState"], "GAP")
@@ -697,11 +1002,11 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_recent_near_loss_uses_far_right_gap_recovery(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
-            raw_near_visible=True,
+            near_center_visible=True,
         )
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
         )
         gap_active = camera_line_frame.gap_entry_is_required(
             False,
@@ -713,8 +1018,6 @@ class VirtualRecoveryTests(unittest.TestCase):
             None,
         )
         sensors = sensor_values(None, None, 0.80)
-        sensors["rawNearPosition"] = None
-
         result = calculate_command(sensors, gap_active=gap_active)
 
         self.assertEqual(result["lineState"], "GAP")
@@ -724,13 +1027,13 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_gap_near_history_expires_without_being_renewed(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
-            raw_near_visible=True,
+            near_center_visible=True,
         )
         observed_history = []
         for _ in range(camera_line_frame.GAP_NEAR_HISTORY_FRAMES):
             recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
                 recent_near_frames,
-                raw_near_visible=False,
+                near_center_visible=False,
             )
             observed_history.append(recent_near_frames)
 
@@ -739,14 +1042,13 @@ class VirtualRecoveryTests(unittest.TestCase):
             gap_forward_active=False,
             green_direction="NENHUMA",
             recent_near_frames=recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
             real_near_point=None,
             virtual_near_point=None,
             lateral_exit_target=None,
         ))
 
         sensors = sensor_values(None, None, -0.80)
-        sensors["rawNearPosition"] = None
         result = calculate_command(sensors, gap_active=False)
         self.assertEqual(result["lineState"], "LINE")
         self.assertEqual(result["controlSource"], "virtual-no-line")
@@ -758,7 +1060,7 @@ class VirtualRecoveryTests(unittest.TestCase):
             gap_forward_active=False,
             green_direction="DIREITA",
             recent_near_frames=recent_near_frames,
-            raw_near_visible=False,
+            near_center_visible=False,
             real_near_point=None,
             virtual_near_point=None,
             lateral_exit_target=None,
@@ -766,7 +1068,6 @@ class VirtualRecoveryTests(unittest.TestCase):
         self.assertFalse(gap_active)
 
         sensors = sensor_values(None, None, -0.80)
-        sensors["rawNearPosition"] = None
         result = calculate_command(
             sensors,
             green_direction="DIREITA",
@@ -905,12 +1206,13 @@ class VirtualRecoveryTests(unittest.TestCase):
                     expected_powers,
                 )
 
-    def test_gap_recovery_prioritizes_near_over_medium_and_far(self):
+    def test_gap_recovery_direction_comes_from_forward_sensors(self):
         sensors = sensor_values(None, 0.80, 0.80)
-        sensors["rawNearPosition"] = -0.80
+        sensors["nearCenter"] = 0.20
+        sensors["nearFinePosition"] = -0.80
         result = calculate_command(sensors, gap_active=True)
         self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual((result["left_power"], result["right_power"]), (0.75, 0.0))
 
     def test_gap_only_ends_after_confirmed_near_reacquisition(self):
         self.assertEqual(camera_line_frame.GEOMETRIC_GAP_REACQUIRE_FRAMES, 2)
@@ -971,21 +1273,21 @@ class VirtualRecoveryTests(unittest.TestCase):
                 camera_line_frame.VirtualTurnStateTracker(),
             )
 
-    def test_green_right_preserves_raw_near_left(self):
+    def test_green_keeps_only_near_center(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
-        near_left = geometry["near"]["left"]
-        mask[near_left["y0"]:near_left["y1"], near_left["x0"]:near_left["x1"]] = 255
-        sensors = camera_line_frame.read_virtual_line_sensors(mask, "DIREITA")
-        self.assertGreater(sensors["nearLeft"], 0.0)
-
-    def test_green_left_preserves_raw_near_right(self):
-        mask = np.zeros((100, 100), dtype=np.uint8)
-        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
-        near_right = geometry["near"]["right"]
-        mask[near_right["y0"]:near_right["y1"], near_right["x0"]:near_right["x1"]] = 255
-        sensors = camera_line_frame.read_virtual_line_sensors(mask, "ESQUERDA")
-        self.assertGreater(sensors["nearRight"], 0.0)
+        near_center = geometry["near"]["center"]
+        mask[
+            near_center["y0"]:near_center["y1"],
+            near_center["x0"]:near_center["x1"],
+        ] = 255
+        for green_direction in ("ESQUERDA", "DIREITA"):
+            with self.subTest(green_direction=green_direction):
+                sensors = camera_line_frame.read_virtual_line_sensors(
+                    mask,
+                    green_direction,
+                )
+                self.assertGreater(sensors["nearCenter"], 0.0)
 
     def test_normal_mapper_below_strong_transition_matches_expected_curve(self):
         for steering_error in (0.20, -0.20):
@@ -1238,11 +1540,12 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
     def test_any_sensor_interrupts_blind_search(self):
         cases = []
         near_sensors = sensor_values(None, None, None)
-        near_sensors["rawNearPosition"] = -0.80
-        cases.append(("NEAR", near_sensors, (0.0, 0.69)))
-        cases.append(("MEDIUM", sensor_values(None, 0.80, None), (0.69, 0.0)))
-        cases.append(("FAR BAND", sensor_values(None, None, 0.80), (0.69, 0.0)))
-        cases.append(("MEDIUM CENTER", sensor_values(None, 0.0, None), (0.69, 0.69)))
+        near_sensors["nearCenter"] = 0.20
+        near_sensors["nearFinePosition"] = -0.80
+        cases.append(("NEAR-C", near_sensors, (0.75, 0.75)))
+        cases.append(("MEDIUM", sensor_values(None, 0.80, None), (0.75, 0.0)))
+        cases.append(("FAR BAND", sensor_values(None, None, 0.80), (0.75, 0.0)))
+        cases.append(("MEDIUM CENTER", sensor_values(None, 0.0, None), (0.75, 0.75)))
 
         for row_name, sensors, expected_powers in cases:
             with self.subTest(row=row_name):

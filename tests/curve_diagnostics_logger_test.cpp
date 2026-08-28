@@ -31,7 +31,7 @@ int main()
         camera.lineTimestamp = 123.456;
         camera.lineSequence = 42;
         camera.lineControlSource = "virtual-reorient";
-        camera.curveDiagnostics.nearPosition = 0.12;
+        camera.curveDiagnostics.nearFinePosition = 0.12;
         camera.curveDiagnostics.mediumPosition = -0.08;
         camera.curveDiagnostics.farBandPosition = 0.04;
         camera.curveDiagnostics.headingAngleDeg = 5.5;
@@ -87,7 +87,7 @@ int main()
     bool ok = true;
     ok &= require(
         header ==
-            "timestamp_ms,frame_id,nearPosition,mediumPosition,"
+            "timestamp_ms,frame_id,nearFinePosition,mediumPosition,"
             "farBandPosition,headingAngleDeg,finalSteering,leftMotor,"
             "rightMotor,controlSource,vstate,lineState",
         "Cabeçalho do baseline visual não corresponde ao contrato esperado.");

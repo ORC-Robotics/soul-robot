@@ -13,7 +13,7 @@ namespace
 {
 constexpr const char* kCsvHeader =
     "timestamp_ms,frame_id,"
-    "nearPosition,mediumPosition,farBandPosition,headingAngleDeg,"
+    "nearFinePosition,mediumPosition,farBandPosition,headingAngleDeg,"
     "finalSteering,leftMotor,rightMotor,controlSource,vstate,lineState";
 
 std::string diagnosticNumber(double value)
@@ -137,7 +137,7 @@ std::string CurveDiagnosticsLogger::buildCsvRow(
     std::ostringstream row;
     row << diagnosticNumber(timestampMs) << ','
         << cameraLineSnapshot.lineSequence << ','
-        << diagnosticNumber(diagnostics.nearPosition) << ','
+        << diagnosticNumber(diagnostics.nearFinePosition) << ','
         << diagnosticNumber(diagnostics.mediumPosition) << ','
         << diagnosticNumber(diagnostics.farBandPosition) << ','
         << diagnosticNumber(diagnostics.headingAngleDeg) << ','

@@ -345,7 +345,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         // Ausência ou valor inválido permanece como NaN/INVALID no CSV.
         CameraCurveDiagnostics& diagnostics = candidate.curveDiagnostics;
         tryGetJsonNumber(
-            json, "nearPosition", diagnostics.nearPosition);
+            json, "nearFinePosition", diagnostics.nearFinePosition);
         tryGetJsonNumber(
             json, "mediumPosition", diagnostics.mediumPosition);
         tryGetJsonNumber(

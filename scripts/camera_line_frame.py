@@ -203,13 +203,13 @@ GREEN_OPEN_KERNEL_SIZE = 5
 GREEN_CLOSE_KERNEL_SIZE = 5
 GREEN_OPEN_ITERATIONS = 2
 GREEN_CLOSE_ITERATIONS = 2
-# O detector de referência exige que o verde ocupe mais de 6,25% da região
-# estrutural. Como a área cresce com a resolução, este limite não fica preso
-# aos 4.000 pixels usados originalmente em 320 x 200.
+# O detector de referência exige mais de 3.000 pixels verdes em 320×200.
+# Este limite aceita o marcador oficial observado na pista, enquanto os filtros
+# de HSV, formato e associação com a faixa continuam bloqueando falsos verdes.
 LINE_MIN_COMPONENT_AREA_PX = 120
 LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
-GREEN_MIN_AREA_RATIO = 4000.0 / (320.0 * 200.0)
+GREEN_MIN_AREA_RATIO = 3000.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
@@ -247,7 +247,7 @@ SPECULAR_REPAIR_MIN_VALUE = 180
 SPECULAR_REPAIR_MAX_SATURATION = 60
 
 VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
-VIRTUAL_HEADING_GAIN = 0.60
+VIRTUAL_HEADING_GAIN = 0.80
 
 # A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
 # CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.
@@ -256,10 +256,6 @@ VIRTUAL_FINE_CENTER_GAIN = 0.25
 # preserva o alcance completo de -1,0 a +1,0 sem criar um salto no limite.
 VIRTUAL_FINE_CENTER_DEADBAND = 0.06
 VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
-
-# O heading não pode inverter uma leitura lateral clara do NEAR sem que a
-# banda MEDIUM também confirme o novo lado observado mais à frente.
-VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD = 0.20
 
 # A correção normal alcança toda a diferença de potência em 0,36.
 # Entre 0,36 e a entrada do pivot em 0,45, a faixa forte aumenta o diferencial.
@@ -371,7 +367,10 @@ CAMERA_PROFILES = {
             # a altura real do frame for diferente durante um diagnóstico.
             "geometry_reference": {
                 "frame_height": 480,
-                "structural_end_y": 400,
+                "structural_end_y": 480,
+                # O verde mantém a ROI vertical usada em sua calibração.
+                # Ampliar a máscara preta não deve mudar seus filtros.
+                "green_end_y": 400,
             },
             "green_detection_enabled": True,
             "overlay_line_thickness": 2,
@@ -588,6 +587,33 @@ def draw_green_roi_overlays(display_frame, roi_interpretation):
             else:
                 color = (0, 220, 255)
             cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)
+
+
+def draw_green_rejection_details(display_frame, rejected_candidates):
+    """Mostra por que um componente verde não chegou à classificação."""
+
+    for candidate in rejected_candidates:
+        reasons = green_geometry_rejection_reasons(candidate)
+        if "area_below_scaled_reference" in reasons:
+            detail = (
+                f"GREEN AREA {candidate['area']:.0f}/"
+                f"{candidate['scaled_minimum_area']:.0f}"
+            )
+        else:
+            detail = "GREEN REJECT " + (
+                ",".join(reasons) if reasons else "UNKNOWN"
+            )
+        x, y, _width, _height = candidate["bounding_box"]
+        cv2.putText(
+            display_frame,
+            detail,
+            (max(4, int(x)), max(14, int(y) - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 220, 255),
+            1,
+            cv2.LINE_AA,
+        )
 
 
 def parse_camera_profile(arguments=None):
@@ -1105,12 +1131,13 @@ def scale_reference_y(reference_y, reference_height, frame_height):
 
 
 def resolve_vision_geometry(frame_height, vision_profile):
-    """Calcula somente o limite estrutural validado da máscara preta."""
+    """Converte os limites verticais da máscara preta e da visão verde."""
 
     geometry_reference = vision_profile.get("geometry_reference")
     if geometry_reference is None:
         return {
             "structural_end_y": frame_height,
+            "green_end_y": frame_height,
             "ignored_start_y": None,
             "pixel_scale": 1.0,
         }
@@ -1121,11 +1148,22 @@ def resolve_vision_geometry(frame_height, vision_profile):
         reference_height,
         frame_height,
     )
+    green_end_y = scale_reference_y(
+        geometry_reference.get(
+            "green_end_y",
+            geometry_reference["structural_end_y"],
+        ),
+        reference_height,
+        frame_height,
+    )
     if not 0 < structural_end_y <= frame_height:
         raise ValueError("O limite estrutural da câmera está fora do frame.")
+    if not 0 < green_end_y <= frame_height:
+        raise ValueError("O limite da visão verde está fora do frame.")
 
     return {
         "structural_end_y": structural_end_y,
+        "green_end_y": green_end_y,
         "ignored_start_y": structural_end_y,
         "pixel_scale": float(frame_height) / float(reference_height),
     }
@@ -1134,18 +1172,28 @@ def create_structural_line_mask(
     filtered_mask,
     roi_start_y,
     structural_end_y,
+    structural_start_y=0,
 ):
-    """Remove da máscara a área física que não pode gerar candidatos."""
+    """Remove da máscara as áreas físicas que não podem gerar candidatos."""
+
+    structural_start_in_roi = max(
+        0,
+        min(filtered_mask.shape[0], structural_start_y - roi_start_y),
+    )
 
     structural_end_in_roi = max(
         0,
         min(filtered_mask.shape[0], structural_end_y - roi_start_y),
     )
 
-    if structural_end_in_roi >= filtered_mask.shape[0]:
+    if (
+        structural_start_in_roi <= 0
+        and structural_end_in_roi >= filtered_mask.shape[0]
+    ):
         return filtered_mask
 
     structural_mask = filtered_mask.copy()
+    structural_mask[:structural_start_in_roi, :] = 0
     structural_mask[structural_end_in_roi:, :] = 0
 
     return structural_mask
@@ -1336,18 +1384,31 @@ def is_hsv_green(hue, saturation, value):
     )
 
 
-def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
-    """Segmenta verde somente na área útil, sem tocar na máscara da linha."""
+def create_green_mask(
+    frame,
+    green_end_y,
+    camera_format="RGB888",
+    green_start_y=0,
+):
+    """Segmenta verde entre a zona morta superior e o limite verde inferior."""
 
-    useful_end_y = max(0, min(frame.shape[0], int(structural_end_y)))
-    useful_frame = frame[:useful_end_y, :]
+    useful_end_y = max(0, min(frame.shape[0], int(green_end_y)))
+    useful_start_y = max(0, min(useful_end_y, int(green_start_y)))
+    green_mask = np.zeros(
+        (useful_end_y, frame.shape[1]),
+        dtype=np.uint8,
+    )
+    if useful_start_y >= useful_end_y:
+        return green_mask
+
+    useful_frame = frame[useful_start_y:useful_end_y, :]
     hsv_frame = frame_to_hsv(useful_frame, camera_format)
-    green_mask = cv2.inRange(
+    useful_green_mask = cv2.inRange(
         hsv_frame,
         (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
         (GREEN_HUE_MAX, 255, 255),
     )
-    if cv2.countNonZero(green_mask) == 0:
+    if cv2.countNonZero(useful_green_mask) == 0:
         return green_mask
     green_kernel_size = scaled_odd_kernel_size(
         GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
@@ -1360,43 +1421,68 @@ def create_green_mask(frame, structural_end_y, camera_format="RGB888"):
         cv2.MORPH_RECT,
         (green_kernel_size, green_kernel_size),
     )
-    green_mask = cv2.morphologyEx(
-        green_mask,
+    useful_green_mask = cv2.morphologyEx(
+        useful_green_mask,
         cv2.MORPH_OPEN,
         open_kernel,
         iterations=GREEN_OPEN_ITERATIONS,
     )
-    return cv2.morphologyEx(
-        green_mask,
+    useful_green_mask = cv2.morphologyEx(
+        useful_green_mask,
         cv2.MORPH_CLOSE,
         close_kernel,
         iterations=GREEN_CLOSE_ITERATIONS,
     )
+    green_mask[useful_start_y:useful_end_y, :] = useful_green_mask
+    return green_mask
 
 
-def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
-    """Expõe as etapas da segmentação somente para a captura one-shot."""
+def create_green_mask_stages(
+    frame,
+    green_end_y,
+    camera_format="RGB888",
+    green_start_y=0,
+):
+    """Expõe as etapas da segmentação dentro dos mesmos limites verticais."""
 
-    useful_end_y = max(0, min(frame.shape[0], int(structural_end_y)))
-    useful_frame = frame[:useful_end_y, :]
-    hsv_frame = frame_to_hsv(useful_frame, camera_format)
-    hue_mask = cv2.inRange(
-        hsv_frame,
+    useful_end_y = max(0, min(frame.shape[0], int(green_end_y)))
+    useful_start_y = max(0, min(useful_end_y, int(green_start_y)))
+    hsv_frame = np.zeros(
+        (useful_end_y, frame.shape[1], 3),
+        dtype=np.uint8,
+    )
+    empty_mask = np.zeros(
+        (useful_end_y, frame.shape[1]),
+        dtype=np.uint8,
+    )
+    if useful_start_y >= useful_end_y:
+        return (
+            hsv_frame,
+            empty_mask,
+            empty_mask.copy(),
+            empty_mask.copy(),
+            empty_mask.copy(),
+        )
+
+    useful_frame = frame[useful_start_y:useful_end_y, :]
+    useful_hsv_frame = frame_to_hsv(useful_frame, camera_format)
+    useful_hue_mask = cv2.inRange(
+        useful_hsv_frame,
         (GREEN_HUE_MIN, 0, 0),
         (GREEN_HUE_MAX, 255, 255),
     )
-    hue_saturation_mask = cv2.inRange(
-        hsv_frame,
+    useful_hue_saturation_mask = cv2.inRange(
+        useful_hsv_frame,
         (GREEN_HUE_MIN, GREEN_SATURATION_MIN, 0),
         (GREEN_HUE_MAX, 255, 255),
     )
-    hsv_mask = cv2.inRange(
-        hsv_frame,
+    useful_hsv_mask = cv2.inRange(
+        useful_hsv_frame,
         (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
         (GREEN_HUE_MAX, 255, 255),
     )
-    final_mask = hsv_mask.copy()
-    if cv2.countNonZero(hsv_mask) > 0:
+    useful_final_mask = useful_hsv_mask.copy()
+    if cv2.countNonZero(useful_hsv_mask) > 0:
         green_kernel_size = scaled_odd_kernel_size(
             GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
         )
@@ -1408,18 +1494,28 @@ def create_green_mask_stages(frame, structural_end_y, camera_format="RGB888"):
             cv2.MORPH_RECT,
             (green_kernel_size, green_kernel_size),
         )
-        final_mask = cv2.morphologyEx(
-            final_mask,
+        useful_final_mask = cv2.morphologyEx(
+            useful_final_mask,
             cv2.MORPH_OPEN,
             open_kernel,
             iterations=GREEN_OPEN_ITERATIONS,
         )
-        final_mask = cv2.morphologyEx(
-            final_mask,
+        useful_final_mask = cv2.morphologyEx(
+            useful_final_mask,
             cv2.MORPH_CLOSE,
             close_kernel,
             iterations=GREEN_CLOSE_ITERATIONS,
         )
+    hue_mask = empty_mask.copy()
+    hue_saturation_mask = empty_mask.copy()
+    hsv_mask = empty_mask.copy()
+    final_mask = empty_mask.copy()
+    active_rows = slice(useful_start_y, useful_end_y)
+    hsv_frame[active_rows, :] = useful_hsv_frame
+    hue_mask[active_rows, :] = useful_hue_mask
+    hue_saturation_mask[active_rows, :] = useful_hue_saturation_mask
+    hsv_mask[active_rows, :] = useful_hsv_mask
+    final_mask[active_rows, :] = useful_final_mask
     return hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask
 
 
@@ -1588,14 +1684,20 @@ def describe_green_contour(
 
 def find_green_candidates(
     frame,
-    structural_end_y,
+    green_end_y,
     camera_format="RGB888",
+    green_start_y=0,
     timings=None,
 ):
     """Segmenta e separa candidatos geométricos de ruídos verdes rejeitados."""
 
     mask_started = time.perf_counter() if timings is not None else 0.0
-    green_mask = create_green_mask(frame, structural_end_y, camera_format)
+    green_mask = create_green_mask(
+        frame,
+        green_end_y,
+        camera_format,
+        green_start_y,
+    )
     if timings is not None:
         timings["green_mask_ms"] = (
             time.perf_counter() - mask_started
@@ -2254,19 +2356,19 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
     )
     return result
 
-VIRTUAL_FAR_Y0 = 0.00
-VIRTUAL_FAR_Y1 = 0.54
+VIRTUAL_FAR_Y0 = 0.13
+VIRTUAL_FAR_Y1 = 0.43
 
 """rois virtuais para o seguidor de linha, em coordenadas normalizadas"""
-VIRTUAL_NEAR_Y0 = 0.54
-VIRTUAL_NEAR_Y1 = 0.83
+VIRTUAL_NEAR_Y0 = 0.82
+VIRTUAL_NEAR_Y1 = 1.0
 
 # As duas novas bandas dividem somente a inteligência de curva. O FAR legado
 # acima continua cobrindo 0,00–0,54 diretamente e não é reconstruído por elas.
-VIRTUAL_FAR_BAND_Y0 = 0.00
+VIRTUAL_FAR_BAND_Y0 = 0.13
 VIRTUAL_FAR_BAND_Y1 = 0.27
-VIRTUAL_MEDIUM_Y0 = 0.27
-VIRTUAL_MEDIUM_Y1 = 0.54
+VIRTUAL_MEDIUM_Y0 = 0.43
+VIRTUAL_MEDIUM_Y1 = 0.82
 # Divisão horizontal dos três sensores.
 #
 # Existe uma pequena sobreposição entre L/C e C/R.
@@ -2284,6 +2386,17 @@ VIRTUAL_CENTER_X1 = 0.615
 
 VIRTUAL_RIGHT_X0 = 0.615
 VIRTUAL_RIGHT_X1 = 0.96
+
+# O FAR legado usa quase toda a largura útil da imagem para antecipar a faixa
+# sem modificar a geometria horizontal preservada do MEDIUM.
+VIRTUAL_FAR_LEFT_X0 = 0.00
+VIRTUAL_FAR_LEFT_X1 = 0.385
+
+VIRTUAL_FAR_CENTER_X0 = 0.385
+VIRTUAL_FAR_CENTER_X1 = 0.615
+
+VIRTUAL_FAR_RIGHT_X0 = 0.615
+VIRTUAL_FAR_RIGHT_X1 = 1.0
 
 # O scan usa somente uma direção clara do MEDIUM e termina após três frames.
 VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD = 0.20
@@ -2312,12 +2425,12 @@ VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 # de quadros consecutivos.
 QUADROS_PARA_REARMAR_VERDE = 60
 
-# A curva é considerada iniciada quando o NEAR se desloca
-# suficientemente para o lado escolhido.
+# A curva é considerada iniciada quando a posição fina local se desloca
+# suficientemente para o lado escolhido, com presença confirmada no NEAR-C.
 LIMIAR_CURVA_VERDE_INICIADA = 0.20
 
-# Após a curva ter começado, o retorno do NEAR para esta região
-# central indica que o robô entrou e se alinhou com a nova faixa.
+# Após a curva ter começado, o retorno da posição fina para esta região central
+# indica que o robô entrou e se alinhou com a nova faixa.
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
 # Evita encerrar a prioridade por uma leitura central isolada.
 QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
@@ -2340,7 +2453,7 @@ GEOMETRIC_GAP_REACQUIRE_FRAMES = 2
 GEOMETRIC_GAP_SEARCH_STEP_PX = 6
 GEOMETRIC_GAP_MAX_SEARCH_PX = 120
 
-# Mantém por poucos quadros a evidência de que o NEAR RAW estava visível.
+# Mantém por poucos quadros a evidência de que o NEAR-C estava visível.
 # A memória permite reconhecer o início de um GAP sem depender de uma única
 # amostra geométrica na altura exata usada pelo rastreador preservado.
 GAP_NEAR_HISTORY_FRAMES = 3
@@ -2387,7 +2500,7 @@ GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
 
 def resolve_virtual_sensor_geometry(frame_shape):
     """
-    Converte o FAR/NEAR legado e as novas bandas para pixels.
+    Converte FAR, FAR BAND, MEDIUM e o único sensor NEAR-C para pixels.
 
     O retângulo FAR original é calculado diretamente para preservar
     exatamente a leitura usada pelo seguidor base.
@@ -2416,24 +2529,33 @@ def resolve_virtual_sensor_geometry(frame_shape):
     right_x0 = int(round(width * VIRTUAL_RIGHT_X0))
     right_x1 = int(round(width * VIRTUAL_RIGHT_X1))
 
+    far_left_x0 = int(round(width * VIRTUAL_FAR_LEFT_X0))
+    far_left_x1 = int(round(width * VIRTUAL_FAR_LEFT_X1))
+
+    far_center_x0 = int(round(width * VIRTUAL_FAR_CENTER_X0))
+    far_center_x1 = int(round(width * VIRTUAL_FAR_CENTER_X1))
+
+    far_right_x0 = int(round(width * VIRTUAL_FAR_RIGHT_X0))
+    far_right_x1 = int(round(width * VIRTUAL_FAR_RIGHT_X1))
+
     return {
         "far": {
             "left": {
-                "x0": left_x0,
+                "x0": far_left_x0,
                 "y0": far_y0,
-                "x1": left_x1,
+                "x1": far_left_x1,
                 "y1": far_y1,
             },
             "center": {
-                "x0": center_x0,
+                "x0": far_center_x0,
                 "y0": far_y0,
-                "x1": center_x1,
+                "x1": far_center_x1,
                 "y1": far_y1,
             },
             "right": {
-                "x0": right_x0,
+                "x0": far_right_x0,
                 "y0": far_y0,
-                "x1": right_x1,
+                "x1": far_right_x1,
                 "y1": far_y1,
             },
         },
@@ -2481,22 +2603,18 @@ def resolve_virtual_sensor_geometry(frame_shape):
         },
 
         "near": {
-            "left": {
-                "x0": left_x0,
-                "y0": near_y0,
-                "x1": left_x1,
-                "y1": near_y1,
-            },
             "center": {
                 "x0": center_x0,
                 "y0": near_y0,
                 "x1": center_x1,
                 "y1": near_y1,
             },
-            "right": {
-                "x0": right_x0,
+            # Esta faixa não é outro sensor. Ela converte os pixels da linha
+            # local em uma coordenada X contínua para centralização e heading.
+            "position": {
+                "x0": 0,
                 "y0": near_y0,
-                "x1": right_x1,
+                "x1": width,
                 "y1": near_y1,
             },
         },
@@ -2505,40 +2623,171 @@ def resolve_virtual_sensor_geometry(frame_shape):
 def draw_virtual_sensor_geometry(
     frame,
     line_follower_command,
+    show_debug_details=True,
 ):
-    """Desenha somente a direção observada entre os pontos NEAR e FAR."""
+    """Desenha a direção e, quando habilitados, os sensores de depuração."""
 
     geometry = resolve_virtual_sensor_geometry(
         frame.shape
     )
 
-    far_position = line_follower_command["farPosition"]
-    near_position = line_follower_command["nearPosition"]
-    far_point = virtual_row_position_to_point(
-        far_position,
-        geometry["far"],
-    )
-
-    near_point = virtual_row_position_to_point(
-        near_position,
-        geometry["near"],
-    )
-
-    if far_point is not None and near_point is not None:
-        far_point_int = (
-            int(round(far_point[0])),
-            int(round(far_point[1])),
+    if show_debug_details:
+        sensors = (
+            (
+                "FAR-L",
+                geometry["far"]["left"],
+                line_follower_command["farLeft"],
+            ),
+            (
+                "FAR-C",
+                geometry["far"]["center"],
+                line_follower_command["farCenter"],
+            ),
+            (
+                "FAR-R",
+                geometry["far"]["right"],
+                line_follower_command["farRight"],
+            ),
+            (
+                "MEDIUM-L",
+                geometry["medium"]["left"],
+                line_follower_command["mediumLeft"],
+            ),
+            (
+                "MEDIUM-C",
+                geometry["medium"]["center"],
+                line_follower_command["mediumCenter"],
+            ),
+            (
+                "MEDIUM-R",
+                geometry["medium"]["right"],
+                line_follower_command["mediumRight"],
+            ),
+            (
+                "NEAR-C",
+                geometry["near"]["center"],
+                line_follower_command["nearCenter"],
+            ),
         )
 
-        near_point_int = (
-            int(round(near_point[0])),
-            int(round(near_point[1])),
+        for name, sensor, value in sensors:
+            cv2.rectangle(
+                frame,
+                (sensor["x0"], sensor["y0"]),
+                (sensor["x1"], sensor["y1"]),
+                (255, 0, 255),
+                2,
+            )
+            cv2.putText(
+                frame,
+                f"{name} {value:.2f}",
+                (sensor["x0"] + 8, sensor["y0"] + 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (255, 0, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+        # O contorno interno identifica somente a faixa FAR BAND usada pelo
+        # controle, sem substituir o retângulo completo do FAR principal.
+        far_band_left = geometry["farBand"]["left"]
+        far_band_right = geometry["farBand"]["right"]
+        cv2.rectangle(
+            frame,
+            (far_band_left["x0"], far_band_left["y0"]),
+            (far_band_right["x1"], far_band_right["y1"]),
+            (255, 160, 0),
+            1,
+        )
+        cv2.putText(
+            frame,
+            "FAR BAND",
+            (
+                far_band_left["x0"] + 8,
+                far_band_left["y1"] - 8,
+            ),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (255, 160, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+        position_details = (
+            (
+                "FAR BAND POS",
+                line_follower_command["farBandPosition"],
+                geometry["farBand"]["center"],
+            ),
+            (
+                "MEDIUM POS",
+                line_follower_command["mediumPosition"],
+                geometry["medium"]["center"],
+            ),
+            (
+                "NEAR FINE POS",
+                line_follower_command["nearFinePosition"],
+                geometry["near"]["center"],
+            ),
+        )
+        for label, position, position_geometry in position_details:
+            position_text = (
+                f"{label} {position:+.2f}"
+                if position is not None
+                else f"{label} INVALID"
+            )
+            cv2.putText(
+                frame,
+                position_text,
+                (
+                    position_geometry["x0"] + 8,
+                    position_geometry["y0"] + 48,
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
+
+    reference_point = virtual_fine_position_to_point(
+        line_follower_command["nearFinePosition"],
+        geometry["near"]["position"],
+    )
+    lookahead_position = line_follower_command["farPosition"]
+    lookahead_geometry = geometry["far"]
+    if reference_point is not None and lookahead_position is None:
+        lookahead_position = line_follower_command["mediumPosition"]
+        lookahead_geometry = geometry["medium"]
+    elif (
+        reference_point is None
+        and line_follower_command["headingAngle"] is not None
+    ):
+        reference_point = virtual_row_position_to_point(
+            line_follower_command["mediumPosition"],
+            geometry["medium"],
+        )
+    lookahead_point = virtual_row_position_to_point(
+        lookahead_position,
+        lookahead_geometry,
+    )
+
+    if lookahead_point is not None and reference_point is not None:
+        lookahead_point_int = (
+            int(round(lookahead_point[0])),
+            int(round(lookahead_point[1])),
+        )
+
+        reference_point_int = (
+            int(round(reference_point[0])),
+            int(round(reference_point[1])),
         )
 
         cv2.line(
             frame,
-            near_point_int,
-            far_point_int,
+            reference_point_int,
+            lookahead_point_int,
             (0, 255, 255),
             2,
             cv2.LINE_AA,
@@ -2546,7 +2795,7 @@ def draw_virtual_sensor_geometry(
 
         cv2.circle(
             frame,
-            near_point_int,
+            reference_point_int,
             5,
             (0, 255, 255),
             -1,
@@ -2554,11 +2803,40 @@ def draw_virtual_sensor_geometry(
 
         cv2.circle(
             frame,
-            far_point_int,
+            lookahead_point_int,
             5,
             (0, 255, 255),
             -1,
         )
+
+    if show_debug_details:
+        heading_angle = line_follower_command["headingAngle"]
+        heading_text = (
+            f"HEADING {heading_angle:+.1f} deg"
+            if heading_angle is not None
+            else "HEADING INVALID"
+        )
+        steering_error = line_follower_command["steeringError"]
+        steering_text = (
+            f"STEERING {steering_error:+.2f}"
+            if steering_error is not None
+            else "STEERING INVALID"
+        )
+        near_center = geometry["near"]["center"]
+        for line_index, debug_text in enumerate((heading_text, steering_text)):
+            cv2.putText(
+                frame,
+                debug_text,
+                (
+                    near_center["x0"] + 8,
+                    near_center["y0"] + 72 + line_index * 24,
+                ),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 255, 255),
+                1,
+                cv2.LINE_AA,
+            )
 
 def find_active_band_segments(processed_line_mask, y):
     """
@@ -3658,7 +3936,7 @@ def extract_gap_geometric_guidance(
     processed_line_mask,
     gap_forward_active,
     green_direction,
-    raw_near_visible,
+    near_center_visible,
 ):
     """Executa a geometria somente quando ela pode participar do GAP."""
 
@@ -3666,7 +3944,7 @@ def extract_gap_geometric_guidance(
         gap_forward_active
         or (
             green_direction == "NENHUMA"
-            and not raw_near_visible
+            and not near_center_visible
         )
     )
     if not geometry_required:
@@ -3796,9 +4074,12 @@ def calculate_virtual_near_fine_position(
 ):
     """Mede o centro X real dos pixels ativos na faixa vertical do NEAR."""
 
-    near_y0 = near_geometry["center"]["y0"]
-    near_y1 = near_geometry["center"]["y1"]
-    near_roi = processed_line_mask[near_y0:near_y1, :]
+    position_geometry = near_geometry["position"]
+    near_x0 = position_geometry["x0"]
+    near_y0 = position_geometry["y0"]
+    near_x1 = position_geometry["x1"]
+    near_y1 = position_geometry["y1"]
+    near_roi = processed_line_mask[near_y0:near_y1, near_x0:near_x1]
     if near_roi.size == 0 or near_roi.shape[1] <= 1:
         return None
 
@@ -3817,7 +4098,7 @@ def read_virtual_line_sensors(
     direcao_verde_ativa="NENHUMA",
 ):
     """
-    Preserva o FAR/NEAR legado e lê FAR BAND/MEDIUM separadamente.
+    Lê FAR, FAR BAND, MEDIUM e o sensor local NEAR-C separadamente.
     """
 
     geometry = resolve_virtual_sensor_geometry(
@@ -3839,19 +4120,9 @@ def read_virtual_line_sensors(
         geometry["far"]["right"],
     )
 
-    near_left = read_virtual_sensor(
-        processed_line_mask,
-        geometry["near"]["left"],
-    )
-
     near_center = read_virtual_sensor(
         processed_line_mask,
         geometry["near"]["center"],
-    )
-
-    near_right = read_virtual_sensor(
-        processed_line_mask,
-        geometry["near"]["right"],
     )
 
     far_band_left = read_virtual_sensor(
@@ -3889,46 +4160,31 @@ def read_virtual_line_sensors(
         far_center,
         far_right,
     )
-    raw_near_position = calculate_virtual_row_position(
-        near_left,
-        near_center,
-        near_right,
-    )
-    near_fine_position = calculate_virtual_near_fine_position(
-        processed_line_mask,
-        geometry["near"],
-    )
+    near_center_visible = virtual_sensor_is_active(near_center)
+    near_fine_position = None
+    if near_center_visible:
+        near_fine_position = calculate_virtual_near_fine_position(
+            processed_line_mask,
+            geometry["near"],
+        )
     control_far_left = far_left
     control_far_center = far_center
     control_far_right = far_right
-    control_near_left = near_left
-    control_near_center = near_center
-    control_near_right = near_right
 
     # Durante uma interseção sinalizada por verde, somente o ramo
     # permitido deve influenciar a antecipação do FAR.
-    #
-    # As cópias de controle preservam no overlay as leituras RAW da câmera.
     if direcao_verde_ativa == "ESQUERDA":
         control_far_center = 0.0
         control_far_right = 0.0
-        control_near_right = 0.0
 
     elif direcao_verde_ativa == "DIREITA":
         control_far_left = 0.0
         control_far_center = 0.0
-        control_near_left = 0.0
 
     far_position = calculate_virtual_row_position(
         control_far_left,
         control_far_center,
         control_far_right,
-    )
-
-    near_position = calculate_virtual_row_position(
-        control_near_left,
-        control_near_center,
-        control_near_right,
     )
 
     far_band_position = calculate_virtual_row_position(
@@ -3943,22 +4199,38 @@ def read_virtual_line_sensors(
         medium_right,
     )
 
-    heading_angle = calculate_virtual_heading_angle(
-    far_position,
-    near_position,
-    geometry,
-)
-    steering_error = calculate_virtual_steering_error(
-    near_position,
-    heading_angle,
-)
+    # O MEDIUM substitui o lookahead somente no seguidor normal. Durante uma
+    # manobra GREEN, a máscara direcional preserva o heading já existente.
+    heading_medium_position = None
     if direcao_verde_ativa == "NENHUMA":
-        steering_error = protect_virtual_near_direction(
-            near_position,
-            medium_position,
-            heading_angle,
-            steering_error,
-        )
+        heading_medium_position = medium_position
+
+    heading_angle = calculate_virtual_heading_angle(
+        far_position,
+        near_fine_position,
+        geometry,
+        medium_position=heading_medium_position,
+    )
+    steering_error = calculate_virtual_steering_error(
+        near_fine_position is not None,
+        heading_angle,
+        fallback_medium_position=(
+            heading_medium_position
+            if (
+                near_fine_position is None
+                and direcao_verde_ativa == "NENHUMA"
+            )
+            else None
+        ),
+        fallback_far_position=(
+            far_position
+            if (
+                near_fine_position is None
+                and direcao_verde_ativa == "NENHUMA"
+            )
+            else None
+        ),
+    )
 
     return {
         "farLeft": far_left,
@@ -3977,12 +4249,8 @@ def read_virtual_line_sensors(
         "mediumRight": medium_right,
         "mediumPosition": medium_position,
 
-        "nearLeft": near_left,
         "nearCenter": near_center,
-        "nearRight": near_right,
-        "nearPosition": near_position,
         "nearFinePosition": near_fine_position,
-        "rawNearPosition": raw_near_position,
         "headingAngle": heading_angle,
         "steeringError": steering_error,
     }
@@ -4034,6 +4302,13 @@ def finite_virtual_position(value):
     return value if math.isfinite(value) else None
 
 
+def virtual_sensor_is_active(value):
+    """Valida se uma leitura analógica supera o limiar global dos sensores."""
+
+    value = finite_virtual_position(value)
+    return value is not None and value >= VIRTUAL_ROW_MIN_ACTIVATION
+
+
 def apply_virtual_fine_center_deadband(fine_position):
     """Remove a trepidação central sem reduzir o alcance da posição fina."""
 
@@ -4047,10 +4322,9 @@ def apply_virtual_fine_center_deadband(fine_position):
 
 
 def virtual_recovery_sensor_direction(sensors):
-    """Escolhe uma direção lateral RAW na ordem NEAR, MEDIUM e FAR BAND."""
+    """Escolhe uma direção lateral RAW na ordem MEDIUM e FAR BAND."""
 
     positions = (
-        sensors.get("rawNearPosition", sensors.get("nearPosition")),
         sensors.get("mediumPosition"),
         sensors.get("farBandPosition"),
     )
@@ -4066,20 +4340,25 @@ def virtual_recovery_sensor_direction(sensors):
 
 
 def virtual_raw_line_is_visible(sensors):
-    """Indica se alguma das três fileiras RAW possui posição utilizável."""
+    """Indica presença no NEAR-C ou posição utilizável mais à frente."""
 
-    positions = (
-        sensors.get("rawNearPosition", sensors.get("nearPosition")),
+    forward_positions = (
         sensors.get("mediumPosition"),
         sensors.get("farBandPosition"),
     )
-    return any(finite_virtual_position(position) is not None for position in positions)
+    return (
+        virtual_sensor_is_active(sensors.get("nearCenter"))
+        or any(
+            finite_virtual_position(position) is not None
+            for position in forward_positions
+        )
+    )
 
 
-def update_gap_recent_near_frames(recent_near_frames, raw_near_visible):
-    """Atualiza a memória curta de uma observação real no NEAR RAW."""
+def update_gap_recent_near_frames(recent_near_frames, near_center_visible):
+    """Atualiza a memória curta de uma observação real no NEAR-C."""
 
-    if raw_near_visible:
+    if near_center_visible:
         return GAP_NEAR_HISTORY_FRAMES
     return max(0, int(recent_near_frames) - 1)
 
@@ -4088,7 +4367,7 @@ def gap_entry_is_required(
     gap_forward_active,
     green_direction,
     recent_near_frames,
-    raw_near_visible,
+    near_center_visible,
     real_near_point,
     virtual_near_point,
     lateral_exit_target,
@@ -4099,7 +4378,7 @@ def gap_entry_is_required(
         not gap_forward_active
         and green_direction == "NENHUMA"
         and recent_near_frames > 0
-        and not raw_near_visible
+        and not near_center_visible
         and real_near_point is None
         and virtual_near_point is None
         and lateral_exit_target is None
@@ -4380,8 +4659,8 @@ def calculate_line_follower_command(
     """
     Aplica o seguidor virtual validado pela câmera inferior.
 
-    Verde e gap mantêm prioridade. No modo normal, somente o steering dos nove
-    sensores virtuais, já protegido por NEAR/MEDIUM, chega ao mapper.
+    Verde e GAP mantêm prioridade. No modo normal, o heading dos sensores à
+    frente e a centralização local do NEAR-C chegam ao mapper.
     """
 
     _ = green_detection_result
@@ -4429,7 +4708,7 @@ def calculate_line_follower_command(
             direct_recovery_direction = observed_recovery_direction
             control_source = "gap-sensor-recovery"
         elif raw_line_visible:
-            # Qualquer linha RAW encerra a busca cega, mas somente o NEAR
+            # Qualquer linha RAW encerra a busca cega, mas somente o NEAR-C
             # confirmado pode encerrar o estado GAP fora deste mapper.
             if line_search_tracker is not None:
                 line_search_tracker.stop()
@@ -4465,20 +4744,16 @@ def calculate_line_follower_command(
             # O seguidor normal recupera autoridade no primeiro frame válido,
             # mesmo enquanto o tracker confirma a saída do REORIENT.
             steering_error = protected_virtual_steering
-            near_position = finite_virtual_position(
-                sensors.get("nearPosition")
-            )
             near_fine_position = finite_virtual_position(
-                sensors.get("nearFinePosition")
+                sensors["nearFinePosition"]
             )
             protected_steering_for_fine = finite_virtual_position(
                 protected_virtual_steering
             )
             if (
-                near_position is not None
+                virtual_sensor_is_active(sensors["nearCenter"])
                 and near_fine_position is not None
                 and protected_steering_for_fine is not None
-                and abs(near_position) <= 0.10
                 and abs(protected_steering_for_fine)
                 <= NORMAL_FULL_STEERING_ERROR
             ):
@@ -4564,8 +4839,8 @@ def calculate_line_follower_command(
     # CONTROLE DE MOTORES
     # --------------------------------------------------------
 
-    BASE_POWER = 0.72
-    MAX_POWER = 0.78
+    BASE_POWER = 0.75
+    MAX_POWER = 0.82
     NORMAL_INNER_MIN_POWER = 0.66
 
     # A faixa forte amplia a curva sem reduzir nenhuma roda abaixo de 0,61.
@@ -4713,15 +4988,8 @@ def calculate_line_follower_command(
         "mediumRight": sensors["mediumRight"],
         "mediumPosition": sensors["mediumPosition"],
 
-        "nearLeft": sensors["nearLeft"],
         "nearCenter": sensors["nearCenter"],
-        "nearRight": sensors["nearRight"],
-        "nearPosition": sensors["nearPosition"],
-        "nearFinePosition": sensors.get("nearFinePosition"),
-        "rawNearPosition": sensors.get(
-            "rawNearPosition",
-            sensors["nearPosition"],
-        ),
+        "nearFinePosition": sensors["nearFinePosition"],
 
         "headingAngle": sensors["headingAngle"],
         "fineCorrection": fine_correction,
@@ -4778,36 +5046,71 @@ def virtual_row_position_to_point(
     )
 
 
+def virtual_fine_position_to_point(position, position_geometry):
+    """Converte o X contínuo do NEAR em um ponto físico da faixa local."""
+
+    if position is None:
+        return None
+
+    x0 = position_geometry["x0"]
+    x1 = position_geometry["x1"]
+    center_y = (
+        position_geometry["y0"]
+        + position_geometry["y1"]
+    ) / 2.0
+    maximum_offset = max(0.0, float(x1 - x0 - 1))
+    normalized = (position + 1.0) / 2.0
+    x = float(x0) + normalized * maximum_offset
+    return float(x), float(center_y)
+
+
 def calculate_virtual_heading_angle(
     far_position,
-    near_position,
+    near_fine_position,
     geometry,
+    medium_position=None,
 ):
     """
-    Calcula a direção da faixa entre NEAR e FAR.
+    Calcula a direção usando os pontos físicos disponíveis no frame atual.
 
     0°  = reta
     >0° = aponta para a direita
     <0° = aponta para a esquerda
 
-    Retorna None se FAR ou NEAR forem inválidos.
+    Com NEAR válido, preserva FAR↔NEAR e o fallback MEDIUM↔NEAR. Sem NEAR,
+    exige FAR e MEDIUM válidos e usa FAR↔MEDIUM. Um único sensor à frente não
+    cria orientação nova e permanece disponível para o recovery existente.
     """
 
-    far_point = virtual_row_position_to_point(
-        far_position,
-        geometry["far"],
+    reference_point = virtual_fine_position_to_point(
+        near_fine_position,
+        geometry["near"]["position"],
+    )
+    lookahead_position = far_position
+    lookahead_geometry = geometry["far"]
+
+    if reference_point is not None:
+        if lookahead_position is None:
+            lookahead_position = medium_position
+            lookahead_geometry = geometry["medium"]
+    else:
+        if far_position is None or medium_position is None:
+            return None
+        reference_point = virtual_row_position_to_point(
+            medium_position,
+            geometry["medium"],
+        )
+
+    lookahead_point = virtual_row_position_to_point(
+        lookahead_position,
+        lookahead_geometry,
     )
 
-    near_point = virtual_row_position_to_point(
-        near_position,
-        geometry["near"],
-    )
-
-    if far_point is None or near_point is None:
+    if lookahead_point is None or reference_point is None:
         return None
 
-    delta_x = far_point[0] - near_point[0]
-    delta_y = near_point[1] - far_point[1]
+    delta_x = lookahead_point[0] - reference_point[0]
+    delta_y = reference_point[1] - lookahead_point[1]
 
     if delta_y <= 0.0:
         return None
@@ -4822,27 +5125,46 @@ def calculate_virtual_heading_angle(
     )
 
 def calculate_virtual_steering_error(
-    near_position,
+    near_fine_position_valid,
     heading_angle,
+    fallback_medium_position=None,
+    fallback_far_position=None,
 ):
     """
-    Combina posição lateral atual e antecipação da trajetória.
+    Usa o heading físico como direção da trajetória.
 
-    Se FAR desaparecer, continua seguindo somente por NEAR.
+    Com a posição fina válida, preserva o controle local. Sem ela, MEDIUM
+    assume a correção lateral; se MEDIUM faltar, FAR mantém a antecipação.
 
     -1.0 = correção máxima para esquerda
      0.0 = seguir reto
     +1.0 = correção máxima para direita
     """
 
-    if near_position is None:
-        return None
+    fallback_medium_position = finite_virtual_position(
+        fallback_medium_position
+    )
+    fallback_far_position = finite_virtual_position(
+        fallback_far_position
+    )
 
-    # FAR é antecipação, não requisito para continuar seguindo.
     if heading_angle is None:
-        return float(
-            max(-1.0, min(1.0, near_position))
-        )
+        if near_fine_position_valid:
+            return 0.0
+        if fallback_medium_position is not None:
+            return float(max(
+                -1.0,
+                min(1.0, 0.50 * fallback_medium_position),
+            ))
+        if fallback_far_position is not None:
+            return float(max(
+                -1.0,
+                min(
+                    1.0,
+                    VIRTUAL_HEADING_GAIN * fallback_far_position,
+                ),
+            ))
+        return None
 
     heading_normalized = (
         heading_angle
@@ -4854,10 +5176,16 @@ def calculate_virtual_steering_error(
         min(1.0, heading_normalized),
     )
 
-    steering_error = (
-        0.60 * near_position
-        + VIRTUAL_HEADING_GAIN * heading_normalized
-    )
+    steering_error = VIRTUAL_HEADING_GAIN * heading_normalized
+    if fallback_medium_position is not None:
+        # O peso lateral preservado de 0,50 entra somente neste gate;
+        # MEDIUM substitui a referência local ausente sem criar outro ganho.
+        steering_error = (
+            0.50 * fallback_medium_position
+            + steering_error
+        )
+    elif not near_fine_position_valid:
+        return None
 
     steering_error = max(
         -1.0,
@@ -4865,44 +5193,6 @@ def calculate_virtual_steering_error(
     )
 
     return float(steering_error)
-
-
-def protect_virtual_near_direction(
-    near_position,
-    medium_position,
-    heading_angle,
-    steering_error,
-):
-    """Impede que o heading inverta sozinho um NEAR lateral confiável."""
-
-    values = (
-        finite_virtual_position(near_position),
-        finite_virtual_position(heading_angle),
-        finite_virtual_position(steering_error),
-    )
-    near_position, heading_angle, steering_error = values
-    if (
-        near_position is None
-        or heading_angle is None
-        or steering_error is None
-        or abs(near_position)
-        < VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD
-        or near_position * steering_error >= 0.0
-    ):
-        return steering_error
-
-    medium_position = finite_virtual_position(medium_position)
-    medium_confirms_heading = (
-        medium_position is not None
-        and abs(medium_position)
-        >= VIRTUAL_NEAR_DIRECTION_PROTECTION_THRESHOLD
-        and medium_position * heading_angle > 0.0
-    )
-    if medium_confirms_heading:
-        return steering_error
-
-    # Sem confirmação à frente, usa somente a posição realmente vista no NEAR.
-    return max(-1.0, min(1.0, 0.60 * near_position))
 
 class GreenObservationTracker:
     """Confirma observações novas e remove decisões após curta histerese."""
@@ -5124,20 +5414,14 @@ def save_line_status(
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
-            "lineNearDetected": bool(
-                finite_virtual_position(
-                    line_follower_command.get(
-                        "rawNearPosition",
-                        line_follower_command.get("nearPosition"),
-                    )
-                )
-                is not None
+            "lineNearDetected": virtual_sensor_is_active(
+                line_follower_command["nearCenter"]
             ),
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")
             ),
-            "nearPosition": finite_virtual_position(
-                line_follower_command.get("nearPosition")
+            "nearFinePosition": finite_virtual_position(
+                line_follower_command["nearFinePosition"]
             ),
             "mediumPosition": finite_virtual_position(
                 line_follower_command.get("mediumPosition")
@@ -5423,6 +5707,11 @@ def main():
                 frame_height,
                 vision_profile,
             )
+            # A zona acima do FAR mostra partes do chassi e não pertence à
+            # pista. Usar a geometria do sensor evita outro limite Y.
+            dead_zone_end_y = resolve_virtual_sensor_geometry(
+                raw_frame.shape
+            )["far"]["left"]["y0"]
             line_vision_started = time.perf_counter()
             line_timings = {}
 
@@ -5439,6 +5728,7 @@ def main():
                 filtered_mask,
                 roi_start_y,
                 vision_geometry["structural_end_y"],
+                dead_zone_end_y,
             )
             contours_started = time.perf_counter()
             line_candidate_mask = create_line_candidate_mask(
@@ -5455,25 +5745,32 @@ def main():
             green_candidates = []
             green_rejected = []
             green_mask = np.zeros(
-                (vision_geometry["structural_end_y"], raw_frame.shape[1]),
+                (vision_geometry["green_end_y"], raw_frame.shape[1]),
                 dtype=np.uint8,
             )
             green_interpretation = analyze_green_marker_contours(
                 [],
                 structural_mask,
             )
+            green_overlay_roi_interpretation = green_interpretation
             green_processing_started = time.perf_counter()
             if green_processing_enabled:
                 green_mask, green_candidates, green_rejected = (
                     find_green_candidates(
                         raw_frame,
-                        vision_geometry["structural_end_y"],
+                        vision_geometry["green_end_y"],
                         camera_format,
+                        green_start_y=dead_zone_end_y,
                     )
                 )
                 # A classificação usa o preto estrutural local, não uma
                 # referência de direção ou posição destinada ao controle.
                 green_association_mask = structural_mask.copy()
+                green_association_mask[:dead_zone_end_y, :] = 0
+                green_association_mask[
+                    vision_geometry["green_end_y"]:,
+                    :,
+                ] = 0
                 useful_height = min(
                     green_association_mask.shape[0],
                     green_mask.shape[0],
@@ -5491,6 +5788,13 @@ def main():
                 ] = 0
                 green_interpretation = analyze_green_marker_contours(
                     [candidate["contour"] for candidate in green_candidates],
+                    green_association_mask,
+                )
+                green_overlay_roi_interpretation = analyze_green_marker_contours(
+                    [
+                        candidate["contour"]
+                        for candidate in green_candidates + green_rejected
+                    ],
                     green_association_mask,
                 )
             green_processing_ms = (
@@ -5563,15 +5867,12 @@ def main():
                 line_candidate_mask,
                 direcao_verde_ativa,
             )
-            raw_near_visible = (
-                finite_virtual_position(
-                    virtual_sensors.get("rawNearPosition")
-                )
-                is not None
+            near_center_visible = virtual_sensor_is_active(
+                virtual_sensors["nearCenter"]
             )
             gap_recent_near_frames = update_gap_recent_near_frames(
                 gap_recent_near_frames,
-                raw_near_visible,
+                near_center_visible,
             )
             raw_line_visible = virtual_raw_line_is_visible(
                 virtual_sensors
@@ -5605,7 +5906,7 @@ def main():
                 line_candidate_mask,
                 gap_forward_active,
                 direcao_verde_ativa,
-                raw_near_visible,
+                near_center_visible,
             )
             geometric_heading = geometric_guidance.get(
                 "farHeadingDeg"
@@ -5628,7 +5929,7 @@ def main():
                 gap_forward_active,
                 direcao_verde_ativa,
                 gap_recent_near_frames,
-                raw_near_visible,
+                near_center_visible,
                 real_near_point,
                 virtual_near_point,
                 lateral_exit_target,
@@ -5641,14 +5942,11 @@ def main():
 
             gap_blind_search_requested = False
             if gap_forward_active:
-                raw_near_reacquired = (
-                    finite_virtual_position(
-                        virtual_sensors.get("rawNearPosition")
-                    )
-                    is not None
+                near_center_reacquired = virtual_sensor_is_active(
+                    virtual_sensors["nearCenter"]
                 )
                 near_reacquired = (
-                    raw_near_reacquired
+                    near_center_reacquired
                     or (
                         real_near_point is not None
                         and not trace_folded_back
@@ -5688,37 +5986,38 @@ def main():
                 )
             )
 
-            near_position = line_follower_command["nearPosition"]
+            near_fine_position = line_follower_command["nearFinePosition"]
 
             # Confirma que o robô realmente começou a entrar no ramo
             # indicado pelo marcador verde.
             if not curva_verde_iniciada:
                 if (
                     direcao_verde_ativa == "ESQUERDA"
-                    and near_position is not None
-                    and near_position <= -LIMIAR_CURVA_VERDE_INICIADA
+                    and near_fine_position is not None
+                    and near_fine_position <= -LIMIAR_CURVA_VERDE_INICIADA
                 ):
                     curva_verde_iniciada = True
                     quadros_centralizado_verde = 0
 
                 elif (
                     direcao_verde_ativa == "DIREITA"
-                    and near_position is not None
-                    and near_position >= LIMIAR_CURVA_VERDE_INICIADA
+                    and near_fine_position is not None
+                    and near_fine_position >= LIMIAR_CURVA_VERDE_INICIADA
                 ):
                     curva_verde_iniciada = True
                     quadros_centralizado_verde = 0
 
-            # Depois que a curva começou, espera o NEAR voltar ao centro
-            # por vários quadros consecutivos. Isso indica que o robô
-            # já entrou e se alinhou com a nova faixa.
+            # Depois que a curva começou, espera a posição fina local voltar
+            # ao centro por vários quadros consecutivos. Isso indica que o
+            # robô já entrou e se alinhou com a nova faixa.
             if (
                 direcao_verde_ativa != "NENHUMA"
                 and curva_verde_iniciada
             ):
                 if (
-                    near_position is not None
-                    and abs(near_position) <= LIMIAR_CENTRALIZACAO_VERDE
+                    near_fine_position is not None
+                    and abs(near_fine_position)
+                    <= LIMIAR_CENTRALIZACAO_VERDE
                 ):
                     quadros_centralizado_verde += 1
                 else:
@@ -5780,8 +6079,9 @@ def main():
                 try:
                     green_mask_stages = create_green_mask_stages(
                         raw_frame,
-                        vision_geometry["structural_end_y"],
+                        vision_geometry["green_end_y"],
                         camera_format,
+                        green_start_y=dead_zone_end_y,
                     )
                     save_green_capture(
                         raw_frame,
@@ -5822,6 +6122,12 @@ def main():
                 draw_virtual_sensor_geometry(
                     frame,
                     line_follower_command,
+                    show_debug_details=(
+                        display_mode in (
+                            DISPLAY_MODE_LINE,
+                            DISPLAY_MODE_REAL,
+                        )
+                    ),
                 )
 
             # A câmera inferior mantém o controle e os nove sensores virtuais.
@@ -5862,6 +6168,12 @@ def main():
                 if display_mode == DISPLAY_MODE_LINE:
                     draw_line_mode_green_overlays(
                         frame,
+                        green_rejected,
+                        "SEM_DECISAO",
+                        False,
+                    )
+                    draw_line_mode_green_overlays(
+                        frame,
                         green_candidates,
                         overlay_interpretation,
                         green_overlay_accepted,
@@ -5869,13 +6181,23 @@ def main():
                 else:
                     draw_green_candidate_overlays(
                         frame,
+                        green_rejected,
+                        "SEM_DECISAO",
+                        False,
+                    )
+                    draw_green_candidate_overlays(
+                        frame,
                         green_candidates,
                         overlay_interpretation,
                         green_overlay_accepted,
                     )
+                draw_green_rejection_details(
+                    frame,
+                    green_rejected,
+                )
                 draw_green_roi_overlays(
                     frame,
-                    green_interpretation,
+                    green_overlay_roi_interpretation,
                 )
 
             now = time.monotonic()

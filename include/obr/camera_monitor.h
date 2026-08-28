@@ -18,7 +18,7 @@ enum class GreenInterpretation
 // Nenhum destes campos participa das decisões ou dos comandos de motor.
 struct CameraCurveDiagnostics
 {
-    double nearPosition = std::numeric_limits<double>::quiet_NaN();
+    double nearFinePosition = std::numeric_limits<double>::quiet_NaN();
     double mediumPosition = std::numeric_limits<double>::quiet_NaN();
     double farBandPosition = std::numeric_limits<double>::quiet_NaN();
     double headingAngleDeg = std::numeric_limits<double>::quiet_NaN();
