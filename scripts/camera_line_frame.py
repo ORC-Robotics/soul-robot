@@ -209,7 +209,7 @@ GREEN_CLOSE_ITERATIONS = 2
 LINE_MIN_COMPONENT_AREA_PX = 120
 LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
-GREEN_MIN_AREA_RATIO = 3000.0 / (320.0 * 200.0)
+GREEN_MIN_AREA_RATIO = 2800.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
@@ -258,13 +258,37 @@ VIRTUAL_FINE_CENTER_DEADBAND = 0.06
 VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
 
 # A correção normal alcança toda a diferença de potência em 0,36.
-# Entre 0,36 e a entrada do pivot em 0,45, a faixa forte aumenta o diferencial.
+# Somente MEDIUM a partir de 0,25 libera a faixa forte entre 0,36 e 0,45.
 NORMAL_FULL_STEERING_ERROR = 0.36
 
 # A histerese impede alternância rápida entre a faixa forte e o pivot.
 # A entrada exige erro 0,45; a saída ocorre somente após cair até 0,35.
 PIVOT_ENTER_THRESHOLD = 0.45
 PIVOT_EXIT_THRESHOLD = 0.35
+
+# O MEDIUM promove a urgência da curva somente no seguimento LINE normal.
+# Em 0,45, NEAR válido autoriza PIVOT; NEAR perdido autoriza SPIN. A saída em
+# 0,30 evita alternância sem reter direção quando a leitura muda ou desaparece.
+VIRTUAL_MEDIUM_STRONG_THRESHOLD = 0.25
+VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD = 0.45
+VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD = 0.30
+VIRTUAL_MEDIUM_SPIN_POWER = 0.72
+# Abaixo deste valor, o MEDIUM ainda pode estar ativo, mas não fornece uma
+# direção lateral confiável durante uma ação crítica já iniciada.
+VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD = 0.15
+# Uma ação crítica já iniciada tolera dez frames sem direção útil do MEDIUM.
+# Depois disso, nenhuma direção antiga pode impedir o normal ou o recovery.
+VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES = 10
+
+# O hard corner devolve o controle após a faixa permanecer centralizada no
+# NEAR e no MEDIUM ou após o FAR reaparecer por dois quadros consecutivos.
+VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD = 0.18
+VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD = 0.20
+VIRTUAL_HARD_CORNER_RECOVERY_FRAMES = 2
+VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES = 2
+# Em 30 FPS, este limite encerra o giro após aproximadamente um segundo.
+# Ao expirar, o recovery existente volta a decidir sem iniciar outra busca.
+VIRTUAL_HARD_CORNER_MAX_FRAMES = 30
 
 PIVOT_STATE_NONE = "NONE"
 PIVOT_STATE_LEFT = "LEFT"
@@ -2368,8 +2392,13 @@ VIRTUAL_NEAR_Y1 = 1.0
 VIRTUAL_FAR_BAND_Y0 = 0.13
 VIRTUAL_FAR_BAND_Y1 = 0.27
 VIRTUAL_MEDIUM_Y0 = 0.43
+# Os três blocos superiores terminam juntos antes do corredor do NEAR-C.
 VIRTUAL_MEDIUM_Y1 = 0.82
-# Divisão horizontal dos três sensores.
+# As asas laterais observam curvas fechadas sem cobrir o corredor do NEAR-C.
+VIRTUAL_MEDIUM_WING_Y0 = 0.82
+VIRTUAL_MEDIUM_WING_Y1 = 0.94
+
+# Divisão horizontal preservada pelo FAR BAND e pelo NEAR-C.
 #
 # Existe uma pequena sobreposição entre L/C e C/R.
 #
@@ -2387,8 +2416,19 @@ VIRTUAL_CENTER_X1 = 0.615
 VIRTUAL_RIGHT_X0 = 0.615
 VIRTUAL_RIGHT_X1 = 0.96
 
+# Na parte superior do MEDIUM, os três blocos se encontram sem lacunas.
+# O CENTER estreito mede continuidade; LEFT e RIGHT medem direção local.
+VIRTUAL_MEDIUM_LEFT_X0 = 0.04
+VIRTUAL_MEDIUM_LEFT_X1 = 0.43
+
+VIRTUAL_MEDIUM_CENTER_X0 = 0.43
+VIRTUAL_MEDIUM_CENTER_X1 = 0.57
+
+VIRTUAL_MEDIUM_RIGHT_X0 = 0.57
+VIRTUAL_MEDIUM_RIGHT_X1 = 0.96
+
 # O FAR legado usa quase toda a largura útil da imagem para antecipar a faixa
-# sem modificar a geometria horizontal preservada do MEDIUM.
+# sem reutilizar a geometria horizontal exclusiva do MEDIUM.
 VIRTUAL_FAR_LEFT_X0 = 0.00
 VIRTUAL_FAR_LEFT_X1 = 0.385
 
@@ -2433,11 +2473,11 @@ LIMIAR_CURVA_VERDE_INICIADA = 0.20
 # indica que o robô entrou e se alinhou com a nova faixa.
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
 # Evita encerrar a prioridade por uma leitura central isolada.
-QUADROS_CENTRALIZADO_PARA_CONCLUIR = 4
+QUADROS_CENTRALIZADO_PARA_CONCLUIR = 30
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 24
+GREEN_MANEUVER_TIMEOUT_FRAMES = 16
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -2516,6 +2556,8 @@ def resolve_virtual_sensor_geometry(frame_shape):
 
     medium_y0 = int(round(height * VIRTUAL_MEDIUM_Y0))
     medium_y1 = int(round(height * VIRTUAL_MEDIUM_Y1))
+    medium_wing_y0 = int(round(height * VIRTUAL_MEDIUM_WING_Y0))
+    medium_wing_y1 = int(round(height * VIRTUAL_MEDIUM_WING_Y1))
 
     near_y0 = int(round(height * VIRTUAL_NEAR_Y0))
     near_y1 = int(round(height * VIRTUAL_NEAR_Y1))
@@ -2528,6 +2570,15 @@ def resolve_virtual_sensor_geometry(frame_shape):
 
     right_x0 = int(round(width * VIRTUAL_RIGHT_X0))
     right_x1 = int(round(width * VIRTUAL_RIGHT_X1))
+
+    medium_left_x0 = int(round(width * VIRTUAL_MEDIUM_LEFT_X0))
+    medium_left_x1 = int(round(width * VIRTUAL_MEDIUM_LEFT_X1))
+
+    medium_center_x0 = int(round(width * VIRTUAL_MEDIUM_CENTER_X0))
+    medium_center_x1 = int(round(width * VIRTUAL_MEDIUM_CENTER_X1))
+
+    medium_right_x0 = int(round(width * VIRTUAL_MEDIUM_RIGHT_X0))
+    medium_right_x1 = int(round(width * VIRTUAL_MEDIUM_RIGHT_X1))
 
     far_left_x0 = int(round(width * VIRTUAL_FAR_LEFT_X0))
     far_left_x1 = int(round(width * VIRTUAL_FAR_LEFT_X1))
@@ -2583,22 +2634,50 @@ def resolve_virtual_sensor_geometry(frame_shape):
 
         "medium": {
             "left": {
-                "x0": left_x0,
+                "x0": medium_left_x0,
                 "y0": medium_y0,
-                "x1": left_x1,
+                "x1": medium_left_x1,
                 "y1": medium_y1,
+                "regions": (
+                    {
+                        "x0": medium_left_x0,
+                        "y0": medium_y0,
+                        "x1": medium_left_x1,
+                        "y1": medium_y1,
+                    },
+                    {
+                        "x0": left_x0,
+                        "y0": medium_wing_y0,
+                        "x1": center_x0,
+                        "y1": medium_wing_y1,
+                    },
+                ),
             },
             "center": {
-                "x0": center_x0,
+                "x0": medium_center_x0,
                 "y0": medium_y0,
-                "x1": center_x1,
+                "x1": medium_center_x1,
                 "y1": medium_y1,
             },
             "right": {
-                "x0": right_x0,
+                "x0": medium_right_x0,
                 "y0": medium_y0,
-                "x1": right_x1,
+                "x1": medium_right_x1,
                 "y1": medium_y1,
+                "regions": (
+                    {
+                        "x0": medium_right_x0,
+                        "y0": medium_y0,
+                        "x1": medium_right_x1,
+                        "y1": medium_y1,
+                    },
+                    {
+                        "x0": center_x1,
+                        "y0": medium_wing_y0,
+                        "x1": right_x1,
+                        "y1": medium_wing_y1,
+                    },
+                ),
             },
         },
 
@@ -2619,6 +2698,13 @@ def resolve_virtual_sensor_geometry(frame_shape):
             },
         },
     }
+
+
+def virtual_sensor_regions(sensor_geometry):
+    """Retorna os blocos disjuntos que formam uma única leitura virtual."""
+
+    regions = sensor_geometry.get("regions")
+    return tuple(regions) if regions else (sensor_geometry,)
 
 def draw_virtual_sensor_geometry(
     frame,
@@ -2671,13 +2757,14 @@ def draw_virtual_sensor_geometry(
         )
 
         for name, sensor, value in sensors:
-            cv2.rectangle(
-                frame,
-                (sensor["x0"], sensor["y0"]),
-                (sensor["x1"], sensor["y1"]),
-                (255, 0, 255),
-                2,
-            )
+            for region in virtual_sensor_regions(sensor):
+                cv2.rectangle(
+                    frame,
+                    (region["x0"], region["y0"]),
+                    (region["x1"], region["y1"]),
+                    (255, 0, 255),
+                    2,
+                )
             cv2.putText(
                 frame,
                 f"{name} {value:.2f}",
@@ -4023,22 +4110,24 @@ def read_virtual_sensor(processed_line_mask, sensor_geometry):
         1.0 = sensor completamente ocupado pela linha
     """
 
-    x0 = sensor_geometry["x0"]
-    y0 = sensor_geometry["y0"]
-    x1 = sensor_geometry["x1"]
-    y1 = sensor_geometry["y1"]
+    active_pixels = 0
+    sensor_area = 0
+    for region in virtual_sensor_regions(sensor_geometry):
+        sensor_roi = processed_line_mask[
+            region["y0"]:region["y1"],
+            region["x0"]:region["x1"],
+        ]
+        if sensor_roi.size == 0:
+            continue
+        active_pixels += cv2.countNonZero(sensor_roi)
+        sensor_area += sensor_roi.size
 
-    sensor_roi = processed_line_mask[
-        y0:y1,
-        x0:x1,
-    ]
-
-    if sensor_roi.size == 0:
+    if sensor_area == 0:
         return 0.0
 
-    active_pixels = cv2.countNonZero(sensor_roi)
-
-    return float(active_pixels) / float(sensor_roi.size)
+    # Os blocos compostos são disjuntos. A soma preserva uma única ocupação
+    # normalizada sem contar novamente pixels na transição entre as partes.
+    return float(active_pixels) / float(sensor_area)
 
 def calculate_virtual_row_position(
     left,
@@ -4170,16 +4259,23 @@ def read_virtual_line_sensors(
     control_far_left = far_left
     control_far_center = far_center
     control_far_right = far_right
+    control_medium_left = medium_left
+    control_medium_center = medium_center
+    control_medium_right = medium_right
 
-    # Durante uma interseção sinalizada por verde, somente o ramo
-    # permitido deve influenciar a antecipação do FAR.
+    # Durante uma interseção sinalizada por verde, FAR e MEDIUM enxergam
+    # somente o ramo permitido pela direção confirmada.
     if direcao_verde_ativa == "ESQUERDA":
         control_far_center = 0.0
         control_far_right = 0.0
+        control_medium_center = 0.0
+        control_medium_right = 0.0
 
     elif direcao_verde_ativa == "DIREITA":
         control_far_left = 0.0
         control_far_center = 0.0
+        control_medium_left = 0.0
+        control_medium_center = 0.0
 
     far_position = calculate_virtual_row_position(
         control_far_left,
@@ -4194,32 +4290,23 @@ def read_virtual_line_sensors(
     )
 
     medium_position = calculate_virtual_row_position(
-        medium_left,
-        medium_center,
-        medium_right,
+        control_medium_left,
+        control_medium_center,
+        control_medium_right,
     )
-
-    # O MEDIUM substitui o lookahead somente no seguidor normal. Durante uma
-    # manobra GREEN, a máscara direcional preserva o heading já existente.
-    heading_medium_position = None
-    if direcao_verde_ativa == "NENHUMA":
-        heading_medium_position = medium_position
 
     heading_angle = calculate_virtual_heading_angle(
         far_position,
         near_fine_position,
         geometry,
-        medium_position=heading_medium_position,
+        medium_position=medium_position,
     )
     steering_error = calculate_virtual_steering_error(
         near_fine_position is not None,
         heading_angle,
         fallback_medium_position=(
-            heading_medium_position
-            if (
-                near_fine_position is None
-                and direcao_verde_ativa == "NENHUMA"
-            )
+            medium_position
+            if near_fine_position is None
             else None
         ),
         fallback_far_position=(
@@ -4644,6 +4731,175 @@ class VirtualPivotStateTracker:
         return self.state
 
 
+class VirtualMediumSpinTracker:
+    """Mantém os SPINs do MEDIUM e a direção persistente do hard corner."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        """Cancela a ação crítica sem preservar a direção antiga."""
+
+        self.state = PIVOT_STATE_NONE
+        self.critical_state = PIVOT_STATE_NONE
+        self.invalid_frames = 0
+        self.hard_corner_state = PIVOT_STATE_NONE
+        self.hard_corner_frames = 0
+        self.hard_corner_recovery_frames = 0
+        self.hard_corner_far_recovery_frames = 0
+        self.hard_corner_entry_blocked = False
+        return self.state
+
+    def clear_hard_corner(self, block_entry=False):
+        """Limpa a manobra persistente e seus contadores internos."""
+
+        self.hard_corner_state = PIVOT_STATE_NONE
+        self.hard_corner_frames = 0
+        self.hard_corner_recovery_frames = 0
+        self.hard_corner_far_recovery_frames = 0
+        self.hard_corner_entry_blocked = bool(block_entry)
+        self.state = PIVOT_STATE_NONE
+        self.critical_state = PIVOT_STATE_NONE
+        self.invalid_frames = 0
+
+    def update(
+        self,
+        medium_position,
+        near_position_valid,
+        critical_entry_allowed=True,
+        hard_corner_entry_requested=False,
+        near_fine_position=None,
+        far_position=None,
+    ):
+        """Atualiza a ação crítica e limita a perda direcional do MEDIUM."""
+
+        medium_position = finite_virtual_position(medium_position)
+        near_fine_position = finite_virtual_position(near_fine_position)
+        far_position = finite_virtual_position(far_position)
+        if not hard_corner_entry_requested:
+            # Um timeout não pode reabrir a mesma manobra enquanto o gatilho
+            # contínuo permanecer ativo. A próxima observação distinta rearma.
+            self.hard_corner_entry_blocked = False
+
+        if (
+            self.hard_corner_state == PIVOT_STATE_NONE
+            and hard_corner_entry_requested
+            and not self.hard_corner_entry_blocked
+            and medium_position is not None
+        ):
+            # A direção observada na entrada permanece fixa durante todo o
+            # giro, mesmo que os sensores mudem de lado durante a rotação.
+            self.hard_corner_state = (
+                PIVOT_STATE_RIGHT
+                if medium_position > 0.0
+                else PIVOT_STATE_LEFT
+            )
+            self.hard_corner_frames = 0
+            self.hard_corner_recovery_frames = 0
+            self.hard_corner_far_recovery_frames = 0
+            self.critical_state = PIVOT_STATE_NONE
+            self.invalid_frames = 0
+
+        if self.hard_corner_state != PIVOT_STATE_NONE:
+            self.hard_corner_frames += 1
+            line_aligned = (
+                near_position_valid
+                and near_fine_position is not None
+                and abs(near_fine_position)
+                <= VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD
+                and medium_position is not None
+                and abs(medium_position)
+                <= VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD
+            )
+            if line_aligned:
+                self.hard_corner_recovery_frames += 1
+            else:
+                self.hard_corner_recovery_frames = 0
+
+            if far_position is not None:
+                self.hard_corner_far_recovery_frames += 1
+            else:
+                self.hard_corner_far_recovery_frames = 0
+
+            hard_corner_recovered = (
+                self.hard_corner_recovery_frames
+                >= VIRTUAL_HARD_CORNER_RECOVERY_FRAMES
+            )
+            hard_corner_far_recovered = (
+                self.hard_corner_far_recovery_frames
+                >= VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES
+            )
+            hard_corner_timed_out = (
+                self.hard_corner_frames >= VIRTUAL_HARD_CORNER_MAX_FRAMES
+            )
+            if hard_corner_recovered or hard_corner_far_recovered:
+                # O mesmo frame já volta ao fluxo normal ou ao recovery.
+                self.clear_hard_corner()
+                return self.state
+            if hard_corner_timed_out:
+                # O timeout não inicia uma busca adicional e bloqueia a
+                # reentrada até o gatilho atual desaparecer.
+                self.clear_hard_corner(block_entry=True)
+                return self.state
+            self.state = self.hard_corner_state
+            return self.state
+
+        medium_direction_lost = (
+            medium_position is None
+            or abs(medium_position)
+            < VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD
+        )
+        if medium_direction_lost:
+            self.state = PIVOT_STATE_NONE
+            if near_position_valid or self.critical_state == PIVOT_STATE_NONE:
+                return self.reset()
+            if (
+                self.invalid_frames
+                >= VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES
+            ):
+                return self.reset()
+            self.invalid_frames += 1
+            self.state = self.critical_state
+            return self.state
+
+        medium_magnitude = abs(medium_position)
+        medium_state = (
+            PIVOT_STATE_RIGHT
+            if medium_position > 0.0
+            else PIVOT_STATE_LEFT
+        )
+
+        # Qualquer leitura válida encerra imediatamente a tolerância. Se ela
+        # ainda for crítica, o lado atual substitui a observação anterior.
+        self.invalid_frames = 0
+
+        if not critical_entry_allowed:
+            return self.reset()
+
+        if near_position_valid:
+            self.state = PIVOT_STATE_NONE
+            if medium_magnitude >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD:
+                self.critical_state = medium_state
+            else:
+                self.critical_state = PIVOT_STATE_NONE
+            return self.state
+
+        if self.state != PIVOT_STATE_NONE:
+            if (
+                medium_magnitude <= VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD
+                or medium_state != self.state
+            ):
+                return self.reset()
+            return self.state
+
+        if medium_magnitude >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD:
+            self.state = medium_state
+            self.critical_state = medium_state
+        else:
+            self.critical_state = PIVOT_STATE_NONE
+        return self.state
+
+
 def calculate_line_follower_command(
     processed_line_mask,
     green_detection_result,
@@ -4651,6 +4907,7 @@ def calculate_line_follower_command(
     gap_forward_active=False,
     virtual_turn_tracker=None,
     pivot_state_tracker=None,
+    medium_spin_tracker=None,
     virtual_sensors=None,
     line_search_tracker=None,
     blind_search_requested=False,
@@ -4683,6 +4940,10 @@ def calculate_line_follower_command(
     medium_scan_direction = None
     direct_recovery_direction = None
     normal_steering_mapper = False
+    medium_spin_state = PIVOT_STATE_NONE
+    medium_strong_requested = False
+    medium_pivot_requested = False
+    medium_hard_corner_spin_requested = False
     fine_correction = 0.0
     line_state = "LINE"
 
@@ -4835,6 +5096,107 @@ def calculate_line_follower_command(
                     else:
                         control_source = "virtual-no-line"
 
+    medium_position = finite_virtual_position(sensors["mediumPosition"])
+    near_fine_position = finite_virtual_position(
+        sensors["nearFinePosition"]
+    )
+    near_position_valid = (
+        virtual_sensor_is_active(sensors["nearCenter"])
+        and near_fine_position is not None
+    )
+    critical_entry_allowed = (
+        normal_steering_mapper and control_source == "virtual"
+    )
+    medium_hard_corner_spin_requested = (
+        line_state == "LINE"
+        and critical_entry_allowed
+        and medium_position is not None
+        and abs(medium_position) >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD
+        and near_position_valid
+        and abs(near_fine_position) >= VIRTUAL_MEDIUM_STRONG_THRESHOLD
+        and medium_position * near_fine_position > 0.0
+        and sensors.get("farPosition") is None
+    )
+    if line_state == "LINE" and medium_spin_tracker is not None:
+        medium_spin_state = medium_spin_tracker.update(
+            medium_position,
+            near_position_valid,
+            critical_entry_allowed=critical_entry_allowed,
+            hard_corner_entry_requested=(
+                medium_hard_corner_spin_requested
+            ),
+            near_fine_position=near_fine_position,
+            far_position=sensors.get("farPosition"),
+        )
+    elif line_state != "LINE" and medium_spin_tracker is not None:
+        medium_spin_tracker.reset()
+    elif medium_hard_corner_spin_requested:
+        # Sem tracker não há memória entre frames, mas a chamada isolada ainda
+        # preserva o comando seguro correspondente ao gatilho atual.
+        medium_spin_state = (
+            PIVOT_STATE_RIGHT
+            if medium_position > 0.0
+            else PIVOT_STATE_LEFT
+        )
+
+    if normal_steering_mapper and control_source == "virtual":
+        medium_strong_requested = (
+            medium_position is not None
+            and abs(medium_position) >= VIRTUAL_MEDIUM_STRONG_THRESHOLD
+        )
+        if not medium_strong_requested:
+            # Sem autoridade local do MEDIUM, FAR e heading permanecem no
+            # intervalo NORMAL e não alcançam a faixa STRONG do mapper.
+            current_steering = finite_virtual_position(steering_error)
+            if current_steering is not None:
+                steering_error = max(
+                    -NORMAL_FULL_STEERING_ERROR,
+                    min(NORMAL_FULL_STEERING_ERROR, current_steering),
+                )
+
+        if medium_spin_tracker is None and (
+            medium_position is not None
+            and not near_position_valid
+            and abs(medium_position)
+            >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD
+        ):
+            medium_spin_state = (
+                PIVOT_STATE_RIGHT
+                if medium_position > 0.0
+                else PIVOT_STATE_LEFT
+            )
+
+        if (
+            medium_spin_state == PIVOT_STATE_NONE
+            and medium_strong_requested
+        ):
+            medium_pivot_requested = (
+                near_position_valid
+                and abs(medium_position)
+                >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD
+            )
+            # A promoção adota o lado local do MEDIUM. Somente a leitura
+            # crítica com NEAR válido recebe magnitude suficiente para PIVOT.
+            current_steering = finite_virtual_position(steering_error)
+            current_magnitude = (
+                abs(current_steering)
+                if current_steering is not None
+                else 0.0
+            )
+            minimum_magnitude = (
+                PIVOT_ENTER_THRESHOLD
+                if medium_pivot_requested
+                else NORMAL_FULL_STEERING_ERROR
+            )
+            promoted_magnitude = max(
+                minimum_magnitude,
+                current_magnitude,
+            )
+            steering_error = (
+                promoted_magnitude
+                if medium_position > 0.0
+                else -promoted_magnitude
+            )
     # --------------------------------------------------------
     # CONTROLE DE MOTORES
     # --------------------------------------------------------
@@ -4851,18 +5213,27 @@ def calculate_line_follower_command(
     NON_NORMAL_PIVOT_THRESHOLD = 0.40
 
     # Potência durante pivot.
-    PIVOT_OUTER_POWER = 0.75
-    PIVOT_INNER_POWER = 0.0
+    PIVOT_OUTER_POWER = 0.78
+    PIVOT_INNER_POWER = -0.72
 
     pivot_state = PIVOT_STATE_NONE
-    if normal_steering_mapper:
+    if medium_spin_state != PIVOT_STATE_NONE:
         if pivot_state_tracker is not None:
-            pivot_state = pivot_state_tracker.update(steering_error)
-        elif steering_error is not None:
-            if steering_error >= PIVOT_ENTER_THRESHOLD:
-                pivot_state = PIVOT_STATE_RIGHT
-            elif steering_error <= -PIVOT_ENTER_THRESHOLD:
-                pivot_state = PIVOT_STATE_LEFT
+            pivot_state_tracker.reset()
+    elif normal_steering_mapper:
+        if pivot_state_tracker is not None:
+            # Somente MEDIUM libera STRONG. A leitura crítica com NEAR válido
+            # é a única que também autoriza PIVOT neste frame.
+            pivot_state_tracker.reset()
+        if medium_pivot_requested:
+            if pivot_state_tracker is not None:
+                pivot_state = pivot_state_tracker.update(steering_error)
+            else:
+                pivot_state = (
+                    PIVOT_STATE_RIGHT
+                    if medium_position > 0.0
+                    else PIVOT_STATE_LEFT
+                )
     else:
         if pivot_state_tracker is not None:
             pivot_state_tracker.reset()
@@ -4877,16 +5248,14 @@ def calculate_line_follower_command(
         right_power = 0.0
 
     elif pivot_state == PIVOT_STATE_RIGHT:
-        # Curva forte para DIREITA.
-        #
-        # Esquerda para frente e direita parada.
+        # PIVOT para DIREITA. A roda esquerda avança um pouco mais forte que
+        # a direita recua, preservando uma pequena componente de avanço.
         left_power = PIVOT_OUTER_POWER
         right_power = PIVOT_INNER_POWER
 
     elif pivot_state == PIVOT_STATE_LEFT:
-        # Curva forte para ESQUERDA.
-        #
-        # Direita para frente e esquerda parada.
+        # PIVOT para ESQUERDA. A roda direita avança um pouco mais forte que
+        # a esquerda recua, preservando uma pequena componente de avanço.
         left_power = PIVOT_INNER_POWER
         right_power = PIVOT_OUTER_POWER
 
@@ -4895,6 +5264,7 @@ def calculate_line_follower_command(
         steering_magnitude = abs(steering_error)
         if (
             normal_steering_mapper
+            and medium_strong_requested
             and steering_magnitude >= NORMAL_FULL_STEERING_ERROR
         ):
             # A progressão quadrática suaviza o início da faixa forte sem
@@ -4968,6 +5338,15 @@ def calculate_line_follower_command(
     elif direct_recovery_direction == "RIGHT":
         left_power = BASE_POWER
         right_power = 0.0
+
+    # O SPIN é uma promoção exclusiva do LINE normal. A roda em ré recebe
+    # diretamente a potência funcional solicitada, sem passar pelo mapper.
+    if medium_spin_state == PIVOT_STATE_LEFT:
+        left_power = -VIRTUAL_MEDIUM_SPIN_POWER
+        right_power = VIRTUAL_MEDIUM_SPIN_POWER
+    elif medium_spin_state == PIVOT_STATE_RIGHT:
+        left_power = VIRTUAL_MEDIUM_SPIN_POWER
+        right_power = -VIRTUAL_MEDIUM_SPIN_POWER
 
     return {
         "left_power": left_power,
@@ -5659,6 +6038,7 @@ def main():
         green_tracker = GreenObservationTracker()
         virtual_turn_tracker = VirtualTurnStateTracker()
         pivot_state_tracker = VirtualPivotStateTracker()
+        medium_spin_tracker = VirtualMediumSpinTracker()
         line_search_tracker = VirtualLineSearchTracker()
 
         # Estado persistente das manobras sinalizadas por verde.
@@ -5979,6 +6359,7 @@ def main():
                     gap_forward_active,
                     virtual_turn_tracker=virtual_turn_tracker,
                     pivot_state_tracker=pivot_state_tracker,
+                    medium_spin_tracker=medium_spin_tracker,
                     virtual_sensors=virtual_sensors,
                     line_search_tracker=line_search_tracker,
                     blind_search_requested=gap_blind_search_requested,

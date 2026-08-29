@@ -50,6 +50,7 @@ def calculate_command(
     sensors,
     tracker=None,
     pivot_state_tracker=None,
+    medium_spin_tracker=None,
     green_direction="NENHUMA",
     gap_active=False,
     line_search_tracker=None,
@@ -73,24 +74,34 @@ def calculate_command(
             gap_forward_active=gap_active,
             virtual_turn_tracker=tracker,
             pivot_state_tracker=pivot_state_tracker,
+            medium_spin_tracker=medium_spin_tracker,
             line_search_tracker=line_search_tracker,
             blind_search_requested=blind_search_requested,
             sensor_recovery_requested=sensor_recovery_requested,
         )
 
 
-def expected_normal_motor_powers(steering_error):
-    """Replica a transição progressiva do mapper normal até o pivot."""
+def expected_normal_motor_powers(steering_error, strong_enabled=False):
+    """Replica o mapper normal com STRONG autorizado somente pelo MEDIUM."""
 
     if steering_error is None:
         return 0.0, 0.0
-    if steering_error >= camera_line_frame.PIVOT_ENTER_THRESHOLD:
-        return 0.75, 0.0
-    if steering_error <= -camera_line_frame.PIVOT_ENTER_THRESHOLD:
-        return 0.0, 0.75
+
+    if not strong_enabled:
+        steering_error = max(
+            -camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+            min(
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+                steering_error,
+            ),
+        )
 
     steering_magnitude = abs(steering_error)
-    if steering_magnitude >= camera_line_frame.NORMAL_FULL_STEERING_ERROR:
+    if (
+        strong_enabled
+        and steering_magnitude
+        >= camera_line_frame.NORMAL_FULL_STEERING_ERROR
+    ):
         transition_progress = (
             steering_magnitude
             - camera_line_frame.NORMAL_FULL_STEERING_ERROR
@@ -100,15 +111,15 @@ def expected_normal_motor_powers(steering_error):
         )
         transition_progress = max(0.0, min(1.0, transition_progress))
         transition_progress *= transition_progress
-        outer_power = 0.78 + transition_progress * (0.85 - 0.78)
+        outer_power = 0.82 + transition_progress * (0.85 - 0.82)
         inner_power = 0.66 - transition_progress * (0.66 - 0.61)
     else:
         steering_strength = (
             steering_magnitude
             / camera_line_frame.NORMAL_FULL_STEERING_ERROR
         )
-        outer_power = 0.72 + steering_strength * (0.78 - 0.72)
-        inner_power = 0.72 - steering_strength * (0.72 - 0.66)
+        outer_power = 0.75 + steering_strength * (0.82 - 0.75)
+        inner_power = 0.75 - steering_strength * (0.75 - 0.66)
     if steering_error > 0.0:
         return outer_power, inner_power
     return inner_power, outer_power
@@ -377,7 +388,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             -1.0,
             min(
                 1.0,
-                0.60 * sensors["mediumPosition"]
+                0.50 * sensors["mediumPosition"]
                 + camera_line_frame.VIRTUAL_HEADING_GAIN
                 * heading_normalized,
             ),
@@ -415,7 +426,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(math.isclose(sensors["mediumPosition"], -1.0))
         self.assertIsNone(sensors["nearFinePosition"])
         self.assertIsNone(sensors["headingAngle"])
-        self.assertTrue(math.isclose(sensors["steeringError"], -0.60))
+        self.assertTrue(math.isclose(sensors["steeringError"], -0.50))
         self.assertEqual(command["controlSource"], "virtual")
         self.assertNotEqual(
             (command["left_power"], command["right_power"]),
@@ -672,6 +683,35 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(near_texts[0].startswith("NEAR-C "))
         self.assertTrue(near_texts[1].startswith("NEAR FINE POS "))
 
+    def test_virtual_debug_overlay_draws_composite_medium_side_wings(self):
+        command = calculate_command(sensor_values(steering_error=0.10))
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            frame.shape
+        )
+        with (
+            patch.object(camera_line_frame.cv2, "putText"),
+            patch.object(camera_line_frame.cv2, "rectangle") as rectangle,
+            patch.object(camera_line_frame.cv2, "line"),
+            patch.object(camera_line_frame.cv2, "circle"),
+        ):
+            camera_line_frame.draw_virtual_sensor_geometry(frame, command)
+
+        rectangles = [
+            (call.args[1], call.args[2])
+            for call in rectangle.call_args_list
+        ]
+        for sensor_name in ("left", "center", "right"):
+            sensor = geometry["medium"][sensor_name]
+            for region in camera_line_frame.virtual_sensor_regions(sensor):
+                self.assertIn(
+                    (
+                        (region["x0"], region["y0"]),
+                        (region["x1"], region["y1"]),
+                    ),
+                    rectangles,
+                )
+
     def test_forward_heading_reaches_mapper_without_near_direction_veto(self):
         forward_steering = -0.26
         sensors = sensor_values(forward_steering, -0.06, 0.0)
@@ -727,7 +767,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 ])
                 self.assertEqual(positions, [(8, 22), (8, 44)])
 
-    def test_legacy_geometry_uses_original_direct_roi(self):
+    def test_virtual_geometry_preserves_far_near_and_composes_medium(self):
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(
             (101, 203)
         )
@@ -754,6 +794,99 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             geometry["medium"]["left"]["y0"],
             round(101 * camera_line_frame.VIRTUAL_MEDIUM_Y0),
         )
+        self.assertEqual(
+            geometry["medium"]["center"]["y0"],
+            geometry["medium"]["left"]["y0"],
+        )
+        self.assertEqual(
+            geometry["medium"]["right"]["y0"],
+            geometry["medium"]["left"]["y0"],
+        )
+        self.assertEqual(
+            geometry["medium"]["center"]["y1"],
+            round(101 * camera_line_frame.VIRTUAL_MEDIUM_Y1),
+        )
+        self.assertEqual(geometry["medium"]["left"]["x0"], round(203 * 0.04))
+        self.assertEqual(geometry["medium"]["left"]["x1"], round(203 * 0.43))
+        self.assertEqual(geometry["medium"]["center"]["x0"], round(203 * 0.43))
+        self.assertEqual(geometry["medium"]["center"]["x1"], round(203 * 0.57))
+        self.assertEqual(geometry["medium"]["right"]["x0"], round(203 * 0.57))
+        self.assertEqual(geometry["medium"]["right"]["x1"], round(203 * 0.96))
+        self.assertEqual(
+            geometry["medium"]["left"]["x1"],
+            geometry["medium"]["center"]["x0"],
+        )
+        self.assertEqual(
+            geometry["medium"]["center"]["x1"],
+            geometry["medium"]["right"]["x0"],
+        )
+        self.assertEqual(
+            geometry["medium"]["left"]["y1"],
+            geometry["medium"]["center"]["y1"],
+        )
+        self.assertEqual(
+            geometry["medium"]["right"]["y1"],
+            geometry["medium"]["center"]["y1"],
+        )
+
+        left_wing = geometry["medium"]["left"]["regions"][1]
+        right_wing = geometry["medium"]["right"]["regions"][1]
+        self.assertEqual(
+            left_wing["y0"],
+            geometry["medium"]["left"]["y1"],
+        )
+        self.assertEqual(
+            right_wing["y0"],
+            geometry["medium"]["right"]["y1"],
+        )
+        self.assertEqual(
+            left_wing["y1"],
+            round(101 * camera_line_frame.VIRTUAL_MEDIUM_WING_Y1),
+        )
+        self.assertEqual(right_wing["y1"], left_wing["y1"])
+        self.assertEqual(
+            left_wing["x1"],
+            geometry["near"]["center"]["x0"],
+        )
+        self.assertEqual(left_wing["x0"], round(203 * 0.04))
+        self.assertEqual(
+            right_wing["x0"],
+            geometry["near"]["center"]["x1"],
+        )
+        self.assertEqual(right_wing["x1"], round(203 * 0.96))
+
+    def test_composite_medium_reading_has_one_normalized_occupancy(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        medium_left = geometry["medium"]["left"]
+        upper, wing = camera_line_frame.virtual_sensor_regions(medium_left)
+
+        mask[
+            upper["y0"]:upper["y1"],
+            upper["x0"]:upper["x1"],
+        ] = 255
+        upper_area = (
+            (upper["y1"] - upper["y0"])
+            * (upper["x1"] - upper["x0"])
+        )
+        wing_area = (
+            (wing["y1"] - wing["y0"])
+            * (wing["x1"] - wing["x0"])
+        )
+        expected_upper_occupancy = upper_area / (upper_area + wing_area)
+        self.assertTrue(math.isclose(
+            camera_line_frame.read_virtual_sensor(mask, medium_left),
+            expected_upper_occupancy,
+        ))
+
+        mask[
+            wing["y0"]:wing["y1"],
+            wing["x0"]:wing["x1"],
+        ] = 255
+        self.assertTrue(math.isclose(
+            camera_line_frame.read_virtual_sensor(mask, medium_left),
+            1.0,
+        ))
 
     def test_sensor_outputs_match_direct_near_center_reference(self):
         random_generator = np.random.default_rng(2026)
@@ -776,16 +909,30 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             far_right = camera_line_frame.read_virtual_sensor(
                 mask, geometry["far"]["right"]
             )
+            medium_left = camera_line_frame.read_virtual_sensor(
+                mask, geometry["medium"]["left"]
+            )
+            medium_center = camera_line_frame.read_virtual_sensor(
+                mask, geometry["medium"]["center"]
+            )
+            medium_right = camera_line_frame.read_virtual_sensor(
+                mask, geometry["medium"]["right"]
+            )
             near_center = camera_line_frame.read_virtual_sensor(
                 mask, geometry["near"]["center"]
             )
             raw_far = (far_left, far_center, far_right)
+            raw_medium = (medium_left, medium_center, medium_right)
             if green_direction == "ESQUERDA":
                 far_center = 0.0
                 far_right = 0.0
+                medium_center = 0.0
+                medium_right = 0.0
             elif green_direction == "DIREITA":
                 far_left = 0.0
                 far_center = 0.0
+                medium_left = 0.0
+                medium_center = 0.0
 
             far_position = camera_line_frame.calculate_virtual_row_position(
                 far_left, far_center, far_right
@@ -801,16 +948,14 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                         geometry["near"],
                     )
                 )
-            medium_position = actual["mediumPosition"]
+            medium_position = camera_line_frame.calculate_virtual_row_position(
+                medium_left, medium_center, medium_right
+            )
             heading_angle = camera_line_frame.calculate_virtual_heading_angle(
                 far_position,
                 near_fine_position,
                 geometry,
-                medium_position=(
-                    medium_position
-                    if green_direction == "NENHUMA"
-                    else None
-                ),
+                medium_position=medium_position,
             )
             steering_error = camera_line_frame.calculate_virtual_steering_error(
                 near_fine_position is not None,
@@ -818,7 +963,6 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 fallback_medium_position=(
                     medium_position
                     if near_fine_position is None
-                    and green_direction == "NENHUMA"
                     else None
                 ),
                 fallback_far_position=(
@@ -833,6 +977,10 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 "farCenter": raw_far[1],
                 "farRight": raw_far[2],
                 "farPosition": far_position,
+                "mediumLeft": raw_medium[0],
+                "mediumCenter": raw_medium[1],
+                "mediumRight": raw_medium[2],
+                "mediumPosition": medium_position,
                 "nearCenter": near_center,
                 "nearFinePosition": near_fine_position,
                 "headingAngle": heading_angle,
@@ -847,6 +995,42 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                         math.isclose(actual_value, expected_value),
                         field_name,
                     )
+
+    def test_green_masks_medium_and_uses_it_when_far_is_missing(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        for side in ("left", "right"):
+            for region in camera_line_frame.virtual_sensor_regions(
+                geometry["medium"][side]
+            ):
+                mask[
+                    region["y0"]:region["y1"],
+                    region["x0"]:region["x1"],
+                ] = 255
+
+        for green_direction, expected_position, expected_powers in (
+            ("ESQUERDA", -1.0, (-0.72, 0.78)),
+            ("DIREITA", 1.0, (0.78, -0.72)),
+        ):
+            with self.subTest(green_direction=green_direction):
+                sensors = camera_line_frame.read_virtual_line_sensors(
+                    mask,
+                    green_direction,
+                )
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                )
+
+                self.assertTrue(math.isclose(
+                    sensors["mediumPosition"],
+                    expected_position,
+                ))
+                self.assertIsNone(sensors["farPosition"])
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    expected_powers,
+                )
 
 
 class VirtualRecoveryTests(unittest.TestCase):
@@ -1303,17 +1487,17 @@ class VirtualRecoveryTests(unittest.TestCase):
                 result["right_power"], expected_powers[1]
             ))
 
-    def test_normal_mapper_is_continuous_at_strong_transition(self):
+    def test_far_mapper_is_continuous_at_normal_limit(self):
         transition = camera_line_frame.NORMAL_FULL_STEERING_ERROR
         before_transition = calculate_command(
             sensor_values(transition - 1e-9, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         at_transition = calculate_command(
-            sensor_values(transition, None, None),
+            sensor_values(transition + 1e-9, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
-        self.assertTrue(math.isclose(at_transition["left_power"], 0.78))
+        self.assertTrue(math.isclose(at_transition["left_power"], 0.82))
         self.assertTrue(math.isclose(at_transition["right_power"], 0.66))
         self.assertTrue(math.isclose(
             before_transition["left_power"],
@@ -1332,11 +1516,12 @@ class VirtualRecoveryTests(unittest.TestCase):
             + camera_line_frame.PIVOT_ENTER_THRESHOLD
         ) * 0.5
         result = calculate_command(
-            sensor_values(steering_error, None, None),
+            sensor_values(steering_error, 0.30, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         expected_left, expected_right = expected_normal_motor_powers(
-            steering_error
+            steering_error,
+            strong_enabled=True,
         )
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
@@ -1344,7 +1529,7 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_normal_mapper_approaches_strong_limits_before_pivot(self):
         steering_error = camera_line_frame.PIVOT_ENTER_THRESHOLD - 1e-9
         result = calculate_command(
-            sensor_values(steering_error, None, None),
+            sensor_values(steering_error, 0.30, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         self.assertTrue(math.isclose(
@@ -1354,14 +1539,14 @@ class VirtualRecoveryTests(unittest.TestCase):
             result["right_power"], 0.61, abs_tol=1e-8
         ))
 
-    def test_pivot_inner_power_is_zero_at_entry_threshold(self):
+    def test_far_level_steering_at_pivot_threshold_stays_normal(self):
         result = calculate_command(
             sensor_values(camera_line_frame.PIVOT_ENTER_THRESHOLD, None, None),
             camera_line_frame.VirtualTurnStateTracker(),
         )
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (0.75, 0.0),
+            (0.82, 0.66),
         )
 
     def test_normal_mapper_transition_is_symmetric(self):
@@ -1402,42 +1587,30 @@ class VirtualRecoveryTests(unittest.TestCase):
             self.assertTrue(math.isclose(result["left_power"], expected_left))
             self.assertTrue(math.isclose(result["right_power"], expected_right))
 
-    def test_pivot_hysteresis_holds_until_error_falls_below_exit(self):
+    def test_far_steering_never_activates_pivot_tracker(self):
         pivot_tracker = camera_line_frame.VirtualPivotStateTracker()
-        released_powers = expected_normal_motor_powers(0.34)
-        for steering_error, expected_state, expected_powers in (
-            (0.47, camera_line_frame.PIVOT_STATE_RIGHT, (0.75, 0.0)),
-            (0.44, camera_line_frame.PIVOT_STATE_RIGHT, (0.75, 0.0)),
-            (0.40, camera_line_frame.PIVOT_STATE_RIGHT, (0.75, 0.0)),
-            (0.34, camera_line_frame.PIVOT_STATE_NONE, released_powers),
-        ):
+        for steering_error in (0.47, 1.0, -1.0, 0.40):
             result = calculate_command(
                 sensor_values(steering_error, None, None),
                 camera_line_frame.VirtualTurnStateTracker(),
                 pivot_state_tracker=pivot_tracker,
             )
-            self.assertEqual(pivot_tracker.state, expected_state)
-            self.assertTrue(math.isclose(
-                result["left_power"], expected_powers[0]
-            ))
-            self.assertTrue(math.isclose(
-                result["right_power"], expected_powers[1]
-            ))
+            self.assertEqual(
+                pivot_tracker.state,
+                camera_line_frame.PIVOT_STATE_NONE,
+            )
+            self.assertGreater(result["left_power"], 0.0)
+            self.assertGreater(result["right_power"], 0.0)
 
-    def test_pivot_sign_inversion_exits_before_opposite_pivot(self):
+    def test_far_sign_inversion_remains_in_normal_mapper(self):
         pivot_tracker = camera_line_frame.VirtualPivotStateTracker()
-        calculate_command(
-            sensor_values(-0.47, None, None),
+        left = calculate_command(
+            sensor_values(-1.0, 0.0, None),
             camera_line_frame.VirtualTurnStateTracker(),
             pivot_state_tracker=pivot_tracker,
         )
-        self.assertEqual(
-            pivot_tracker.state,
-            camera_line_frame.PIVOT_STATE_LEFT,
-        )
-
-        inverted = calculate_command(
-            sensor_values(0.47, None, None),
+        right = calculate_command(
+            sensor_values(1.0, 0.0, None),
             camera_line_frame.VirtualTurnStateTracker(),
             pivot_state_tracker=pivot_tracker,
         )
@@ -1445,21 +1618,13 @@ class VirtualRecoveryTests(unittest.TestCase):
             pivot_tracker.state,
             camera_line_frame.PIVOT_STATE_NONE,
         )
-        self.assertTrue(math.isclose(inverted["left_power"], 0.85))
-        self.assertTrue(math.isclose(inverted["right_power"], 0.61))
-
-        opposite_pivot = calculate_command(
-            sensor_values(0.47, None, None),
-            camera_line_frame.VirtualTurnStateTracker(),
-            pivot_state_tracker=pivot_tracker,
+        self.assertEqual(
+            (left["left_power"], left["right_power"]),
+            (0.66, 0.82),
         )
         self.assertEqual(
-            pivot_tracker.state,
-            camera_line_frame.PIVOT_STATE_RIGHT,
-        )
-        self.assertEqual(
-            (opposite_pivot["left_power"], opposite_pivot["right_power"]),
-            (0.75, 0.0),
+            (right["left_power"], right["right_power"]),
+            (0.82, 0.66),
         )
 
     def test_green_keeps_previous_normal_curve_scale(self):
@@ -1470,12 +1635,622 @@ class VirtualRecoveryTests(unittest.TestCase):
         steering_strength = 0.30 / 0.40
         self.assertTrue(math.isclose(
             result["left_power"],
-            0.72 + steering_strength * (0.78 - 0.72),
+            0.75 + steering_strength * (0.82 - 0.75),
         ))
         self.assertTrue(math.isclose(
             result["right_power"],
-            0.72 - steering_strength * (0.72 - 0.66),
+            0.75 - steering_strength * (0.75 - 0.66),
         ))
+
+
+class VirtualMediumUrgencyTests(unittest.TestCase):
+    def test_local_hard_corner_with_missing_far_uses_existing_spin(self):
+        sensors = sensor_values(
+            0.0,
+            -0.60,
+            None,
+            near_fine_position=-0.38,
+        )
+        sensors["farPosition"] = None
+
+        result = calculate_command(
+            sensors,
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (-0.72, 0.72),
+        )
+
+    def test_hard_corner_persists_until_two_aligned_frames(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entry_sensors = sensor_values(
+            0.0,
+            -0.72,
+            None,
+            near_fine_position=-0.38,
+        )
+        entry_sensors["farPosition"] = None
+
+        entered = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_LEFT,
+        )
+        self.assertEqual(
+            (entered["left_power"], entered["right_power"]),
+            (-0.72, 0.72),
+        )
+
+        transient_sensors = (
+            sensor_values(0.0, -0.05, None, near_fine_position=-0.38),
+            sensor_values(None, None, None),
+            sensor_values(0.0, 0.60, None, near_fine_position=0.38),
+        )
+        transient_sensors[2]["farPosition"] = None
+        for sensors in transient_sensors:
+            held = calculate_command(
+                sensors,
+                medium_spin_tracker=tracker,
+            )
+            self.assertEqual(
+                tracker.hard_corner_state,
+                camera_line_frame.PIVOT_STATE_LEFT,
+            )
+            self.assertEqual(
+                (held["left_power"], held["right_power"]),
+                (-0.72, 0.72),
+            )
+
+        aligned_sensors = sensor_values(
+            0.04,
+            0.08,
+            None,
+            near_fine_position=0.05,
+        )
+        first_aligned = calculate_command(
+            aligned_sensors,
+            medium_spin_tracker=tracker,
+        )
+        recovered = calculate_command(
+            aligned_sensors,
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(
+            (first_aligned["left_power"], first_aligned["right_power"]),
+            (-0.72, 0.72),
+        )
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            (recovered["left_power"], recovered["right_power"]),
+            expected_normal_motor_powers(0.04),
+        )
+
+    def test_hard_corner_requires_two_consecutive_far_frames_to_exit(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entry_sensors = sensor_values(
+            0.0,
+            -0.72,
+            None,
+            near_fine_position=-0.38,
+        )
+        entry_sensors["farPosition"] = None
+        far_sensors = dict(entry_sensors)
+        far_sensors["farPosition"] = -0.40
+
+        calculate_command(entry_sensors, medium_spin_tracker=tracker)
+        isolated_far = calculate_command(
+            far_sensors,
+            medium_spin_tracker=tracker,
+        )
+        far_lost_again = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+        )
+        first_consecutive_far = calculate_command(
+            far_sensors,
+            medium_spin_tracker=tracker,
+        )
+        recovered = calculate_command(
+            far_sensors,
+            medium_spin_tracker=tracker,
+        )
+
+        for held in (
+            isolated_far,
+            far_lost_again,
+            first_consecutive_far,
+        ):
+            self.assertEqual(
+                (held["left_power"], held["right_power"]),
+                (-0.72, 0.72),
+            )
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            (recovered["left_power"], recovered["right_power"]),
+            (-0.72, 0.78),
+        )
+
+    def test_hard_corner_timeout_returns_to_existing_recovery(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entry_sensors = sensor_values(
+            0.0,
+            -0.72,
+            None,
+            near_fine_position=-0.38,
+        )
+        entry_sensors["farPosition"] = None
+        calculate_command(entry_sensors, medium_spin_tracker=tracker)
+
+        for _ in range(
+            camera_line_frame.VIRTUAL_HARD_CORNER_MAX_FRAMES - 2
+        ):
+            held = calculate_command(
+                entry_sensors,
+                medium_spin_tracker=tracker,
+            )
+            self.assertEqual(
+                (held["left_power"], held["right_power"]),
+                (-0.72, 0.72),
+            )
+
+        timed_out = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+        )
+        still_blocked = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertTrue(tracker.hard_corner_entry_blocked)
+        self.assertEqual(
+            (timed_out["left_power"], timed_out["right_power"]),
+            (-0.72, 0.78),
+        )
+        self.assertEqual(
+            (still_blocked["left_power"], still_blocked["right_power"]),
+            (-0.72, 0.78),
+        )
+
+    def test_green_and_gap_cancel_persistent_hard_corner(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entry_sensors = sensor_values(
+            0.0,
+            -0.72,
+            None,
+            near_fine_position=-0.38,
+        )
+        entry_sensors["farPosition"] = None
+
+        calculate_command(entry_sensors, medium_spin_tracker=tracker)
+        green = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+            green_direction="DIREITA",
+        )
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertNotEqual(
+            (green["left_power"], green["right_power"]),
+            (-0.72, 0.72),
+        )
+
+        calculate_command(entry_sensors, medium_spin_tracker=tracker)
+        gap = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+            gap_active=True,
+        )
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertNotEqual(
+            (gap["left_power"], gap["right_power"]),
+            (-0.72, 0.72),
+        )
+
+    def test_hard_corner_requires_large_near_offset(self):
+        sensors = sensor_values(
+            0.0,
+            -0.60,
+            None,
+            near_fine_position=-0.10,
+        )
+        sensors["farPosition"] = None
+
+        result = calculate_command(
+            sensors,
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (-0.72, 0.78),
+        )
+
+    def test_hard_corner_requires_missing_far(self):
+        result = calculate_command(
+            sensor_values(
+                0.0,
+                -0.60,
+                None,
+                near_fine_position=-0.38,
+            ),
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (-0.72, 0.78),
+        )
+
+    def test_hard_corner_requires_matching_medium_and_near_sides(self):
+        sensors = sensor_values(
+            0.0,
+            -0.60,
+            None,
+            near_fine_position=0.38,
+        )
+        sensors["farPosition"] = None
+
+        result = calculate_command(
+            sensors,
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (-0.72, 0.78),
+        )
+
+    def test_medium_below_strong_threshold_does_not_promote(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        result = calculate_command(
+            sensor_values(0.12, 0.20, None),
+            medium_spin_tracker=tracker,
+        )
+        reference = calculate_command(
+            sensor_values(0.12, None, None),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(result["finalSteering"], 0.12)
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (reference["left_power"], reference["right_power"]),
+        )
+
+    def test_medium_guarantees_strong_action_in_its_direction(self):
+        for medium_position, expected_sign in ((-0.30, -1.0), (0.30, 1.0)):
+            with self.subTest(medium_position=medium_position):
+                result = calculate_command(
+                    sensor_values(-expected_sign * 0.10, medium_position, None),
+                    medium_spin_tracker=(
+                        camera_line_frame.VirtualMediumSpinTracker()
+                    ),
+                )
+
+                self.assertEqual(
+                    result["finalSteering"],
+                    expected_sign
+                    * camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+                )
+                self.assertGreater(result["left_power"], 0.0)
+                self.assertGreater(result["right_power"], 0.0)
+                if expected_sign < 0.0:
+                    self.assertLess(
+                        result["left_power"], result["right_power"]
+                    )
+                else:
+                    self.assertGreater(
+                        result["left_power"], result["right_power"]
+                    )
+
+    def test_medium_critical_without_near_enters_spin(self):
+        for medium_position, expected_powers in (
+            (-0.50, (-0.72, 0.72)),
+            (0.50, (0.72, -0.72)),
+        ):
+            with self.subTest(medium_position=medium_position):
+                result = calculate_command(
+                    sensor_values(0.0, medium_position, None),
+                    medium_spin_tracker=(
+                        camera_line_frame.VirtualMediumSpinTracker()
+                    ),
+                )
+
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    expected_powers,
+                )
+
+    def test_far_extreme_with_central_medium_never_pivots_or_spins(self):
+        for medium_position in (None, -0.20, 0.0, 0.20):
+            for near_fine_position in (None, 0.0):
+                with self.subTest(
+                    medium_position=medium_position,
+                    near_fine_position=near_fine_position,
+                ):
+                    pivot_tracker = (
+                        camera_line_frame.VirtualPivotStateTracker()
+                    )
+                    result = calculate_command(
+                        sensor_values(
+                            1.0,
+                            medium_position,
+                            None,
+                            near_fine_position=near_fine_position,
+                        ),
+                        pivot_state_tracker=pivot_tracker,
+                        medium_spin_tracker=(
+                            camera_line_frame.VirtualMediumSpinTracker()
+                        ),
+                    )
+
+                    self.assertEqual(
+                        result["finalSteering"],
+                        camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+                    )
+                    self.assertEqual(
+                        pivot_tracker.state,
+                        camera_line_frame.PIVOT_STATE_NONE,
+                    )
+                    self.assertEqual(
+                        (result["left_power"], result["right_power"]),
+                        (0.82, 0.66),
+                    )
+
+    def test_medium_critical_with_valid_near_uses_pivot(self):
+        result = calculate_command(
+            sensor_values(0.0, 0.50, None, near_fine_position=0.0),
+            pivot_state_tracker=camera_line_frame.VirtualPivotStateTracker(),
+            medium_spin_tracker=camera_line_frame.VirtualMediumSpinTracker(),
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.78, -0.72),
+        )
+
+    def test_spin_exits_at_medium_exit_threshold_in_same_frame(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entered = calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=tracker,
+        )
+        held = calculate_command(
+            sensor_values(0.0, 0.31, None),
+            medium_spin_tracker=tracker,
+        )
+        released = calculate_command(
+            sensor_values(0.0, 0.30, None),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(
+            (entered["left_power"], entered["right_power"]),
+            (0.72, -0.72),
+        )
+        self.assertEqual(
+            (held["left_power"], held["right_power"]),
+            (0.72, -0.72),
+        )
+        self.assertEqual(tracker.state, camera_line_frame.PIVOT_STATE_NONE)
+        self.assertEqual(
+            released["finalSteering"],
+            camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+        )
+        self.assertGreater(released["left_power"], 0.0)
+        self.assertGreater(released["right_power"], 0.0)
+
+    def test_spin_cancels_immediately_on_side_change(self):
+        side_tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=side_tracker,
+        )
+        changed_side = calculate_command(
+            sensor_values(0.0, -0.48, None),
+            medium_spin_tracker=side_tracker,
+        )
+
+        self.assertEqual(
+            side_tracker.state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            changed_side["finalSteering"],
+            -camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+        )
+        self.assertGreater(changed_side["left_power"], 0.0)
+        self.assertGreater(changed_side["right_power"], 0.0)
+
+    def test_critical_tolerance_holds_three_invalid_medium_frames(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=tracker,
+        )
+
+        for invalid_frame in (1, 2, 3):
+            result = calculate_command(
+                sensor_values(None, None, None),
+                medium_spin_tracker=tracker,
+            )
+            self.assertEqual(tracker.invalid_frames, invalid_frame)
+            self.assertEqual(
+                (result["left_power"], result["right_power"]),
+                (0.72, -0.72),
+            )
+
+    def test_critical_tolerance_expires_after_configured_invalid_frames(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=tracker,
+        )
+        for _ in range(
+            camera_line_frame.VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES
+        ):
+            calculate_command(
+                sensor_values(None, None, None),
+                medium_spin_tracker=tracker,
+            )
+
+        expired = calculate_command(
+            sensor_values(None, None, None),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(tracker.state, camera_line_frame.PIVOT_STATE_NONE)
+        self.assertEqual(
+            tracker.critical_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(tracker.invalid_frames, 0)
+        self.assertEqual(
+            (expired["left_power"], expired["right_power"]),
+            (0.0, 0.0),
+        )
+
+    def test_neutral_medium_keeps_previous_critical_direction(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, -0.50, None),
+            medium_spin_tracker=tracker,
+        )
+        direction_lost = calculate_command(
+            sensor_values(0.0, -0.05, None),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(tracker.invalid_frames, 1)
+        self.assertEqual(
+            tracker.critical_state,
+            camera_line_frame.PIVOT_STATE_LEFT,
+        )
+        self.assertEqual(
+            (direction_lost["left_power"], direction_lost["right_power"]),
+            (-0.72, 0.72),
+        )
+
+    def test_valid_medium_ends_tolerance_in_current_frame(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=tracker,
+        )
+        calculate_command(
+            sensor_values(None, None, None),
+            medium_spin_tracker=tracker,
+        )
+        recovered = calculate_command(
+            sensor_values(0.12, 0.20, None),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(tracker.state, camera_line_frame.PIVOT_STATE_NONE)
+        self.assertEqual(
+            tracker.critical_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(tracker.invalid_frames, 0)
+        self.assertEqual(recovered["finalSteering"], 0.12)
+        self.assertGreater(recovered["left_power"], 0.0)
+        self.assertGreater(recovered["right_power"], 0.0)
+
+    def test_near_reappearance_ends_tolerance_in_current_frame(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        calculate_command(
+            sensor_values(0.0, 0.48, None),
+            medium_spin_tracker=tracker,
+        )
+        calculate_command(
+            sensor_values(None, None, None),
+            medium_spin_tracker=tracker,
+        )
+        near_reacquired = calculate_command(
+            sensor_values(0.12, None, None, near_fine_position=0.0),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(tracker.state, camera_line_frame.PIVOT_STATE_NONE)
+        self.assertEqual(
+            tracker.critical_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(tracker.invalid_frames, 0)
+        self.assertEqual(near_reacquired["finalSteering"], 0.12)
+        self.assertGreater(near_reacquired["left_power"], 0.0)
+        self.assertGreater(near_reacquired["right_power"], 0.0)
+
+    def test_pivot_side_is_tolerated_if_medium_and_near_are_lost(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        pivot = calculate_command(
+            sensor_values(0.0, -0.50, None, near_fine_position=0.0),
+            medium_spin_tracker=tracker,
+        )
+        lost = calculate_command(
+            sensor_values(None, None, None),
+            medium_spin_tracker=tracker,
+        )
+
+        self.assertEqual(
+            (pivot["left_power"], pivot["right_power"]),
+            (-0.72, 0.78),
+        )
+        self.assertEqual(
+            (lost["left_power"], lost["right_power"]),
+            (-0.72, 0.72),
+        )
+
+    def test_spin_exits_to_pivot_when_near_reappears(self):
+        medium_tracker = camera_line_frame.VirtualMediumSpinTracker()
+        spinning = calculate_command(
+            sensor_values(0.0, 0.50, None),
+            medium_spin_tracker=medium_tracker,
+        )
+        near_reacquired = calculate_command(
+            sensor_values(0.0, 0.50, None, near_fine_position=0.0),
+            medium_spin_tracker=medium_tracker,
+        )
+
+        self.assertEqual(
+            (spinning["left_power"], spinning["right_power"]),
+            (0.72, -0.72),
+        )
+        self.assertEqual(
+            medium_tracker.state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            (near_reacquired["left_power"], near_reacquired["right_power"]),
+            (0.78, -0.72),
+        )
 
 
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
