@@ -243,6 +243,8 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lineFollowerRightPower = 0.0;
     snapshot.lineControlSource = "unavailable";
     snapshot.lineNearDetected = false;
+    snapshot.lineNearFinePosition =
+        std::numeric_limits<double>::quiet_NaN();
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
@@ -341,11 +343,15 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.lineControlSource = lineControlSource;
         }
 
+        // A posição fina é opcional para manter compatibilidade com processos
+        // de câmera antigos. Sem ela, a missão simplesmente pula a correção.
+        tryGetJsonNumber(
+            json, "nearFinePosition", candidate.lineNearFinePosition);
+
         // O baseline abaixo é opcional e nunca invalida o comando visual.
         // Ausência ou valor inválido permanece como NaN/INVALID no CSV.
         CameraCurveDiagnostics& diagnostics = candidate.curveDiagnostics;
-        tryGetJsonNumber(
-            json, "nearFinePosition", diagnostics.nearFinePosition);
+        diagnostics.nearFinePosition = candidate.lineNearFinePosition;
         tryGetJsonNumber(
             json, "mediumPosition", diagnostics.mediumPosition);
         tryGetJsonNumber(

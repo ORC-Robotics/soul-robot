@@ -30,15 +30,29 @@ def sensor_values(
         "farLeft": 0.10,
         "farCenter": 0.40,
         "farRight": 0.10,
+        "controlFarLeft": 0.10,
+        "controlFarCenter": 0.40,
+        "controlFarRight": 0.10,
         "farPosition": 0.0,
+        "rawFarPosition": 0.0,
+        "farTrusted": True,
         "farBandLeft": 0.10,
         "farBandCenter": 0.10,
         "farBandRight": 0.10,
+        "controlFarBandLeft": 0.10,
+        "controlFarBandCenter": 0.10,
+        "controlFarBandRight": 0.10,
         "farBandPosition": far_band_position,
+        "rawFarBandPosition": far_band_position,
         "mediumLeft": 0.10,
         "mediumCenter": 0.20,
         "mediumRight": 0.10,
+        "controlMediumLeft": 0.10,
+        "controlMediumCenter": 0.20,
+        "controlMediumRight": 0.10,
         "mediumPosition": medium_position,
+        "rawMediumPosition": medium_position,
+        "mediumTrusted": True,
         "nearCenter": 0.0 if steering_error is None else 0.20,
         "nearFinePosition": near_fine_position,
         "headingAngle": 0.0,
@@ -683,6 +697,263 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(near_texts[0].startswith("NEAR-C "))
         self.assertTrue(near_texts[1].startswith("NEAR FINE POS "))
 
+    def test_line_confidence_overlay_uses_center_left_debug_block(self):
+        command = calculate_command(sensor_values(steering_error=0.10))
+        command["rawFarPosition"] = -0.25
+        command["farPosition"] = None
+        command["rawMediumPosition"] = 0.30
+        command["mediumPosition"] = 0.30
+        command["farLineConfidence"] = 0.45
+        command["mediumLineConfidence"] = 0.70
+        command["farLineThicknessPx"] = 8.5
+        command["mediumLineThicknessPx"] = 19.25
+        command["farThicknessConsistency"] = 0.36
+        command["mediumThicknessConsistency"] = 0.82
+        command["farTrusted"] = False
+        command["mediumTrusted"] = True
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+        with patch.object(camera_line_frame.cv2, "putText") as put_text:
+            camera_line_frame.draw_line_confidence_overlay(frame, command)
+
+        foreground_calls = [
+            call
+            for call in put_text.call_args_list
+            if call.args[6] == 1
+        ]
+        self.assertEqual(len(foreground_calls), 6)
+        self.assertTrue(foreground_calls[0].args[1].startswith("FAR CONF 0.45"))
+        self.assertIn("RAW POS -0.25", foreground_calls[0].args[1])
+        self.assertEqual(
+            foreground_calls[1].args[1],
+            "FAR THICK 8.5  CONS 0.36",
+        )
+        self.assertEqual(
+            foreground_calls[2].args[1],
+            "FAR TRUST NO  CTRL POS --",
+        )
+        self.assertTrue(foreground_calls[3].args[1].startswith("MED CONF 0.70"))
+        self.assertIn("RAW POS +0.30", foreground_calls[3].args[1])
+        self.assertEqual(
+            foreground_calls[4].args[1],
+            "MED THICK 19.2  CONS 0.82",
+        )
+        self.assertEqual(
+            foreground_calls[5].args[1],
+            "MED TRUST YES  CTRL POS +0.30",
+        )
+        for call in foreground_calls:
+            text_x, text_y = call.args[2]
+            self.assertGreaterEqual(text_x, 20)
+            self.assertLessEqual(text_x, 30)
+            self.assertGreater(text_y, frame.shape[0] * 0.45)
+            self.assertLess(text_y, frame.shape[0] * 0.75)
+
+    def test_line_confidence_does_not_change_control_decisions(self):
+        low_confidence_sensors = sensor_values(
+            steering_error=0.18,
+            medium_position=0.10,
+            far_band_position=-0.05,
+            near_fine_position=0.08,
+        )
+        low_confidence_sensors.update({
+            "farLineConfidence": 0.0,
+            "mediumLineConfidence": 0.0,
+            "farThicknessConsistency": 0.0,
+            "mediumThicknessConsistency": 0.0,
+        })
+        high_confidence_sensors = dict(low_confidence_sensors)
+        high_confidence_sensors.update({
+            "farLineConfidence": 1.0,
+            "mediumLineConfidence": 1.0,
+            "farThicknessConsistency": 1.0,
+            "mediumThicknessConsistency": 1.0,
+        })
+
+        low_result = calculate_command(low_confidence_sensors)
+        high_result = calculate_command(high_confidence_sensors)
+
+        decision_fields = (
+            "left_power",
+            "right_power",
+            "farPosition",
+            "mediumPosition",
+            "steeringError",
+            "finalSteering",
+            "virtualState",
+            "lineState",
+            "controlSource",
+        )
+        for field in decision_fields:
+            self.assertEqual(low_result[field], high_result[field])
+
+    def test_untrusted_forward_candidates_cannot_feed_control(self):
+        sensors = sensor_values(
+            steering_error=0.80,
+            medium_position=0.90,
+            far_band_position=0.90,
+        )
+        sensors["farPosition"] = 0.90
+        sensors["rawFarPosition"] = 0.90
+        sensors["rawFarBandPosition"] = 0.90
+        sensors["rawMediumPosition"] = 0.90
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+
+        result = calculate_command(sensors)
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, 0.0),
+        )
+        self.assertEqual(result["rawFarPosition"], 0.90)
+        self.assertEqual(result["rawFarBandPosition"], 0.90)
+        self.assertEqual(result["rawMediumPosition"], 0.90)
+        self.assertIsNone(result["farPosition"])
+        self.assertIsNone(result["farBandPosition"])
+        self.assertIsNone(result["mediumPosition"])
+        self.assertEqual(
+            (
+                result["controlFarLeft"],
+                result["controlFarCenter"],
+                result["controlFarRight"],
+                result["controlFarBandLeft"],
+                result["controlFarBandCenter"],
+                result["controlFarBandRight"],
+                result["controlMediumLeft"],
+                result["controlMediumCenter"],
+                result["controlMediumRight"],
+            ),
+            (0.0,) * 9,
+        )
+        self.assertIsNone(result["headingAngle"])
+        self.assertIsNone(result["steeringError"])
+        self.assertEqual(result["controlSource"], "virtual-no-line")
+
+    def test_untrusted_medium_candidate_does_not_start_pivot_or_spin(self):
+        sensors = sensor_values(
+            steering_error=0.90,
+            medium_position=0.90,
+            far_band_position=0.90,
+            near_fine_position=0.60,
+        )
+        sensors["farPosition"] = 0.90
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        pivot_tracker = camera_line_frame.VirtualPivotStateTracker()
+        spin_tracker = camera_line_frame.VirtualMediumSpinTracker()
+
+        result = calculate_command(
+            sensors,
+            pivot_state_tracker=pivot_tracker,
+            medium_spin_tracker=spin_tracker,
+        )
+
+        self.assertEqual(
+            pivot_tracker.state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            spin_tracker.state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertEqual(
+            spin_tracker.critical_state,
+            camera_line_frame.PIVOT_STATE_NONE,
+        )
+        self.assertGreaterEqual(result["left_power"], 0.0)
+        self.assertGreaterEqual(result["right_power"], 0.0)
+
+    def test_untrusted_candidate_does_not_update_memorized_direction(self):
+        sensors = sensor_values(
+            steering_error=None,
+            medium_position=0.90,
+            far_band_position=0.90,
+        )
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.last_direction = "LEFT"
+
+        calculate_command(
+            sensors,
+            gap_active=True,
+            line_search_tracker=search_tracker,
+        )
+
+        self.assertEqual(search_tracker.last_direction, "LEFT")
+
+    def test_untrusted_candidates_do_not_confirm_reorient(self):
+        sensors = sensor_values(
+            steering_error=None,
+            medium_position=0.90,
+            far_band_position=0.90,
+        )
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        turn_tracker = camera_line_frame.VirtualTurnStateTracker()
+
+        for _ in range(
+            camera_line_frame.VIRTUAL_REORIENT_CONFIRMATION_FRAMES
+        ):
+            calculate_command(sensors, tracker=turn_tracker)
+
+        self.assertEqual(
+            turn_tracker.state,
+            camera_line_frame.VIRTUAL_STATE_NORMAL,
+        )
+        self.assertIsNone(turn_tracker.reorient_candidate)
+        self.assertEqual(turn_tracker.reorient_frames, 0)
+
+    def test_untrusted_forward_candidates_do_not_interrupt_gap(self):
+        sensors = sensor_values(
+            steering_error=None,
+            medium_position=-0.90,
+            far_band_position=-0.90,
+        )
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+
+        result = calculate_command(sensors, gap_active=True)
+
+        self.assertFalse(
+            camera_line_frame.virtual_raw_line_is_visible(sensors)
+        )
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.75, 0.75),
+        )
+        self.assertEqual(result["controlSource"], "gap-forward")
+
+    def test_untrusted_forward_geometry_does_not_block_gap_entry(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[200:216, 20:460] = 255
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        forward_control_trusted = (
+            sensors["farTrusted"] or sensors["mediumTrusted"]
+        )
+
+        guidance = camera_line_frame.extract_gap_geometric_guidance(
+            mask,
+            gap_forward_active=False,
+            green_direction="NENHUMA",
+            near_center_visible=False,
+            forward_control_trusted=forward_control_trusted,
+        )
+
+        self.assertFalse(forward_control_trusted)
+        self.assertIsNone(guidance["nearPoint"])
+        self.assertIsNone(guidance["virtualNearPoint"])
+        self.assertIsNone(guidance["lateralExitTarget"])
+        self.assertTrue(camera_line_frame.gap_entry_is_required(
+            gap_forward_active=False,
+            green_direction="NENHUMA",
+            recent_near_frames=1,
+            near_center_visible=False,
+            real_near_point=guidance["nearPoint"],
+            virtual_near_point=guidance["virtualNearPoint"],
+            lateral_exit_target=guidance["lateralExitTarget"],
+        ))
+
     def test_virtual_debug_overlay_draws_composite_medium_side_wings(self):
         command = calculate_command(sensor_values(steering_error=0.10))
         frame = np.zeros((100, 200, 3), dtype=np.uint8)
@@ -923,6 +1194,12 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             )
             raw_far = (far_left, far_center, far_right)
             raw_medium = (medium_left, medium_center, medium_right)
+            raw_far_position = (
+                camera_line_frame.calculate_virtual_row_position(*raw_far)
+            )
+            raw_medium_position = (
+                camera_line_frame.calculate_virtual_row_position(*raw_medium)
+            )
             if green_direction == "ESQUERDA":
                 far_center = 0.0
                 far_right = 0.0
@@ -951,22 +1228,28 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             medium_position = camera_line_frame.calculate_virtual_row_position(
                 medium_left, medium_center, medium_right
             )
+            trusted_far_position = (
+                far_position if actual["farTrusted"] else None
+            )
+            trusted_medium_position = (
+                medium_position if actual["mediumTrusted"] else None
+            )
             heading_angle = camera_line_frame.calculate_virtual_heading_angle(
-                far_position,
+                trusted_far_position,
                 near_fine_position,
                 geometry,
-                medium_position=medium_position,
+                medium_position=trusted_medium_position,
             )
             steering_error = camera_line_frame.calculate_virtual_steering_error(
                 near_fine_position is not None,
                 heading_angle,
                 fallback_medium_position=(
-                    medium_position
+                    trusted_medium_position
                     if near_fine_position is None
                     else None
                 ),
                 fallback_far_position=(
-                    far_position
+                    trusted_far_position
                     if near_fine_position is None
                     and green_direction == "NENHUMA"
                     else None
@@ -976,11 +1259,29 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 "farLeft": raw_far[0],
                 "farCenter": raw_far[1],
                 "farRight": raw_far[2],
-                "farPosition": far_position,
+                "controlFarLeft": far_left if actual["farTrusted"] else 0.0,
+                "controlFarCenter": (
+                    far_center if actual["farTrusted"] else 0.0
+                ),
+                "controlFarRight": (
+                    far_right if actual["farTrusted"] else 0.0
+                ),
+                "rawFarPosition": raw_far_position,
+                "farPosition": trusted_far_position,
                 "mediumLeft": raw_medium[0],
                 "mediumCenter": raw_medium[1],
                 "mediumRight": raw_medium[2],
-                "mediumPosition": medium_position,
+                "controlMediumLeft": (
+                    medium_left if actual["mediumTrusted"] else 0.0
+                ),
+                "controlMediumCenter": (
+                    medium_center if actual["mediumTrusted"] else 0.0
+                ),
+                "controlMediumRight": (
+                    medium_right if actual["mediumTrusted"] else 0.0
+                ),
+                "rawMediumPosition": raw_medium_position,
+                "mediumPosition": trusted_medium_position,
                 "nearCenter": near_center,
                 "nearFinePosition": near_fine_position,
                 "headingAngle": heading_angle,

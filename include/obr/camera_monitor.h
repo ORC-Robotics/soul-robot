@@ -37,6 +37,9 @@ struct CameraLineSnapshot
     double lineFollowerRightPower = 0.0;
     std::string lineControlSource = "unknown";
     bool lineNearDetected = false;
+    // Posição normalizada da linha no NEAR usada somente para a correção
+    // inicial do retorno. NaN impede qualquer giro sem uma leitura válida.
+    double lineNearFinePosition = std::numeric_limits<double>::quiet_NaN();
 
     bool greenPathBlackValid = false;
     std::uint64_t greenCandidateCount = 0;

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
+
 
 SCRIPT_DIRECTORY = os.path.dirname(__file__)
 CAMERA_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "camera_line_frame.py")
@@ -87,12 +89,115 @@ class ForwardCameraStreamTest(unittest.TestCase):
 
         self.assertFalse(status["enabled"])
         self.assertFalse(status["active"])
+        self.assertFalse(status["processingActive"])
         self.assertEqual(status["state"], "disabled")
         self.assertEqual(status["cameraRole"], "forward")
         self.assertEqual(status["mainResolution"], {"width": 960, "height": 540})
         self.assertEqual(status["sensorMode"]["width"], 1920)
         self.assertEqual(status["sensorMode"]["height"], 1080)
+        self.assertEqual(status["targetCameraFps"], 30)
         self.assertNotIn("lineSequence", status)
+
+    def test_downward_process_rejects_forward_role(self):
+        with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
+            camera_line_frame.parse_camera_profile(["--camera-role", "forward"])
+
+    def test_forward_processing_reuses_only_forward_black_segmentation(self):
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        filtered_mask = np.zeros((100, 200), dtype=np.uint8)
+        filtered_mask[60:95, 95:105] = 255
+        with mock.patch.object(
+            camera_line_frame,
+            "create_filtered_line_mask",
+            return_value=(filtered_mask, 0),
+        ) as create_mask:
+            reading = forward_camera_stream.process_forward_frame(frame, "RGB888")
+
+        create_mask.assert_called_once_with(
+            frame,
+            camera_line_frame.CAMERA_PROFILES["forward"]["vision"],
+            "RGB888",
+        )
+        self.assertTrue(reading["forwardLineVisible"])
+        self.assertAlmostEqual(reading["forwardLinePosition"], 0.0, places=6)
+
+    def test_forward_line_on_left_has_negative_position(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        mask[60:95, 20:30] = 255
+
+        reading = forward_camera_stream.calculate_forward_line_assist(mask)
+
+        self.assertTrue(reading["forwardLineVisible"])
+        self.assertLess(reading["forwardLinePosition"], 0.0)
+        self.assertGreater(reading["forwardLineConfidence"], 0.0)
+
+    def test_forward_line_in_center_has_position_near_zero(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        mask[60:95, 95:105] = 255
+
+        reading = forward_camera_stream.calculate_forward_line_assist(mask)
+
+        self.assertTrue(reading["forwardLineVisible"])
+        self.assertAlmostEqual(reading["forwardLinePosition"], 0.0, places=6)
+
+    def test_forward_line_on_right_has_positive_position(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        mask[60:95, 170:180] = 255
+
+        reading = forward_camera_stream.calculate_forward_line_assist(mask)
+
+        self.assertTrue(reading["forwardLineVisible"])
+        self.assertGreater(reading["forwardLinePosition"], 0.0)
+
+    def test_empty_forward_roi_is_not_visible(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+
+        reading = forward_camera_stream.calculate_forward_line_assist(mask)
+
+        self.assertFalse(reading["forwardLineVisible"])
+        self.assertIsNone(reading["forwardLinePosition"])
+        self.assertEqual(reading["forwardLineConfidence"], 0.0)
+
+    def test_forward_line_status_uses_dedicated_atomic_ipc(self):
+        reading = {
+            "forwardLineVisible": True,
+            "forwardLinePosition": -0.25,
+            "forwardLineConfidence": 0.04,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            status_path = os.path.join(temporary_directory, "forward.json")
+            temporary_path = os.path.join(temporary_directory, "forward.tmp.json")
+            with mock.patch.object(
+                forward_camera_stream,
+                "FORWARD_LINE_STATUS_PATH",
+                status_path,
+            ), mock.patch.object(
+                forward_camera_stream,
+                "TEMP_FORWARD_LINE_STATUS_PATH",
+                temporary_path,
+            ):
+                saved = forward_camera_stream.save_forward_line_status(
+                    reading,
+                    timestamp=123.5,
+                    sequence=7,
+                )
+
+            with open(status_path, "r", encoding="utf-8") as status_file:
+                status = json.load(status_file)
+
+        self.assertTrue(saved)
+        self.assertEqual(
+            set(status),
+            {
+                "forwardLineVisible",
+                "forwardLinePosition",
+                "forwardLineConfidence",
+                "forwardLineSequence",
+                "forwardLineTimestamp",
+            },
+        )
+        self.assertEqual(status["forwardLineSequence"], 7)
+        self.assertEqual(status["forwardLineTimestamp"], 123.5)
 
 
 if __name__ == "__main__":

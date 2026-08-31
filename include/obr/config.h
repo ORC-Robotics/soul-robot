@@ -54,13 +54,13 @@ constexpr int kCameraStreamPort = 8090;
 // Caminho HTTP do stream MJPEG dentro do script Python da câmera.
 constexpr const char* kCameraStreamPath = "/stream.mjpg";
 
-// O processo frontal permanece ocioso nesta porta enquanto a câmera está desligada.
-// Quando ativado, ele transmite 960x540 sem publicar dados do segue-faixa.
+// O processo frontal captura e processa continuamente, mesmo sem cliente de vídeo.
+// Esta porta transmite o overlay 960x540 sem controlar motores ou a câmera inferior.
 constexpr int kForwardCameraStreamPort = 8091;
 constexpr const char* kForwardCameraStreamPath = "/stream.mjpg";
 
-// O dashboard altera somente este pequeno IPC para solicitar a CAM1.
-// O valor zero fecha a câmera física e reduz o consumo durante a missão principal.
+// O dashboard altera somente este pequeno IPC para disponibilizar o stream da CAM1.
+// O valor zero desliga a visualização, mas preserva o processamento frontal a 30 FPS.
 constexpr const char* kForwardCameraControlPath =
     "/dev/shm/obr_forward_camera_enabled";
 constexpr const char* kForwardCameraTemporaryControlPath =
@@ -281,8 +281,21 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
               "O controle fechado da missão de distância deve permanecer seguro.");
 
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
-// Primeiro o robô avança pelos encoders, depois gira pelo MPU6050 e continua
-// no mesmo sentido até a câmera inferior confirmar novamente a linha próxima.
+// Primeiro o robô mantém brevemente a velocidade vigente, corrige um
+// desalinhamento local grande, avança pelos encoders, gira pelo MPU6050 e
+// continua até a câmera confirmar a linha próxima.
+// Atraso, em milissegundos, logo após reconhecer o retorno de 180°.
+// A espera não bloqueia o loop, mantendo E-Stop e telemetria ativos.
+constexpr int kGreenTurnAroundRecognitionDelayMs = 1000;
+// Deslocamento normalizado mínimo do NEAR que autoriza a correção inicial.
+// Um valor alto evita girar por pequenos erros que o segue-linha já corrigiria.
+constexpr double kGreenTurnAroundCenteringEnterThreshold = 0.45;
+// Deslocamento normalizado que encerra a correção e libera o avanço.
+constexpr double kGreenTurnAroundCenteringExitThreshold = 0.20;
+// Potência normalizada do SPIN curto usado somente antes do avanço de 180°.
+constexpr double kGreenTurnAroundCenteringPower = 0.69;
+// Tempo máximo, em milissegundos, da correção para impedir giro indefinido.
+constexpr int kGreenTurnAroundCenteringTimeoutMs = 500;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
 constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
@@ -300,7 +313,7 @@ constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
 // contagem congelada continuar chegando como telemetria aparentemente válida.
 constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
 // Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
-constexpr double kGreenTurnAroundImuDegrees = 150.0;
+constexpr double kGreenTurnAroundImuDegrees = 166.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
 constexpr double kGreenTurnAroundImuToleranceDegrees = 5.0;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
@@ -316,7 +329,15 @@ constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
 
-static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
+static_assert(kGreenTurnAroundRecognitionDelayMs >= 0 &&
+                  kGreenTurnAroundCenteringEnterThreshold >
+                      kGreenTurnAroundCenteringExitThreshold &&
+                  kGreenTurnAroundCenteringExitThreshold >= 0.0 &&
+                  kGreenTurnAroundCenteringEnterThreshold <= 1.0 &&
+                  kGreenTurnAroundCenteringPower >= kMotorStartMinimumPower &&
+                  kGreenTurnAroundCenteringPower <= kMaxMotorOutput &&
+                  kGreenTurnAroundCenteringTimeoutMs > 0 &&
+                  kGreenTurnAroundForwardDistanceCm > 0.0 &&
                   kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
                   kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
                   kGreenTurnAroundForwardSettleMs >= 0 &&

@@ -23,6 +23,8 @@ private:
     enum class TurnAroundPhase
     {
         Idle,
+        RecognitionDelay,
+        Centering,
         DrivingForward,
         ForwardSettling,
         TurningByImu,
@@ -32,6 +34,8 @@ private:
     TurnAroundPhase turnAroundPhase_ = TurnAroundPhase::Idle;
     ImuTurnController turnAroundController_;
     bool turnAroundArmed_ = true;
+    double recognitionLeftPower_ = 0.0;
+    double recognitionRightPower_ = 0.0;
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;
     int lineReacquireFrames_ = 0;

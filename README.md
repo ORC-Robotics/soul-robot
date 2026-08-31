@@ -503,40 +503,39 @@ como snapshot de compatibilidade, lendo `/tmp/obr_camera_frame.jpg`. O FPS, a
 resolução, o formato e a disponibilidade da captura vêm de
 `/camera-status.json`.
 
-A câmera frontal usa a CAM1 e fica fisicamente fechada por padrão. No dashboard,
-abra a visualização `Frontal` ou `Dupla` e use o botão `ATIVAR`. Quando ligada, o
-gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando o
-modo físico `1920x1080` de 10 bits, pela rota:
+A câmera frontal usa a CAM1 e permanece capturando e processando a linha a 30 FPS.
+O gerenciador `forward_camera_stream.py` mantém o perfil `960x540`, com modo físico
+`1920x1080` de 10 bits. No dashboard, abra a visualização `Frontal` ou `Dupla` e use
+o botão `ATIVAR` para disponibilizar somente o stream de diagnóstico pela rota:
 
 ```txt
 http://obr.local:8080/forward-camera-stream.mjpg
 ```
 
-Ao usar `DESATIVAR`, o Picamera2 é encerrado e a CAM1 é liberada; permanece apenas
-um gerenciador ocioso que observa o pequeno arquivo de controle. A câmera frontal
-não executa segmentação de linha ou verde e não publica no IPC do segue-faixa.
-Assim, ativá-la não muda o controle dos motores nem a interpretação da câmera
-inferior.
+Ao usar `DESATIVAR`, somente a visualização MJPEG é desligada. A CAM1 continua
+capturando e publicando sua leitura leve em
+`/dev/shm/obr_forward_line_status.json`, sem escrever no IPC da câmera inferior.
+Ela não executa sensores FAR/MEDIUM/NEAR, GREEN, GAP, recovery nem comandos de
+motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
-O código também pode solicitar que a frontal já seja aberta no início do serviço:
+O código também pode solicitar que o stream frontal já fique disponível no início:
 
 ```sh
 OBR_FORWARD_CAMERA_ENABLED=1 bash scripts/run_robot.sh
 ```
 
-Sem essa variável, ou com valor `0`, cada início do serviço volta ao estado seguro
-desligado. O dashboard envia o mesmo controle pelo WebSocket com
+Sem essa variável, ou com valor `0`, cada início do serviço mantém apenas o stream
+desligado. O dashboard envia o mesmo controle de visualização pelo WebSocket com
 `{"command":"set_forward_camera","enabled":true}` ou `false`.
 
 ```sh
 cd /home/raspberry/OBR2026K
-python3 scripts/camera_line_frame.py
+python3 scripts/forward_camera_stream.py
 ```
 
-O papel da câmera conectada pode ser escolhido por argumento:
+O processo da câmera inferior é separado e aceita somente o papel `down`:
 
 ```sh
-python3 scripts/camera_line_frame.py --camera-role forward
 python3 scripts/camera_line_frame.py --camera-role down
 ```
 
@@ -547,8 +546,9 @@ OBR_CAMERA_ROLE=down python3 scripts/camera_line_frame.py
 ```
 
 O perfil `forward` preserva a saída `960x540` e seleciona explicitamente o modo
-físico `1920x1080`. O gerenciador frontal reutiliza somente essa configuração de
-captura, sem chamar a visão de linha. O perfil `down` usa saída `480x360 @ 30 FPS`
+físico `1920x1080`. O gerenciador frontal reutiliza essa configuração de captura e
+a segmentação preta própria, sem chamar a visão de controle inferior. O perfil
+`down` usa saída `480x360 @ 30 FPS`
 e seleciona explicitamente o modo `1640x1232` de 10 bits, reportado pelo driver
   como full-FOV. A geometria e os kernels preservados da máscara e do detector
   verde são derivados da resolução atual; os valores de referência de `640x480`

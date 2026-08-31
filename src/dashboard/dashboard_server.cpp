@@ -1659,6 +1659,8 @@ std::string DashboardServer::dashboardHtml()
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
         turnaround_waiting_sensors: ["RETORNO: SENSORES", "warn", "machineStepPerception"],
+        turnaround_recognition_delay: ["RETORNO: AGUARDANDO", "warn", "machineStepFeedback"],
+        turnaround_centering: ["RETORNO: CENTRALIZANDO", "active", "machineStepMotion"],
         turnaround_forward: ["RETORNO: AVANÇO", "active", "machineStepMotion"],
         turnaround_forward_settling: ["RETORNO: ESTABILIZANDO", "warn", "machineStepFeedback"],
         turnaround_imu: ["RETORNO: GIRO IMU", "active", "machineStepMotion"],

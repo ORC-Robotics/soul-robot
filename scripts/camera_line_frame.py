@@ -1,7 +1,4 @@
-"""Processa a câmera selecionada e publica máscaras e telemetria visual.
-
-Somente o papel ``down`` publica o ponto de extensão ainda zerado do seguidor.
-"""
+"""Processa exclusivamente a câmera inferior e publica sua telemetria visual."""
 
 import argparse
 import json
@@ -209,7 +206,7 @@ GREEN_CLOSE_ITERATIONS = 2
 LINE_MIN_COMPONENT_AREA_PX = 120
 LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
-GREEN_MIN_AREA_RATIO = 2800.0 / (320.0 * 200.0)
+GREEN_MIN_AREA_RATIO = 2600.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
@@ -641,23 +638,25 @@ def draw_green_rejection_details(display_frame, rejected_candidates):
 
 
 def parse_camera_profile(arguments=None):
-    """Seleciona o papel da câmera; o argumento tem prioridade sobre o ambiente."""
+    """Aceita somente a CAM0; a frontal possui um processo dedicado e leve."""
 
-    environment_role = os.environ.get("OBR_CAMERA_ROLE", "forward").strip().lower()
-    parser = argparse.ArgumentParser(description="Captura e processa a câmera do robô.")
+    environment_role = os.environ.get("OBR_CAMERA_ROLE", "down").strip().lower()
+    parser = argparse.ArgumentParser(
+        description="Captura e processa a câmera inferior do robô."
+    )
     parser.add_argument(
         "--camera-role",
-        choices=tuple(CAMERA_PROFILES),
+        choices=("down",),
         default=environment_role,
-        help="Papel físico da câmera conectada: forward ou down.",
+        help="Papel físico desta captura: somente down.",
     )
     parsed = parser.parse_args(arguments)
-    if parsed.camera_role not in CAMERA_PROFILES:
+    if parsed.camera_role != "down":
         parser.error(
-            "OBR_CAMERA_ROLE deve ser 'forward' ou 'down', "
-            f"mas recebeu {parsed.camera_role!r}."
+            "OBR_CAMERA_ROLE deve ser 'down'; use forward_camera_stream.py "
+            "para a câmera frontal."
         )
-    return CAMERA_PROFILES[parsed.camera_role]
+    return CAMERA_PROFILES["down"]
 
 
 def handle_signal(signum, frame):
@@ -2438,6 +2437,44 @@ VIRTUAL_FAR_CENTER_X1 = 0.615
 VIRTUAL_FAR_RIGHT_X0 = 0.615
 VIRTUAL_FAR_RIGHT_X1 = 1.0
 
+# A espessura transversal continua sendo a principal evidência. A consistência
+# recebe peso moderado e todos os pesos permanecem fáceis de calibrar.
+VIRTUAL_LINE_CONFIDENCE_THICKNESS_WEIGHT = 0.60
+VIRTUAL_LINE_CONFIDENCE_CONSISTENCY_WEIGHT = 0.20
+VIRTUAL_LINE_CONFIDENCE_CONTINUITY_WEIGHT = 0.15
+VIRTUAL_LINE_CONFIDENCE_AREA_WEIGHT = 0.05
+
+# A mediana do quarto superior dos raios evita que os pixels de borda reduzam
+# a medida e que um único pico isolado infle a espessura do componente.
+VIRTUAL_LINE_THICKNESS_CORE_PERCENTILE = 75.0
+
+# Uma dispersão robusta igual a metade da espessura mediana zera o score.
+# Valores menores produzem uma transição linear até a consistência máxima.
+VIRTUAL_LINE_CONSISTENCY_MAX_RELATIVE_DISPERSION = 0.50
+
+# Larguras esperadas da fita no frame 480x360. A interpolação entre topo e
+# base compensa a perspectiva e deixa os dois extremos fáceis de calibrar.
+VIRTUAL_LINE_EXPECTED_THICKNESS_TOP_PX = 12.0
+VIRTUAL_LINE_EXPECTED_THICKNESS_BOTTOM_PX = 32.0
+VIRTUAL_LINE_CONFIDENCE_REFERENCE_WIDTH_PX = 480.0
+
+# Distância vertical entre amostras no frame 480x360. O passo acompanha a
+# altura real do frame para manter custo e densidade semelhantes em testes.
+VIRTUAL_LINE_CONFIDENCE_REFERENCE_HEIGHT_PX = 360.0
+VIRTUAL_LINE_CONFIDENCE_SAMPLE_STEP_PX = 4.0
+
+# Os limiares de trust bloqueiam candidatos fracos antes que FAR ou MEDIUM
+# participem do controle. Cada fileira permanece calibrável separadamente.
+FAR_TRUST_MIN_CONFIDENCE = 0.75
+FAR_TRUST_MIN_THICKNESS_PX = 18.0
+
+MEDIUM_TRUST_MIN_CONFIDENCE = 0.75
+MEDIUM_TRUST_MIN_THICKNESS_PX = 22.0
+
+# Este veto continua valendo mesmo se os demais limiares forem reduzidos em
+# uma calibração futura. Componentes tão finos não podem dirigir o robô.
+LINE_TRUST_ABSOLUTE_THIN_VETO_PX = 10.0
+
 # O scan usa somente uma direção clara do MEDIUM e termina após três frames.
 VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD = 0.20
 VIRTUAL_MEDIUM_SCAN_MAX_FRAMES = 3
@@ -2463,7 +2500,7 @@ VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 # Após terminar a curva, novos verdes continuam bloqueados até
 # que nenhum candidato verde seja visto por esta quantidade
 # de quadros consecutivos.
-QUADROS_PARA_REARMAR_VERDE = 60
+QUADROS_PARA_REARMAR_VERDE = 90
 
 # A curva é considerada iniciada quando a posição fina local se desloca
 # suficientemente para o lado escolhido, com presença confirmada no NEAR-C.
@@ -2472,12 +2509,13 @@ LIMIAR_CURVA_VERDE_INICIADA = 0.20
 # Após a curva ter começado, o retorno da posição fina para esta região central
 # indica que o robô entrou e se alinhou com a nova faixa.
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
+
 # Evita encerrar a prioridade por uma leitura central isolada.
-QUADROS_CENTRALIZADO_PARA_CONCLUIR = 30
+QUADROS_CENTRALIZADO_PARA_CONCLUIR = 15
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 16
+GREEN_MANEUVER_TIMEOUT_FRAMES = 36
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -2705,6 +2743,390 @@ def virtual_sensor_regions(sensor_geometry):
 
     regions = sensor_geometry.get("regions")
     return tuple(regions) if regions else (sensor_geometry,)
+
+
+def normalized_line_confidence(value):
+    """Converte uma medição de confidence para a faixa pública de 0,0 a 1,0."""
+
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return float(max(0.0, min(1.0, value)))
+
+
+def non_negative_line_measurement(value):
+    """Sanitiza uma medição diagnóstica que não pode ser negativa."""
+
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, value)
+
+
+def create_virtual_row_component_mask(processed_line_mask, row_geometry):
+    """Recorta os pixels finais cobertos pelos blocos de uma fileira virtual."""
+
+    frame_height, frame_width = processed_line_mask.shape[:2]
+    clipped_regions = []
+    for sensor_geometry in row_geometry.values():
+        for region in virtual_sensor_regions(sensor_geometry):
+            x0 = max(0, min(frame_width, int(region["x0"])))
+            y0 = max(0, min(frame_height, int(region["y0"])))
+            x1 = max(x0, min(frame_width, int(region["x1"])))
+            y1 = max(y0, min(frame_height, int(region["y1"])))
+            if x1 > x0 and y1 > y0:
+                clipped_regions.append((x0, y0, x1, y1))
+
+    if not clipped_regions:
+        return np.zeros((0, 0), dtype=np.uint8), 0, 0
+
+    bounds_x0 = min(region[0] for region in clipped_regions)
+    bounds_y0 = min(region[1] for region in clipped_regions)
+    bounds_x1 = max(region[2] for region in clipped_regions)
+    bounds_y1 = max(region[3] for region in clipped_regions)
+    component_mask = np.zeros(
+        (bounds_y1 - bounds_y0, bounds_x1 - bounds_x0),
+        dtype=np.uint8,
+    )
+    for x0, y0, x1, y1 in clipped_regions:
+        target = component_mask[
+            y0 - bounds_y0:y1 - bounds_y0,
+            x0 - bounds_x0:x1 - bounds_x0,
+        ]
+        source = processed_line_mask[y0:y1, x0:x1]
+        np.maximum(target, source, out=target)
+
+    return component_mask, bounds_y0, bounds_y1
+
+
+def empty_virtual_row_line_measurement():
+    """Cria uma medição diagnóstica vazia para FAR ou MEDIUM."""
+
+    return {
+        "lineConfidence": 0.0,
+        "thicknessScore": 0.0,
+        "thicknessConsistency": 0.0,
+        "continuityScore": 0.0,
+        "areaScore": 0.0,
+        "robustThicknessPx": 0.0,
+    }
+
+
+def expected_virtual_line_thickness_px(frame_shape, absolute_y):
+    """Estima a largura da fita em um Y, compensando a perspectiva fixa."""
+
+    frame_height, frame_width = frame_shape[:2]
+    if frame_height <= 0 or frame_width <= 0:
+        return 0.0
+
+    normalized_y = float(absolute_y) / float(max(1, frame_height - 1))
+    normalized_y = max(0.0, min(1.0, normalized_y))
+    reference_thickness_px = (
+        VIRTUAL_LINE_EXPECTED_THICKNESS_TOP_PX
+        + (
+            VIRTUAL_LINE_EXPECTED_THICKNESS_BOTTOM_PX
+            - VIRTUAL_LINE_EXPECTED_THICKNESS_TOP_PX
+        ) * normalized_y
+    )
+    return max(
+        1.0,
+        reference_thickness_px
+        * float(frame_width)
+        / VIRTUAL_LINE_CONFIDENCE_REFERENCE_WIDTH_PX,
+    )
+
+
+def component_labels_in_row(label_row):
+    """Retorna os componentes presentes em uma amostra horizontal."""
+
+    if label_row.size == 0:
+        return ()
+
+    return tuple(
+        int(label)
+        for label in np.unique(label_row)
+        if label > 0
+    )
+
+
+def normalized_thickness_consistency(local_thicknesses_px):
+    """Converte a dispersão robusta das espessuras locais em score 0..1."""
+
+    if local_thicknesses_px.size == 0:
+        return 0.0
+
+    median_thickness_px = float(np.median(local_thicknesses_px))
+    if median_thickness_px <= 0.0:
+        return 0.0
+
+    thickness_mad_px = float(np.median(
+        np.abs(local_thicknesses_px - median_thickness_px)
+    ))
+    lower_percentile_px, upper_percentile_px = np.percentile(
+        local_thicknesses_px,
+        (10.0, 90.0),
+    )
+    relative_mad = thickness_mad_px / median_thickness_px
+    relative_percentile_span = (
+        float(upper_percentile_px - lower_percentile_px)
+        / (2.0 * median_thickness_px)
+    )
+    robust_relative_dispersion = max(
+        relative_mad,
+        relative_percentile_span,
+    )
+    return normalized_line_confidence(
+        1.0
+        - robust_relative_dispersion
+        / VIRTUAL_LINE_CONSISTENCY_MAX_RELATIVE_DISPERSION
+    )
+
+
+def measure_component_thickness(labels, stats, label):
+    """Mede espessura transversal e sua consistência no mesmo componente."""
+
+    component_x = int(stats[label, cv2.CC_STAT_LEFT])
+    component_y = int(stats[label, cv2.CC_STAT_TOP])
+    component_width = int(stats[label, cv2.CC_STAT_WIDTH])
+    component_height = int(stats[label, cv2.CC_STAT_HEIGHT])
+    if component_width <= 0 or component_height <= 0:
+        return {
+            "robustThicknessPx": 0.0,
+            "thicknessConsistency": 0.0,
+        }
+
+    component_labels = labels[
+        component_y:component_y + component_height,
+        component_x:component_x + component_width,
+    ]
+    component_mask = np.where(component_labels == label, 255, 0).astype(
+        np.uint8
+    )
+
+    # A borda preta garante que componentes cortados pelo limite da ROI também
+    # tenham uma distância finita até o fundo em todas as orientações.
+    padded_mask = cv2.copyMakeBorder(
+        component_mask,
+        1,
+        1,
+        1,
+        1,
+        cv2.BORDER_CONSTANT,
+        value=0,
+    )
+    distance_map = cv2.distanceTransform(padded_mask, cv2.DIST_L2, 3)
+    component_distance_map = distance_map[1:-1, 1:-1]
+    component_distances = component_distance_map[component_mask != 0]
+    if component_distances.size == 0:
+        return {
+            "robustThicknessPx": 0.0,
+            "thicknessConsistency": 0.0,
+        }
+
+    core_minimum_radius = float(np.percentile(
+        component_distances,
+        VIRTUAL_LINE_THICKNESS_CORE_PERCENTILE,
+    ))
+    core_distances = component_distances[
+        component_distances >= core_minimum_radius
+    ]
+    if core_distances.size == 0:
+        return {
+            "robustThicknessPx": 0.0,
+            "thicknessConsistency": 0.0,
+        }
+
+    robust_radius_px = float(np.median(core_distances))
+    robust_thickness_px = max(0.0, 2.0 * robust_radius_px)
+
+    local_maximum_map = cv2.dilate(
+        distance_map,
+        np.ones((3, 3), dtype=np.uint8),
+    )[1:-1, 1:-1]
+    # Os máximos locais formam o núcleo interno sem executar skeleton. Assim,
+    # a dispersão não inclui o gradiente inevitável entre borda e centro.
+    ridge_mask = (
+        (component_mask != 0)
+        & (component_distance_map >= local_maximum_map - 1e-6)
+    )
+    local_thicknesses_px = 2.0 * component_distance_map[ridge_mask]
+    thickness_consistency = normalized_thickness_consistency(
+        local_thicknesses_px
+    )
+    return {
+        "robustThicknessPx": robust_thickness_px,
+        "thicknessConsistency": thickness_consistency,
+    }
+
+
+def robust_component_thickness_px(labels, stats, label):
+    """Mantém a API escalar da espessura diagnóstica validada."""
+
+    return measure_component_thickness(
+        labels,
+        stats,
+        label,
+    )["robustThicknessPx"]
+
+
+def measure_virtual_row_line_confidence(processed_line_mask, row_geometry):
+    """Mede a geometria de FAR/MEDIUM sem participar do controle do robô."""
+
+    if processed_line_mask.ndim != 2 or processed_line_mask.size == 0:
+        return empty_virtual_row_line_measurement()
+
+    component_mask, bounds_y0, bounds_y1 = create_virtual_row_component_mask(
+        processed_line_mask,
+        row_geometry,
+    )
+    if component_mask.size == 0 or bounds_y1 <= bounds_y0:
+        return empty_virtual_row_line_measurement()
+
+    active_mask = cv2.compare(component_mask, 0, cv2.CMP_GT)
+    active_pixel_count = int(cv2.countNonZero(active_mask))
+    if active_pixel_count <= 0:
+        return empty_virtual_row_line_measurement()
+
+    label_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+        active_mask,
+        connectivity=8,
+    )
+    if label_count <= 1:
+        return empty_virtual_row_line_measurement()
+
+    frame_height = processed_line_mask.shape[0]
+    sample_step = max(
+        1,
+        int(round(
+            VIRTUAL_LINE_CONFIDENCE_SAMPLE_STEP_PX
+            * float(frame_height)
+            / VIRTUAL_LINE_CONFIDENCE_REFERENCE_HEIGHT_PX
+        )),
+    )
+    sampled_local_rows = list(range(0, component_mask.shape[0], sample_step))
+    last_local_y = component_mask.shape[0] - 1
+    if sampled_local_rows[-1] != last_local_y:
+        sampled_local_rows.append(last_local_y)
+
+    sampled_rows_by_label = {
+        label: []
+        for label in range(1, label_count)
+    }
+    for local_y in sampled_local_rows:
+        absolute_y = bounds_y0 + local_y
+        for label in component_labels_in_row(labels[local_y]):
+            sampled_rows_by_label[label].append(absolute_y)
+
+    # A área de referência representa uma fita em perspectiva atravessando
+    # verticalmente toda a fileira observada.
+    reference_area = max(
+        1.0,
+        sum(
+            expected_virtual_line_thickness_px(
+                processed_line_mask.shape,
+                absolute_y,
+            )
+            for absolute_y in range(bounds_y0, bounds_y1)
+        ),
+    )
+    best_measurement = empty_virtual_row_line_measurement()
+    for label in range(1, label_count):
+        component_sampled_rows = sampled_rows_by_label[label]
+        component_thickness = measure_component_thickness(
+            labels,
+            stats,
+            label,
+        )
+        robust_thickness_px = component_thickness["robustThicknessPx"]
+        thickness_consistency = component_thickness[
+            "thicknessConsistency"
+        ]
+        reference_y = bounds_y0 + float(centroids[label][1])
+        expected_thickness_px = expected_virtual_line_thickness_px(
+            processed_line_mask.shape,
+            reference_y,
+        )
+        thickness_score = normalized_line_confidence(
+            robust_thickness_px / expected_thickness_px
+        )
+
+        component_area = int(stats[label, cv2.CC_STAT_AREA])
+        vertical_coverage = (
+            float(len(component_sampled_rows))
+            / float(len(sampled_local_rows))
+        )
+        component_share = float(component_area) / float(active_pixel_count)
+        continuity_score = normalized_line_confidence(
+            vertical_coverage * component_share
+        )
+        area_score = normalized_line_confidence(
+            float(component_area) / reference_area
+        )
+        line_confidence = normalized_line_confidence(
+            VIRTUAL_LINE_CONFIDENCE_THICKNESS_WEIGHT * thickness_score
+            + (
+                VIRTUAL_LINE_CONFIDENCE_CONSISTENCY_WEIGHT
+                * thickness_consistency
+            )
+            + VIRTUAL_LINE_CONFIDENCE_CONTINUITY_WEIGHT * continuity_score
+            + VIRTUAL_LINE_CONFIDENCE_AREA_WEIGHT * area_score
+        )
+        candidate_measurement = {
+            "lineConfidence": line_confidence,
+            "thicknessScore": thickness_score,
+            "thicknessConsistency": thickness_consistency,
+            "continuityScore": continuity_score,
+            "areaScore": area_score,
+            "robustThicknessPx": robust_thickness_px,
+        }
+        if line_confidence > best_measurement["lineConfidence"]:
+            best_measurement = candidate_measurement
+
+    return best_measurement
+
+
+def calculate_virtual_row_line_confidence(processed_line_mask, row_geometry):
+    """Mantém a API escalar da confidence usada pela telemetria existente."""
+
+    measurement = measure_virtual_row_line_confidence(
+        processed_line_mask,
+        row_geometry,
+    )
+    return measurement["lineConfidence"]
+
+
+def line_measurement_is_trusted(
+    measurement,
+    minimum_confidence,
+    minimum_thickness_px,
+):
+    """Aplica o gate de trust usando somente confidence e espessura."""
+
+    line_confidence = normalized_line_confidence(
+        measurement.get("lineConfidence")
+    )
+    thickness_px = non_negative_line_measurement(
+        measurement.get("robustThicknessPx")
+    )
+    if thickness_px <= LINE_TRUST_ABSOLUTE_THIN_VETO_PX:
+        return False
+    return bool(
+        line_confidence >= minimum_confidence
+        and thickness_px >= minimum_thickness_px
+    )
+
+
+def virtual_sensor_trust_is_active(sensors, trust_name):
+    """Aceita somente o booleano verdadeiro produzido pelo gate visual."""
+
+    return sensors.get(trust_name) is True
+
 
 def draw_virtual_sensor_geometry(
     frame,
@@ -4024,14 +4446,18 @@ def extract_gap_geometric_guidance(
     gap_forward_active,
     green_direction,
     near_center_visible,
+    forward_control_trusted=True,
 ):
     """Executa a geometria somente quando ela pode participar do GAP."""
 
     geometry_required = (
-        gap_forward_active
-        or (
-            green_direction == "NENHUMA"
-            and not near_center_visible
+        forward_control_trusted
+        and (
+            gap_forward_active
+            or (
+                green_direction == "NENHUMA"
+                and not near_center_visible
+            )
         )
     )
     if not geometry_required:
@@ -4094,6 +4520,136 @@ def draw_line_control_overlay(frame, line_follower_command):
             (8, 22 + line_index * 22),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.50,
+            (0, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def draw_line_confidence_overlay(frame, line_follower_command):
+    """Mostra confidence e espessura no centro-esquerdo para calibração."""
+
+    # Cinco por cento da largura cai em 24 px no frame 480x360. Os limites
+    # preservam a margem pedida mesmo se um frame de diagnóstico mudar de tamanho.
+    text_x = max(20, min(30, int(round(frame.shape[1] * 0.05))))
+    # O bloco completo permanece na região central, abaixo dos rótulos do
+    # MEDIUM e longe dos textos principais do seguidor.
+    first_text_y = int(round(frame.shape[0] * 0.47))
+    line_spacing = max(14, min(19, int(round(frame.shape[0] * 0.05))))
+
+    control_far_position = finite_virtual_position(
+        line_follower_command.get("farPosition")
+    )
+    control_medium_position = finite_virtual_position(
+        line_follower_command.get("mediumPosition")
+    )
+    raw_far_position = finite_virtual_position(
+        line_follower_command.get(
+            "rawFarPosition",
+            control_far_position,
+        )
+    )
+    raw_medium_position = finite_virtual_position(
+        line_follower_command.get(
+            "rawMediumPosition",
+            control_medium_position,
+        )
+    )
+    raw_far_position_text = (
+        "--" if raw_far_position is None else f"{raw_far_position:+.2f}"
+    )
+    raw_medium_position_text = (
+        "--" if raw_medium_position is None else f"{raw_medium_position:+.2f}"
+    )
+    control_far_position_text = (
+        "--"
+        if control_far_position is None
+        else f"{control_far_position:+.2f}"
+    )
+    control_medium_position_text = (
+        "--"
+        if control_medium_position is None
+        else f"{control_medium_position:+.2f}"
+    )
+    far_confidence = normalized_line_confidence(
+        line_follower_command.get("farLineConfidence")
+    )
+    medium_confidence = normalized_line_confidence(
+        line_follower_command.get("mediumLineConfidence")
+    )
+    far_thickness_px = non_negative_line_measurement(
+        line_follower_command.get("farLineThicknessPx")
+    )
+    medium_thickness_px = non_negative_line_measurement(
+        line_follower_command.get("mediumLineThicknessPx")
+    )
+    far_thickness_consistency = normalized_line_confidence(
+        line_follower_command.get("farThicknessConsistency")
+    )
+    medium_thickness_consistency = normalized_line_confidence(
+        line_follower_command.get("mediumThicknessConsistency")
+    )
+    far_trust_text = (
+        "YES"
+        if virtual_sensor_trust_is_active(
+            line_follower_command,
+            "farTrusted",
+        )
+        else "NO"
+    )
+    medium_trust_text = (
+        "YES"
+        if virtual_sensor_trust_is_active(
+            line_follower_command,
+            "mediumTrusted",
+        )
+        else "NO"
+    )
+    overlay_texts = (
+        (
+            f"FAR CONF {far_confidence:.2f}  "
+            f"RAW POS {raw_far_position_text}"
+        ),
+        (
+            f"FAR THICK {far_thickness_px:.1f}  "
+            f"CONS {far_thickness_consistency:.2f}"
+        ),
+        (
+            f"FAR TRUST {far_trust_text}  "
+            f"CTRL POS {control_far_position_text}"
+        ),
+        (
+            f"MED CONF {medium_confidence:.2f}  "
+            f"RAW POS {raw_medium_position_text}"
+        ),
+        (
+            f"MED THICK {medium_thickness_px:.1f}  "
+            f"CONS {medium_thickness_consistency:.2f}"
+        ),
+        (
+            f"MED TRUST {medium_trust_text}  "
+            f"CTRL POS {control_medium_position_text}"
+        ),
+    )
+    for line_index, overlay_text in enumerate(overlay_texts):
+        text_origin = (text_x, first_text_y + line_index * line_spacing)
+        # O contorno escuro mantém a leitura visível sobre piso claro ou máscara.
+        cv2.putText(
+            frame,
+            overlay_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            overlay_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
             (0, 255, 255),
             1,
             cv2.LINE_AA,
@@ -4194,17 +4750,38 @@ def read_virtual_line_sensors(
         processed_line_mask.shape
     )
 
-    far_left = read_virtual_sensor(
+    # Estas medições usam somente a máscara final do frame atual. O trust
+    # decide se a fileira pode participar do controle, sem alterar a máscara.
+    far_line_measurement = measure_virtual_row_line_confidence(
+        processed_line_mask,
+        geometry["far"],
+    )
+    medium_line_measurement = measure_virtual_row_line_confidence(
+        processed_line_mask,
+        geometry["medium"],
+    )
+    far_trusted = line_measurement_is_trusted(
+        far_line_measurement,
+        FAR_TRUST_MIN_CONFIDENCE,
+        FAR_TRUST_MIN_THICKNESS_PX,
+    )
+    medium_trusted = line_measurement_is_trusted(
+        medium_line_measurement,
+        MEDIUM_TRUST_MIN_CONFIDENCE,
+        MEDIUM_TRUST_MIN_THICKNESS_PX,
+    )
+
+    raw_far_left = read_virtual_sensor(
         processed_line_mask,
         geometry["far"]["left"],
     )
 
-    far_center = read_virtual_sensor(
+    raw_far_center = read_virtual_sensor(
         processed_line_mask,
         geometry["far"]["center"],
     )
 
-    far_right = read_virtual_sensor(
+    raw_far_right = read_virtual_sensor(
         processed_line_mask,
         geometry["far"]["right"],
     )
@@ -4214,40 +4791,50 @@ def read_virtual_line_sensors(
         geometry["near"]["center"],
     )
 
-    far_band_left = read_virtual_sensor(
+    raw_far_band_left = read_virtual_sensor(
         processed_line_mask,
         geometry["farBand"]["left"],
     )
 
-    far_band_center = read_virtual_sensor(
+    raw_far_band_center = read_virtual_sensor(
         processed_line_mask,
         geometry["farBand"]["center"],
     )
 
-    far_band_right = read_virtual_sensor(
+    raw_far_band_right = read_virtual_sensor(
         processed_line_mask,
         geometry["farBand"]["right"],
     )
 
-    medium_left = read_virtual_sensor(
+    raw_medium_left = read_virtual_sensor(
         processed_line_mask,
         geometry["medium"]["left"],
     )
 
-    medium_center = read_virtual_sensor(
+    raw_medium_center = read_virtual_sensor(
         processed_line_mask,
         geometry["medium"]["center"],
     )
 
-    medium_right = read_virtual_sensor(
+    raw_medium_right = read_virtual_sensor(
         processed_line_mask,
         geometry["medium"]["right"],
     )
 
     raw_far_position = calculate_virtual_row_position(
-        far_left,
-        far_center,
-        far_right,
+        raw_far_left,
+        raw_far_center,
+        raw_far_right,
+    )
+    raw_far_band_position = calculate_virtual_row_position(
+        raw_far_band_left,
+        raw_far_band_center,
+        raw_far_band_right,
+    )
+    raw_medium_position = calculate_virtual_row_position(
+        raw_medium_left,
+        raw_medium_center,
+        raw_medium_right,
     )
     near_center_visible = virtual_sensor_is_active(near_center)
     near_fine_position = None
@@ -4256,12 +4843,12 @@ def read_virtual_line_sensors(
             processed_line_mask,
             geometry["near"],
         )
-    control_far_left = far_left
-    control_far_center = far_center
-    control_far_right = far_right
-    control_medium_left = medium_left
-    control_medium_center = medium_center
-    control_medium_right = medium_right
+    control_far_left = raw_far_left
+    control_far_center = raw_far_center
+    control_far_right = raw_far_right
+    control_medium_left = raw_medium_left
+    control_medium_center = raw_medium_center
+    control_medium_right = raw_medium_right
 
     # Durante uma interseção sinalizada por verde, FAR e MEDIUM enxergam
     # somente o ramo permitido pela direção confirmada.
@@ -4277,6 +4864,25 @@ def read_virtual_line_sensors(
         control_medium_left = 0.0
         control_medium_center = 0.0
 
+    # A conversão RAW -> controle ocorre aqui, antes de heading, trackers ou
+    # steering. Uma fileira sem trust equivale integralmente a linha ausente.
+    if not far_trusted:
+        control_far_left = 0.0
+        control_far_center = 0.0
+        control_far_right = 0.0
+        control_far_band_left = 0.0
+        control_far_band_center = 0.0
+        control_far_band_right = 0.0
+    else:
+        control_far_band_left = raw_far_band_left
+        control_far_band_center = raw_far_band_center
+        control_far_band_right = raw_far_band_right
+
+    if not medium_trusted:
+        control_medium_left = 0.0
+        control_medium_center = 0.0
+        control_medium_right = 0.0
+
     far_position = calculate_virtual_row_position(
         control_far_left,
         control_far_center,
@@ -4284,9 +4890,9 @@ def read_virtual_line_sensors(
     )
 
     far_band_position = calculate_virtual_row_position(
-        far_band_left,
-        far_band_center,
-        far_band_right,
+        control_far_band_left,
+        control_far_band_center,
+        control_far_band_right,
     )
 
     medium_position = calculate_virtual_row_position(
@@ -4320,21 +4926,50 @@ def read_virtual_line_sensors(
     )
 
     return {
-        "farLeft": far_left,
-        "farCenter": far_center,
-        "farRight": far_right,
+        "farLeft": raw_far_left,
+        "farCenter": raw_far_center,
+        "farRight": raw_far_right,
+        "controlFarLeft": control_far_left,
+        "controlFarCenter": control_far_center,
+        "controlFarRight": control_far_right,
         "farPosition": far_position,
         "rawFarPosition": raw_far_position,
+        "farLineConfidence": far_line_measurement["lineConfidence"],
+        "farLineThicknessPx": far_line_measurement["robustThicknessPx"],
+        "farThicknessConsistency": far_line_measurement[
+            "thicknessConsistency"
+        ],
+        "farTrusted": far_trusted,
+        "farThicknessScore": far_line_measurement["thicknessScore"],
+        "farContinuityScore": far_line_measurement["continuityScore"],
+        "farAreaScore": far_line_measurement["areaScore"],
 
-        "farBandLeft": far_band_left,
-        "farBandCenter": far_band_center,
-        "farBandRight": far_band_right,
+        "farBandLeft": raw_far_band_left,
+        "farBandCenter": raw_far_band_center,
+        "farBandRight": raw_far_band_right,
+        "controlFarBandLeft": control_far_band_left,
+        "controlFarBandCenter": control_far_band_center,
+        "controlFarBandRight": control_far_band_right,
         "farBandPosition": far_band_position,
+        "rawFarBandPosition": raw_far_band_position,
 
-        "mediumLeft": medium_left,
-        "mediumCenter": medium_center,
-        "mediumRight": medium_right,
+        "mediumLeft": raw_medium_left,
+        "mediumCenter": raw_medium_center,
+        "mediumRight": raw_medium_right,
+        "controlMediumLeft": control_medium_left,
+        "controlMediumCenter": control_medium_center,
+        "controlMediumRight": control_medium_right,
         "mediumPosition": medium_position,
+        "rawMediumPosition": raw_medium_position,
+        "mediumLineConfidence": medium_line_measurement["lineConfidence"],
+        "mediumLineThicknessPx": medium_line_measurement["robustThicknessPx"],
+        "mediumThicknessConsistency": medium_line_measurement[
+            "thicknessConsistency"
+        ],
+        "mediumTrusted": medium_trusted,
+        "mediumThicknessScore": medium_line_measurement["thicknessScore"],
+        "mediumContinuityScore": medium_line_measurement["continuityScore"],
+        "mediumAreaScore": medium_line_measurement["areaScore"],
 
         "nearCenter": near_center,
         "nearFinePosition": near_fine_position,
@@ -4345,6 +4980,11 @@ def read_virtual_line_sensors(
 def virtual_reorient_direction(sensors):
     """Detecta concordância lateral entre MEDIUM e FAR BAND."""
 
+    if not (
+        virtual_sensor_trust_is_active(sensors, "mediumTrusted")
+        and virtual_sensor_trust_is_active(sensors, "farTrusted")
+    ):
+        return None
     medium_position = sensors.get("mediumPosition")
     far_band_position = sensors.get("farBandPosition")
     if medium_position is None or far_band_position is None:
@@ -4361,6 +5001,8 @@ def virtual_reorient_direction(sensors):
 def virtual_medium_scan_direction(sensors):
     """Retorna o lado confiável observado somente pelo MEDIUM."""
 
+    if not virtual_sensor_trust_is_active(sensors, "mediumTrusted"):
+        return None
     medium_position = sensors.get("mediumPosition")
     if medium_position is None:
         return None
@@ -4409,13 +5051,21 @@ def apply_virtual_fine_center_deadband(fine_position):
 
 
 def virtual_recovery_sensor_direction(sensors):
-    """Escolhe uma direção lateral RAW na ordem MEDIUM e FAR BAND."""
+    """Escolhe uma direção trusted na ordem MEDIUM e FAR BAND."""
 
     positions = (
-        sensors.get("mediumPosition"),
-        sensors.get("farBandPosition"),
+        (
+            sensors.get("mediumPosition"),
+            virtual_sensor_trust_is_active(sensors, "mediumTrusted"),
+        ),
+        (
+            sensors.get("farBandPosition"),
+            virtual_sensor_trust_is_active(sensors, "farTrusted"),
+        ),
     )
-    for position in positions:
+    for position, trusted in positions:
+        if not trusted:
+            continue
         position = finite_virtual_position(position)
         if position is None:
             continue
@@ -4427,17 +5077,23 @@ def virtual_recovery_sensor_direction(sensors):
 
 
 def virtual_raw_line_is_visible(sensors):
-    """Indica presença no NEAR-C ou posição utilizável mais à frente."""
+    """Indica presença no NEAR-C ou fileira frontal com trust ativo."""
 
     forward_positions = (
-        sensors.get("mediumPosition"),
-        sensors.get("farBandPosition"),
+        (
+            sensors.get("mediumPosition"),
+            virtual_sensor_trust_is_active(sensors, "mediumTrusted"),
+        ),
+        (
+            sensors.get("farBandPosition"),
+            virtual_sensor_trust_is_active(sensors, "farTrusted"),
+        ),
     )
     return (
         virtual_sensor_is_active(sensors.get("nearCenter"))
         or any(
-            finite_virtual_position(position) is not None
-            for position in forward_positions
+            trusted and finite_virtual_position(position) is not None
+            for position, trusted in forward_positions
         )
     )
 
@@ -4930,12 +5586,67 @@ def calculate_line_follower_command(
             direcao_verde_ativa,
         )
     )
+    far_trusted = virtual_sensor_trust_is_active(sensors, "farTrusted")
+    medium_trusted = virtual_sensor_trust_is_active(
+        sensors,
+        "mediumTrusted",
+    )
+    trusted_far_position = (
+        finite_virtual_position(sensors.get("farPosition"))
+        if far_trusted
+        else None
+    )
+    trusted_medium_position = (
+        finite_virtual_position(sensors.get("mediumPosition"))
+        if medium_trusted
+        else None
+    )
+    trusted_far_band_position = (
+        finite_virtual_position(sensors.get("farBandPosition"))
+        if far_trusted
+        else None
+    )
     observed_recovery_direction = virtual_recovery_sensor_direction(sensors)
     raw_line_visible = virtual_raw_line_is_visible(sensors)
     if line_search_tracker is not None:
         line_search_tracker.remember(observed_recovery_direction)
 
     protected_virtual_steering = sensors["steeringError"]
+    protected_heading_angle = sensors.get("headingAngle")
+    if not (far_trusted and medium_trusted):
+        # Recalcula o caminho de controle quando uma fileira perde trust. Isso
+        # impede que um heading previamente calculado carregue o candidato vetado.
+        trusted_near_fine_position = (
+            finite_virtual_position(sensors.get("nearFinePosition"))
+            if virtual_sensor_is_active(sensors.get("nearCenter"))
+            else None
+        )
+        geometry = resolve_virtual_sensor_geometry(
+            processed_line_mask.shape
+        )
+        protected_heading_angle = calculate_virtual_heading_angle(
+            trusted_far_position,
+            trusted_near_fine_position,
+            geometry,
+            medium_position=trusted_medium_position,
+        )
+        protected_virtual_steering = calculate_virtual_steering_error(
+            trusted_near_fine_position is not None,
+            protected_heading_angle,
+            fallback_medium_position=(
+                trusted_medium_position
+                if trusted_near_fine_position is None
+                else None
+            ),
+            fallback_far_position=(
+                trusted_far_position
+                if (
+                    trusted_near_fine_position is None
+                    and direcao_verde_ativa == "NENHUMA"
+                )
+                else None
+            ),
+        )
     virtual_state = VIRTUAL_STATE_NORMAL
     medium_scan_direction = None
     direct_recovery_direction = None
@@ -4953,9 +5664,7 @@ def calculate_line_follower_command(
             virtual_turn_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
-        steering_error = sensors[
-            "steeringError"
-        ]
+        steering_error = protected_virtual_steering
         control_source = "virtual-green"
 
     elif gap_forward_active:
@@ -4969,7 +5678,7 @@ def calculate_line_follower_command(
             direct_recovery_direction = observed_recovery_direction
             control_source = "gap-sensor-recovery"
         elif raw_line_visible:
-            # Qualquer linha RAW encerra a busca cega, mas somente o NEAR-C
+            # Uma linha de controle encerra a busca cega, mas somente o NEAR-C
             # confirmado pode encerrar o estado GAP fora deste mapper.
             if line_search_tracker is not None:
                 line_search_tracker.stop()
@@ -5096,7 +5805,7 @@ def calculate_line_follower_command(
                     else:
                         control_source = "virtual-no-line"
 
-    medium_position = finite_virtual_position(sensors["mediumPosition"])
+    medium_position = trusted_medium_position
     near_fine_position = finite_virtual_position(
         sensors["nearFinePosition"]
     )
@@ -5115,7 +5824,7 @@ def calculate_line_follower_command(
         and near_position_valid
         and abs(near_fine_position) >= VIRTUAL_MEDIUM_STRONG_THRESHOLD
         and medium_position * near_fine_position > 0.0
-        and sensors.get("farPosition") is None
+        and trusted_far_position is None
     )
     if line_state == "LINE" and medium_spin_tracker is not None:
         medium_spin_state = medium_spin_tracker.update(
@@ -5126,7 +5835,7 @@ def calculate_line_follower_command(
                 medium_hard_corner_spin_requested
             ),
             near_fine_position=near_fine_position,
-            far_position=sensors.get("farPosition"),
+            far_position=trusted_far_position,
         )
     elif line_state != "LINE" and medium_spin_tracker is not None:
         medium_spin_tracker.reset()
@@ -5355,22 +6064,99 @@ def calculate_line_follower_command(
         "farLeft": sensors["farLeft"],
         "farCenter": sensors["farCenter"],
         "farRight": sensors["farRight"],
-        "farPosition": sensors["farPosition"],
+        "controlFarLeft": (
+            sensors.get("controlFarLeft", sensors["farLeft"])
+            if far_trusted
+            else 0.0
+        ),
+        "controlFarCenter": (
+            sensors.get("controlFarCenter", sensors["farCenter"])
+            if far_trusted
+            else 0.0
+        ),
+        "controlFarRight": (
+            sensors.get("controlFarRight", sensors["farRight"])
+            if far_trusted
+            else 0.0
+        ),
+        "farPosition": trusted_far_position,
+        "rawFarPosition": sensors.get(
+            "rawFarPosition",
+            sensors["farPosition"],
+        ),
+        "farLineConfidence": normalized_line_confidence(
+            sensors.get("farLineConfidence")
+        ),
+        "farLineThicknessPx": non_negative_line_measurement(
+            sensors.get("farLineThicknessPx")
+        ),
+        "farThicknessConsistency": normalized_line_confidence(
+            sensors.get("farThicknessConsistency")
+        ),
+        "farTrusted": far_trusted,
 
         "farBandLeft": sensors["farBandLeft"],
         "farBandCenter": sensors["farBandCenter"],
         "farBandRight": sensors["farBandRight"],
-        "farBandPosition": sensors["farBandPosition"],
+        "controlFarBandLeft": (
+            sensors.get("controlFarBandLeft", sensors["farBandLeft"])
+            if far_trusted
+            else 0.0
+        ),
+        "controlFarBandCenter": (
+            sensors.get("controlFarBandCenter", sensors["farBandCenter"])
+            if far_trusted
+            else 0.0
+        ),
+        "controlFarBandRight": (
+            sensors.get("controlFarBandRight", sensors["farBandRight"])
+            if far_trusted
+            else 0.0
+        ),
+        "farBandPosition": trusted_far_band_position,
+        "rawFarBandPosition": sensors.get(
+            "rawFarBandPosition",
+            sensors["farBandPosition"],
+        ),
 
         "mediumLeft": sensors["mediumLeft"],
         "mediumCenter": sensors["mediumCenter"],
         "mediumRight": sensors["mediumRight"],
-        "mediumPosition": sensors["mediumPosition"],
+        "controlMediumLeft": (
+            sensors.get("controlMediumLeft", sensors["mediumLeft"])
+            if medium_trusted
+            else 0.0
+        ),
+        "controlMediumCenter": (
+            sensors.get("controlMediumCenter", sensors["mediumCenter"])
+            if medium_trusted
+            else 0.0
+        ),
+        "controlMediumRight": (
+            sensors.get("controlMediumRight", sensors["mediumRight"])
+            if medium_trusted
+            else 0.0
+        ),
+        "mediumPosition": trusted_medium_position,
+        "rawMediumPosition": sensors.get(
+            "rawMediumPosition",
+            sensors["mediumPosition"],
+        ),
+        "mediumLineConfidence": normalized_line_confidence(
+            sensors.get("mediumLineConfidence")
+        ),
+        "mediumLineThicknessPx": non_negative_line_measurement(
+            sensors.get("mediumLineThicknessPx")
+        ),
+        "mediumThicknessConsistency": normalized_line_confidence(
+            sensors.get("mediumThicknessConsistency")
+        ),
+        "mediumTrusted": medium_trusted,
 
         "nearCenter": sensors["nearCenter"],
         "nearFinePosition": sensors["nearFinePosition"],
 
-        "headingAngle": sensors["headingAngle"],
+        "headingAngle": protected_heading_angle,
         "fineCorrection": fine_correction,
         "steeringError": steering_error,
         "finalSteering": steering_error,
@@ -5790,6 +6576,14 @@ def save_line_status(
             raise ValueError("Comando visual fora da faixa normalizada")
 
         repair_status = specular_repair_status or {}
+        far_trusted = virtual_sensor_trust_is_active(
+            line_follower_command,
+            "farTrusted",
+        )
+        medium_trusted = virtual_sensor_trust_is_active(
+            line_follower_command,
+            "mediumTrusted",
+        )
         line_status = {
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
@@ -5802,11 +6596,33 @@ def save_line_status(
             "nearFinePosition": finite_virtual_position(
                 line_follower_command["nearFinePosition"]
             ),
-            "mediumPosition": finite_virtual_position(
-                line_follower_command.get("mediumPosition")
+            "farLineConfidence": normalized_line_confidence(
+                line_follower_command.get("farLineConfidence")
             ),
-            "farBandPosition": finite_virtual_position(
-                line_follower_command.get("farBandPosition")
+            "farThicknessConsistency": normalized_line_confidence(
+                line_follower_command.get("farThicknessConsistency")
+            ),
+            "farTrusted": far_trusted,
+            "mediumPosition": (
+                finite_virtual_position(
+                    line_follower_command.get("mediumPosition")
+                )
+                if medium_trusted
+                else None
+            ),
+            "mediumLineConfidence": normalized_line_confidence(
+                line_follower_command.get("mediumLineConfidence")
+            ),
+            "mediumThicknessConsistency": normalized_line_confidence(
+                line_follower_command.get("mediumThicknessConsistency")
+            ),
+            "mediumTrusted": medium_trusted,
+            "farBandPosition": (
+                finite_virtual_position(
+                    line_follower_command.get("farBandPosition")
+                )
+                if far_trusted
+                else None
             ),
             "headingAngleDeg": finite_virtual_position(
                 line_follower_command.get("headingAngle")
@@ -5852,6 +6668,10 @@ def save_status(
     specular_repair_status=None,
     green_status=None,
     line_timings=None,
+    far_line_confidence=0.0,
+    medium_line_confidence=0.0,
+    far_thickness_consistency=0.0,
+    medium_thickness_consistency=0.0,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -5943,6 +6763,18 @@ def save_status(
         "lineFollowerImplemented": False,
         "lineTimestamp": line_timestamp,
         "lineSequence": line_sequence,
+        "farLineConfidence": normalized_line_confidence(
+            far_line_confidence
+        ),
+        "mediumLineConfidence": normalized_line_confidence(
+            medium_line_confidence
+        ),
+        "farThicknessConsistency": normalized_line_confidence(
+            far_thickness_consistency
+        ),
+        "mediumThicknessConsistency": normalized_line_confidence(
+            medium_thickness_consistency
+        ),
         "specularRepairPixels": repaired_pixels,
         "specularRepairComponents": repaired_components,
         "lineProcessingMs": safe_line_timings["lineProcessingMs"],
@@ -6287,6 +7119,16 @@ def main():
                 gap_forward_active,
                 direcao_verde_ativa,
                 near_center_visible,
+                forward_control_trusted=(
+                    virtual_sensor_trust_is_active(
+                        virtual_sensors,
+                        "farTrusted",
+                    )
+                    or virtual_sensor_trust_is_active(
+                        virtual_sensors,
+                        "mediumTrusted",
+                    )
+                ),
             )
             geometric_heading = geometric_guidance.get(
                 "farHeadingDeg"
@@ -6510,6 +7352,7 @@ def main():
                         )
                     ),
                 )
+                draw_line_confidence_overlay(frame, line_follower_command)
 
             # A câmera inferior mantém o controle e os nove sensores virtuais.
             # As linhas estruturais antigas permanecem nas outras câmeras.
@@ -6615,6 +7458,22 @@ def main():
                     specular_repair_status=specular_repair_status,
                     green_status=green_status,
                     line_timings=line_timings,
+                    far_line_confidence=line_follower_command.get(
+                        "farLineConfidence",
+                        0.0,
+                    ),
+                    medium_line_confidence=line_follower_command.get(
+                        "mediumLineConfidence",
+                        0.0,
+                    ),
+                    far_thickness_consistency=line_follower_command.get(
+                        "farThicknessConsistency",
+                        0.0,
+                    ),
+                    medium_thickness_consistency=line_follower_command.get(
+                        "mediumThicknessConsistency",
+                        0.0,
+                    ),
                 )
                 last_status_time = now
     except Exception as error:

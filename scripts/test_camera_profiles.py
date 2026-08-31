@@ -148,6 +148,383 @@ class CameraProfilesTest(unittest.TestCase):
         result = camera_line_frame.create_line_candidate_mask(mask, profile)
         self.assertEqual(np.count_nonzero(result), 0)
 
+    def test_empty_virtual_rows_have_zero_line_confidence(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertEqual(sensors["farLineConfidence"], 0.0)
+        self.assertEqual(sensors["mediumLineConfidence"], 0.0)
+        self.assertEqual(sensors["farThicknessConsistency"], 0.0)
+        self.assertEqual(sensors["mediumThicknessConsistency"], 0.0)
+        self.assertFalse(sensors["farTrusted"])
+        self.assertFalse(sensors["mediumTrusted"])
+
+    def test_wide_black_tape_is_trusted_in_far(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[47:155, 220:260] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertTrue(sensors["farTrusted"])
+
+    def test_wide_black_tape_is_trusted_in_medium(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[155:295, 220:260] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertTrue(sensors["mediumTrusted"])
+
+    def test_wide_diagonal_tape_remains_trusted(self):
+        cases = (
+            ("far", (100, 140), (380, 60)),
+            ("medium", (100, 285), (380, 170)),
+        )
+        for row_name, start_point, end_point in cases:
+            with self.subTest(row=row_name):
+                mask = np.zeros((360, 480), dtype=np.uint8)
+                cv2.line(mask, start_point, end_point, 255, 40)
+
+                sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+                self.assertTrue(sensors[f"{row_name}Trusted"])
+
+    def test_wide_right_angle_tape_remains_trusted(self):
+        cases = (
+            ("far", ((240, 145), (240, 95), (380, 95))),
+            ("medium", ((240, 285), (240, 220), (380, 220))),
+        )
+        for row_name, points in cases:
+            with self.subTest(row=row_name):
+                mask = np.zeros((360, 480), dtype=np.uint8)
+                cv2.line(mask, points[0], points[1], 255, 40)
+                cv2.line(mask, points[1], points[2], 255, 40)
+
+                sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+                self.assertTrue(sensors[f"{row_name}Trusted"])
+
+    def test_thin_horizontal_seam_is_not_trusted(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[201:204, 50:430] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertFalse(sensors["mediumTrusted"])
+
+    def test_untrusted_far_candidate_is_removed_from_control_reading(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[80:96, 20:220] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertFalse(sensors["farTrusted"])
+        self.assertIsNotNone(sensors["rawFarPosition"])
+        self.assertIsNone(sensors["farPosition"])
+        self.assertIsNotNone(sensors["rawFarBandPosition"])
+        self.assertIsNone(sensors["farBandPosition"])
+        self.assertEqual(
+            (
+                sensors["controlFarLeft"],
+                sensors["controlFarCenter"],
+                sensors["controlFarRight"],
+                sensors["controlFarBandLeft"],
+                sensors["controlFarBandCenter"],
+                sensors["controlFarBandRight"],
+            ),
+            (0.0,) * 6,
+        )
+
+    def test_untrusted_medium_candidate_is_removed_from_control_reading(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[200:216, 20:460] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertFalse(sensors["mediumTrusted"])
+        self.assertIsNotNone(sensors["rawMediumPosition"])
+        self.assertIsNone(sensors["mediumPosition"])
+        self.assertEqual(
+            (
+                sensors["controlMediumLeft"],
+                sensors["controlMediumCenter"],
+                sensors["controlMediumRight"],
+            ),
+            (0.0,) * 3,
+        )
+
+    def test_thin_diagonal_seam_is_not_trusted(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        cv2.line(mask, (150, 285), (330, 165), 255, 3)
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertFalse(sensors["mediumTrusted"])
+
+    def test_absolute_thickness_veto_rejects_high_confidence_candidate(self):
+        measurement = {
+            "lineConfidence": 1.0,
+            "robustThicknessPx": 10.0,
+            "thicknessConsistency": 1.0,
+        }
+
+        trusted = camera_line_frame.line_measurement_is_trusted(
+            measurement,
+            camera_line_frame.FAR_TRUST_MIN_CONFIDENCE,
+            camera_line_frame.FAR_TRUST_MIN_THICKNESS_PX,
+        )
+
+        self.assertFalse(trusted)
+
+    def test_high_confidence_consistent_thin_seam_is_not_trusted(self):
+        measurement = {
+            "lineConfidence": 0.95,
+            "robustThicknessPx": 16.0,
+            "thicknessConsistency": 0.95,
+        }
+
+        trusted = camera_line_frame.line_measurement_is_trusted(
+            measurement,
+            camera_line_frame.FAR_TRUST_MIN_CONFIDENCE,
+            camera_line_frame.FAR_TRUST_MIN_THICKNESS_PX,
+        )
+
+        self.assertFalse(trusted)
+
+    def test_zero_consistency_does_not_veto_thick_candidate(self):
+        measurement = {
+            "lineConfidence": 0.90,
+            "robustThicknessPx": 60.0,
+            "thicknessConsistency": 0.0,
+        }
+
+        trusted = camera_line_frame.line_measurement_is_trusted(
+            measurement,
+            camera_line_frame.MEDIUM_TRUST_MIN_CONFIDENCE,
+            camera_line_frame.MEDIUM_TRUST_MIN_THICKNESS_PX,
+        )
+
+        self.assertTrue(trusted)
+
+    def test_wide_continuous_line_has_high_line_confidence(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[47:338, 220:260] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+
+        far_measurement = camera_line_frame.measure_virtual_row_line_confidence(
+            mask,
+            geometry["far"],
+        )
+        medium_measurement = (
+            camera_line_frame.measure_virtual_row_line_confidence(
+                mask, geometry["medium"]
+            )
+        )
+
+        self.assertGreater(far_measurement["lineConfidence"], 0.80)
+        self.assertGreater(medium_measurement["lineConfidence"], 0.80)
+        self.assertGreater(far_measurement["robustThicknessPx"], 30.0)
+        self.assertGreater(medium_measurement["robustThicknessPx"], 30.0)
+
+    def test_fragmented_component_has_lower_line_confidence(self):
+        continuous = np.zeros((360, 480), dtype=np.uint8)
+        continuous[47:155, 225:255] = 255
+        fragments = np.zeros_like(continuous)
+        for y in range(48, 154, 16):
+            fragments[y:y + 5, 225:255] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            continuous.shape
+        )
+
+        continuous_confidence = (
+            camera_line_frame.calculate_virtual_row_line_confidence(
+                continuous,
+                geometry["far"],
+            )
+        )
+        fragment_confidence = (
+            camera_line_frame.calculate_virtual_row_line_confidence(
+                fragments,
+                geometry["far"],
+            )
+        )
+
+        self.assertLess(fragment_confidence, continuous_confidence)
+
+    def test_long_thin_seam_has_low_line_confidence(self):
+        thin_seam = np.zeros((360, 480), dtype=np.uint8)
+        thin_seam[47:155, 239:242] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            thin_seam.shape
+        )
+
+        seam_measurement = (
+            camera_line_frame.measure_virtual_row_line_confidence(
+                thin_seam, geometry["far"]
+            )
+        )
+
+        self.assertLess(seam_measurement["robustThicknessPx"], 5.0)
+        self.assertLess(seam_measurement["thicknessScore"], 0.25)
+        self.assertLess(seam_measurement["lineConfidence"], 0.55)
+
+    def test_transverse_thickness_is_similar_in_all_orientations(self):
+        shape = (360, 480)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            shape
+        )["medium"]
+        directions = (
+            ((240, 170), (240, 280)),
+            ((100, 225), (380, 225)),
+            ((140, 275), (340, 175)),
+        )
+        measured_thicknesses = []
+        measured_consistencies = []
+        for start_point, end_point in directions:
+            mask = np.zeros(shape, dtype=np.uint8)
+            cv2.line(mask, start_point, end_point, 255, 20)
+            measurement = (
+                camera_line_frame.measure_virtual_row_line_confidence(
+                    mask, geometry
+                )
+            )
+            measured_thicknesses.append(
+                measurement["robustThicknessPx"]
+            )
+            measured_consistencies.append(
+                measurement["thicknessConsistency"]
+            )
+
+        median_thickness = float(np.median(measured_thicknesses))
+        for measured_thickness in measured_thicknesses:
+            self.assertAlmostEqual(
+                measured_thickness,
+                median_thickness,
+                delta=2.0,
+            )
+        for measured_consistency in measured_consistencies:
+            self.assertGreater(measured_consistency, 0.90)
+            self.assertAlmostEqual(
+                measured_consistency,
+                measured_consistencies[0],
+                delta=0.10,
+            )
+
+    def test_uniform_thickness_has_high_consistency(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[165:285, 230:250] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+
+        measurement = camera_line_frame.measure_virtual_row_line_confidence(
+            mask,
+            geometry["medium"],
+        )
+
+        self.assertGreater(measurement["thicknessConsistency"], 0.90)
+        expected_confidence = (
+            0.60 * measurement["thicknessScore"]
+            + 0.20 * measurement["thicknessConsistency"]
+            + 0.15 * measurement["continuityScore"]
+            + 0.05 * measurement["areaScore"]
+        )
+        self.assertAlmostEqual(
+            measurement["lineConfidence"],
+            expected_confidence,
+        )
+
+    def test_irregular_thickness_has_low_consistency(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[165:205, 237:243] = 255
+        mask[205:245, 222:258] = 255
+        mask[245:285, 235:245] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+
+        measurement = camera_line_frame.measure_virtual_row_line_confidence(
+            mask,
+            geometry["medium"],
+        )
+
+        self.assertLess(measurement["thicknessConsistency"], 0.40)
+
+    def test_long_thin_horizontal_seam_has_low_thickness(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[201:203, 50:430] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+
+        measurement = camera_line_frame.measure_virtual_row_line_confidence(
+            mask,
+            geometry["medium"],
+        )
+
+        self.assertGreater(measurement["robustThicknessPx"], 0.0)
+        self.assertLess(measurement["robustThicknessPx"], 5.0)
+        self.assertLess(measurement["thicknessScore"], 0.25)
+        self.assertLess(measurement["lineConfidence"], 0.30)
+
+    def test_thick_horizontal_band_has_high_thickness(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[190:230, 50:430] = 255
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            mask.shape
+        )
+
+        measurement = camera_line_frame.measure_virtual_row_line_confidence(
+            mask,
+            geometry["medium"],
+        )
+
+        self.assertGreater(measurement["robustThicknessPx"], 30.0)
+        self.assertGreater(measurement["thicknessScore"], 0.90)
+        self.assertGreater(measurement["lineConfidence"], 0.75)
+
+    def test_expected_line_thickness_increases_toward_frame_bottom(self):
+        frame_shape = (360, 480)
+
+        top_thickness = camera_line_frame.expected_virtual_line_thickness_px(
+            frame_shape, 0
+        )
+        bottom_thickness = (
+            camera_line_frame.expected_virtual_line_thickness_px(
+                frame_shape, frame_shape[0] - 1
+            )
+        )
+
+        self.assertLess(top_thickness, bottom_thickness)
+
+    def test_line_confidence_is_always_limited_to_unit_interval(self):
+        masks = (
+            np.zeros((100, 200), dtype=np.uint8),
+            np.full((100, 200), 255, dtype=np.uint8),
+        )
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(
+            masks[0].shape
+        )
+
+        for mask in masks:
+            for row_name in ("far", "medium"):
+                with self.subTest(mask_active=bool(np.any(mask)), row=row_name):
+                    measurement = (
+                        camera_line_frame.measure_virtual_row_line_confidence(
+                            mask, geometry[row_name]
+                        )
+                    )
+                    for score_name in (
+                        "lineConfidence",
+                        "thicknessScore",
+                        "thicknessConsistency",
+                        "continuityScore",
+                        "areaScore",
+                    ):
+                        self.assertGreaterEqual(measurement[score_name], 0.0)
+                        self.assertLessEqual(measurement[score_name], 1.0)
+
     def test_display_line_mode_does_not_modify_source_masks(self):
         raw = np.zeros((80, 120, 3), dtype=np.uint8)
         structural = np.zeros((80, 120), dtype=np.uint8)
@@ -463,6 +840,12 @@ class CameraProfilesTest(unittest.TestCase):
                         "nearCenter": 0.20,
                         "nearFinePosition": 0.12,
                         "mediumPosition": 0.08,
+                        "mediumLineConfidence": 0.64,
+                        "mediumThicknessConsistency": 0.58,
+                        "mediumTrusted": False,
+                        "farLineConfidence": 0.72,
+                        "farThicknessConsistency": 0.81,
+                        "farTrusted": True,
                         "farBandPosition": -0.04,
                         "headingAngle": 5.5,
                         "finalSteering": 0.18,
@@ -488,7 +871,13 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["lineControlSource"], "virtual")
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
         self.assertEqual(published["nearFinePosition"], 0.12)
-        self.assertEqual(published["mediumPosition"], 0.08)
+        self.assertIsNone(published["mediumPosition"])
+        self.assertEqual(published["mediumLineConfidence"], 0.64)
+        self.assertEqual(published["mediumThicknessConsistency"], 0.58)
+        self.assertFalse(published["mediumTrusted"])
+        self.assertEqual(published["farLineConfidence"], 0.72)
+        self.assertEqual(published["farThicknessConsistency"], 0.81)
+        self.assertTrue(published["farTrusted"])
         self.assertEqual(published["farBandPosition"], -0.04)
         self.assertEqual(published["headingAngleDeg"], 5.5)
         self.assertEqual(published["finalSteering"], 0.18)
@@ -501,6 +890,12 @@ class CameraProfilesTest(unittest.TestCase):
             "lineControlSource",
             "nearFinePosition",
             "mediumPosition",
+            "mediumLineConfidence",
+            "mediumThicknessConsistency",
+            "mediumTrusted",
+            "farLineConfidence",
+            "farThicknessConsistency",
+            "farTrusted",
             "farBandPosition",
             "headingAngleDeg",
             "finalSteering",
@@ -512,6 +907,42 @@ class CameraProfilesTest(unittest.TestCase):
             "specularRepairComponents",
         }
         self.assertEqual(set(published), expected_keys)
+
+    def test_camera_status_exposes_far_and_medium_line_confidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            original_status_path = camera_line_frame.STATUS_PATH
+            original_temp_path = camera_line_frame.TEMP_STATUS_PATH
+            camera_line_frame.STATUS_PATH = os.path.join(
+                directory,
+                "camera-status.json",
+            )
+            camera_line_frame.TEMP_STATUS_PATH = os.path.join(
+                directory,
+                "camera-status.tmp.json",
+            )
+            try:
+                camera_line_frame.save_status(
+                    30.0,
+                    camera_line_frame.CAMERA_PROFILES["down"],
+                    {},
+                    far_line_confidence=0.41,
+                    medium_line_confidence=0.62,
+                    far_thickness_consistency=0.73,
+                    medium_thickness_consistency=0.54,
+                )
+                with open(
+                    camera_line_frame.STATUS_PATH,
+                    encoding="utf-8",
+                ) as status_file:
+                    published = json.load(status_file)
+            finally:
+                camera_line_frame.STATUS_PATH = original_status_path
+                camera_line_frame.TEMP_STATUS_PATH = original_temp_path
+
+        self.assertEqual(published["farLineConfidence"], 0.41)
+        self.assertEqual(published["mediumLineConfidence"], 0.62)
+        self.assertEqual(published["farThicknessConsistency"], 0.73)
+        self.assertEqual(published["mediumThicknessConsistency"], 0.54)
 
 
 if __name__ == "__main__":

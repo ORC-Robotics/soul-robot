@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -48,6 +49,9 @@ CameraLineSnapshot freshVision(
     snapshot.lineFollowerLeftPower = 0.68;
     snapshot.lineFollowerRightPower = 0.67;
     snapshot.lineNearDetected = lineNearDetected;
+    snapshot.lineNearFinePosition = lineNearDetected
+                                        ? 0.0
+                                        : std::numeric_limits<double>::quiet_NaN();
     snapshot.lineSequence = 1;
     snapshot.greenCandidateCount =
         interpretation == GreenInterpretation::TurnAround180 ? 2 : 1;
@@ -98,6 +102,9 @@ RobotSnapshot startReturnImu(
     MissionFixture& fixture,
     const CameraLineSnapshot& returnVision)
 {
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
     fixture.update(returnVision);
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
@@ -177,6 +184,9 @@ void testUnequalEncoderDistancesDoNotInterruptForwardStage()
         GreenInterpretation::TurnAround180,
         false);
     fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    fixture.update(returnVision);
 
     fixture.telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
         8.0 * config::kEncoderCountsPerCentimeter));
@@ -197,6 +207,9 @@ void testMissingEncoderDataStopsAfterConfiguredSecond()
     const CameraLineSnapshot returnVision = freshVision(
         GreenInterpretation::TurnAround180,
         false);
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
     fixture.update(returnVision);
 
     fixture.telemetry.lastSensorAgeMs =
@@ -220,10 +233,19 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
 
     RobotSnapshot snapshot = fixture.update(returnVision);
     require(
+        snapshot.autonomousStatus.phase == "turnaround_recognition_delay" &&
+            closeTo(snapshot.left, returnVision.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, returnVision.lineFollowerRightPower),
+        "O retorno deve manter a velocidade vigente durante um segundo.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
         snapshot.autonomousStatus.phase == "turnaround_forward" &&
             closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
             closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
-        "O retorno deve começar avançando com os dois motores.");
+        "Após a espera, o retorno deve avançar com os dois motores.");
 
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
@@ -234,7 +256,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     require(
         snapshot.autonomousStatus.phase == "turnaround_forward_settling" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
-        "Após 9 cm o retorno deve parar antes do giro.");
+        "Após a distância configurada o retorno deve parar antes do giro.");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kGreenTurnAroundForwardSettleMs + 20));
@@ -289,6 +311,52 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     }
     snapshot = fixture.update(recoveredVision);
     requireFollowingLine(snapshot, "Linha próxima recuperada");
+}
+
+void testReturnCentersOnlyWhenNearIsFarFromCenter()
+{
+    MissionFixture offCenterFixture;
+    CameraLineSnapshot offCenterVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        true);
+    offCenterVision.lineNearFinePosition = -0.75;
+
+    offCenterFixture.update(offCenterVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    RobotSnapshot snapshot = offCenterFixture.update(offCenterVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centering" &&
+            closeTo(
+                snapshot.left,
+                -config::kGreenTurnAroundCenteringPower) &&
+            closeTo(
+                snapshot.right,
+                config::kGreenTurnAroundCenteringPower),
+        "Linha muito à esquerda deve solicitar um SPIN para a esquerda.");
+
+    offCenterVision.lineNearFinePosition = 0.10;
+    snapshot = offCenterFixture.update(offCenterVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_forward" &&
+            closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
+            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
+        "Linha centralizada deve liberar imediatamente o avanço do retorno.");
+
+    MissionFixture nearCenterFixture;
+    CameraLineSnapshot nearCenterVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        true);
+    nearCenterVision.lineNearFinePosition = 0.30;
+    nearCenterFixture.update(nearCenterVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    snapshot = nearCenterFixture.update(nearCenterVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_forward" &&
+            closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
+            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
+        "Desvio moderado não deve iniciar a correção por SPIN.");
 }
 
 void testVisualSearchStopsAtAngularLimit()
@@ -353,6 +421,7 @@ int main()
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
         testMissingEncoderDataStopsAfterConfiguredSecond();
         testReturnRunsConfiguredSequenceAndRestoresFollower();
+        testReturnCentersOnlyWhenNearIsFarFromCenter();
         testVisualSearchStopsAtAngularLimit();
         testUnavailableCameraStopsMission();
         std::cout << "main_mission_test: OK\n";

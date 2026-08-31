@@ -18,7 +18,7 @@ fi
 
 stop_forward_camera() {
   if [[ -n "$FORWARD_CAMERA_PID" ]] && kill -0 "$FORWARD_CAMERA_PID" >/dev/null 2>&1; then
-    # O gerenciador fecha a CAM1 antes de sair para liberar o conector e o ISP.
+    # O processo frontal fecha a CAM1 somente no encerramento do serviço.
     kill "$FORWARD_CAMERA_PID"
     wait "$FORWARD_CAMERA_PID" >/dev/null 2>&1 || true
   fi
@@ -55,8 +55,8 @@ if [[ ! -x "$ROBOT_BIN" ]]; then
 fi
 
 if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
-  # O processo frontal fica ocioso e não abre a CAM1 até receber uma ativação.
-  # Defina OBR_FORWARD_CAMERA_ENABLED=1 apenas quando o boot já deve iniciar o stream.
+  # A CAM1 processa continuamente. Esta opção controla somente se o stream de
+  # diagnóstico começa disponível no boot; ela não interrompe a leitura frontal.
   pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
   OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-0}" \
     "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &

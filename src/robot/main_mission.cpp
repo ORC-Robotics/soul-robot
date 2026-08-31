@@ -82,6 +82,8 @@ void MainMission::reset()
     turnAroundPhase_ = TurnAroundPhase::Idle;
     turnAroundController_.reset();
     turnAroundArmed_ = true;
+    recognitionLeftPower_ = 0.0;
+    recognitionRightPower_ = 0.0;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
@@ -130,6 +132,24 @@ void MainMission::update(
     }
 
     const auto now = std::chrono::steady_clock::now();
+    const auto startTurnAroundForward = [&]()
+    {
+        if (!turnAroundEncodersReady(esp32Telemetry) ||
+            !ImuTurnController::imuReady(esp32Telemetry))
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_waiting_sensors",
+                "Retorno pausado: aguardando encoders e MPU6050"));
+            return false;
+        }
+
+        turnAroundPhase_ = TurnAroundPhase::DrivingForward;
+        forwardStartLeftCount_ = esp32Telemetry.leftEncoderCount;
+        forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        phaseStartedAt_ = now;
+        return true;
+    };
     const bool detected180 = turnAroundDetected(cameraLineSnapshot);
     if (turnAroundPhase_ == TurnAroundPhase::Idle && !detected180)
     {
@@ -152,9 +172,9 @@ void MainMission::update(
         }
 
         turnAroundArmed_ = false;
-        turnAroundPhase_ = TurnAroundPhase::DrivingForward;
-        forwardStartLeftCount_ = esp32Telemetry.leftEncoderCount;
-        forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        turnAroundPhase_ = TurnAroundPhase::RecognitionDelay;
+        recognitionLeftPower_ = cameraLineSnapshot.lineFollowerLeftPower;
+        recognitionRightPower_ = cameraLineSnapshot.lineFollowerRightPower;
         phaseStartedAt_ = now;
         lineReacquireFrames_ = 0;
         lineSearchStartYawDegrees_ = 0.0;
@@ -168,6 +188,78 @@ void MainMission::update(
         robotState.updateAutonomousStatus(makeMainMissionStatus(
             "line_following", "Seguindo a linha pela câmera inferior"));
         return;
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::RecognitionDelay)
+    {
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(
+                config::kGreenTurnAroundRecognitionDelayMs))
+        {
+            // Mantém o comando que estava vigente no reconhecimento sem
+            // bloquear o loop de segurança com um sleep real.
+            robotState.driveAutonomous(
+                recognitionLeftPower_, recognitionRightPower_);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_recognition_delay",
+                "Retorno 180° reconhecido: mantendo a velocidade atual"));
+            return;
+        }
+
+        const double nearPosition =
+            cameraLineSnapshot.lineNearFinePosition;
+        const bool nearPositionValid =
+            cameraLineSnapshot.lineNearDetected &&
+            std::isfinite(nearPosition) &&
+            std::abs(nearPosition) <= 1.0;
+        if (nearPositionValid &&
+            std::abs(nearPosition) >=
+                config::kGreenTurnAroundCenteringEnterThreshold)
+        {
+            turnAroundPhase_ = TurnAroundPhase::Centering;
+            phaseStartedAt_ = now;
+        }
+        else if (!startTurnAroundForward())
+        {
+            return;
+        }
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::Centering)
+    {
+        const double nearPosition =
+            cameraLineSnapshot.lineNearFinePosition;
+        const bool nearPositionValid =
+            cameraLineSnapshot.lineNearDetected &&
+            std::isfinite(nearPosition) &&
+            std::abs(nearPosition) <= 1.0;
+        const bool centered =
+            nearPositionValid &&
+            std::abs(nearPosition) <=
+                config::kGreenTurnAroundCenteringExitThreshold;
+        const bool centeringTimedOut =
+            now - phaseStartedAt_ >= std::chrono::milliseconds(
+                config::kGreenTurnAroundCenteringTimeoutMs);
+
+        if (!nearPositionValid || centered || centeringTimedOut)
+        {
+            // Uma leitura perdida ou o timeout não autoriza giro cego.
+            // Nesses casos, a sequência segue para o avanço já existente.
+            if (!startTurnAroundForward())
+            {
+                return;
+            }
+        }
+        else
+        {
+            const double turnSign = nearPosition > 0.0 ? 1.0 : -1.0;
+            const double leftPower =
+                turnSign * config::kGreenTurnAroundCenteringPower;
+            robotState.driveAutonomous(leftPower, -leftPower);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_centering",
+                "Centralizando a linha antes do retorno 180°"));
+            return;
+        }
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::DrivingForward)
