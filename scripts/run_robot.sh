@@ -56,9 +56,10 @@ fi
 
 if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
   # A CAM1 processa continuamente. Esta opção controla somente se o stream de
-  # diagnóstico começa disponível no boot; ela não interrompe a leitura frontal.
+  # diagnóstico começa disponível no boot; o padrão ligado evita uma ativação
+  # manual no dashboard e não altera a leitura frontal contínua.
   pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
-  OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-0}" \
+  OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
     "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
   FORWARD_CAMERA_PID="$!"
 else

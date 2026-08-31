@@ -592,6 +592,12 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
          << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
+         << ",\"forwardAssistState\":\"" << state.autonomousStatus.forwardAssistState << "\""
+         << ",\"forwardAssistDirection\":\"" << state.autonomousStatus.forwardAssistDirection << "\""
+         << ",\"forwardAssistYawDeltaDeg\":" << state.autonomousStatus.forwardAssistYawDeltaDeg
+         << ",\"forwardLineVisible\":" << (state.autonomousStatus.forwardLineVisible ? "true" : "false")
+         << ",\"forwardLinePosition\":" << state.autonomousStatus.forwardLinePosition
+         << ",\"bottomStableFrames\":" << state.autonomousStatus.bottomStableFrames
           << ",\"left\":" << state.left
           << ",\"right\":" << state.right
          << ",\"requestedLeft\":" << state.left
@@ -1477,11 +1483,11 @@ std::string DashboardServer::dashboardHtml()
         role: "Resgate e percepção frontal",
         streamUrl: "/forward-camera-stream.mjpg",
         statusUrl: "/forward-camera-status.json",
-        status: "DESLIGADA",
-        enabled: false,
+        status: "INICIANDO",
+        enabled: true,
         active: false,
         transitioning: false,
-        requestedEnabled: false,
+        requestedEnabled: true,
         transitionDeadlineMs: 0,
         error: "",
         metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" }
@@ -1659,8 +1665,6 @@ std::string DashboardServer::dashboardHtml()
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
         turnaround_waiting_sensors: ["RETORNO: SENSORES", "warn", "machineStepPerception"],
-        turnaround_recognition_delay: ["RETORNO: AGUARDANDO", "warn", "machineStepFeedback"],
-        turnaround_centering: ["RETORNO: CENTRALIZANDO", "active", "machineStepMotion"],
         turnaround_forward: ["RETORNO: AVANÇO", "active", "machineStepMotion"],
         turnaround_forward_settling: ["RETORNO: ESTABILIZANDO", "warn", "machineStepFeedback"],
         turnaround_imu: ["RETORNO: GIRO IMU", "active", "machineStepMotion"],

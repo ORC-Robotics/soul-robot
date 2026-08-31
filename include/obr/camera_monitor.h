@@ -49,7 +49,31 @@ struct CameraLineSnapshot
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;
     double ageMs = 0.0;
+    bool farTrusted = false;
+    bool mediumTrusted = false;
+    bool normalSteeringValid = false;
+    // Direção lateral calculada pelo recovery inferior exclusivamente com
+    // posições trusted. A Raspberry apenas memoriza esta decisão entre frames.
+    std::string trustedDirection = "NONE";
     CameraCurveDiagnostics curveDiagnostics;
+};
+
+// Leitura leve da câmera frontal e comando produzido pelo mapper NORMAL
+// compartilhado com a câmera inferior. Confidence permanece apenas diagnóstico.
+struct ForwardLineSnapshot
+{
+    bool sourceFresh = false;
+    bool visible = false;
+    double position = std::numeric_limits<double>::quiet_NaN();
+    double confidence = 0.0;
+    double normalLeftPower = 0.0;
+    double normalRightPower = 0.0;
+    double timestamp = 0.0;
+    std::uint64_t sequence = 0;
+    double ageMs = 0.0;
+
+    bool lineObservationValid() const;
+    bool normalCommandValid() const;
 };
 
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.
@@ -58,8 +82,11 @@ class CameraMonitor
 public:
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
+    ForwardLineSnapshot forwardLineSnapshot();
 
 private:
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
+    ForwardLineSnapshot cachedForwardLineSnapshot_;
+    bool hasCachedForwardLineSnapshot_ = false;
 };

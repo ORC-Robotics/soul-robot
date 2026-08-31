@@ -39,17 +39,17 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
-    def test_environment_defaults_to_disabled(self):
+    def test_environment_defaults_to_enabled(self):
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(forward_camera_stream.environment_enabled())
+            self.assertTrue(forward_camera_stream.environment_enabled())
 
-    def test_environment_can_enable_camera_at_startup(self):
+    def test_environment_can_disable_camera_at_startup(self):
         with mock.patch.dict(
             os.environ,
-            {"OBR_FORWARD_CAMERA_ENABLED": "true"},
+            {"OBR_FORWARD_CAMERA_ENABLED": "false"},
             clear=True,
         ):
-            self.assertTrue(forward_camera_stream.environment_enabled())
+            self.assertFalse(forward_camera_stream.environment_enabled())
 
     def test_control_file_round_trip(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -68,6 +68,16 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 self.assertTrue(forward_camera_stream.requested_enabled())
                 forward_camera_stream.write_requested_enabled(False)
                 self.assertFalse(forward_camera_stream.requested_enabled())
+
+    def test_missing_control_file_defaults_to_enabled(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_path = os.path.join(temporary_directory, "missing")
+            with mock.patch.object(
+                forward_camera_stream,
+                "CONTROL_PATH",
+                missing_path,
+            ):
+                self.assertTrue(forward_camera_stream.requested_enabled())
 
     def test_disabled_status_keeps_forward_profile_without_line_data(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -96,7 +106,17 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["sensorMode"]["width"], 1920)
         self.assertEqual(status["sensorMode"]["height"], 1080)
         self.assertEqual(status["targetCameraFps"], 30)
+        self.assertEqual(status["rotationDegrees"], 180)
+        self.assertEqual(status["captureTransform"], "identity")
+        self.assertEqual(status["transform"], "opencv-rotate-180")
         self.assertNotIn("lineSequence", status)
+
+    def test_forward_frame_is_rotated_before_processing(self):
+        frame = np.arange(2 * 3 * 3, dtype=np.uint8).reshape((2, 3, 3))
+
+        oriented = forward_camera_stream.orient_forward_frame(frame)
+
+        np.testing.assert_array_equal(oriented, frame[::-1, ::-1])
 
     def test_downward_process_rejects_forward_role(self):
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
@@ -194,10 +214,40 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 "forwardLineConfidence",
                 "forwardLineSequence",
                 "forwardLineTimestamp",
+                "forwardLineNormalLeftPower",
+                "forwardLineNormalRightPower",
             },
         )
         self.assertEqual(status["forwardLineSequence"], 7)
         self.assertEqual(status["forwardLineTimestamp"], 123.5)
+        self.assertGreater(status["forwardLineNormalRightPower"], 0.0)
+        self.assertGreater(status["forwardLineNormalLeftPower"], 0.0)
+        self.assertLess(
+            status["forwardLineNormalLeftPower"],
+            status["forwardLineNormalRightPower"],
+        )
+
+    def test_forward_mapper_never_generates_reverse_or_strong_range(self):
+        for position in (-1.0, -0.2, 0.0, 0.2, 1.0):
+            command = camera_line_frame.map_normal_steering_error(position)
+
+            self.assertIsNotNone(command)
+            self.assertGreaterEqual(
+                command["left_power"],
+                camera_line_frame.NORMAL_INNER_MIN_POWER,
+            )
+            self.assertGreaterEqual(
+                command["right_power"],
+                camera_line_frame.NORMAL_INNER_MIN_POWER,
+            )
+            self.assertLessEqual(
+                command["left_power"],
+                camera_line_frame.NORMAL_MAX_POWER,
+            )
+            self.assertLessEqual(
+                command["right_power"],
+                camera_line_frame.NORMAL_MAX_POWER,
+            )
 
 
 if __name__ == "__main__":

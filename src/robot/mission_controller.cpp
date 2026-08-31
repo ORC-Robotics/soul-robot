@@ -94,7 +94,8 @@ void MissionController::update(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
-    const CameraLineSnapshot& cameraLineSnapshot)
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardLineSnapshot& forwardLineSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -131,7 +132,8 @@ void MissionController::update(
             robotState,
             esp32Telemetry,
             cameraReady,
-            cameraLineSnapshot);
+            cameraLineSnapshot,
+            forwardLineSnapshot);
         return;
     }
 }

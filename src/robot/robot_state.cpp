@@ -255,6 +255,26 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     {
         state_.autonomousStatus.averageDistanceCm = 0.0;
     }
+    if (!std::isfinite(state_.autonomousStatus.forwardAssistYawDeltaDeg))
+    {
+        state_.autonomousStatus.forwardAssistYawDeltaDeg = 0.0;
+    }
+    state_.autonomousStatus.forwardAssistYawDeltaDeg = std::clamp(
+        state_.autonomousStatus.forwardAssistYawDeltaDeg,
+        0.0,
+        180.0);
+    if (!std::isfinite(state_.autonomousStatus.forwardLinePosition))
+    {
+        state_.autonomousStatus.forwardLinePosition = 0.0;
+        state_.autonomousStatus.forwardLineVisible = false;
+    }
+    state_.autonomousStatus.forwardLinePosition = std::clamp(
+        state_.autonomousStatus.forwardLinePosition,
+        -1.0,
+        1.0);
+    state_.autonomousStatus.bottomStableFrames = std::max(
+        0,
+        state_.autonomousStatus.bottomStableFrames);
 }
 
 void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)

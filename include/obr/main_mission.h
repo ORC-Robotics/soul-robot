@@ -17,14 +17,27 @@ public:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         bool cameraReady,
-        const CameraLineSnapshot& cameraLineSnapshot);
+        const CameraLineSnapshot& cameraLineSnapshot,
+        const ForwardLineSnapshot& forwardLineSnapshot);
 
 private:
+    enum class ForwardAssistState
+    {
+        Bottom,
+        SearchSpin,
+        ForwardFollow
+    };
+
+    enum class ForwardAssistDirection
+    {
+        None,
+        Left,
+        Right
+    };
+
     enum class TurnAroundPhase
     {
         Idle,
-        RecognitionDelay,
-        Centering,
         DrivingForward,
         ForwardSettling,
         TurningByImu,
@@ -34,11 +47,33 @@ private:
     TurnAroundPhase turnAroundPhase_ = TurnAroundPhase::Idle;
     ImuTurnController turnAroundController_;
     bool turnAroundArmed_ = true;
-    double recognitionLeftPower_ = 0.0;
-    double recognitionRightPower_ = 0.0;
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;
     int lineReacquireFrames_ = 0;
     double lineSearchStartYawDegrees_ = 0.0;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
+
+    ForwardAssistState forwardAssistState_ = ForwardAssistState::Bottom;
+    ForwardAssistDirection forwardAssistDirection_ =
+        ForwardAssistDirection::None;
+    double forwardAssistYawOriginDegrees_ = 0.0;
+    double forwardAssistYawDeltaDegrees_ = 0.0;
+    int bottomStableFrames_ = 0;
+    bool hasPreviousBottomFrame_ = false;
+    std::uint64_t previousBottomSequence_ = 0;
+    bool previousBottomTrusted_ = false;
+    bool previousBottomLineNormal_ = false;
+    ForwardAssistDirection previousBottomDirection_ =
+        ForwardAssistDirection::None;
+
+    void resetForwardAssist();
+    bool updateForwardAssist(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const CameraLineSnapshot& cameraLineSnapshot,
+        const ForwardLineSnapshot& forwardLineSnapshot);
+    AutonomousStatus forwardAssistStatus(
+        const std::string& phase,
+        const std::string& action,
+        const ForwardLineSnapshot& forwardLineSnapshot) const;
 };

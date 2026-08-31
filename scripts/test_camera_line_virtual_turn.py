@@ -697,56 +697,91 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertTrue(near_texts[0].startswith("NEAR-C "))
         self.assertTrue(near_texts[1].startswith("NEAR FINE POS "))
 
-    def test_line_confidence_overlay_uses_center_left_debug_block(self):
-        command = calculate_command(sensor_values(steering_error=0.10))
-        command["rawFarPosition"] = -0.25
-        command["farPosition"] = None
-        command["rawMediumPosition"] = 0.30
-        command["mediumPosition"] = 0.30
-        command["farLineConfidence"] = 0.45
-        command["mediumLineConfidence"] = 0.70
-        command["farLineThicknessPx"] = 8.5
-        command["mediumLineThicknessPx"] = 19.25
-        command["farThicknessConsistency"] = 0.36
-        command["mediumThicknessConsistency"] = 0.82
-        command["farTrusted"] = False
-        command["mediumTrusted"] = True
+    def test_down_overlay_omits_temporary_confidence_diagnostics(self):
+        command = calculate_command(sensor_values(
+            steering_error=0.10,
+            medium_position=0.20,
+            far_band_position=-0.10,
+            near_fine_position=0.05,
+        ))
+        command["lineProcessingMs"] = 12.5
         frame = np.zeros((360, 480, 3), dtype=np.uint8)
-        with patch.object(camera_line_frame.cv2, "putText") as put_text:
-            camera_line_frame.draw_line_confidence_overlay(frame, command)
+        with (
+            patch.object(camera_line_frame.cv2, "putText") as put_text,
+            patch.object(camera_line_frame.cv2, "rectangle"),
+            patch.object(camera_line_frame.cv2, "line"),
+            patch.object(camera_line_frame.cv2, "circle"),
+        ):
+            camera_line_frame.draw_line_control_overlay(frame, command)
+            camera_line_frame.draw_virtual_sensor_geometry(frame, command)
 
-        foreground_calls = [
-            call
+        rendered_texts = [
+            call.args[1]
             for call in put_text.call_args_list
-            if call.args[6] == 1
         ]
-        self.assertEqual(len(foreground_calls), 6)
-        self.assertTrue(foreground_calls[0].args[1].startswith("FAR CONF 0.45"))
-        self.assertIn("RAW POS -0.25", foreground_calls[0].args[1])
-        self.assertEqual(
-            foreground_calls[1].args[1],
-            "FAR THICK 8.5  CONS 0.36",
+        preserved_prefixes = (
+            "LINE ",
+            "L ",
+            "FAR-L ",
+            "FAR-C ",
+            "FAR-R ",
+            "FAR BAND POS ",
+            "MEDIUM-L ",
+            "MEDIUM-C ",
+            "MEDIUM-R ",
+            "MEDIUM POS ",
+            "NEAR-C ",
+            "NEAR FINE POS ",
         )
-        self.assertEqual(
-            foreground_calls[2].args[1],
-            "FAR TRUST NO  CTRL POS --",
+        for prefix in preserved_prefixes:
+            self.assertTrue(
+                any(text.startswith(prefix) for text in rendered_texts),
+                prefix,
+            )
+
+        removed_fragments = (
+            "FAR CONF",
+            "FAR THICK",
+            "FAR CONS",
+            "FAR TRUST",
+            "MED CONF",
+            "MED THICK",
+            "MED CONS",
+            "MED TRUST",
+            "RAW POS",
+            "CTRL POS",
         )
-        self.assertTrue(foreground_calls[3].args[1].startswith("MED CONF 0.70"))
-        self.assertIn("RAW POS +0.30", foreground_calls[3].args[1])
+        for fragment in removed_fragments:
+            self.assertFalse(
+                any(fragment in text for text in rendered_texts),
+                fragment,
+            )
+
+        origins_by_prefix = {
+            prefix: next(
+                call.args[2]
+                for call in put_text.call_args_list
+                if call.args[1].startswith(prefix)
+            )
+            for prefix in preserved_prefixes
+        }
         self.assertEqual(
-            foreground_calls[4].args[1],
-            "MED THICK 19.2  CONS 0.82",
+            origins_by_prefix["MEDIUM-L "][1],
+            origins_by_prefix["MEDIUM-R "][1],
         )
-        self.assertEqual(
-            foreground_calls[5].args[1],
-            "MED TRUST YES  CTRL POS +0.30",
+        self.assertGreater(
+            origins_by_prefix["MEDIUM-C "][1],
+            origins_by_prefix["MEDIUM-L "][1],
         )
-        for call in foreground_calls:
-            text_x, text_y = call.args[2]
-            self.assertGreaterEqual(text_x, 20)
-            self.assertLessEqual(text_x, 30)
-            self.assertGreater(text_y, frame.shape[0] * 0.45)
-            self.assertLess(text_y, frame.shape[0] * 0.75)
+        self.assertGreater(
+            origins_by_prefix["MEDIUM POS "][1],
+            origins_by_prefix["MEDIUM-C "][1],
+        )
+        for text_x, text_y in origins_by_prefix.values():
+            self.assertGreaterEqual(text_x, 0)
+            self.assertLess(text_x, frame.shape[1])
+            self.assertGreaterEqual(text_y, 0)
+            self.assertLess(text_y, frame.shape[0])
 
     def test_line_confidence_does_not_change_control_decisions(self):
         low_confidence_sensors = sensor_values(

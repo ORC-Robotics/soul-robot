@@ -26,6 +26,11 @@ STATUS_FPS = 5
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
 
+# A OV5647 frontal está fisicamente invertida, mas o hvflip solicitado ao
+# Picamera2 não alterou o JPEG de forma consistente. Rotacionar o array uma vez,
+# antes da visão e do stream, mantém percepção e diagnóstico na mesma orientação.
+FORWARD_FRAME_ROTATION_DEGREES = 180
+
 # A ROI usa frações do frame frontal para continuar válida em testes com outras
 # resoluções. Estes quatro valores são o ponto central da calibração física.
 FORWARD_ASSIST_X0 = 0.05
@@ -46,9 +51,9 @@ frame_condition = threading.Condition()
 
 
 def environment_enabled():
-    """Lê o estado inicial do stream; a captura permanece sempre ativa."""
+    """Inicia o stream ligado, sem alterar a captura frontal contínua."""
 
-    value = os.environ.get("OBR_FORWARD_CAMERA_ENABLED", "0").strip().lower()
+    value = os.environ.get("OBR_FORWARD_CAMERA_ENABLED", "1").strip().lower()
     if value in ("1", "true", "yes", "on"):
         return True
     if value in ("0", "false", "no", "off", ""):
@@ -67,11 +72,16 @@ def write_requested_enabled(enabled):
 
 
 def requested_enabled():
-    """Retorna falso quando o controle do stream não existe ou é inválido."""
+    """Mantém o stream ligado sem arquivo; zero explícito continua desligando."""
 
     try:
         with open(CONTROL_PATH, "r", encoding="utf-8") as control_file:
             return control_file.read().strip() == "1"
+    except FileNotFoundError:
+        # /dev/shm pode ser limpo durante a operação. A ausência restaura o
+        # padrão ligado, enquanto um arquivo existente com "0" preserva o
+        # desligamento solicitado pelo dashboard.
+        return True
     except OSError:
         return False
 
@@ -110,7 +120,12 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "mainResolution": {"width": width, "height": height},
         "sensorMode": sensor_mode,
         "scalerCrop": details.get("scalerCrop"),
-        "transform": details.get("transform", "hvflip"),
+        "rotationDegrees": FORWARD_FRAME_ROTATION_DEGREES,
+        "captureTransform": details.get(
+            "transform",
+            camera_line_frame.camera_transform_settings(profile)["name"],
+        ),
+        "transform": "opencv-rotate-180",
         "targetCameraFps": profile["target_fps"],
         "streamPort": STREAM_PORT,
         "streamPath": STREAM_PATH,
@@ -222,6 +237,14 @@ def process_forward_frame(frame, camera_format):
     return calculate_forward_line_assist(full_filtered_mask)
 
 
+def orient_forward_frame(frame):
+    """Corrige a montagem frontal antes de qualquer processamento ou stream."""
+
+    if FORWARD_FRAME_ROTATION_DEGREES != 180:
+        raise ValueError("A rotação frontal implementada deve permanecer em 180 graus.")
+    return cv2.rotate(frame, cv2.ROTATE_180)
+
+
 def save_forward_line_status(reading, timestamp, sequence):
     """Publica atomicamente apenas a leitura leve da câmera frontal."""
 
@@ -245,6 +268,19 @@ def save_forward_line_status(reading, timestamp, sequence):
         elif position is not None:
             raise ValueError("forwardLinePosition deve ser None sem linha visível")
 
+        forward_error = (
+            max(-1.0, min(1.0, position))
+            if visible
+            else None
+        )
+        normal_command = (
+            camera_line_frame.map_normal_steering_error(forward_error)
+            if visible
+            else None
+        )
+        if visible and normal_command is None:
+            raise ValueError("mapper NORMAL não aceitou a posição frontal")
+
         confidence = float(reading["forwardLineConfidence"])
         if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
             raise ValueError("forwardLineConfidence inválido")
@@ -255,6 +291,16 @@ def save_forward_line_status(reading, timestamp, sequence):
             "forwardLineConfidence": confidence,
             "forwardLineSequence": sequence,
             "forwardLineTimestamp": timestamp,
+            "forwardLineNormalLeftPower": (
+                normal_command["left_power"]
+                if normal_command is not None
+                else None
+            ),
+            "forwardLineNormalRightPower": (
+                normal_command["right_power"]
+                if normal_command is not None
+                else None
+            ),
         }
         with open(
             TEMP_FORWARD_LINE_STATUS_PATH,
@@ -588,6 +634,7 @@ def main():
 
             try:
                 frame = camera.capture_array("main")
+                frame = orient_forward_frame(frame)
                 reading = process_forward_frame(frame, camera_format)
                 line_timestamp = time.time()
                 line_sequence += 1

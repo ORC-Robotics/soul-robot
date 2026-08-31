@@ -17,7 +17,8 @@ public:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         bool cameraReady,
-        const CameraLineSnapshot& cameraLineSnapshot);
+        const CameraLineSnapshot& cameraLineSnapshot,
+        const ForwardLineSnapshot& forwardLineSnapshot);
 
 private:
     enum class DistancePhase

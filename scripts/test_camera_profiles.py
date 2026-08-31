@@ -93,7 +93,22 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(profile["main_size"], (480, 360))
         self.assertEqual(profile["sensor_size"], (1640, 1232))
         self.assertEqual(profile["target_fps"], 30)
-        self.assertEqual(camera_line_frame.CAMERA_ROTATION_DEGREES, 180)
+        self.assertEqual(profile["rotation_degrees"], 180)
+
+    def test_camera_profiles_keep_independent_orientations(self):
+        down_settings = camera_line_frame.camera_transform_settings(
+            camera_line_frame.CAMERA_PROFILES["down"]
+        )
+        forward_settings = camera_line_frame.camera_transform_settings(
+            camera_line_frame.CAMERA_PROFILES["forward"]
+        )
+
+        self.assertEqual(down_settings["name"], "hvflip")
+        self.assertTrue(down_settings["hflip"])
+        self.assertTrue(down_settings["vflip"])
+        self.assertEqual(forward_settings["name"], "identity")
+        self.assertFalse(forward_settings["hflip"])
+        self.assertFalse(forward_settings["vflip"])
 
     def test_down_geometry_contains_only_structural_limit(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
@@ -883,6 +898,7 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["finalSteering"], 0.18)
         self.assertEqual(published["vstate"], "NORMAL")
         self.assertEqual(published["lineState"], "LINE")
+        self.assertEqual(published["trustedDirection"], "NONE")
         expected_keys = set(status) | {
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
@@ -901,6 +917,7 @@ class CameraProfilesTest(unittest.TestCase):
             "finalSteering",
             "vstate",
             "lineState",
+            "trustedDirection",
             "lineTimestamp",
             "lineSequence",
             "specularRepairPixels",

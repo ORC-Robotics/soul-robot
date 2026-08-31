@@ -232,6 +232,12 @@ bool isNormalizedValue(double value)
     return std::isfinite(value) && value >= -1.0 && value <= 1.0;
 }
 
+bool isTrustedDirection(const std::string& direction)
+{
+    return direction == "NONE" || direction == "LEFT" ||
+           direction == "RIGHT";
+}
+
 CameraLineSnapshot unavailableLineSnapshot(
     const CameraLineSnapshot& cachedSnapshot,
     bool hasCachedSnapshot)
@@ -245,6 +251,10 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lineNearDetected = false;
     snapshot.lineNearFinePosition =
         std::numeric_limits<double>::quiet_NaN();
+    snapshot.farTrusted = false;
+    snapshot.mediumTrusted = false;
+    snapshot.normalSteeringValid = false;
+    snapshot.trustedDirection = "NONE";
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
@@ -260,6 +270,63 @@ CameraLineSnapshot unavailableLineSnapshot(
     }
     return snapshot;
 }
+
+
+ForwardLineSnapshot unavailableForwardLineSnapshot(
+    const ForwardLineSnapshot& cachedSnapshot,
+    bool hasCachedSnapshot)
+{
+    ForwardLineSnapshot snapshot = hasCachedSnapshot
+                                       ? cachedSnapshot
+                                       : ForwardLineSnapshot{};
+    snapshot.sourceFresh = false;
+    snapshot.visible = false;
+    snapshot.position = std::numeric_limits<double>::quiet_NaN();
+    snapshot.normalLeftPower = 0.0;
+    snapshot.normalRightPower = 0.0;
+    if (hasCachedSnapshot)
+    {
+        snapshot.ageMs =
+            (currentUnixSeconds() - snapshot.timestamp) * 1000.0;
+        if (!std::isfinite(snapshot.ageMs))
+        {
+            snapshot.ageMs = 0.0;
+        }
+    }
+    return snapshot;
+}
+}
+
+bool ForwardLineSnapshot::lineObservationValid() const
+{
+    return sourceFresh && visible && sequence > 0 &&
+           isNormalizedValue(position);
+}
+
+bool ForwardLineSnapshot::normalCommandValid() const
+{
+    if (!lineObservationValid() ||
+        !std::isfinite(normalLeftPower) ||
+        !std::isfinite(normalRightPower) ||
+        normalLeftPower < config::kForwardAssistNormalMinimumPower ||
+        normalLeftPower > config::kForwardAssistNormalMaximumPower ||
+        normalRightPower < config::kForwardAssistNormalMinimumPower ||
+        normalRightPower > config::kForwardAssistNormalMaximumPower)
+    {
+        return false;
+    }
+
+    constexpr double kComparisonTolerance = 1e-6;
+    if (position < 0.0)
+    {
+        return normalLeftPower <= normalRightPower + kComparisonTolerance;
+    }
+    if (position > 0.0)
+    {
+        return normalLeftPower + kComparisonTolerance >= normalRightPower;
+    }
+    return std::abs(normalLeftPower - normalRightPower) <=
+           kComparisonTolerance;
 }
 
 bool CameraMonitor::ready() const
@@ -363,6 +430,32 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         tryGetJsonString(json, "vstate", diagnostics.virtualState);
         tryGetJsonString(json, "lineState", diagnostics.lineState);
 
+        // Os gates trusted são opcionais somente para compatibilidade com uma
+        // câmera antiga. Ausência mantém ambos falsos e bloqueia a assistência.
+        tryGetJsonBool(json, "farTrusted", candidate.farTrusted);
+        tryGetJsonBool(json, "mediumTrusted", candidate.mediumTrusted);
+        std::string trustedDirection;
+        if (tryGetJsonString(json, "trustedDirection", trustedDirection))
+        {
+            if (!isTrustedDirection(trustedDirection))
+            {
+                return unavailableLineSnapshot(
+                    cachedLineSnapshot_, hasCachedLineSnapshot_);
+            }
+            candidate.trustedDirection = trustedDirection;
+        }
+        candidate.normalSteeringValid =
+            candidate.lineControlSource == "virtual" &&
+            isNormalizedValue(diagnostics.finalSteering) &&
+            candidate.lineFollowerLeftPower >=
+                config::kForwardAssistNormalMinimumPower &&
+            candidate.lineFollowerLeftPower <=
+                config::kForwardAssistNormalMaximumPower &&
+            candidate.lineFollowerRightPower >=
+                config::kForwardAssistNormalMinimumPower &&
+            candidate.lineFollowerRightPower <=
+                config::kForwardAssistNormalMaximumPower;
+
         const bool valuesValid =
             isNormalizedValue(candidate.lineFollowerLeftPower) &&
             isNormalizedValue(candidate.lineFollowerRightPower) &&
@@ -394,5 +487,95 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
     {
         return unavailableLineSnapshot(
             cachedLineSnapshot_, hasCachedLineSnapshot_);
+    }
+}
+
+ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
+{
+    try
+    {
+        std::ifstream file(config::kForwardLineStatusPath);
+        if (!file)
+        {
+            return unavailableForwardLineSnapshot(
+                cachedForwardLineSnapshot_,
+                hasCachedForwardLineSnapshot_);
+        }
+        std::ostringstream content;
+        content << file.rdbuf();
+        if (file.bad())
+        {
+            return unavailableForwardLineSnapshot(
+                cachedForwardLineSnapshot_,
+                hasCachedForwardLineSnapshot_);
+        }
+        const std::string json = content.str();
+
+        ForwardLineSnapshot candidate;
+        if (!tryGetJsonBool(
+                json, "forwardLineVisible", candidate.visible) ||
+            !tryGetJsonNumber(
+                json, "forwardLineConfidence", candidate.confidence) ||
+            !tryGetJsonUnsignedInteger(
+                json, "forwardLineSequence", candidate.sequence) ||
+            !tryGetJsonNumber(
+                json, "forwardLineTimestamp", candidate.timestamp))
+        {
+            return unavailableForwardLineSnapshot(
+                cachedForwardLineSnapshot_,
+                hasCachedForwardLineSnapshot_);
+        }
+
+        if (candidate.visible &&
+            (!tryGetJsonNumber(
+                 json, "forwardLinePosition", candidate.position) ||
+             !tryGetJsonNumber(
+                 json,
+                 "forwardLineNormalLeftPower",
+                 candidate.normalLeftPower) ||
+             !tryGetJsonNumber(
+                 json,
+                 "forwardLineNormalRightPower",
+                 candidate.normalRightPower)))
+        {
+            return unavailableForwardLineSnapshot(
+                cachedForwardLineSnapshot_,
+                hasCachedForwardLineSnapshot_);
+        }
+
+        const bool valuesValid =
+            candidate.sequence > 0 &&
+            std::isfinite(candidate.timestamp) &&
+            candidate.timestamp >= 0.0 &&
+            std::isfinite(candidate.confidence) &&
+            candidate.confidence >= 0.0 &&
+            candidate.confidence <= 1.0 &&
+            (!candidate.visible || isNormalizedValue(candidate.position));
+        if (!valuesValid)
+        {
+            return unavailableForwardLineSnapshot(
+                cachedForwardLineSnapshot_,
+                hasCachedForwardLineSnapshot_);
+        }
+
+        candidate.ageMs =
+            (currentUnixSeconds() - candidate.timestamp) * 1000.0;
+        candidate.sourceFresh =
+            std::isfinite(candidate.ageMs) && candidate.ageMs >= 0.0 &&
+            candidate.ageMs <= config::kForwardLineStatusTimeoutMs;
+        if (!candidate.sourceFresh)
+        {
+            return unavailableForwardLineSnapshot(candidate, true);
+        }
+
+        cachedForwardLineSnapshot_ = candidate;
+        hasCachedForwardLineSnapshot_ = true;
+        return candidate;
+    }
+    catch (const std::exception&)
+    {
+        return unavailableForwardLineSnapshot(
+            cachedForwardLineSnapshot_,
+            hasCachedForwardLineSnapshot_);
     }
 }

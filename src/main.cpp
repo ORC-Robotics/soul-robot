@@ -156,6 +156,8 @@ int main()
 
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
+        const ForwardLineSnapshot forwardLineSnapshot =
+            cameraMonitor.forwardLineSnapshot();
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))
@@ -263,7 +265,8 @@ int main()
             robotState,
             esp32Telemetry,
             cameraReady,
-            cameraLineSnapshot);
+            cameraLineSnapshot,
+            forwardLineSnapshot);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.

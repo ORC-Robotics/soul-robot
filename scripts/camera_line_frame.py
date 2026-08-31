@@ -258,6 +258,13 @@ VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
 # Somente MEDIUM a partir de 0,25 libera a faixa forte entre 0,36 e 0,45.
 NORMAL_FULL_STEERING_ERROR = 0.36
 
+# Potências do mapper NORMAL compartilhado pelo seguidor inferior e pela
+# publicação frontal. Manter uma única função evita que a câmera auxiliar crie
+# outra curva de potência ou alcance PIVOT, SPIN e ré.
+NORMAL_BASE_POWER = 0.75
+NORMAL_MAX_POWER = 0.82
+NORMAL_INNER_MIN_POWER = 0.66
+
 # A histerese impede alternância rápida entre a faixa forte e o pivot.
 # A entrada exige erro 0,45; a saída ocorre somente após cair até 0,35.
 PIVOT_ENTER_THRESHOLD = 0.45
@@ -311,7 +318,9 @@ VISIBLE_GREEN_INTERPRETATIONS = {
     "RETORNO_180",
 }
 
-# As duas posições previstas usam a câmera montada de cabeça para baixo.
+# A câmera inferior corrige sua montagem pelo Picamera2. A frontal mantém a
+# captura neutra e aplica sua rotação no próprio processo, pois a OV5647 não
+# entregou o flip de captura de forma consistente nos testes reais.
 # Manter a transformação no Picamera2 evita rotacionar cada frame no OpenCV.
 CAMERA_ROTATION_DEGREES = 180
 
@@ -332,6 +341,7 @@ DOWNWARD_REFERENCE_FRAME_HEIGHT = 480
 CAMERA_PROFILES = {
     "forward": {
         "role": "forward",
+        "rotation_degrees": 0,
         "main_size": (960, 540),
         "sensor_size": (1920, 1080),
         "sensor_bit_depth": 10,
@@ -349,6 +359,7 @@ CAMERA_PROFILES = {
     },
     "down": {
         "role": "down",
+        "rotation_degrees": CAMERA_ROTATION_DEGREES,
         "main_size": (480, 360),
         "sensor_size": (1640, 1232),
         "sensor_bit_depth": 10,
@@ -788,6 +799,29 @@ def rectangle_values(rectangle):
     }
 
 
+def camera_transform_settings(camera_profile):
+    """Define a transformação física de cada papel sem compartilhar rotação."""
+
+    rotation_degrees = int(camera_profile.get("rotation_degrees", 0))
+    if rotation_degrees == 0:
+        return {
+            "rotation_degrees": 0,
+            "hflip": False,
+            "vflip": False,
+            "name": "identity",
+        }
+    if rotation_degrees == 180:
+        return {
+            "rotation_degrees": 180,
+            "hflip": True,
+            "vflip": True,
+            "name": "hvflip",
+        }
+    raise ValueError(
+        "A rotação da câmera deve ser 0 ou 180 graus para esta montagem."
+    )
+
+
 def camera_runtime_details(picam2, camera_profile, camera_config, camera_index):
     """Registra a câmera e o modo físico realmente aceitos pelo Picamera2."""
 
@@ -806,6 +840,7 @@ def camera_runtime_details(picam2, camera_profile, camera_config, camera_index):
     camera = getattr(picam2, "camera", None)
     camera_id = str(getattr(camera, "id", ""))
     properties = getattr(picam2, "camera_properties", {})
+    transform_settings = camera_transform_settings(camera_profile)
     return {
         "cameraIndex": int(camera_index),
         "cameraId": camera_id,
@@ -817,7 +852,8 @@ def camera_runtime_details(picam2, camera_profile, camera_config, camera_index):
             "format": str(camera_config["raw"]["format"]),
         },
         "scalerCrop": None,
-        "transform": "hvflip",
+        "rotationDegrees": transform_settings["rotation_degrees"],
+        "transform": transform_settings["name"],
     }
 
 
@@ -828,7 +864,11 @@ def create_camera(camera_profile, camera_index):
     frame_width, frame_height = camera_profile["main_size"]
     target_fps = camera_profile["target_fps"]
     frame_duration_us = int(1_000_000 / target_fps)
-    camera_transform = Transform(hflip=True, vflip=True)
+    transform_settings = camera_transform_settings(camera_profile)
+    camera_transform = Transform(
+        hflip=transform_settings["hflip"],
+        vflip=transform_settings["vflip"],
+    )
     sensor = {
         "output_size": camera_profile["sensor_size"],
         "bit_depth": camera_profile["sensor_bit_depth"],
@@ -3187,10 +3227,16 @@ def draw_virtual_sensor_geometry(
                     (255, 0, 255),
                     2,
                 )
+            # O CENTER do MEDIUM é estreito. Sua legenda fica em outra linha
+            # para não sobrepor os textos completos de MEDIUM-L e MEDIUM-R.
+            sensor_text_y_offset = 48 if name == "MEDIUM-C" else 24
             cv2.putText(
                 frame,
                 f"{name} {value:.2f}",
-                (sensor["x0"] + 8, sensor["y0"] + 24),
+                (
+                    sensor["x0"] + 8,
+                    sensor["y0"] + sensor_text_y_offset,
+                ),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 (255, 0, 255),
@@ -3227,20 +3273,29 @@ def draw_virtual_sensor_geometry(
             (
                 "FAR BAND POS",
                 line_follower_command["farBandPosition"],
-                geometry["farBand"]["center"],
+                (
+                    geometry["farBand"]["center"]["x0"] + 8,
+                    far_band_left["y1"] - 8,
+                ),
             ),
             (
                 "MEDIUM POS",
                 line_follower_command["mediumPosition"],
-                geometry["medium"]["center"],
+                (
+                    geometry["medium"]["center"]["x0"] + 8,
+                    geometry["medium"]["center"]["y0"] + 72,
+                ),
             ),
             (
                 "NEAR FINE POS",
                 line_follower_command["nearFinePosition"],
-                geometry["near"]["center"],
+                (
+                    geometry["near"]["center"]["x0"] + 8,
+                    geometry["near"]["center"]["y0"] + 48,
+                ),
             ),
         )
-        for label, position, position_geometry in position_details:
+        for label, position, text_origin in position_details:
             position_text = (
                 f"{label} {position:+.2f}"
                 if position is not None
@@ -3249,10 +3304,7 @@ def draw_virtual_sensor_geometry(
             cv2.putText(
                 frame,
                 position_text,
-                (
-                    position_geometry["x0"] + 8,
-                    position_geometry["y0"] + 48,
-                ),
+                text_origin,
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.45,
                 (0, 255, 255),
@@ -4526,136 +4578,6 @@ def draw_line_control_overlay(frame, line_follower_command):
         )
 
 
-def draw_line_confidence_overlay(frame, line_follower_command):
-    """Mostra confidence e espessura no centro-esquerdo para calibração."""
-
-    # Cinco por cento da largura cai em 24 px no frame 480x360. Os limites
-    # preservam a margem pedida mesmo se um frame de diagnóstico mudar de tamanho.
-    text_x = max(20, min(30, int(round(frame.shape[1] * 0.05))))
-    # O bloco completo permanece na região central, abaixo dos rótulos do
-    # MEDIUM e longe dos textos principais do seguidor.
-    first_text_y = int(round(frame.shape[0] * 0.47))
-    line_spacing = max(14, min(19, int(round(frame.shape[0] * 0.05))))
-
-    control_far_position = finite_virtual_position(
-        line_follower_command.get("farPosition")
-    )
-    control_medium_position = finite_virtual_position(
-        line_follower_command.get("mediumPosition")
-    )
-    raw_far_position = finite_virtual_position(
-        line_follower_command.get(
-            "rawFarPosition",
-            control_far_position,
-        )
-    )
-    raw_medium_position = finite_virtual_position(
-        line_follower_command.get(
-            "rawMediumPosition",
-            control_medium_position,
-        )
-    )
-    raw_far_position_text = (
-        "--" if raw_far_position is None else f"{raw_far_position:+.2f}"
-    )
-    raw_medium_position_text = (
-        "--" if raw_medium_position is None else f"{raw_medium_position:+.2f}"
-    )
-    control_far_position_text = (
-        "--"
-        if control_far_position is None
-        else f"{control_far_position:+.2f}"
-    )
-    control_medium_position_text = (
-        "--"
-        if control_medium_position is None
-        else f"{control_medium_position:+.2f}"
-    )
-    far_confidence = normalized_line_confidence(
-        line_follower_command.get("farLineConfidence")
-    )
-    medium_confidence = normalized_line_confidence(
-        line_follower_command.get("mediumLineConfidence")
-    )
-    far_thickness_px = non_negative_line_measurement(
-        line_follower_command.get("farLineThicknessPx")
-    )
-    medium_thickness_px = non_negative_line_measurement(
-        line_follower_command.get("mediumLineThicknessPx")
-    )
-    far_thickness_consistency = normalized_line_confidence(
-        line_follower_command.get("farThicknessConsistency")
-    )
-    medium_thickness_consistency = normalized_line_confidence(
-        line_follower_command.get("mediumThicknessConsistency")
-    )
-    far_trust_text = (
-        "YES"
-        if virtual_sensor_trust_is_active(
-            line_follower_command,
-            "farTrusted",
-        )
-        else "NO"
-    )
-    medium_trust_text = (
-        "YES"
-        if virtual_sensor_trust_is_active(
-            line_follower_command,
-            "mediumTrusted",
-        )
-        else "NO"
-    )
-    overlay_texts = (
-        (
-            f"FAR CONF {far_confidence:.2f}  "
-            f"RAW POS {raw_far_position_text}"
-        ),
-        (
-            f"FAR THICK {far_thickness_px:.1f}  "
-            f"CONS {far_thickness_consistency:.2f}"
-        ),
-        (
-            f"FAR TRUST {far_trust_text}  "
-            f"CTRL POS {control_far_position_text}"
-        ),
-        (
-            f"MED CONF {medium_confidence:.2f}  "
-            f"RAW POS {raw_medium_position_text}"
-        ),
-        (
-            f"MED THICK {medium_thickness_px:.1f}  "
-            f"CONS {medium_thickness_consistency:.2f}"
-        ),
-        (
-            f"MED TRUST {medium_trust_text}  "
-            f"CTRL POS {control_medium_position_text}"
-        ),
-    )
-    for line_index, overlay_text in enumerate(overlay_texts):
-        text_origin = (text_x, first_text_y + line_index * line_spacing)
-        # O contorno escuro mantém a leitura visível sobre piso claro ou máscara.
-        cv2.putText(
-            frame,
-            overlay_text,
-            text_origin,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (0, 0, 0),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            frame,
-            overlay_text,
-            text_origin,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (0, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
-
 def read_virtual_sensor(processed_line_mask, sensor_geometry):
     """
     Mede quanto da área de um sensor virtual está ocupada
@@ -5029,6 +4951,46 @@ def finite_virtual_position(value):
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
+
+
+def map_normal_steering_error(steering_error):
+    """Converte erro lateral somente no intervalo de autoridade NORMAL."""
+
+    steering_error = finite_virtual_position(steering_error)
+    if steering_error is None:
+        return None
+
+    limited_error = max(
+        -NORMAL_FULL_STEERING_ERROR,
+        min(NORMAL_FULL_STEERING_ERROR, steering_error),
+    )
+    steering_strength = min(
+        1.0,
+        abs(limited_error) / NORMAL_FULL_STEERING_ERROR,
+    )
+    outer_power = (
+        NORMAL_BASE_POWER
+        + steering_strength * (NORMAL_MAX_POWER - NORMAL_BASE_POWER)
+    )
+    inner_power = (
+        NORMAL_BASE_POWER
+        - steering_strength
+        * (NORMAL_BASE_POWER - NORMAL_INNER_MIN_POWER)
+    )
+    if limited_error > 0.0:
+        return {
+            "left_power": outer_power,
+            "right_power": inner_power,
+        }
+    if limited_error < 0.0:
+        return {
+            "left_power": inner_power,
+            "right_power": outer_power,
+        }
+    return {
+        "left_power": NORMAL_BASE_POWER,
+        "right_power": NORMAL_BASE_POWER,
+    }
 
 
 def virtual_sensor_is_active(value):
@@ -5910,9 +5872,8 @@ def calculate_line_follower_command(
     # CONTROLE DE MOTORES
     # --------------------------------------------------------
 
-    BASE_POWER = 0.75
-    MAX_POWER = 0.82
-    NORMAL_INNER_MIN_POWER = 0.66
+    BASE_POWER = NORMAL_BASE_POWER
+    MAX_POWER = NORMAL_MAX_POWER
 
     # A faixa forte amplia a curva sem reduzir nenhuma roda abaixo de 0,61.
     STRONG_TURN_OUTER_POWER = 0.85
@@ -5967,6 +5928,16 @@ def calculate_line_follower_command(
         # a esquerda recua, preservando uma pequena componente de avanço.
         left_power = PIVOT_INNER_POWER
         right_power = PIVOT_OUTER_POWER
+
+    elif normal_steering_mapper and not medium_strong_requested:
+        # O caminho normal e a câmera frontal chamam exatamente o mesmo mapper.
+        normal_command = map_normal_steering_error(steering_error)
+        if normal_command is None:
+            left_power = 0.0
+            right_power = 0.0
+        else:
+            left_power = normal_command["left_power"]
+            right_power = normal_command["right_power"]
 
     else:
         # Correção normal.
@@ -6164,6 +6135,9 @@ def calculate_line_follower_command(
         "lineState": line_state,
         "greenDirection": direcao_verde_ativa,
         "controlSource": control_source,
+        # Reaproveita a direção já escolhida pelo recovery com MEDIUM/FAR
+        # trusted; a câmera frontal nunca calcula LEFT ou RIGHT.
+        "trustedDirection": observed_recovery_direction or "NONE",
     }
 
 def virtual_row_position_to_point(
@@ -6636,6 +6610,9 @@ def save_line_status(
             "lineState": str(
                 line_follower_command.get("lineState", "INVALID")
             ),
+            "trustedDirection": str(
+                line_follower_command.get("trustedDirection", "NONE")
+            ),
             "lineTimestamp": line_timestamp,
             "lineSequence": line_sequence,
             "specularRepairPixels": max(
@@ -6748,13 +6725,19 @@ def save_status(
         "jpegQuality": JPEG_QUALITY,
         "targetCameraFps": camera_profile["target_fps"],
         "cameraFormat": camera_format,
-        "rotationDegrees": CAMERA_ROTATION_DEGREES,
+        "rotationDegrees": camera_details.get(
+            "rotationDegrees",
+            camera_profile["rotation_degrees"],
+        ),
         "cameraIndex": camera_details.get("cameraIndex"),
         "cameraId": camera_details.get("cameraId", ""),
         "cameraModel": camera_details.get("cameraModel", ""),
         "sensorMode": camera_details.get("sensorMode"),
         "scalerCrop": camera_details.get("scalerCrop"),
-        "transform": camera_details.get("transform", "hvflip"),
+        "transform": camera_details.get(
+            "transform",
+            camera_transform_settings(camera_profile)["name"],
+        ),
         "streamPort": MJPEG_STREAM_PORT,
         "streamPath": MJPEG_STREAM_PATH,
         "streamFps": MJPEG_STREAM_FPS,
@@ -7352,7 +7335,6 @@ def main():
                         )
                     ),
                 )
-                draw_line_confidence_overlay(frame, line_follower_command)
 
             # A câmera inferior mantém o controle e os nove sensores virtuais.
             # As linhas estruturais antigas permanecem nas outras câmeras.

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <string>
 
 namespace
@@ -75,6 +76,7 @@ double shortestAngularDistanceDegrees(double first, double second)
     }
     return difference;
 }
+
 }
 
 void MainMission::reset()
@@ -82,19 +84,285 @@ void MainMission::reset()
     turnAroundPhase_ = TurnAroundPhase::Idle;
     turnAroundController_.reset();
     turnAroundArmed_ = true;
-    recognitionLeftPower_ = 0.0;
-    recognitionRightPower_ = 0.0;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
     lineSearchStartYawDegrees_ = 0.0;
+    resetForwardAssist();
+}
+
+void MainMission::resetForwardAssist()
+{
+    forwardAssistState_ = ForwardAssistState::Bottom;
+    forwardAssistDirection_ = ForwardAssistDirection::None;
+    forwardAssistYawOriginDegrees_ = 0.0;
+    forwardAssistYawDeltaDegrees_ = 0.0;
+    bottomStableFrames_ = 0;
+    hasPreviousBottomFrame_ = false;
+    previousBottomSequence_ = 0;
+    previousBottomTrusted_ = false;
+    previousBottomLineNormal_ = false;
+    previousBottomDirection_ = ForwardAssistDirection::None;
+}
+
+AutonomousStatus MainMission::forwardAssistStatus(
+    const std::string& phase,
+    const std::string& action,
+    const ForwardLineSnapshot& forwardLineSnapshot) const
+{
+    AutonomousStatus status = makeMainMissionStatus(phase, action);
+    switch (forwardAssistState_)
+    {
+    case ForwardAssistState::SearchSpin:
+        status.forwardAssistState = "SEARCH_SPIN";
+        break;
+    case ForwardAssistState::ForwardFollow:
+        status.forwardAssistState = "FORWARD_FOLLOW";
+        break;
+    case ForwardAssistState::Bottom:
+    default:
+        status.forwardAssistState = "BOTTOM";
+        break;
+    }
+    switch (forwardAssistDirection_)
+    {
+    case ForwardAssistDirection::Left:
+        status.forwardAssistDirection = "LEFT";
+        break;
+    case ForwardAssistDirection::Right:
+        status.forwardAssistDirection = "RIGHT";
+        break;
+    case ForwardAssistDirection::None:
+    default:
+        status.forwardAssistDirection = "NONE";
+        break;
+    }
+    status.forwardAssistYawDeltaDeg = forwardAssistYawDeltaDegrees_;
+    status.forwardLineVisible =
+        forwardLineSnapshot.lineObservationValid();
+    status.forwardLinePosition = status.forwardLineVisible
+                                     ? std::clamp(
+                                           forwardLineSnapshot.position,
+                                           -1.0,
+                                           1.0)
+                                     : 0.0;
+    status.bottomStableFrames = bottomStableFrames_;
+    return status;
+}
+
+bool MainMission::updateForwardAssist(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardLineSnapshot& forwardLineSnapshot)
+{
+    const bool bottomLineNormal =
+        cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+        cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL";
+    if (!bottomLineNormal)
+    {
+        // GREEN, GAP e estados de curva superiores sempre retiram a autoridade
+        // frontal. A memória anterior também é descartada para impedir que uma
+        // direção observada antes desses estados dispare uma busca posterior.
+        resetForwardAssist();
+        return false;
+    }
+
+    ForwardAssistDirection currentTrustedDirection =
+        ForwardAssistDirection::None;
+    if (cameraLineSnapshot.trustedDirection == "LEFT")
+    {
+        currentTrustedDirection = ForwardAssistDirection::Left;
+    }
+    else if (cameraLineSnapshot.trustedDirection == "RIGHT")
+    {
+        currentTrustedDirection = ForwardAssistDirection::Right;
+    }
+
+    const bool currentBottomTrusted =
+        cameraLineSnapshot.farTrusted || cameraLineSnapshot.mediumTrusted;
+    const bool newBottomFrame =
+        cameraLineSnapshot.sourceFresh &&
+        (!hasPreviousBottomFrame_ ||
+         cameraLineSnapshot.lineSequence != previousBottomSequence_);
+    const bool consecutiveBottomFrame =
+        newBottomFrame && hasPreviousBottomFrame_ &&
+        previousBottomSequence_ !=
+            std::numeric_limits<std::uint64_t>::max() &&
+        cameraLineSnapshot.lineSequence == previousBottomSequence_ + 1;
+
+    const bool previousBottomTrusted = previousBottomTrusted_;
+    const bool previousBottomLineNormal = previousBottomLineNormal_;
+    const ForwardAssistDirection previousBottomDirection =
+        previousBottomDirection_;
+
+    if (newBottomFrame)
+    {
+        hasPreviousBottomFrame_ = true;
+        previousBottomSequence_ = cameraLineSnapshot.lineSequence;
+        previousBottomTrusted_ = currentBottomTrusted;
+        previousBottomLineNormal_ = bottomLineNormal;
+        previousBottomDirection_ = currentBottomTrusted
+                                       ? currentTrustedDirection
+                                       : ForwardAssistDirection::None;
+    }
+
+    const bool bottomLostTrustedRows =
+        !cameraLineSnapshot.farTrusted &&
+        !cameraLineSnapshot.mediumTrusted;
+    const bool bottomRequestsExistingCriticalTurn =
+        (cameraLineSnapshot.lineFollowerLeftPower < 0.0 ||
+         cameraLineSnapshot.lineFollowerRightPower < 0.0) &&
+        cameraLineSnapshot.lineControlSource != "virtual-blind-search";
+    if (forwardAssistState_ == ForwardAssistState::Bottom &&
+        consecutiveBottomFrame && previousBottomTrusted &&
+        previousBottomLineNormal &&
+        previousBottomDirection != ForwardAssistDirection::None &&
+        bottomLostTrustedRows && !bottomRequestsExistingCriticalTurn &&
+        ImuTurnController::imuReady(esp32Telemetry))
+    {
+        // A direção vem do último frame inferior consecutivo e o yaw nasce uma
+        // única vez. Voltar do FOLLOW para SEARCH não passa novamente aqui.
+        forwardAssistState_ = ForwardAssistState::SearchSpin;
+        forwardAssistDirection_ = previousBottomDirection;
+        forwardAssistYawOriginDegrees_ = esp32Telemetry.yawZDeg;
+        forwardAssistYawDeltaDegrees_ = 0.0;
+        bottomStableFrames_ = 0;
+    }
+
+    if (forwardAssistState_ == ForwardAssistState::Bottom)
+    {
+        return false;
+    }
+
+    if (bottomRequestsExistingCriticalTurn ||
+        !ImuTurnController::imuReady(esp32Telemetry))
+    {
+        // HARD CORNER, PIVOT, SPIN e perda da IMU devolvem o comando ao fluxo
+        // inferior no mesmo ciclo; a frontal não disputa essas prioridades.
+        forwardAssistState_ = ForwardAssistState::Bottom;
+        forwardAssistDirection_ = ForwardAssistDirection::None;
+        forwardAssistYawDeltaDegrees_ = 0.0;
+        bottomStableFrames_ = 0;
+        return false;
+    }
+
+    forwardAssistYawDeltaDegrees_ = shortestAngularDistanceDegrees(
+        forwardAssistYawOriginDegrees_,
+        esp32Telemetry.yawZDeg);
+
+    if (forwardAssistState_ == ForwardAssistState::ForwardFollow &&
+        newBottomFrame)
+    {
+        const bool bottomRecovered = currentBottomTrusted &&
+                                     cameraLineSnapshot.normalSteeringValid;
+        if (bottomRecovered)
+        {
+            bottomStableFrames_ =
+                bottomStableFrames_ > 0 && consecutiveBottomFrame
+                    ? bottomStableFrames_ + 1
+                    : 1;
+        }
+        else
+        {
+            bottomStableFrames_ = 0;
+        }
+        if (bottomStableFrames_ >=
+            config::kForwardAssistBottomStableFrames)
+        {
+            forwardAssistState_ = ForwardAssistState::Bottom;
+            forwardAssistDirection_ = ForwardAssistDirection::None;
+            forwardAssistYawDeltaDegrees_ = 0.0;
+            bottomStableFrames_ = 0;
+            return false;
+        }
+    }
+
+    if (forwardAssistState_ == ForwardAssistState::ForwardFollow &&
+        !forwardLineSnapshot.lineObservationValid())
+    {
+        // A tentativa continua com a mesma direção, origem e orçamento angular.
+        forwardAssistState_ = ForwardAssistState::SearchSpin;
+    }
+
+    if (forwardAssistState_ == ForwardAssistState::SearchSpin)
+    {
+        if (forwardAssistYawDeltaDegrees_ >=
+                config::kForwardAssistMaximumSearchDegrees)
+        {
+            // O teto angular entrega imediatamente a decisão ao recovery
+            // inferior já existente.
+            forwardAssistState_ = ForwardAssistState::Bottom;
+            forwardAssistDirection_ = ForwardAssistDirection::None;
+            forwardAssistYawDeltaDegrees_ = 0.0;
+            bottomStableFrames_ = 0;
+            return false;
+        }
+
+        if (currentBottomTrusted)
+        {
+            // Durante SEARCH, qualquer FAR/MEDIUM trusted encerra o SPIN no
+            // mesmo ciclo e devolve a decisão ao fluxo inferior existente.
+            forwardAssistState_ = ForwardAssistState::Bottom;
+            forwardAssistDirection_ = ForwardAssistDirection::None;
+            forwardAssistYawDeltaDegrees_ = 0.0;
+            bottomStableFrames_ = 0;
+            return false;
+        }
+        bottomStableFrames_ = 0;
+
+        if (forwardLineSnapshot.lineObservationValid())
+        {
+            // Esta transição acontece antes de qualquer comando de SPIN. Assim,
+            // o primeiro frame frontal válido já substitui o giro pelo avanço.
+            forwardAssistState_ = ForwardAssistState::ForwardFollow;
+        }
+        else
+        {
+            const double spinPower =
+                config::kForwardAssistSearchSpinPower;
+            const bool turnsLeft =
+                forwardAssistDirection_ == ForwardAssistDirection::Left;
+            robotState.driveAutonomous(
+                turnsLeft ? -spinPower : spinPower,
+                turnsLeft ? spinPower : -spinPower);
+            robotState.updateAutonomousStatus(forwardAssistStatus(
+                "forward_assist_search",
+                turnsLeft
+                    ? "FWD: SEARCH LEFT"
+                    : "FWD: SEARCH RIGHT",
+                forwardLineSnapshot));
+            return true;
+        }
+    }
+
+    if (!forwardLineSnapshot.normalCommandValid())
+    {
+        // Linha encontrada com comando ausente ou fora do NORMAL não autoriza
+        // continuar girando nem avançar com um valor não validado.
+        forwardAssistState_ = ForwardAssistState::Bottom;
+        forwardAssistDirection_ = ForwardAssistDirection::None;
+        forwardAssistYawDeltaDegrees_ = 0.0;
+        bottomStableFrames_ = 0;
+        return false;
+    }
+
+    robotState.driveAutonomous(
+        forwardLineSnapshot.normalLeftPower,
+        forwardLineSnapshot.normalRightPower);
+    robotState.updateAutonomousStatus(forwardAssistStatus(
+        "forward_assist_follow",
+        "FWD: FOLLOW " + std::to_string(forwardLineSnapshot.position),
+        forwardLineSnapshot));
+    return true;
 }
 
 void MainMission::update(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
-    const CameraLineSnapshot& cameraLineSnapshot)
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardLineSnapshot& forwardLineSnapshot)
 {
     const RobotSnapshot robotSnapshot = robotState.snapshot();
     if (robotSnapshot.mode != "autonomous" ||
@@ -151,6 +419,12 @@ void MainMission::update(
         return true;
     };
     const bool detected180 = turnAroundDetected(cameraLineSnapshot);
+    if (detected180 || turnAroundPhase_ != TurnAroundPhase::Idle)
+    {
+        // O retorno verde é uma prioridade superior e nunca compartilha
+        // autoridade com a assistência frontal.
+        resetForwardAssist();
+    }
     if (turnAroundPhase_ == TurnAroundPhase::Idle && !detected180)
     {
         // Um retorno concluído só pode disparar novamente depois que os dois
@@ -172,94 +446,35 @@ void MainMission::update(
         }
 
         turnAroundArmed_ = false;
-        turnAroundPhase_ = TurnAroundPhase::RecognitionDelay;
-        recognitionLeftPower_ = cameraLineSnapshot.lineFollowerLeftPower;
-        recognitionRightPower_ = cameraLineSnapshot.lineFollowerRightPower;
-        phaseStartedAt_ = now;
         lineReacquireFrames_ = 0;
         lineSearchStartYawDegrees_ = 0.0;
+        // O frame que confirma os dois verdes pode conter um comando forte de
+        // curva. O retorno assume os motores imediatamente para impedir que
+        // esse comando antigo provoque um SPIN antes do avanço por encoder.
+        if (!startTurnAroundForward())
+        {
+            return;
+        }
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
     {
+        if (updateForwardAssist(
+                robotState,
+                esp32Telemetry,
+                cameraLineSnapshot,
+                forwardLineSnapshot))
+        {
+            return;
+        }
         robotState.driveAutonomous(
             cameraLineSnapshot.lineFollowerLeftPower,
             cameraLineSnapshot.lineFollowerRightPower);
-        robotState.updateAutonomousStatus(makeMainMissionStatus(
-            "line_following", "Seguindo a linha pela câmera inferior"));
+        robotState.updateAutonomousStatus(forwardAssistStatus(
+            "line_following",
+            "Seguindo a linha pela câmera inferior",
+            forwardLineSnapshot));
         return;
-    }
-
-    if (turnAroundPhase_ == TurnAroundPhase::RecognitionDelay)
-    {
-        if (now - phaseStartedAt_ < std::chrono::milliseconds(
-                config::kGreenTurnAroundRecognitionDelayMs))
-        {
-            // Mantém o comando que estava vigente no reconhecimento sem
-            // bloquear o loop de segurança com um sleep real.
-            robotState.driveAutonomous(
-                recognitionLeftPower_, recognitionRightPower_);
-            robotState.updateAutonomousStatus(makeMainMissionStatus(
-                "turnaround_recognition_delay",
-                "Retorno 180° reconhecido: mantendo a velocidade atual"));
-            return;
-        }
-
-        const double nearPosition =
-            cameraLineSnapshot.lineNearFinePosition;
-        const bool nearPositionValid =
-            cameraLineSnapshot.lineNearDetected &&
-            std::isfinite(nearPosition) &&
-            std::abs(nearPosition) <= 1.0;
-        if (nearPositionValid &&
-            std::abs(nearPosition) >=
-                config::kGreenTurnAroundCenteringEnterThreshold)
-        {
-            turnAroundPhase_ = TurnAroundPhase::Centering;
-            phaseStartedAt_ = now;
-        }
-        else if (!startTurnAroundForward())
-        {
-            return;
-        }
-    }
-
-    if (turnAroundPhase_ == TurnAroundPhase::Centering)
-    {
-        const double nearPosition =
-            cameraLineSnapshot.lineNearFinePosition;
-        const bool nearPositionValid =
-            cameraLineSnapshot.lineNearDetected &&
-            std::isfinite(nearPosition) &&
-            std::abs(nearPosition) <= 1.0;
-        const bool centered =
-            nearPositionValid &&
-            std::abs(nearPosition) <=
-                config::kGreenTurnAroundCenteringExitThreshold;
-        const bool centeringTimedOut =
-            now - phaseStartedAt_ >= std::chrono::milliseconds(
-                config::kGreenTurnAroundCenteringTimeoutMs);
-
-        if (!nearPositionValid || centered || centeringTimedOut)
-        {
-            // Uma leitura perdida ou o timeout não autoriza giro cego.
-            // Nesses casos, a sequência segue para o avanço já existente.
-            if (!startTurnAroundForward())
-            {
-                return;
-            }
-        }
-        else
-        {
-            const double turnSign = nearPosition > 0.0 ? 1.0 : -1.0;
-            const double leftPower =
-                turnSign * config::kGreenTurnAroundCenteringPower;
-            robotState.driveAutonomous(leftPower, -leftPower);
-            robotState.updateAutonomousStatus(makeMainMissionStatus(
-                "turnaround_centering",
-                "Centralizando a linha antes do retorno 180°"));
-            return;
-        }
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::DrivingForward)

@@ -27,6 +27,12 @@ struct AutonomousStatus
     double leftDistanceCm = 0.0;
     double rightDistanceCm = 0.0;
     double averageDistanceCm = 0.0;
+    std::string forwardAssistState = "BOTTOM";
+    std::string forwardAssistDirection = "NONE";
+    double forwardAssistYawDeltaDeg = 0.0;
+    bool forwardLineVisible = false;
+    double forwardLinePosition = 0.0;
+    int bottomStableFrames = 0;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.

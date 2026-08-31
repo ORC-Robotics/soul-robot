@@ -68,6 +68,48 @@ constexpr const char* kForwardCameraTemporaryControlPath =
 constexpr const char* kForwardCameraStatusPath =
     "/tmp/obr_forward_camera_status.json";
 
+// Arquivo JSON rápido publicado continuamente pela câmera frontal.
+// Este IPC é apenas uma fonte auxiliar e nunca substitui os gates de segurança
+// nem o estado da câmera inferior.
+constexpr const char* kForwardLineStatusPath =
+    "/dev/shm/obr_forward_line_status.json";
+
+// Idade máxima, em milissegundos, aceita para a leitura frontal.
+// Uma amostra mais antiga perde autoridade imediatamente e não pode manter
+// nem o seguimento frontal nem uma decisão de linha encontrada.
+constexpr int kForwardLineStatusTimeoutMs = 125;
+
+// Potência simétrica usada somente na busca frontal com direção já confirmada
+// pela câmera inferior. O sinal é aplicado conforme LEFT ou RIGHT.
+constexpr double kForwardAssistSearchSpinPower = 0.72;
+
+// Limite angular absoluto, em graus, de uma tentativa completa de busca.
+// O valor é um teto de segurança; encontrar a linha encerra o giro antes dele.
+constexpr double kForwardAssistMaximumSearchDegrees = 65.0;
+
+// Quantidade de frames inferiores novos e consecutivos exigidos para devolver
+// a autoridade depois que a câmera frontal começou a carregar o robô.
+constexpr int kForwardAssistBottomStableFrames = 2;
+
+// Limites do mapper NORMAL existente na câmera inferior. A leitura frontal
+// publica o resultado desse mesmo mapper e a Raspberry rejeita qualquer comando
+// auxiliar fora desta faixa, impedindo PIVOT, SPIN e ré no FORWARD_FOLLOW.
+constexpr double kForwardAssistNormalMinimumPower = 0.66;
+constexpr double kForwardAssistNormalMaximumPower = 0.82;
+
+static_assert(kForwardAssistSearchSpinPower > 0.0 &&
+                  kForwardAssistSearchSpinPower <= 1.0,
+              "A busca frontal deve permanecer na faixa normalizada.");
+static_assert(kForwardAssistMaximumSearchDegrees > 0.0 &&
+                  kForwardAssistMaximumSearchDegrees <= 180.0 &&
+                  kForwardAssistBottomStableFrames > 0,
+              "Os limites da assistência frontal devem ser positivos.");
+static_assert(kForwardAssistNormalMinimumPower > 0.0 &&
+                  kForwardAssistNormalMinimumPower <=
+                      kForwardAssistNormalMaximumPower &&
+                  kForwardAssistNormalMaximumPower <= 1.0,
+              "O mapper frontal deve permanecer no intervalo NORMAL.");
+
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
 // Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.
 constexpr int kCameraLightPinBoard = 40;
@@ -281,21 +323,8 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
               "O controle fechado da missão de distância deve permanecer seguro.");
 
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
-// Primeiro o robô mantém brevemente a velocidade vigente, corrige um
-// desalinhamento local grande, avança pelos encoders, gira pelo MPU6050 e
-// continua até a câmera confirmar a linha próxima.
-// Atraso, em milissegundos, logo após reconhecer o retorno de 180°.
-// A espera não bloqueia o loop, mantendo E-Stop e telemetria ativos.
-constexpr int kGreenTurnAroundRecognitionDelayMs = 1000;
-// Deslocamento normalizado mínimo do NEAR que autoriza a correção inicial.
-// Um valor alto evita girar por pequenos erros que o segue-linha já corrigiria.
-constexpr double kGreenTurnAroundCenteringEnterThreshold = 0.45;
-// Deslocamento normalizado que encerra a correção e libera o avanço.
-constexpr double kGreenTurnAroundCenteringExitThreshold = 0.20;
-// Potência normalizada do SPIN curto usado somente antes do avanço de 180°.
-constexpr double kGreenTurnAroundCenteringPower = 0.69;
-// Tempo máximo, em milissegundos, da correção para impedir giro indefinido.
-constexpr int kGreenTurnAroundCenteringTimeoutMs = 500;
+// O robô avança imediatamente pelos encoders, gira pelo MPU6050 e continua
+// até a câmera confirmar a linha próxima.
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
 constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
@@ -329,15 +358,7 @@ constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
 
-static_assert(kGreenTurnAroundRecognitionDelayMs >= 0 &&
-                  kGreenTurnAroundCenteringEnterThreshold >
-                      kGreenTurnAroundCenteringExitThreshold &&
-                  kGreenTurnAroundCenteringExitThreshold >= 0.0 &&
-                  kGreenTurnAroundCenteringEnterThreshold <= 1.0 &&
-                  kGreenTurnAroundCenteringPower >= kMotorStartMinimumPower &&
-                  kGreenTurnAroundCenteringPower <= kMaxMotorOutput &&
-                  kGreenTurnAroundCenteringTimeoutMs > 0 &&
-                  kGreenTurnAroundForwardDistanceCm > 0.0 &&
+static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
                   kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
                   kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
                   kGreenTurnAroundForwardSettleMs >= 0 &&
