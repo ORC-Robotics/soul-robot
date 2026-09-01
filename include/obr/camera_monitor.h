@@ -15,7 +15,8 @@ enum class GreenInterpretation
 };
 
 // Transporta o baseline do controle inferior para diagnóstico assíncrono.
-// Nenhum destes campos participa das decisões ou dos comandos de motor.
+// As posições FAR/MEDIUM só participam do controle quando o respectivo gate
+// trusted do CameraLineSnapshot confirma que a leitura é válida.
 struct CameraCurveDiagnostics
 {
     double nearFinePosition = std::numeric_limits<double>::quiet_NaN();

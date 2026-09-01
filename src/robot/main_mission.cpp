@@ -103,11 +103,75 @@ void MainMission::resetForwardAssist()
     previousBottomTrusted_ = false;
     previousBottomLineNormal_ = false;
     latchedBottomDirection_ = ForwardAssistDirection::None;
+    mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+    mediumFlipConfirmationFrames_ = 0;
     forwardAssistFarTrusted_ = false;
     forwardAssistMediumTrusted_ = false;
     forwardAssistGapCandidate_ = false;
     forwardAssistEntryAllowed_ = false;
     forwardAssistEntryBlocker_ = "WAITING_TRUST";
+}
+
+void MainMission::updateLatchedBottomDirection(
+    ForwardAssistDirection farDirection,
+    ForwardAssistDirection mediumDirection,
+    bool consecutiveBottomFrame)
+{
+    const bool directionsConflict =
+        farDirection != ForwardAssistDirection::None &&
+        mediumDirection != ForwardAssistDirection::None &&
+        farDirection != mediumDirection;
+    if (directionsConflict &&
+        latchedBottomDirection_ != ForwardAssistDirection::None)
+    {
+        // Um conflito instantâneo não pode inverter uma curva já memorizada.
+        mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+        mediumFlipConfirmationFrames_ = 0;
+        return;
+    }
+
+    if (farDirection != ForwardAssistDirection::None)
+    {
+        // FAR representa melhor a continuação futura e atualiza o lado sem atraso.
+        latchedBottomDirection_ = farDirection;
+        mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+        mediumFlipConfirmationFrames_ = 0;
+        return;
+    }
+
+    if (mediumDirection == ForwardAssistDirection::None)
+    {
+        // NONE interrompe apenas uma confirmação de inversão; o latch permanece.
+        mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+        mediumFlipConfirmationFrames_ = 0;
+        return;
+    }
+
+    if (latchedBottomDirection_ == ForwardAssistDirection::None ||
+        latchedBottomDirection_ == mediumDirection)
+    {
+        latchedBottomDirection_ = mediumDirection;
+        mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+        mediumFlipConfirmationFrames_ = 0;
+        return;
+    }
+
+    if (mediumFlipCandidateDirection_ != mediumDirection ||
+        !consecutiveBottomFrame)
+    {
+        mediumFlipCandidateDirection_ = mediumDirection;
+        mediumFlipConfirmationFrames_ = 1;
+        return;
+    }
+
+    ++mediumFlipConfirmationFrames_;
+    if (mediumFlipConfirmationFrames_ >=
+        config::kForwardAssistMediumFlipConfirmationFrames)
+    {
+        latchedBottomDirection_ = mediumDirection;
+        mediumFlipCandidateDirection_ = ForwardAssistDirection::None;
+        mediumFlipConfirmationFrames_ = 0;
+    }
 }
 
 AutonomousStatus MainMission::forwardAssistStatus(
@@ -210,16 +274,32 @@ bool MainMission::updateForwardAssist(
         return false;
     }
 
-    ForwardAssistDirection currentTrustedDirection =
-        ForwardAssistDirection::None;
-    if (cameraLineSnapshot.trustedDirection == "LEFT")
+    const auto directionFromTrustedPosition = [](
+        bool trusted,
+        double position)
     {
-        currentTrustedDirection = ForwardAssistDirection::Left;
-    }
-    else if (cameraLineSnapshot.trustedDirection == "RIGHT")
-    {
-        currentTrustedDirection = ForwardAssistDirection::Right;
-    }
+        if (!trusted || !std::isfinite(position))
+        {
+            return ForwardAssistDirection::None;
+        }
+        if (position <= -config::kForwardAssistDirectionPositionThreshold)
+        {
+            return ForwardAssistDirection::Left;
+        }
+        if (position >= config::kForwardAssistDirectionPositionThreshold)
+        {
+            return ForwardAssistDirection::Right;
+        }
+        return ForwardAssistDirection::None;
+    };
+    const ForwardAssistDirection farDirection =
+        directionFromTrustedPosition(
+            cameraLineSnapshot.farTrusted,
+            cameraLineSnapshot.curveDiagnostics.farBandPosition);
+    const ForwardAssistDirection mediumDirection =
+        directionFromTrustedPosition(
+            cameraLineSnapshot.mediumTrusted,
+            cameraLineSnapshot.curveDiagnostics.mediumPosition);
 
     const bool currentBottomTrusted =
         cameraLineSnapshot.farTrusted || cameraLineSnapshot.mediumTrusted;
@@ -244,12 +324,12 @@ bool MainMission::updateForwardAssist(
         previousBottomSequence_ = cameraLineSnapshot.lineSequence;
         previousBottomTrusted_ = currentBottomTrusted;
         previousBottomLineNormal_ = bottomLineNormal;
-        if (currentBottomTrusted &&
-            forwardAssistState_ == ForwardAssistState::Bottom)
+        if (forwardAssistState_ == ForwardAssistState::Bottom)
         {
-            // A direção é memorizada enquanto FAR/MEDIUM ainda possuem trust.
-            // Depois que SEARCH começa, um flicker não pode trocar o lado latched.
-            latchedBottomDirection_ = currentTrustedDirection;
+            updateLatchedBottomDirection(
+                farDirection,
+                mediumDirection,
+                consecutiveBottomFrame);
         }
     }
 
@@ -540,13 +620,10 @@ void MainMission::update(
         turnAroundArmed_ = false;
         lineReacquireFrames_ = 0;
         lineSearchStartYawDegrees_ = 0.0;
-        // O frame que confirma os dois verdes pode conter um comando forte de
-        // curva. O retorno assume os motores imediatamente para impedir que
-        // esse comando antigo provoque um SPIN antes do avanço por encoder.
-        if (!startTurnAroundForward())
-        {
-            return;
-        }
+        // O retorno assume os motores no mesmo ciclo da confirmação verde.
+        // A primeira pausa elimina qualquer comando residual do segue-linha.
+        turnAroundPhase_ = TurnAroundPhase::RecognitionDelay;
+        phaseStartedAt_ = now;
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
@@ -567,6 +644,118 @@ void MainMission::update(
             "Seguindo a linha pela câmera inferior",
             forwardLineSnapshot));
         return;
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::RecognitionDelay)
+    {
+        robotState.driveAutonomous(0.0, 0.0);
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(
+                config::kGreenTurnAroundRecognitionDelayMs))
+        {
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_recognition_delay",
+                "Retorno 180° reconhecido: aguardando antes do alinhamento"));
+            return;
+        }
+
+        turnAroundPhase_ = TurnAroundPhase::Centering;
+        phaseStartedAt_ = now;
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::Centering)
+    {
+        const bool nearPositionValid =
+            cameraLineSnapshot.lineNearDetected &&
+            std::isfinite(cameraLineSnapshot.lineNearFinePosition) &&
+            std::abs(cameraLineSnapshot.lineNearFinePosition) <= 1.0;
+        const double mediumPosition =
+            cameraLineSnapshot.curveDiagnostics.mediumPosition;
+        const bool mediumPositionValid =
+            cameraLineSnapshot.mediumTrusted &&
+            std::isfinite(mediumPosition) &&
+            std::abs(mediumPosition) <= 1.0;
+        const bool bothCentered =
+            nearPositionValid && mediumPositionValid &&
+            std::abs(cameraLineSnapshot.lineNearFinePosition) <=
+                config::kGreenTurnAroundCenteringTolerance &&
+            std::abs(mediumPosition) <=
+                config::kGreenTurnAroundCenteringTolerance;
+        const bool timedOut =
+            now - phaseStartedAt_ >= std::chrono::milliseconds(
+                config::kGreenTurnAroundCenteringTimeoutMs);
+
+        if (bothCentered || timedOut)
+        {
+            // O segundo intervalo sempre começa com os motores zerados. Mesmo
+            // no timeout, isso interrompe o giro antes do avanço por encoder.
+            turnAroundPhase_ = TurnAroundPhase::PostCenteringDelay;
+            phaseStartedAt_ = now;
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                timedOut
+                    ? "turnaround_centering_timeout_delay"
+                    : "turnaround_centered_delay",
+                timedOut
+                    ? "Alinhamento expirou: aguardando antes do avanço"
+                    : "NEAR e MEDIUM alinhados: aguardando antes do avanço"));
+            return;
+        }
+
+        double alignmentPosition = 0.0;
+        bool alignmentDirectionValid = false;
+        if (mediumPositionValid &&
+            std::abs(mediumPosition) >
+                config::kGreenTurnAroundCenteringTolerance)
+        {
+            // O MEDIUM corrige primeiro a orientação futura da faixa. Quando
+            // ele já está central, o NEAR remove o deslocamento restante.
+            alignmentPosition = mediumPosition;
+            alignmentDirectionValid = true;
+        }
+        else if (nearPositionValid &&
+                 std::abs(cameraLineSnapshot.lineNearFinePosition) >
+                     config::kGreenTurnAroundCenteringTolerance)
+        {
+            alignmentPosition = cameraLineSnapshot.lineNearFinePosition;
+            alignmentDirectionValid = true;
+        }
+
+        if (!alignmentDirectionValid)
+        {
+            // Sem posição lateral confiável, permanecer parado é mais seguro
+            // do que escolher um lado e iniciar um giro cego.
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_centering_waiting_line",
+                "Aguardando NEAR e MEDIUM válidos para concluir o alinhamento"));
+            return;
+        }
+
+        const double turnSign = alignmentPosition > 0.0 ? 1.0 : -1.0;
+        const double leftPower =
+            turnSign * config::kGreenTurnAroundCenteringPower;
+        robotState.driveAutonomous(leftPower, -leftPower);
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "turnaround_centering",
+            "Retorno 180°: alinhando NEAR e MEDIUM antes do avanço"));
+        return;
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::PostCenteringDelay)
+    {
+        robotState.driveAutonomous(0.0, 0.0);
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(
+                config::kGreenTurnAroundPostCenteringDelayMs))
+        {
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_post_centering_delay",
+                "Alinhamento encerrado: aguardando antes do avanço"));
+            return;
+        }
+        if (!startTurnAroundForward())
+        {
+            return;
+        }
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::DrivingForward)

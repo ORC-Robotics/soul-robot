@@ -87,6 +87,15 @@ constexpr double kForwardAssistSearchSpinPower = 0.72;
 // O valor é um teto de segurança; encontrar a linha encerra o giro antes dele.
 constexpr double kForwardAssistMaximumSearchDegrees = 65.0;
 
+// Limiar normalizado usado somente para extrair LEFT/RIGHT das posições
+// trusted recebidas pelo Forward Assist. O valor permanece igual ao limiar
+// existente na câmera inferior e não altera o detector visual.
+constexpr double kForwardAssistDirectionPositionThreshold = 0.20;
+
+// Quantidade de frames MEDIUM novos, consecutivos e no mesmo lado necessária
+// para inverter uma direção já latched quando FAR não oferece direção válida.
+constexpr int kForwardAssistMediumFlipConfirmationFrames = 2;
+
 // Quantidade de frames inferiores novos e consecutivos exigidos para devolver
 // a autoridade depois que a câmera frontal começou a carregar o robô.
 constexpr int kForwardAssistBottomStableFrames = 2;
@@ -102,6 +111,9 @@ static_assert(kForwardAssistSearchSpinPower > 0.0 &&
               "A busca frontal deve permanecer na faixa normalizada.");
 static_assert(kForwardAssistMaximumSearchDegrees > 0.0 &&
                   kForwardAssistMaximumSearchDegrees <= 180.0 &&
+                  kForwardAssistDirectionPositionThreshold > 0.0 &&
+                  kForwardAssistDirectionPositionThreshold <= 1.0 &&
+                  kForwardAssistMediumFlipConfirmationFrames > 0 &&
                   kForwardAssistBottomStableFrames > 0,
               "Os limites da assistência frontal devem ser positivos.");
 static_assert(kForwardAssistNormalMinimumPower > 0.0 &&
@@ -323,8 +335,20 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
               "O controle fechado da missão de distância deve permanecer seguro.");
 
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
-// O robô avança imediatamente pelos encoders, gira pelo MPU6050 e continua
-// até a câmera confirmar a linha próxima.
+// Ao reconhecer o retorno, o robô permanece parado antes de começar a alinhar.
+// O atraso não bloqueia o loop, mantendo E-Stop e telemetria ativos.
+constexpr int kGreenTurnAroundRecognitionDelayMs = 1000;
+// Deslocamento normalizado máximo aceito simultaneamente no NEAR e MEDIUM.
+// Reduzir este valor exige um alinhamento visual mais preciso antes do avanço.
+constexpr double kGreenTurnAroundCenteringTolerance = 0.20;
+// Potência normalizada do SPIN usado somente para alinhar NEAR e MEDIUM.
+constexpr double kGreenTurnAroundCenteringPower = 0.69;
+// Tempo máximo, em milissegundos, da centralização visual.
+// O limite impede um giro indefinido se a linha permanecer fora do centro.
+constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
+// Tempo parado, em milissegundos, depois do alinhamento e antes do avanço.
+// Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
+constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
 constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
@@ -337,7 +361,7 @@ constexpr int kGreenTurnAroundForwardSettleMs = 250;
 // O avanço só é interrompido por encoder quando a telemetria fica ausente.
 constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
 
-// Limite absoluto de segurança, em milissegundos, para o avanço de 9 cm.
+// Limite absoluto de segurança, em milissegundos, para o avanço configurado.
 // Ele não controla a distância; apenas impede movimento indefinido se uma
 // contagem congelada continuar chegando como telemetria aparentemente válida.
 constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
@@ -358,14 +382,21 @@ constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
 
-static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
+static_assert(kGreenTurnAroundRecognitionDelayMs > 0 &&
+                  kGreenTurnAroundCenteringTolerance > 0.0 &&
+                  kGreenTurnAroundCenteringTolerance <= 1.0 &&
+                  kGreenTurnAroundCenteringPower >= kMotorStartMinimumPower &&
+                  kGreenTurnAroundCenteringPower <= kMaxMotorOutput &&
+                  kGreenTurnAroundCenteringTimeoutMs > 0 &&
+                  kGreenTurnAroundPostCenteringDelayMs > 0 &&
+                  kGreenTurnAroundForwardDistanceCm > 0.0 &&
                   kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
                   kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
                   kGreenTurnAroundForwardSettleMs >= 0 &&
                   kGreenTurnAroundEncoderDataTimeoutMs > 0 &&
                   kGreenTurnAroundForwardSafetyTimeoutMs >
                       kGreenTurnAroundEncoderDataTimeoutMs,
-              "O avanço inicial do retorno verde deve permanecer seguro.");
+              "As etapas iniciais do retorno verde devem permanecer seguras.");
 static_assert(kGreenTurnAroundImuDegrees > 0.0 &&
                   kGreenTurnAroundImuDegrees <= 180.0 &&
                   kGreenTurnAroundImuToleranceDegrees > 0.0 &&

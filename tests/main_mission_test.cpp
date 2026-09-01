@@ -77,6 +77,23 @@ CameraLineSnapshot bottomVision(
     snapshot.farTrusted = farTrusted;
     snapshot.mediumTrusted = mediumTrusted;
     snapshot.trustedDirection = trustedDirection;
+    double trustedPosition = 0.0;
+    if (trustedDirection == "LEFT")
+    {
+        trustedPosition = -0.60;
+    }
+    else if (trustedDirection == "RIGHT")
+    {
+        trustedPosition = 0.60;
+    }
+    if (farTrusted)
+    {
+        snapshot.curveDiagnostics.farBandPosition = trustedPosition;
+    }
+    if (mediumTrusted)
+    {
+        snapshot.curveDiagnostics.mediumPosition = trustedPosition;
+    }
     snapshot.curveDiagnostics.lineState = "LINE";
     snapshot.curveDiagnostics.virtualState = "NORMAL";
     if (farTrusted || mediumTrusted)
@@ -193,7 +210,20 @@ RobotSnapshot startReturnImu(
     MissionFixture& fixture,
     const CameraLineSnapshot& returnVision)
 {
-    fixture.update(returnVision);
+    CameraLineSnapshot alignedVision = returnVision;
+    alignedVision.lineNearDetected = true;
+    alignedVision.lineNearFinePosition = 0.0;
+    alignedVision.mediumTrusted = true;
+    alignedVision.curveDiagnostics.mediumPosition = 0.0;
+
+    fixture.update(alignedVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    fixture.update(alignedVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundPostCenteringDelayMs + 20));
+    fixture.update(alignedVision);
+
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
         config::kEncoderCountsPerCentimeter));
@@ -202,6 +232,34 @@ RobotSnapshot startReturnImu(
     fixture.update(returnVision);
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kGreenTurnAroundForwardSettleMs + 20));
+    return fixture.update(returnVision);
+}
+
+RobotSnapshot startReturnForward(
+    MissionFixture& fixture,
+    CameraLineSnapshot returnVision)
+{
+    returnVision.lineNearDetected = true;
+    returnVision.lineNearFinePosition = 0.0;
+    returnVision.mediumTrusted = true;
+    returnVision.curveDiagnostics.mediumPosition = 0.0;
+
+    RobotSnapshot snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_recognition_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O retorno deve parar antes de iniciar o alinhamento.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centered_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "NEAR e MEDIUM alinhados devem iniciar a segunda pausa.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundPostCenteringDelayMs + 20));
     return fixture.update(returnVision);
 }
 
@@ -271,7 +329,7 @@ void testUnequalEncoderDistancesDoNotInterruptForwardStage()
     const CameraLineSnapshot returnVision = freshVision(
         GreenInterpretation::TurnAround180,
         false);
-    fixture.update(returnVision);
+    startReturnForward(fixture, returnVision);
 
     fixture.telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
         8.0 * config::kEncoderCountsPerCentimeter));
@@ -292,7 +350,7 @@ void testMissingEncoderDataStopsAfterConfiguredSecond()
     const CameraLineSnapshot returnVision = freshVision(
         GreenInterpretation::TurnAround180,
         false);
-    fixture.update(returnVision);
+    startReturnForward(fixture, returnVision);
 
     fixture.telemetry.lastSensorAgeMs =
         config::kGreenTurnAroundEncoderDataTimeoutMs + 1;
@@ -313,16 +371,16 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
         GreenInterpretation::TurnAround180,
         false);
     // Reproduz o comando assimétrico que podia existir no frame verde.
-    // O retorno deve descartá-lo e assumir o avanço reto imediatamente.
+    // O retorno deve descartá-lo, parar e só avançar após as etapas iniciais.
     returnVision.lineFollowerLeftPower = -0.78;
     returnVision.lineFollowerRightPower = 0.78;
 
-    RobotSnapshot snapshot = fixture.update(returnVision);
+    RobotSnapshot snapshot = startReturnForward(fixture, returnVision);
     require(
         snapshot.autonomousStatus.phase == "turnaround_forward" &&
             closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
             closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
-        "O retorno deve avançar reto no mesmo ciclo da detecção.");
+        "Após as duas pausas, o retorno deve iniciar o avanço configurado.");
 
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
@@ -390,27 +448,146 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     requireFollowingLine(snapshot, "Linha próxima recuperada");
 }
 
-void testReturnSkipsCenteringRegardlessOfNearPosition()
+void testReturnStopsBeforeAndAfterCentering()
 {
-    for (const double nearPosition : {-0.75, 0.75})
-    {
-        MissionFixture fixture;
-        CameraLineSnapshot returnVision = freshVision(
-            GreenInterpretation::TurnAround180,
-            true);
-        returnVision.lineNearFinePosition = nearPosition;
+    MissionFixture fixture;
+    CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        true);
+    returnVision.lineNearFinePosition = 0.75;
+    returnVision.mediumTrusted = true;
+    returnVision.curveDiagnostics.mediumPosition = 0.75;
 
-        const RobotSnapshot snapshot = fixture.update(returnVision);
-        require(
-            snapshot.autonomousStatus.phase == "turnaround_forward" &&
-                closeTo(
-                    snapshot.left,
-                    config::kGreenTurnAroundForwardPower) &&
-                closeTo(
-                    snapshot.right,
-                    config::kGreenTurnAroundForwardPower),
-            "O retorno deve ignorar o NEAR e avançar sem centralização.");
-    }
+    RobotSnapshot snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_recognition_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O reconhecimento do retorno deve zerar os motores por um segundo.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centering" &&
+            closeTo(
+                snapshot.left,
+                config::kGreenTurnAroundCenteringPower) &&
+            closeTo(
+                snapshot.right,
+                -config::kGreenTurnAroundCenteringPower),
+        "Depois da primeira pausa, o alinhamento deve girar no próprio eixo.");
+
+    returnVision.lineNearFinePosition = 0.0;
+    returnVision.curveDiagnostics.mediumPosition = 0.0;
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centered_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "Ao alinhar NEAR e MEDIUM, os motores devem zerar novamente.");
+
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_post_centering_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "Durante a segunda espera o robô deve permanecer parado.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundPostCenteringDelayMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_forward" &&
+            closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
+            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
+        "Somente após a segunda pausa o retorno deve avançar.");
+}
+
+void testReturnCenteringRequiresBothNearAndMedium()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        true);
+    returnVision.lineNearFinePosition = 0.0;
+    returnVision.mediumTrusted = true;
+    returnVision.curveDiagnostics.mediumPosition = -0.75;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+
+    RobotSnapshot snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centering" &&
+            closeTo(
+                snapshot.left,
+                -config::kGreenTurnAroundCenteringPower) &&
+            closeTo(
+                snapshot.right,
+                config::kGreenTurnAroundCenteringPower),
+        "MEDIUM desalinhado deve manter o pivot mesmo com NEAR central.");
+
+    returnVision.lineNearFinePosition = 0.75;
+    returnVision.curveDiagnostics.mediumPosition = 0.0;
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centering" &&
+            closeTo(
+                snapshot.left,
+                config::kGreenTurnAroundCenteringPower) &&
+            closeTo(
+                snapshot.right,
+                -config::kGreenTurnAroundCenteringPower),
+        "NEAR desalinhado deve manter o pivot mesmo com MEDIUM central.");
+
+    returnVision.lineNearDetected = false;
+    returnVision.lineNearFinePosition =
+        std::numeric_limits<double>::quiet_NaN();
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase ==
+                "turnaround_centering_waiting_line" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "Sem direção lateral válida, o alinhamento deve esperar parado.");
+
+    returnVision.lineNearDetected = true;
+    returnVision.lineNearFinePosition = 0.0;
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_centered_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "A segunda pausa só pode começar com NEAR e MEDIUM centralizados.");
+}
+
+void testReturnCenteringTimeoutReleasesConfiguredSequence()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        true);
+    returnVision.lineNearFinePosition = 0.75;
+    returnVision.mediumTrusted = true;
+    returnVision.curveDiagnostics.mediumPosition = 0.75;
+    fixture.update(returnVision);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionDelayMs + 20));
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundCenteringTimeoutMs + 20));
+    RobotSnapshot snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase ==
+                "turnaround_centering_timeout_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O timeout deve parar o pivot antes da segunda espera.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundPostCenteringDelayMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_forward" &&
+            closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
+            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
+        "Após timeout e segunda pausa, a sequência deve prosseguir.");
 }
 
 void testVisualSearchStopsAtAngularLimit()
@@ -495,6 +672,203 @@ void testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection()
             noDirection.autonomousStatus.forwardAssistEntryBlocker ==
                 "NO_LATCHED_DIRECTION",
         "Trust sem direção lateral confiável não pode iniciar a busca frontal.");
+}
+
+void testForwardAssistNonePreservesRightLatchUntilLoss()
+{
+    MissionFixture fixture;
+
+    RobotSnapshot snapshot = fixture.update(
+        bottomVision(1, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "Uma direção RIGHT trusted deve ser memorizada.");
+
+    snapshot = fixture.update(bottomVision(2, false, true, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "Um frame trusted sem nova direção não pode apagar o latch RIGHT.");
+
+    snapshot = fixture.update(bottomVision(3, false, true, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "Vários frames NONE devem preservar o último lado RIGHT confiável.");
+
+    snapshot = fixture.update(bottomVision(4, false, false, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.forwardAssistDirection == "RIGHT" &&
+            snapshot.autonomousStatus.forwardAssistLatchedDirection ==
+                "RIGHT" &&
+            !snapshot.autonomousStatus.forwardAssistFarTrusted &&
+            !snapshot.autonomousStatus.forwardAssistMediumTrusted &&
+            snapshot.autonomousStatus.forwardAssistEntryAllowed &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker == "NONE" &&
+            closeTo(
+                snapshot.left,
+                config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                -config::kForwardAssistSearchSpinPower),
+        "A perda de FAR/MEDIUM deve iniciar SEARCH_SPIN RIGHT com o latch "
+        "preservado durante os frames NONE.");
+}
+
+void testForwardAssistValidDirectionReplacesLatchAndNonePreservesIt()
+{
+    MissionFixture fixture;
+
+    fixture.update(bottomVision(1, true, true, "RIGHT"));
+    RobotSnapshot snapshot = fixture.update(
+        bottomVision(2, true, true, "LEFT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Uma nova direção LEFT trusted deve substituir o latch RIGHT.");
+
+    snapshot = fixture.update(bottomVision(3, true, true, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "O primeiro frame NONE deve preservar o novo latch LEFT.");
+
+    snapshot = fixture.update(bottomVision(4, true, true, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Vários frames NONE devem preservar o último lado LEFT confiável.");
+
+    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
+            snapshot.autonomousStatus.forwardAssistLatchedDirection ==
+                "LEFT" &&
+            snapshot.autonomousStatus.forwardAssistEntryAllowed &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker == "NONE" &&
+            closeTo(
+                snapshot.left,
+                -config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                config::kForwardAssistSearchSpinPower),
+        "Depois de RIGHT para LEFT, a perda deve iniciar SEARCH_SPIN LEFT.");
+}
+
+void testForwardAssistFarDirectionWinsWithoutExistingLatch()
+{
+    MissionFixture farLeftFixture;
+    CameraLineSnapshot farLeft = bottomVision(
+        1, true, true, "RIGHT");
+    farLeft.curveDiagnostics.farBandPosition = -0.60;
+    farLeft.curveDiagnostics.mediumPosition = 0.60;
+    RobotSnapshot snapshot = farLeftFixture.update(farLeft);
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "FAR LEFT deve vencer MEDIUM RIGHT ao criar o latch.");
+
+    MissionFixture farRightFixture;
+    CameraLineSnapshot farRight = bottomVision(
+        1, true, true, "LEFT");
+    farRight.curveDiagnostics.farBandPosition = 0.60;
+    farRight.curveDiagnostics.mediumPosition = -0.60;
+    snapshot = farRightFixture.update(farRight);
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "FAR RIGHT deve vencer MEDIUM LEFT ao criar o latch.");
+}
+
+void testForwardAssistConflictPreservesExistingLatch()
+{
+    MissionFixture fixture;
+    fixture.update(bottomVision(1, true, true, "LEFT"));
+
+    CameraLineSnapshot conflict = bottomVision(
+        2, true, true, "RIGHT");
+    conflict.curveDiagnostics.farBandPosition = -0.60;
+    conflict.curveDiagnostics.mediumPosition = 0.60;
+    RobotSnapshot snapshot = fixture.update(conflict);
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "FAR LEFT com MEDIUM RIGHT deve preservar o latch LEFT.");
+
+    conflict = bottomVision(3, true, true, "LEFT");
+    conflict.curveDiagnostics.farBandPosition = 0.60;
+    conflict.curveDiagnostics.mediumPosition = -0.60;
+    snapshot = fixture.update(conflict);
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Direções FAR/MEDIUM conflitantes não podem inverter um latch existente.");
+}
+
+void testForwardAssistMediumFlipRequiresTwoConsecutiveFrames()
+{
+    MissionFixture fixture;
+    fixture.update(bottomVision(1, true, true, "LEFT"));
+
+    RobotSnapshot snapshot = fixture.update(
+        bottomVision(2, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Um único frame MEDIUM RIGHT não pode inverter o latch LEFT.");
+
+    snapshot = fixture.update(bottomVision(3, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "Dois frames MEDIUM RIGHT consecutivos devem confirmar a inversão.");
+
+    CameraLineSnapshot farLeft = bottomVision(
+        4, true, false, "LEFT");
+    snapshot = fixture.update(farLeft);
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "FAR LEFT válido deve atualizar imediatamente um latch RIGHT.");
+
+    MissionFixture sequenceGapFixture;
+    sequenceGapFixture.update(bottomVision(10, true, true, "LEFT"));
+    sequenceGapFixture.update(bottomVision(11, false, true, "RIGHT"));
+    snapshot = sequenceGapFixture.update(
+        bottomVision(13, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Um salto de sequence deve reiniciar a confirmação MEDIUM em 1/2.");
+
+    snapshot = sequenceGapFixture.update(
+        bottomVision(14, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
+        "Somente o próximo frame MEDIUM consecutivo deve completar 2/2.");
+}
+
+void testForwardAssistNoneBreaksMediumFlipButPreservesLatch()
+{
+    MissionFixture fixture;
+    fixture.update(bottomVision(1, true, true, "LEFT"));
+    fixture.update(bottomVision(2, false, true, "RIGHT"));
+
+    RobotSnapshot snapshot = fixture.update(
+        bottomVision(3, false, true, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "NONE deve preservar LEFT e interromper a confirmação MEDIUM.");
+
+    snapshot = fixture.update(bottomVision(4, false, true, "RIGHT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
+        "Após NONE, a confirmação MEDIUM deve recomeçar em 1/2.");
+
+    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
+            snapshot.autonomousStatus.forwardAssistLatchedDirection ==
+                "LEFT" &&
+            snapshot.autonomousStatus.forwardAssistEntryAllowed &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker == "NONE" &&
+            closeTo(
+                snapshot.left,
+                -config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                config::kForwardAssistSearchSpinPower),
+        "A perda completa deve usar o latch LEFT preservado.");
 }
 
 void testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering()
@@ -858,10 +1232,18 @@ int main()
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
         testMissingEncoderDataStopsAfterConfiguredSecond();
         testReturnRunsConfiguredSequenceAndRestoresFollower();
-        testReturnSkipsCenteringRegardlessOfNearPosition();
+        testReturnStopsBeforeAndAfterCentering();
+        testReturnCenteringRequiresBothNearAndMedium();
+        testReturnCenteringTimeoutReleasesConfiguredSequence();
         testVisualSearchStopsAtAngularLimit();
         testForwardAssistStaysOnBottomWhileTrusted();
         testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection();
+        testForwardAssistNonePreservesRightLatchUntilLoss();
+        testForwardAssistValidDirectionReplacesLatchAndNonePreservesIt();
+        testForwardAssistFarDirectionWinsWithoutExistingLatch();
+        testForwardAssistConflictPreservesExistingLatch();
+        testForwardAssistMediumFlipRequiresTwoConsecutiveFrames();
+        testForwardAssistNoneBreaksMediumFlipButPreservesLatch();
         testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering();
         testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees();
         testForwardSearchStopsAtWrappedSixtyFiveDegreeLimit();

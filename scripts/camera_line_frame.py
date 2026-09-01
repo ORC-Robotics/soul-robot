@@ -2555,7 +2555,7 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, sessenta frames correspondem a aproximadamente dois segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 6
+GREEN_MANEUVER_TIMEOUT_FRAMES = 12
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.

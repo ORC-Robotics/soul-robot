@@ -38,6 +38,9 @@ private:
     enum class TurnAroundPhase
     {
         Idle,
+        RecognitionDelay,
+        Centering,
+        PostCenteringDelay,
         DrivingForward,
         ForwardSettling,
         TurningByImu,
@@ -65,6 +68,9 @@ private:
     bool previousBottomLineNormal_ = false;
     ForwardAssistDirection latchedBottomDirection_ =
         ForwardAssistDirection::None;
+    ForwardAssistDirection mediumFlipCandidateDirection_ =
+        ForwardAssistDirection::None;
+    int mediumFlipConfirmationFrames_ = 0;
     bool forwardAssistFarTrusted_ = false;
     bool forwardAssistMediumTrusted_ = false;
     bool forwardAssistGapCandidate_ = false;
@@ -72,6 +78,10 @@ private:
     std::string forwardAssistEntryBlocker_ = "WAITING_TRUST";
 
     void resetForwardAssist();
+    void updateLatchedBottomDirection(
+        ForwardAssistDirection farDirection,
+        ForwardAssistDirection mediumDirection,
+        bool consecutiveBottomFrame);
     bool updateForwardAssist(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
