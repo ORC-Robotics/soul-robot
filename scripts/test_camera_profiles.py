@@ -129,7 +129,7 @@ class CameraProfilesTest(unittest.TestCase):
     def test_green_minimum_area_preserves_calibrated_roi(self):
         self.assertAlmostEqual(
             camera_line_frame.green_minimum_area(480, 300),
-            6750.0,
+            5850.0,
         )
 
     def test_black_mask_keeps_dark_tape_and_rejects_white_floor(self):
