@@ -157,11 +157,11 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertTrue(np.all(result[:20] == 0))
         self.assertTrue(np.all(result[20:] == 255))
 
-    def test_line_candidate_mask_rejects_giant_dark_component(self):
+    def test_line_candidate_mask_preserves_full_frame_component(self):
         profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
         mask = np.full((319, 480), 255, dtype=np.uint8)
         result = camera_line_frame.create_line_candidate_mask(mask, profile)
-        self.assertEqual(np.count_nonzero(result), 0)
+        self.assertEqual(np.count_nonzero(result), mask.size)
 
     def test_empty_virtual_rows_have_zero_line_confidence(self):
         mask = np.zeros((100, 200), dtype=np.uint8)

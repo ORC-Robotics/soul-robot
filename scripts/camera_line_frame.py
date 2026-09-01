@@ -390,10 +390,9 @@ CAMERA_PROFILES = {
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
-            # Uma linha ou cruzamento normal não deve ocupar mais de 30% da
-            # máscara. Componentes maiores indicam sombra ou obstrução e
-            # são rejeitados para o robô não seguir um falso contorno.
-            "full_line_max_area_ratio": 0.30,
+            # O perfil inferior preserva componentes amplos: cruzamentos e
+            # curvas próximas podem ocupar quase toda a máscara útil.
+            "full_line_max_area_ratio": 1.0,
             # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se
             # a altura real do frame for diferente durante um diagnóstico.
