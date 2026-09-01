@@ -595,7 +595,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
         self.assertTrue(math.isclose(
             result["fineCorrection"],
-            camera_line_frame.VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+            camera_line_frame.VIRTUAL_FINE_CENTER_GAIN,
         ))
         self.assertTrue(math.isclose(
             result["finalSteering"],
@@ -611,10 +611,14 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
     def test_fine_centering_requires_near_center_and_weak_steering(self):
         cases = (
-            (0.20, 0.0),
-            (0.31, 0.20),
+            (0.20, 0.0, 0.20),
+            (
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR + 0.01,
+                0.20,
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+            ),
         )
-        for protected_steering, near_center in cases:
+        for protected_steering, near_center, expected_steering in cases:
             with self.subTest(
                 protected_steering=protected_steering,
                 near_center=near_center,
@@ -628,7 +632,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 self.assertEqual(result["fineCorrection"], 0.0)
                 self.assertEqual(
                     result["finalSteering"],
-                    protected_steering,
+                    expected_steering,
                 )
 
     def test_fine_centering_does_not_change_green_or_gap(self):
@@ -1028,13 +1032,19 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             sensors,
             camera_line_frame.VirtualTurnStateTracker(),
         )
+        fine_correction = (
+            camera_line_frame.apply_virtual_fine_center_deadband(0.23)
+            * camera_line_frame.VIRTUAL_FINE_CENTER_GAIN
+        )
+        expected_steering = forward_steering + fine_correction
         expected_left, expected_right = expected_normal_motor_powers(
-            forward_steering
+            expected_steering
         )
         self.assertTrue(math.isclose(
             result["finalSteering"],
-            forward_steering,
+            expected_steering,
         ))
+        self.assertLess(result["finalSteering"], 0.0)
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
         self.assertEqual(result["controlSource"], "virtual")
@@ -1525,7 +1535,7 @@ class VirtualRecoveryTests(unittest.TestCase):
 
     def test_gap_geometry_preserves_real_near_path(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
-        mask[:85, 47:53] = 255
+        mask[:, 47:53] = 255
 
         guidance = camera_line_frame.extract_geometric_line_path(mask)
 
@@ -1595,7 +1605,10 @@ class VirtualRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["lineState"], "GAP")
         self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
 
     def test_recent_near_loss_uses_far_right_gap_recovery(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
@@ -1620,7 +1633,10 @@ class VirtualRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["lineState"], "GAP")
         self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+        )
 
     def test_gap_near_history_expires_without_being_renewed(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
@@ -1704,14 +1720,20 @@ class VirtualRecoveryTests(unittest.TestCase):
         tracker = camera_line_frame.VirtualTurnStateTracker()
         result = calculate_command(sensor_values(None, -0.80, None), tracker)
         self.assertIsNone(result["finalSteering"])
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
         self.assertEqual(result["controlSource"], "virtual-medium-scan")
 
     def test_invalid_steering_uses_right_medium_scan(self):
         tracker = camera_line_frame.VirtualTurnStateTracker()
         result = calculate_command(sensor_values(None, 0.80, None), tracker)
         self.assertIsNone(result["finalSteering"])
-        self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+        )
         self.assertEqual(result["controlSource"], "virtual-medium-scan")
 
     def test_medium_scan_disappears_when_normal_steering_returns(self):
@@ -1727,7 +1749,10 @@ class VirtualRecoveryTests(unittest.TestCase):
         for _ in range(camera_line_frame.VIRTUAL_MEDIUM_SCAN_MAX_FRAMES):
             result = calculate_command(sensors, tracker)
             self.assertEqual(result["controlSource"], "virtual-medium-scan")
-            self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+            self.assertEqual(
+                (result["left_power"], result["right_power"]),
+                (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+            )
 
         result = calculate_command(sensors, tracker)
         self.assertEqual(result["controlSource"], "virtual-no-line")
@@ -1737,13 +1762,19 @@ class VirtualRecoveryTests(unittest.TestCase):
         tracker, result = self.enter_reorient("LEFT")
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_REORIENT_LEFT)
         self.assertEqual(result["finalSteering"], -1.0)
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.75))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (-0.72, 0.78),
+        )
 
     def test_matching_right_recovery_enters_reorient(self):
         tracker, result = self.enter_reorient("RIGHT")
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_REORIENT_RIGHT)
         self.assertEqual(result["finalSteering"], 1.0)
-        self.assertEqual((result["left_power"], result["right_power"]), (0.75, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.78, -0.72),
+        )
 
     def test_medium_far_disagreement_never_enters_reorient(self):
         tracker = camera_line_frame.VirtualTurnStateTracker()
@@ -1773,14 +1804,22 @@ class VirtualRecoveryTests(unittest.TestCase):
             green_direction="DIREITA",
         )
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_NORMAL)
-        self.assertIsNone(result["finalSteering"])
+        self.assertEqual(result["finalSteering"], 1.0)
         self.assertEqual(result["controlSource"], "virtual-green")
         self.assertEqual(result["greenDirection"], "DIREITA")
 
     def test_gap_uses_medium_and_far_band_lateral_recovery(self):
         cases = (
-            (sensor_values(None, -0.80, None), "LEFT", (0.0, 0.69)),
-            (sensor_values(None, None, 0.80), "RIGHT", (0.69, 0.0)),
+            (
+                sensor_values(None, -0.80, None),
+                "LEFT",
+                (0.0, camera_line_frame.NORMAL_BASE_POWER),
+            ),
+            (
+                sensor_values(None, None, 0.80),
+                "RIGHT",
+                (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+            ),
         )
         for sensors, _direction, expected_powers in cases:
             with self.subTest(direction=_direction):
@@ -2107,7 +2146,8 @@ class VirtualMediumUrgencyTests(unittest.TestCase):
             sensor_values(None, None, None),
             sensor_values(0.0, 0.60, None, near_fine_position=0.38),
         )
-        transient_sensors[2]["farPosition"] = None
+        for sensors in transient_sensors:
+            sensors["farPosition"] = None
         for sensors in transient_sensors:
             held = calculate_command(
                 sensors,
@@ -2695,12 +2735,15 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
             sensor_recovery_requested=True,
         )
         self.assertEqual(result["controlSource"], "virtual-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
 
     def test_green_timeout_without_line_starts_in_green_direction(self):
         cases = (
-            ("ESQUERDA", "LEFT", -1.0, (0.0, 0.75)),
-            ("DIREITA", "RIGHT", 1.0, (0.75, 0.0)),
+            ("ESQUERDA", "LEFT", -1.0, (-0.72, 0.78)),
+            ("DIREITA", "RIGHT", 1.0, (0.78, -0.72)),
         )
         for (
             green_direction,
