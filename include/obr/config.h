@@ -334,23 +334,6 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
                   kDriveDistanceDifferenceConfirmationSamples > 0,
               "O controle fechado da missão de distância deve permanecer seguro.");
 
-// Giro mínimo, em graus, aplicado no sentido de um único verde confirmado.
-// Depois deste piso angular, a câmera inferior recupera o fluxo verde normal.
-constexpr double kGreenMinimumTurnDegrees = 12.0;
-// Potência simétrica do pivot inicial dos verdes LEFT/RIGHT.
-// Os motores recebem sinais opostos para o robô girar no próprio eixo.
-constexpr double kGreenMinimumTurnPower = 0.75;
-// Tempo máximo, em milissegundos, para alcançar o piso angular pelo MPU6050.
-// Se o yaw não responder, a missão para em vez de manter o pivot indefinidamente.
-constexpr int kGreenMinimumTurnTimeoutMs = 2500;
-
-static_assert(kGreenMinimumTurnDegrees > 0.0 &&
-                  kGreenMinimumTurnDegrees < 90.0 &&
-                  kGreenMinimumTurnPower >= kMotorStartMinimumPower &&
-                  kGreenMinimumTurnPower <= kMaxMotorOutput &&
-                  kGreenMinimumTurnTimeoutMs > 0,
-              "O giro mínimo do verde lateral deve permanecer seguro.");
-
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
 // Ao reconhecer o retorno, o robô permanece parado antes de começar a alinhar.
 // O atraso não bloqueia o loop, mantendo E-Stop e telemetria ativos.

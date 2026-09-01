@@ -56,13 +56,6 @@ private:
     double lineSearchStartYawDegrees_ = 0.0;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
 
-    bool lateralGreenMinimumTurnActive_ = false;
-    bool lateralGreenMinimumTurnArmed_ = true;
-    ImuTurnDirection lateralGreenMinimumTurnDirection_ =
-        ImuTurnDirection::Left;
-    double lateralGreenMinimumTurnYawOriginDegrees_ = 0.0;
-    std::chrono::steady_clock::time_point lateralGreenMinimumTurnStartedAt_{};
-
     ForwardAssistState forwardAssistState_ = ForwardAssistState::Bottom;
     ForwardAssistDirection forwardAssistDirection_ =
         ForwardAssistDirection::None;

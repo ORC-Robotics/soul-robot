@@ -230,7 +230,7 @@ GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
 # Fração mínima de pixels ativos do componente preto em cada ROI.
 GREEN_ROI_MIN_BLACK_RATIO = 0.25
 # Mantém a orientação durante meio segundo depois da última leitura válida.
-GREEN_DIRECTION_RETENTION_SECONDS = 0.5
+GREEN_DIRECTION_RETENTION_SECONDS = 0.3
 # Dois marcadores só representam retorno quando estão na mesma altura local.
 # A tolerância usa a maior altura observada para acompanhar a perspectiva.
 GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS = 1.5
@@ -244,7 +244,7 @@ SPECULAR_REPAIR_MIN_VALUE = 180
 SPECULAR_REPAIR_MAX_SATURATION = 60
 
 VIRTUAL_HEADING_FULL_SCALE_DEG = 30.0
-VIRTUAL_HEADING_GAIN = 0.80
+VIRTUAL_HEADING_GAIN = 0.55
 
 # A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
 # CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.

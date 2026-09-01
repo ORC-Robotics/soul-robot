@@ -46,22 +46,6 @@ bool turnAroundDetected(const CameraLineSnapshot& snapshot)
            snapshot.greenInterpretation == GreenInterpretation::TurnAround180;
 }
 
-bool lateralGreenDetected(const CameraLineSnapshot& snapshot)
-{
-    const bool lateralInterpretation =
-        snapshot.greenInterpretation == GreenInterpretation::Left ||
-        snapshot.greenInterpretation == GreenInterpretation::Right;
-    return snapshot.greenConfirmed && snapshot.greenPathBlackValid &&
-           snapshot.greenCandidateCount == 1 && lateralInterpretation;
-}
-
-ImuTurnDirection lateralGreenDirection(const CameraLineSnapshot& snapshot)
-{
-    return snapshot.greenInterpretation == GreenInterpretation::Right
-               ? ImuTurnDirection::Right
-               : ImuTurnDirection::Left;
-}
-
 bool turnAroundEncodersReady(const Esp32TelemetrySnapshot& telemetry)
 {
     return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
@@ -93,26 +77,6 @@ double shortestAngularDistanceDegrees(double first, double second)
     return difference;
 }
 
-double directionalAngularDistanceDegrees(
-    double origin,
-    double current,
-    ImuTurnDirection direction)
-{
-    double signedDifference = std::fmod(current - origin, 360.0);
-    if (signedDifference > 180.0)
-    {
-        signedDifference -= 360.0;
-    }
-    else if (signedDifference < -180.0)
-    {
-        signedDifference += 360.0;
-    }
-
-    const double directionSign =
-        direction == ImuTurnDirection::Right ? 1.0 : -1.0;
-    return std::max(0.0, signedDifference * directionSign);
-}
-
 }
 
 void MainMission::reset()
@@ -124,10 +88,6 @@ void MainMission::reset()
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
     lineSearchStartYawDegrees_ = 0.0;
-    lateralGreenMinimumTurnActive_ = false;
-    lateralGreenMinimumTurnArmed_ = true;
-    lateralGreenMinimumTurnDirection_ = ImuTurnDirection::Left;
-    lateralGreenMinimumTurnYawOriginDegrees_ = 0.0;
     resetForwardAssist();
 }
 
@@ -631,13 +591,6 @@ void MainMission::update(
         return true;
     };
     const bool detected180 = turnAroundDetected(cameraLineSnapshot);
-    const bool detectedLateralGreen =
-        lateralGreenDetected(cameraLineSnapshot);
-    if (detected180)
-    {
-        // O retorno de 180° continua sendo superior ao piso angular lateral.
-        lateralGreenMinimumTurnActive_ = false;
-    }
     if (detected180 || turnAroundPhase_ != TurnAroundPhase::Idle)
     {
         // O retorno verde é uma prioridade superior e nunca compartilha
@@ -671,96 +624,6 @@ void MainMission::update(
         // A primeira pausa elimina qualquer comando residual do segue-linha.
         turnAroundPhase_ = TurnAroundPhase::RecognitionDelay;
         phaseStartedAt_ = now;
-    }
-
-    if (turnAroundPhase_ == TurnAroundPhase::Idle)
-    {
-        if (!lateralGreenMinimumTurnActive_ && !detectedLateralGreen &&
-            cameraLineSnapshot.curveDiagnostics.lineState != "GREEN")
-        {
-            // Rearma somente depois que o fluxo verde anterior realmente saiu.
-            lateralGreenMinimumTurnArmed_ = true;
-        }
-
-        if (!lateralGreenMinimumTurnActive_ && detectedLateralGreen &&
-            lateralGreenMinimumTurnArmed_)
-        {
-            resetForwardAssist();
-            if (!ImuTurnController::imuReady(esp32Telemetry))
-            {
-                robotState.driveAutonomous(0.0, 0.0);
-                robotState.updateAutonomousStatus(makeMainMissionStatus(
-                    "green_minimum_turn_waiting_imu",
-                    "Verde lateral detectado: aguardando yaw válido"));
-                return;
-            }
-
-            lateralGreenMinimumTurnActive_ = true;
-            lateralGreenMinimumTurnArmed_ = false;
-            lateralGreenMinimumTurnDirection_ =
-                lateralGreenDirection(cameraLineSnapshot);
-            lateralGreenMinimumTurnYawOriginDegrees_ =
-                esp32Telemetry.yawZDeg;
-            lateralGreenMinimumTurnStartedAt_ = now;
-        }
-
-        if (lateralGreenMinimumTurnActive_)
-        {
-            resetForwardAssist();
-            if (!ImuTurnController::imuReady(esp32Telemetry))
-            {
-                lateralGreenMinimumTurnActive_ = false;
-                robotState.stop();
-                robotState.updateAutonomousStatus(makeMainMissionStatus(
-                    "green_minimum_turn_imu_lost",
-                    "Giro mínimo do verde interrompido: yaw indisponível"));
-                return;
-            }
-            if (now - lateralGreenMinimumTurnStartedAt_ >
-                std::chrono::milliseconds(
-                    config::kGreenMinimumTurnTimeoutMs))
-            {
-                lateralGreenMinimumTurnActive_ = false;
-                robotState.stop();
-                robotState.updateAutonomousStatus(makeMainMissionStatus(
-                    "green_minimum_turn_timeout",
-                    "Giro mínimo do verde interrompido pelo tempo limite"));
-                return;
-            }
-
-            const double turnedDegrees = directionalAngularDistanceDegrees(
-                lateralGreenMinimumTurnYawOriginDegrees_,
-                esp32Telemetry.yawZDeg,
-                lateralGreenMinimumTurnDirection_);
-            if (turnedDegrees < config::kGreenMinimumTurnDegrees)
-            {
-                const double turnSign =
-                    lateralGreenMinimumTurnDirection_ ==
-                            ImuTurnDirection::Right
-                        ? 1.0
-                        : -1.0;
-                const double leftPower =
-                    turnSign * config::kGreenMinimumTurnPower;
-                robotState.driveAutonomous(leftPower, -leftPower);
-                robotState.updateAutonomousStatus(makeMainMissionStatus(
-                    "green_minimum_turn",
-                    lateralGreenMinimumTurnDirection_ ==
-                            ImuTurnDirection::Right
-                        ? "Verde direito: garantindo giro mínimo de 25°"
-                        : "Verde esquerdo: garantindo giro mínimo de 25°",
-                    std::clamp(
-                        turnedDegrees /
-                                config::kGreenMinimumTurnDegrees *
-                            100.0,
-                        0.0,
-                        100.0)));
-                return;
-            }
-
-            // Não existe pausa ao completar o piso: o comando visual verde
-            // recupera autoridade ainda neste ciclo de controle.
-            lateralGreenMinimumTurnActive_ = false;
-        }
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
