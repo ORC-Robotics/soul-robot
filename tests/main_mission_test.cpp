@@ -276,8 +276,6 @@ void testNonReturnGreenDoesNotStartSequence()
     const GreenInterpretation interpretations[] = {
         GreenInterpretation::FalseMarker,
         GreenInterpretation::Ambiguous,
-        GreenInterpretation::Left,
-        GreenInterpretation::Right,
     };
     for (const GreenInterpretation interpretation : interpretations)
     {
@@ -286,6 +284,132 @@ void testNonReturnGreenDoesNotStartSequence()
             fixture.update(freshVision(interpretation)),
             "Classificação diferente de retorno");
     }
+}
+
+void testLateralGreenGuaranteesTwentyFiveDegreesAndReturnsControl()
+{
+    const struct
+    {
+        GreenInterpretation interpretation;
+        double directionSign;
+        const char* name;
+    } cases[] = {
+        {GreenInterpretation::Left, -1.0, "LEFT"},
+        {GreenInterpretation::Right, 1.0, "RIGHT"},
+    };
+
+    for (const auto& testCase : cases)
+    {
+        MissionFixture fixture;
+        CameraLineSnapshot greenVision = freshVision(
+            testCase.interpretation);
+        greenVision.curveDiagnostics.lineState = "GREEN";
+
+        RobotSnapshot snapshot = fixture.update(greenVision);
+        require(
+            snapshot.autonomousStatus.phase == "green_minimum_turn" &&
+                closeTo(
+                    snapshot.left,
+                    testCase.directionSign *
+                        config::kGreenMinimumTurnPower) &&
+                closeTo(
+                    snapshot.right,
+                    -testCase.directionSign *
+                        config::kGreenMinimumTurnPower),
+            std::string("Verde ") + testCase.name +
+                " deve iniciar pivot no sentido selecionado.");
+
+        fixture.telemetry.yawZDeg =
+            testCase.directionSign *
+            (config::kGreenMinimumTurnDegrees - 0.1);
+        snapshot = fixture.update(greenVision);
+        require(
+            snapshot.autonomousStatus.phase == "green_minimum_turn",
+            std::string("Verde ") + testCase.name +
+                " não pode devolver autoridade antes dos 25 graus.");
+
+        fixture.telemetry.yawZDeg =
+            testCase.directionSign * config::kGreenMinimumTurnDegrees;
+        snapshot = fixture.update(greenVision);
+        requireFollowingLine(
+            snapshot,
+            std::string("Verde ") + testCase.name +
+                " após completar o giro mínimo");
+
+        snapshot = fixture.update(greenVision);
+        requireFollowingLine(
+            snapshot,
+            std::string("Verde ") + testCase.name +
+                " não deve reiniciar enquanto o mesmo verde permanecer ativo");
+    }
+}
+
+void testLateralGreenCountsOnlySelectedDirectionAndHandlesYawWrap()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot leftGreen = freshVision(GreenInterpretation::Left);
+    leftGreen.curveDiagnostics.lineState = "GREEN";
+    fixture.telemetry.yawZDeg = -170.0;
+    fixture.update(leftGreen);
+
+    fixture.telemetry.yawZDeg = -140.0;
+    RobotSnapshot snapshot = fixture.update(leftGreen);
+    require(
+        snapshot.autonomousStatus.phase == "green_minimum_turn" &&
+            closeTo(snapshot.left, -config::kGreenMinimumTurnPower) &&
+            closeTo(snapshot.right, config::kGreenMinimumTurnPower),
+        "Movimento de yaw para o lado oposto não pode cumprir o mínimo LEFT.");
+
+    fixture.telemetry.yawZDeg = 165.0;
+    snapshot = fixture.update(leftGreen);
+    requireFollowingLine(
+        snapshot,
+        "Giro LEFT atravessando a borda de -180/180 graus");
+}
+
+void testLateralGreenWaitsForImuAndStopsIfItIsLost()
+{
+    CameraLineSnapshot rightGreen = freshVision(GreenInterpretation::Right);
+    rightGreen.curveDiagnostics.lineState = "GREEN";
+
+    MissionFixture waitingFixture;
+    waitingFixture.telemetry.mpuOk = false;
+    RobotSnapshot snapshot = waitingFixture.update(rightGreen);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase ==
+                "green_minimum_turn_waiting_imu",
+        "Sem yaw inicial, o verde lateral deve aguardar com motores zerados.");
+
+    MissionFixture lostFixture;
+    lostFixture.update(rightGreen);
+    lostFixture.telemetry.mpuOk = false;
+    snapshot = lostFixture.update(rightGreen);
+    require(
+        snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase ==
+                "green_minimum_turn_imu_lost",
+        "Perder a IMU durante o giro mínimo deve parar a missão.");
+}
+
+void testLateralGreenStopsAtSafetyTimeout()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot leftGreen = freshVision(GreenInterpretation::Left);
+    leftGreen.curveDiagnostics.lineState = "GREEN";
+    fixture.update(leftGreen);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenMinimumTurnTimeoutMs + 20));
+    const RobotSnapshot snapshot = fixture.update(leftGreen);
+    require(
+        snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase ==
+                "green_minimum_turn_timeout",
+        "Yaw congelado deve parar o giro mínimo no timeout de segurança.");
 }
 
 void testReturnWaitsForRequiredSensors()
@@ -1227,6 +1351,10 @@ int main()
     {
         testNormalLineFollowerCommandsMotors();
         testNonReturnGreenDoesNotStartSequence();
+        testLateralGreenGuaranteesTwentyFiveDegreesAndReturnsControl();
+        testLateralGreenCountsOnlySelectedDirectionAndHandlesYawWrap();
+        testLateralGreenWaitsForImuAndStopsIfItIsLost();
+        testLateralGreenStopsAtSafetyTimeout();
         testReturnWaitsForRequiredSensors();
         testImuFailureAlwaysStopsReturn();
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
