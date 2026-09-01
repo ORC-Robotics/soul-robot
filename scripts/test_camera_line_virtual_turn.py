@@ -1368,6 +1368,84 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     expected_powers,
                 )
 
+    def test_green_trust_is_measured_only_on_selected_right_branch(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        for row_name in ("far", "medium"):
+            for region in camera_line_frame.virtual_sensor_regions(
+                geometry[row_name]["right"]
+            ):
+                mask[
+                    region["y0"]:region["y1"],
+                    region["x0"]:region["x1"],
+                ] = 255
+
+        measured_geometries = []
+        original_measurement = (
+            camera_line_frame.measure_virtual_row_line_confidence
+        )
+
+        def measure_selected_branch(processed_mask, row_geometry):
+            measured_geometries.append(tuple(row_geometry))
+            return original_measurement(processed_mask, row_geometry)
+
+        with patch.object(
+            camera_line_frame,
+            "measure_virtual_row_line_confidence",
+            side_effect=measure_selected_branch,
+        ):
+            sensors = camera_line_frame.read_virtual_line_sensors(
+                mask,
+                "DIREITA",
+            )
+
+        self.assertEqual(measured_geometries, [("right",), ("right",)])
+        self.assertTrue(sensors["farTrusted"])
+        self.assertTrue(sensors["mediumTrusted"])
+        self.assertEqual(sensors["farPosition"], 1.0)
+        self.assertEqual(sensors["mediumPosition"], 1.0)
+
+    def test_green_without_trusted_branch_keeps_pivoting_in_its_direction(self):
+        for green_direction, expected_powers in (
+            ("ESQUERDA", (-0.72, 0.78)),
+            ("DIREITA", (0.78, -0.72)),
+        ):
+            with self.subTest(green_direction=green_direction):
+                sensors = sensor_values(None, None, None)
+                sensors["farTrusted"] = False
+                sensors["mediumTrusted"] = False
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                )
+
+                self.assertEqual(result["controlSource"], "virtual-green")
+                self.assertEqual(result["lineState"], "GREEN")
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    expected_powers,
+                )
+
+    def test_green_with_only_far_branch_keeps_pivoting_in_its_direction(self):
+        for green_direction, far_position, expected_powers in (
+            ("ESQUERDA", -1.0, (-0.72, 0.78)),
+            ("DIREITA", 1.0, (0.78, -0.72)),
+        ):
+            with self.subTest(green_direction=green_direction):
+                sensors = sensor_values(None, None, None)
+                sensors["farPosition"] = far_position
+                sensors["mediumTrusted"] = False
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                )
+
+                self.assertEqual(result["controlSource"], "virtual-green")
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    expected_powers,
+                )
+
 
 class VirtualRecoveryTests(unittest.TestCase):
     def test_active_near_center_skips_gap_geometry(self):
@@ -2620,20 +2698,44 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
         self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
 
     def test_green_timeout_without_line_starts_in_green_direction(self):
-        timeout = camera_line_frame.update_green_maneuver_state(
-            "DIREITA",
-            camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES - 1,
-            raw_line_visible=False,
+        cases = (
+            ("ESQUERDA", "LEFT", -1.0, (0.0, 0.75)),
+            ("DIREITA", "RIGHT", 1.0, (0.75, 0.0)),
         )
-        search_tracker = camera_line_frame.VirtualLineSearchTracker()
-        search_tracker.start(timeout["searchDirection"])
-        result = calculate_command(
-            sensor_values(None, None, None),
-            line_search_tracker=search_tracker,
-        )
-        self.assertEqual(result["controlSource"], "virtual-blind-search")
-        self.assertEqual(result["finalSteering"], 1.0)
-        self.assertEqual((result["left_power"], result["right_power"]), (0.75, 0.0))
+        for (
+            green_direction,
+            search_direction,
+            expected_steering,
+            expected_powers,
+        ) in cases:
+            with self.subTest(green_direction=green_direction):
+                timeout = camera_line_frame.update_green_maneuver_state(
+                    green_direction,
+                    camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES - 1,
+                    raw_line_visible=False,
+                )
+                self.assertEqual(
+                    timeout["searchDirection"],
+                    search_direction,
+                )
+                search_tracker = camera_line_frame.VirtualLineSearchTracker()
+                search_tracker.start(timeout["searchDirection"])
+                result = calculate_command(
+                    sensor_values(None, None, None),
+                    line_search_tracker=search_tracker,
+                )
+                self.assertEqual(
+                    result["controlSource"],
+                    "virtual-blind-search",
+                )
+                self.assertEqual(
+                    result["finalSteering"],
+                    expected_steering,
+                )
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    expected_powers,
+                )
 
     def test_blind_search_reverses_after_short_initial_window(self):
         search_tracker = camera_line_frame.VirtualLineSearchTracker()

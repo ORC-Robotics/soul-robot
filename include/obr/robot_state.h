@@ -29,7 +29,13 @@ struct AutonomousStatus
     double averageDistanceCm = 0.0;
     std::string forwardAssistState = "BOTTOM";
     std::string forwardAssistDirection = "NONE";
+    std::string forwardAssistLatchedDirection = "NONE";
+    std::string forwardAssistEntryBlocker = "WAITING_TRUST";
     double forwardAssistYawDeltaDeg = 0.0;
+    bool forwardAssistFarTrusted = false;
+    bool forwardAssistMediumTrusted = false;
+    bool forwardAssistGapCandidate = false;
+    bool forwardAssistEntryAllowed = false;
     bool forwardLineVisible = false;
     double forwardLinePosition = 0.0;
     int bottomStableFrames = 0;

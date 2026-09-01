@@ -63,8 +63,13 @@ private:
     std::uint64_t previousBottomSequence_ = 0;
     bool previousBottomTrusted_ = false;
     bool previousBottomLineNormal_ = false;
-    ForwardAssistDirection previousBottomDirection_ =
+    ForwardAssistDirection latchedBottomDirection_ =
         ForwardAssistDirection::None;
+    bool forwardAssistFarTrusted_ = false;
+    bool forwardAssistMediumTrusted_ = false;
+    bool forwardAssistGapCandidate_ = false;
+    bool forwardAssistEntryAllowed_ = false;
+    std::string forwardAssistEntryBlocker_ = "WAITING_TRUST";
 
     void resetForwardAssist();
     bool updateForwardAssist(

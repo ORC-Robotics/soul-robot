@@ -594,7 +594,15 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
          << ",\"forwardAssistState\":\"" << state.autonomousStatus.forwardAssistState << "\""
          << ",\"forwardAssistDirection\":\"" << state.autonomousStatus.forwardAssistDirection << "\""
+         << ",\"forwardAssistLatchedDirection\":\"" << state.autonomousStatus.forwardAssistLatchedDirection << "\""
+         << ",\"forwardAssistEntryBlocker\":\"" << state.autonomousStatus.forwardAssistEntryBlocker << "\""
          << ",\"forwardAssistYawDeltaDeg\":" << state.autonomousStatus.forwardAssistYawDeltaDeg
+         << ",\"forwardAssistFarTrusted\":" << (state.autonomousStatus.forwardAssistFarTrusted ? "true" : "false")
+         << ",\"forwardAssistMediumTrusted\":" << (state.autonomousStatus.forwardAssistMediumTrusted ? "true" : "false")
+         << ",\"forwardAssistGapCandidate\":" << (state.autonomousStatus.forwardAssistGapCandidate ? "true" : "false")
+         << ",\"forwardAssistEntryAllowed\":" << (state.autonomousStatus.forwardAssistEntryAllowed ? "true" : "false")
+         << ",\"forwardAssistYawLimitDeg\":" << config::kForwardAssistMaximumSearchDegrees
+         << ",\"bottomStableRequiredFrames\":" << config::kForwardAssistBottomStableFrames
          << ",\"forwardLineVisible\":" << (state.autonomousStatus.forwardLineVisible ? "true" : "false")
          << ",\"forwardLinePosition\":" << state.autonomousStatus.forwardLinePosition
          << ",\"bottomStableFrames\":" << state.autonomousStatus.bottomStableFrames
@@ -1209,6 +1217,7 @@ std::string DashboardServer::dashboardHtml()
           <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
             <div class="camera-hud-header">
               <strong id="cameraLineFollowerState" class="camera-hud-line">CONTROLE PENDENTE</strong>
+              <strong id="forwardAssistDiagnostic">FWD BOTTOM | FT 0 MT 0 | DIR NONE | ENTRY 0 | BLOCK WAITING_TRUST | BOTTOM_STABLE 0/2 | YAW 0.0/65 | GAP_CANDIDATE 0</strong>
               <span id="cameraHudFps">-- FPS</span>
             </div>
             <div class="camera-hud-values">
@@ -1505,6 +1514,7 @@ std::string DashboardServer::dashboardHtml()
     const operationCameraFps = element("operationCameraFps");
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
+    const forwardAssistDiagnostic = element("forwardAssistDiagnostic");
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const operationCameraDiagnosticFields = {
       lineFollowerState: element("cameraLineFollowerState"),
@@ -1979,6 +1989,7 @@ std::string DashboardServer::dashboardHtml()
         updateMode(data);
         updateAutonomousMission(data);
         updateStateMachine(data);
+        updateForwardAssistDiagnostic(data);
         element("cpu").textContent = `${formatNumber(data.cpu, 1)}%`;
         element("temp").textContent = `${formatNumber(data.temperature, 1)} °C`;
         element("ram").textContent = `${formatNumber(data.ram, 1)}%`;
@@ -2624,6 +2635,25 @@ std::string DashboardServer::dashboardHtml()
     `MORPH ${formatPipelineTiming(data.morphMs)} · CONT ${formatPipelineTiming(data.contoursMs)} ms`
   );
 }
+
+    function updateForwardAssistDiagnostic(data) {
+      const state = String(data.forwardAssistState || "BOTTOM");
+      const farTrusted = data.forwardAssistFarTrusted === true ? 1 : 0;
+      const mediumTrusted = data.forwardAssistMediumTrusted === true ? 1 : 0;
+      const direction = String(data.forwardAssistLatchedDirection || "NONE");
+      const entry = data.forwardAssistEntryAllowed === true ? 1 : 0;
+      const blocker = String(data.forwardAssistEntryBlocker || "UNKNOWN");
+      const bottomStableFrames = Number(data.bottomStableFrames) || 0;
+      const bottomStableRequiredFrames =
+        Number(data.bottomStableRequiredFrames) || 2;
+      const yawDelta = Number(data.forwardAssistYawDeltaDeg) || 0;
+      const yawLimit = Number(data.forwardAssistYawLimitDeg) || 65;
+      const gapCandidate = data.forwardAssistGapCandidate === true ? 1 : 0;
+      setTextIfChanged(
+        forwardAssistDiagnostic,
+        `FWD ${state} | FT ${farTrusted} MT ${mediumTrusted} | DIR ${direction} | ENTRY ${entry} | BLOCK ${blocker} | BOTTOM_STABLE ${bottomStableFrames}/${bottomStableRequiredFrames} | YAW ${yawDelta.toFixed(1)}/${yawLimit.toFixed(0)} | GAP_CANDIDATE ${gapCandidate}`
+      );
+    }
 
     function renderCurrentCameraDiagnostics() {
       if (latestCameraDiagnosticData) {

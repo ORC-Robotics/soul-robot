@@ -102,6 +102,18 @@ CameraLineSnapshot bottomVision(
     return snapshot;
 }
 
+CameraLineSnapshot gapVision(std::uint64_t sequence)
+{
+    CameraLineSnapshot snapshot = bottomVision(
+        sequence, false, false, "NONE");
+    snapshot.curveDiagnostics.lineState = "GAP";
+    snapshot.lineControlSource = "gap-forward";
+    snapshot.lineFollowerLeftPower = 0.75;
+    snapshot.lineFollowerRightPower = 0.75;
+    snapshot.normalSteeringValid = false;
+    return snapshot;
+}
+
 ForwardLineSnapshot forwardVision(
     std::uint64_t sequence,
     double position,
@@ -478,8 +490,56 @@ void testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection()
     const RobotSnapshot noDirection = noDirectionFixture.update(
         bottomVision(2, false, false, "NONE"));
     require(
-        noDirection.autonomousStatus.forwardAssistState == "BOTTOM",
+        noDirection.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            !noDirection.autonomousStatus.forwardAssistEntryAllowed &&
+            noDirection.autonomousStatus.forwardAssistEntryBlocker ==
+                "NO_LATCHED_DIRECTION",
         "Trust sem direção lateral confiável não pode iniciar a busca frontal.");
+}
+
+void testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot trusted = bottomVision(
+        40, false, true, "LEFT");
+    trusted.curveDiagnostics.mediumPosition = -0.60;
+    fixture.update(trusted);
+
+    CameraLineSnapshot lost = bottomVision(
+        43, false, false, "NONE");
+    lost.lineNearDetected = true;
+    lost.lineNearFinePosition = -0.72;
+    lost.curveDiagnostics.nearFinePosition = -0.72;
+    lost.curveDiagnostics.mediumPosition =
+        std::numeric_limits<double>::quiet_NaN();
+    lost.curveDiagnostics.farBandPosition =
+        std::numeric_limits<double>::quiet_NaN();
+    lost.curveDiagnostics.headingAngleDeg =
+        std::numeric_limits<double>::quiet_NaN();
+    lost.curveDiagnostics.finalSteering = 0.0;
+    lost.lineControlSource = "virtual";
+    lost.normalSteeringValid = true;
+    lost.lineFollowerLeftPower = 0.75;
+    lost.lineFollowerRightPower = 0.75;
+
+    const RobotSnapshot snapshot = fixture.update(lost);
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
+            snapshot.autonomousStatus.forwardAssistLatchedDirection ==
+                "LEFT" &&
+            !snapshot.autonomousStatus.forwardAssistFarTrusted &&
+            !snapshot.autonomousStatus.forwardAssistMediumTrusted &&
+            snapshot.autonomousStatus.forwardAssistEntryAllowed &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker == "NONE" &&
+            closeTo(
+                snapshot.left,
+                -config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                config::kForwardAssistSearchSpinPower),
+        "A perda de FAR/MEDIUM deve entrar em SEARCH_SPIN com a direção "
+        "latched, mesmo com salto de sequence e NEAR produzindo steering zero.");
 }
 
 void testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees()
@@ -490,13 +550,15 @@ void testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees()
         startForwardSearch(fixture, "LEFT");
         fixture.telemetry.yawZDeg = -foundAtDegrees;
         const ForwardLineSnapshot forward = forwardVision(1, -0.32);
+        const CameraLineSnapshot gapCandidate = gapVision(3);
         const RobotSnapshot snapshot = fixture.update(
-            bottomVision(2, false, false, "NONE"),
+            gapCandidate,
             true,
             forward);
         require(
             snapshot.autonomousStatus.forwardAssistState ==
                     "FORWARD_FOLLOW" &&
+                snapshot.autonomousStatus.forwardAssistGapCandidate &&
                 snapshot.left > 0.0 && snapshot.right > 0.0 &&
                 closeTo(snapshot.left, forward.normalLeftPower) &&
                 closeTo(snapshot.right, forward.normalRightPower),
@@ -504,34 +566,121 @@ void testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees()
     }
 }
 
-void testForwardSearchStopsAtWrappedFortyFiveDegreeLimit()
+void testForwardSearchStopsAtWrappedSixtyFiveDegreeLimit()
 {
     MissionFixture fixture;
     fixture.telemetry.yawZDeg = 170.0;
     startForwardSearch(fixture, "RIGHT");
-    fixture.telemetry.yawZDeg = -145.0;
-    const CameraLineSnapshot recovery = bottomVision(
-        2, false, false, "NONE");
+    fixture.telemetry.yawZDeg = -125.0;
+    const CameraLineSnapshot recovery = gapVision(3);
     const RobotSnapshot snapshot = fixture.update(recovery);
     require(
         snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "SEARCH_ANGLE_LIMIT" &&
+            snapshot.autonomousStatus.forwardAssistGapCandidate &&
             closeTo(snapshot.left, recovery.lineFollowerLeftPower) &&
             closeTo(snapshot.right, recovery.lineFollowerRightPower),
-        "O limite de 45 graus deve considerar wrap-around e devolver ao recovery.");
+        "O limite de 65 graus deve considerar wrap-around e liberar GAP/recovery.");
 }
 
-void testBottomRecoveryStopsSearchImmediately()
+void testBottomRecoveryRequiresTwoStableFramesDuringSearch()
 {
     MissionFixture fixture;
     startForwardSearch(fixture, "RIGHT");
-    const CameraLineSnapshot recovered = bottomVision(
-        3, true, false, "RIGHT");
-    const RobotSnapshot snapshot = fixture.update(recovered);
+    const CameraLineSnapshot firstRecovered = bottomVision(
+        3, false, true, "RIGHT");
+    RobotSnapshot snapshot = fixture.update(firstRecovered);
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.bottomStableFrames == 1 &&
+            closeTo(
+                snapshot.left,
+                config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                -config::kForwardAssistSearchSpinPower),
+        "Um frame MEDIUM trusted não pode cancelar SEARCH_SPIN.");
+
+    const CameraLineSnapshot secondRecovered = bottomVision(
+        4, false, true, "RIGHT");
+    snapshot = fixture.update(secondRecovered);
     require(
         snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
-            closeTo(snapshot.left, recovered.lineFollowerLeftPower) &&
-            closeTo(snapshot.right, recovered.lineFollowerRightPower),
-        "FAR trusted durante SEARCH deve parar o SPIN no mesmo ciclo.");
+            closeTo(snapshot.left, secondRecovered.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, secondRecovered.lineFollowerRightPower),
+        "Dois frames MEDIUM trusted com steering normal devem devolver BOTTOM.");
+}
+
+void testBottomRecoveryFlickerResetsCounterDuringSearch()
+{
+    MissionFixture fixture;
+    startForwardSearch(fixture, "LEFT");
+
+    RobotSnapshot snapshot = fixture.update(
+        bottomVision(3, false, true, "LEFT"));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.bottomStableFrames == 1,
+        "O primeiro frame trusted deve registrar BOTTOM_STABLE 1/2.");
+
+    snapshot = fixture.update(bottomVision(4, false, false, "NONE"));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            snapshot.autonomousStatus.bottomStableFrames == 0 &&
+            snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
+            closeTo(
+                snapshot.left,
+                -config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                snapshot.right,
+                config::kForwardAssistSearchSpinPower),
+        "Perder trust depois de 1/2 deve zerar o contador e manter SEARCH LEFT.");
+}
+
+void testSearchKeepsAuthorityOverGapAndTotalBottomLoss()
+{
+    MissionFixture gapFixture;
+    gapFixture.telemetry.yawZDeg = 10.0;
+    startForwardSearch(gapFixture, "LEFT");
+    gapFixture.telemetry.yawZDeg = 22.0;
+    const RobotSnapshot gap = gapFixture.update(gapVision(3));
+    require(
+        gap.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            gap.autonomousStatus.forwardAssistDirection == "LEFT" &&
+            gap.autonomousStatus.forwardAssistLatchedDirection == "LEFT" &&
+            gap.autonomousStatus.forwardAssistGapCandidate &&
+            gap.autonomousStatus.bottomStableFrames == 0 &&
+            closeTo(gap.autonomousStatus.forwardAssistYawDeltaDeg, 12.0) &&
+            closeTo(
+                gap.left,
+                -config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                gap.right,
+                config::kForwardAssistSearchSpinPower),
+        "GAP posterior não pode expulsar SEARCH nem substituir seus motores.");
+
+    MissionFixture lossFixture;
+    startForwardSearch(lossFixture, "RIGHT");
+    CameraLineSnapshot noBottomSensors = bottomVision(
+        3, false, false, "NONE");
+    noBottomSensors.lineNearDetected = false;
+    noBottomSensors.lineNearFinePosition =
+        std::numeric_limits<double>::quiet_NaN();
+    noBottomSensors.curveDiagnostics.nearFinePosition =
+        std::numeric_limits<double>::quiet_NaN();
+    const RobotSnapshot totalLoss = lossFixture.update(noBottomSensors);
+    require(
+        totalLoss.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
+            !totalLoss.autonomousStatus.forwardAssistGapCandidate &&
+            totalLoss.autonomousStatus.forwardAssistDirection == "RIGHT" &&
+            closeTo(
+                totalLoss.left,
+                config::kForwardAssistSearchSpinPower) &&
+            closeTo(
+                totalLoss.right,
+                -config::kForwardAssistSearchSpinPower),
+        "Perda total de NEAR/FAR/MEDIUM deve manter o SEARCH já iniciado.");
 }
 
 void testForwardFollowUsesOnlyNormalForwardPowerAndTwoStableFrames()
@@ -636,24 +785,21 @@ void testStaleForwardReadingNeverStopsSearch()
         "Leitura frontal stale deve ser ignorada durante SEARCH.");
 }
 
-void testGreenGapAndExistingCriticalTurnCancelForwardAuthority()
+void testGreenAndExistingCriticalTurnCancelForwardAuthority()
 {
-    for (const std::string lineState : {"GREEN", "GAP"})
-    {
-        MissionFixture fixture;
-        startForwardSearch(fixture, "LEFT");
-        CameraLineSnapshot higherPriority = bottomVision(
-            3, false, false, "NONE");
-        higherPriority.curveDiagnostics.lineState = lineState;
-        higherPriority.lineFollowerLeftPower = 0.70;
-        higherPriority.lineFollowerRightPower = 0.69;
-        const RobotSnapshot snapshot = fixture.update(higherPriority);
-        require(
-            snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
-                closeTo(snapshot.left, higherPriority.lineFollowerLeftPower) &&
-                closeTo(snapshot.right, higherPriority.lineFollowerRightPower),
-            lineState + " deve cancelar a autoridade frontal.");
-    }
+    MissionFixture greenFixture;
+    startForwardSearch(greenFixture, "LEFT");
+    CameraLineSnapshot greenPriority = bottomVision(
+        3, false, false, "NONE");
+    greenPriority.curveDiagnostics.lineState = "GREEN";
+    greenPriority.lineFollowerLeftPower = 0.70;
+    greenPriority.lineFollowerRightPower = 0.69;
+    const RobotSnapshot green = greenFixture.update(greenPriority);
+    require(
+        green.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            closeTo(green.left, greenPriority.lineFollowerLeftPower) &&
+            closeTo(green.right, greenPriority.lineFollowerRightPower),
+        "GREEN deve continuar acima da autoridade frontal.");
 
     MissionFixture criticalFixture;
     criticalFixture.update(bottomVision(1, true, true, "LEFT"));
@@ -665,9 +811,27 @@ void testGreenGapAndExistingCriticalTurnCancelForwardAuthority()
     const RobotSnapshot critical = criticalFixture.update(hardCorner);
     require(
         critical.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            !critical.autonomousStatus.forwardAssistEntryAllowed &&
+            critical.autonomousStatus.forwardAssistEntryBlocker ==
+                "BOTTOM_CRITICAL_TURN" &&
             closeTo(critical.left, hardCorner.lineFollowerLeftPower) &&
             closeTo(critical.right, hardCorner.lineFollowerRightPower),
         "HARD CORNER/PIVOT/SPIN inferior não pode ser substituído pela frontal.");
+}
+
+void testGapWithoutSearchPreservesExistingBehavior()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot gapCommand = gapVision(1);
+    const RobotSnapshot snapshot = fixture.update(gapCommand);
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistGapCandidate &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "LINE_NOT_NORMAL" &&
+            closeTo(snapshot.left, gapCommand.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, gapCommand.lineFollowerRightPower),
+        "GAP sem SEARCH ativo deve manter sua autoridade e seus motores atuais.");
 }
 
 void testUnavailableCameraStopsMission()
@@ -698,14 +862,18 @@ int main()
         testVisualSearchStopsAtAngularLimit();
         testForwardAssistStaysOnBottomWhileTrusted();
         testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection();
+        testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering();
         testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees();
-        testForwardSearchStopsAtWrappedFortyFiveDegreeLimit();
-        testBottomRecoveryStopsSearchImmediately();
+        testForwardSearchStopsAtWrappedSixtyFiveDegreeLimit();
+        testBottomRecoveryRequiresTwoStableFramesDuringSearch();
+        testBottomRecoveryFlickerResetsCounterDuringSearch();
+        testSearchKeepsAuthorityOverGapAndTotalBottomLoss();
         testForwardFollowUsesOnlyNormalForwardPowerAndTwoStableFrames();
         testBottomStableFramesMustHaveConsecutiveSequences();
         testForwardLossResumesSameSearchAttempt();
         testStaleForwardReadingNeverStopsSearch();
-        testGreenGapAndExistingCriticalTurnCancelForwardAuthority();
+        testGreenAndExistingCriticalTurnCancelForwardAuthority();
+        testGapWithoutSearchPreservesExistingBehavior();
         testUnavailableCameraStopsMission();
         std::cout << "main_mission_test: OK\n";
         return 0;

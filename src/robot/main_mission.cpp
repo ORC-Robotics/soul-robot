@@ -102,7 +102,12 @@ void MainMission::resetForwardAssist()
     previousBottomSequence_ = 0;
     previousBottomTrusted_ = false;
     previousBottomLineNormal_ = false;
-    previousBottomDirection_ = ForwardAssistDirection::None;
+    latchedBottomDirection_ = ForwardAssistDirection::None;
+    forwardAssistFarTrusted_ = false;
+    forwardAssistMediumTrusted_ = false;
+    forwardAssistGapCandidate_ = false;
+    forwardAssistEntryAllowed_ = false;
+    forwardAssistEntryBlocker_ = "WAITING_TRUST";
 }
 
 AutonomousStatus MainMission::forwardAssistStatus(
@@ -137,6 +142,24 @@ AutonomousStatus MainMission::forwardAssistStatus(
         status.forwardAssistDirection = "NONE";
         break;
     }
+    switch (latchedBottomDirection_)
+    {
+    case ForwardAssistDirection::Left:
+        status.forwardAssistLatchedDirection = "LEFT";
+        break;
+    case ForwardAssistDirection::Right:
+        status.forwardAssistLatchedDirection = "RIGHT";
+        break;
+    case ForwardAssistDirection::None:
+    default:
+        status.forwardAssistLatchedDirection = "NONE";
+        break;
+    }
+    status.forwardAssistFarTrusted = forwardAssistFarTrusted_;
+    status.forwardAssistMediumTrusted = forwardAssistMediumTrusted_;
+    status.forwardAssistGapCandidate = forwardAssistGapCandidate_;
+    status.forwardAssistEntryAllowed = forwardAssistEntryAllowed_;
+    status.forwardAssistEntryBlocker = forwardAssistEntryBlocker_;
     status.forwardAssistYawDeltaDeg = forwardAssistYawDeltaDegrees_;
     status.forwardLineVisible =
         forwardLineSnapshot.lineObservationValid();
@@ -156,15 +179,34 @@ bool MainMission::updateForwardAssist(
     const CameraLineSnapshot& cameraLineSnapshot,
     const ForwardLineSnapshot& forwardLineSnapshot)
 {
+    forwardAssistFarTrusted_ = cameraLineSnapshot.farTrusted;
+    forwardAssistMediumTrusted_ = cameraLineSnapshot.mediumTrusted;
+    forwardAssistGapCandidate_ =
+        cameraLineSnapshot.curveDiagnostics.lineState == "GAP";
     const bool bottomLineNormal =
         cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
         cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL";
-    if (!bottomLineNormal)
+    const bool searchOwnsRecovery =
+        forwardAssistState_ == ForwardAssistState::SearchSpin;
+    const bool greenHasPriority =
+        cameraLineSnapshot.curveDiagnostics.lineState == "GREEN";
+    if (!bottomLineNormal && (!searchOwnsRecovery || greenHasPriority))
     {
-        // GREEN, GAP e estados de curva superiores sempre retiram a autoridade
-        // frontal. A memória anterior também é descartada para impedir que uma
-        // direção observada antes desses estados dispare uma busca posterior.
+        // Antes de uma busca começar, GREEN, GAP e estados inferiores especiais
+        // preservam sua autoridade existente. Depois da entrada legítima no
+        // SEARCH, somente GREEN pode retirar essa posse neste gate.
+        const bool farTrusted = forwardAssistFarTrusted_;
+        const bool mediumTrusted = forwardAssistMediumTrusted_;
+        const bool gapCandidate = forwardAssistGapCandidate_;
+        const std::string entryBlocker =
+            cameraLineSnapshot.curveDiagnostics.lineState != "LINE"
+                ? "LINE_NOT_NORMAL"
+                : "VIRTUAL_NOT_NORMAL";
         resetForwardAssist();
+        forwardAssistFarTrusted_ = farTrusted;
+        forwardAssistMediumTrusted_ = mediumTrusted;
+        forwardAssistGapCandidate_ = gapCandidate;
+        forwardAssistEntryBlocker_ = entryBlocker;
         return false;
     }
 
@@ -193,8 +235,8 @@ bool MainMission::updateForwardAssist(
 
     const bool previousBottomTrusted = previousBottomTrusted_;
     const bool previousBottomLineNormal = previousBottomLineNormal_;
-    const ForwardAssistDirection previousBottomDirection =
-        previousBottomDirection_;
+    const ForwardAssistDirection latchedBottomDirection =
+        latchedBottomDirection_;
 
     if (newBottomFrame)
     {
@@ -202,9 +244,13 @@ bool MainMission::updateForwardAssist(
         previousBottomSequence_ = cameraLineSnapshot.lineSequence;
         previousBottomTrusted_ = currentBottomTrusted;
         previousBottomLineNormal_ = bottomLineNormal;
-        previousBottomDirection_ = currentBottomTrusted
-                                       ? currentTrustedDirection
-                                       : ForwardAssistDirection::None;
+        if (currentBottomTrusted &&
+            forwardAssistState_ == ForwardAssistState::Bottom)
+        {
+            // A direção é memorizada enquanto FAR/MEDIUM ainda possuem trust.
+            // Depois que SEARCH começa, um flicker não pode trocar o lado latched.
+            latchedBottomDirection_ = currentTrustedDirection;
+        }
     }
 
     const bool bottomLostTrustedRows =
@@ -214,20 +260,43 @@ bool MainMission::updateForwardAssist(
         (cameraLineSnapshot.lineFollowerLeftPower < 0.0 ||
          cameraLineSnapshot.lineFollowerRightPower < 0.0) &&
         cameraLineSnapshot.lineControlSource != "virtual-blind-search";
-    if (forwardAssistState_ == ForwardAssistState::Bottom &&
-        consecutiveBottomFrame && previousBottomTrusted &&
-        previousBottomLineNormal &&
-        previousBottomDirection != ForwardAssistDirection::None &&
-        bottomLostTrustedRows && !bottomRequestsExistingCriticalTurn &&
-        ImuTurnController::imuReady(esp32Telemetry))
+    if (forwardAssistState_ == ForwardAssistState::Bottom && newBottomFrame)
     {
-        // A direção vem do último frame inferior consecutivo e o yaw nasce uma
-        // única vez. Voltar do FOLLOW para SEARCH não passa novamente aqui.
-        forwardAssistState_ = ForwardAssistState::SearchSpin;
-        forwardAssistDirection_ = previousBottomDirection;
-        forwardAssistYawOriginDegrees_ = esp32Telemetry.yawZDeg;
-        forwardAssistYawDeltaDegrees_ = 0.0;
-        bottomStableFrames_ = 0;
+        forwardAssistEntryAllowed_ = false;
+        if (!bottomLostTrustedRows)
+        {
+            forwardAssistEntryBlocker_ = cameraLineSnapshot.farTrusted
+                                             ? "FAR_TRUSTED"
+                                             : "MEDIUM_TRUSTED";
+        }
+        else if (!previousBottomTrusted || !previousBottomLineNormal)
+        {
+            forwardAssistEntryBlocker_ = "NO_PREVIOUS_TRUST";
+        }
+        else if (latchedBottomDirection == ForwardAssistDirection::None)
+        {
+            forwardAssistEntryBlocker_ = "NO_LATCHED_DIRECTION";
+        }
+        else if (bottomRequestsExistingCriticalTurn)
+        {
+            forwardAssistEntryBlocker_ = "BOTTOM_CRITICAL_TURN";
+        }
+        else if (!ImuTurnController::imuReady(esp32Telemetry))
+        {
+            forwardAssistEntryBlocker_ = "IMU_NOT_READY";
+        }
+        else
+        {
+            // O gate usa os dois últimos estados realmente observados. Saltos
+            // no sequence do IPC não invalidam uma direção trusted já latched.
+            forwardAssistEntryAllowed_ = true;
+            forwardAssistEntryBlocker_ = "NONE";
+            forwardAssistState_ = ForwardAssistState::SearchSpin;
+            forwardAssistDirection_ = latchedBottomDirection;
+            forwardAssistYawOriginDegrees_ = esp32Telemetry.yawZDeg;
+            forwardAssistYawDeltaDegrees_ = 0.0;
+            bottomStableFrames_ = 0;
+        }
     }
 
     if (forwardAssistState_ == ForwardAssistState::Bottom)
@@ -235,15 +304,22 @@ bool MainMission::updateForwardAssist(
         return false;
     }
 
-    if (bottomRequestsExistingCriticalTurn ||
-        !ImuTurnController::imuReady(esp32Telemetry))
+    const bool imuReady = ImuTurnController::imuReady(esp32Telemetry);
+    if (!imuReady ||
+        (forwardAssistState_ != ForwardAssistState::SearchSpin &&
+         bottomRequestsExistingCriticalTurn))
     {
-        // HARD CORNER, PIVOT, SPIN e perda da IMU devolvem o comando ao fluxo
-        // inferior no mesmo ciclo; a frontal não disputa essas prioridades.
+        // A perda da IMU sempre encerra a assistência. HARD CORNER, PIVOT e
+        // SPIN inferiores bloqueiam a entrada, mas não expulsam um SEARCH que
+        // já possui direção e orçamento angular válidos.
         forwardAssistState_ = ForwardAssistState::Bottom;
         forwardAssistDirection_ = ForwardAssistDirection::None;
         forwardAssistYawDeltaDegrees_ = 0.0;
         bottomStableFrames_ = 0;
+        forwardAssistEntryAllowed_ = false;
+        forwardAssistEntryBlocker_ = !imuReady
+                                         ? "IMU_NOT_READY"
+                                         : "BOTTOM_CRITICAL_TURN";
         return false;
     }
 
@@ -251,31 +327,41 @@ bool MainMission::updateForwardAssist(
         forwardAssistYawOriginDegrees_,
         esp32Telemetry.yawZDeg);
 
-    if (forwardAssistState_ == ForwardAssistState::ForwardFollow &&
-        newBottomFrame)
+    const auto bottomRecoveryConfirmed = [&]()
     {
+        if (!newBottomFrame)
+        {
+            return false;
+        }
+
         const bool bottomRecovered = currentBottomTrusted &&
                                      cameraLineSnapshot.normalSteeringValid;
-        if (bottomRecovered)
+        if (!bottomRecovered)
         {
-            bottomStableFrames_ =
-                bottomStableFrames_ > 0 && consecutiveBottomFrame
-                    ? bottomStableFrames_ + 1
-                    : 1;
-        }
-        else
-        {
-            bottomStableFrames_ = 0;
-        }
-        if (bottomStableFrames_ >=
-            config::kForwardAssistBottomStableFrames)
-        {
-            forwardAssistState_ = ForwardAssistState::Bottom;
-            forwardAssistDirection_ = ForwardAssistDirection::None;
-            forwardAssistYawDeltaDegrees_ = 0.0;
             bottomStableFrames_ = 0;
             return false;
         }
+
+        bottomStableFrames_ =
+            bottomStableFrames_ > 0 && consecutiveBottomFrame
+                ? bottomStableFrames_ + 1
+                : 1;
+        return bottomStableFrames_ >=
+               config::kForwardAssistBottomStableFrames;
+    };
+
+    if (forwardAssistState_ == ForwardAssistState::ForwardFollow &&
+        bottomRecoveryConfirmed())
+    {
+        forwardAssistState_ = ForwardAssistState::Bottom;
+        forwardAssistDirection_ = ForwardAssistDirection::None;
+        forwardAssistYawDeltaDegrees_ = 0.0;
+        bottomStableFrames_ = 0;
+        forwardAssistEntryAllowed_ = false;
+        forwardAssistEntryBlocker_ = cameraLineSnapshot.farTrusted
+                                         ? "FAR_TRUSTED"
+                                         : "MEDIUM_TRUSTED";
+        return false;
     }
 
     if (forwardAssistState_ == ForwardAssistState::ForwardFollow &&
@@ -296,26 +382,30 @@ bool MainMission::updateForwardAssist(
             forwardAssistDirection_ = ForwardAssistDirection::None;
             forwardAssistYawDeltaDegrees_ = 0.0;
             bottomStableFrames_ = 0;
+            forwardAssistEntryAllowed_ = false;
+            forwardAssistEntryBlocker_ = "SEARCH_ANGLE_LIMIT";
             return false;
         }
-
-        if (currentBottomTrusted)
-        {
-            // Durante SEARCH, qualquer FAR/MEDIUM trusted encerra o SPIN no
-            // mesmo ciclo e devolve a decisão ao fluxo inferior existente.
-            forwardAssistState_ = ForwardAssistState::Bottom;
-            forwardAssistDirection_ = ForwardAssistDirection::None;
-            forwardAssistYawDeltaDegrees_ = 0.0;
-            bottomStableFrames_ = 0;
-            return false;
-        }
-        bottomStableFrames_ = 0;
 
         if (forwardLineSnapshot.lineObservationValid())
         {
             // Esta transição acontece antes de qualquer comando de SPIN. Assim,
             // o primeiro frame frontal válido já substitui o giro pelo avanço.
             forwardAssistState_ = ForwardAssistState::ForwardFollow;
+        }
+        else if (bottomRecoveryConfirmed())
+        {
+            // Um flicker trusted conta apenas como 1/2. A bottom recupera a
+            // autoridade somente após dois frames novos, normais e consecutivos.
+            forwardAssistState_ = ForwardAssistState::Bottom;
+            forwardAssistDirection_ = ForwardAssistDirection::None;
+            forwardAssistYawDeltaDegrees_ = 0.0;
+            bottomStableFrames_ = 0;
+            forwardAssistEntryAllowed_ = false;
+            forwardAssistEntryBlocker_ = cameraLineSnapshot.farTrusted
+                                             ? "FAR_TRUSTED"
+                                             : "MEDIUM_TRUSTED";
+            return false;
         }
         else
         {
@@ -344,6 +434,8 @@ bool MainMission::updateForwardAssist(
         forwardAssistDirection_ = ForwardAssistDirection::None;
         forwardAssistYawDeltaDegrees_ = 0.0;
         bottomStableFrames_ = 0;
+        forwardAssistEntryAllowed_ = false;
+        forwardAssistEntryBlocker_ = "FORWARD_COMMAND_INVALID";
         return false;
     }
 

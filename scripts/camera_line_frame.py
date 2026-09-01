@@ -248,11 +248,11 @@ VIRTUAL_HEADING_GAIN = 0.80
 
 # A posição fina corrige apenas pequenos desvios que ainda cabem no sensor
 # CENTER. O limite impede que essa correção alcance sozinha STRONG ou PIVOT.
-VIRTUAL_FINE_CENTER_GAIN = 0.25
+VIRTUAL_FINE_CENTER_GAIN = 0.15
 # A deadband elimina ruído perto do centro. O remapeamento contínuo fora dela
 # preserva o alcance completo de -1,0 a +1,0 sem criar um salto no limite.
-VIRTUAL_FINE_CENTER_DEADBAND = 0.06
-VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.12
+VIRTUAL_FINE_CENTER_DEADBAND = 0.09
+VIRTUAL_FINE_CENTER_MAX_CORRECTION = 0.9
 
 # A correção normal alcança toda a diferença de potência em 0,36.
 # Somente MEDIUM a partir de 0,25 libera a faixa forte entre 0,36 e 0,45.
@@ -2540,7 +2540,7 @@ VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 # Após terminar a curva, novos verdes continuam bloqueados até
 # que nenhum candidato verde seja visto por esta quantidade
 # de quadros consecutivos.
-QUADROS_PARA_REARMAR_VERDE = 90
+QUADROS_PARA_REARMAR_VERDE = 60
 
 # A curva é considerada iniciada quando a posição fina local se desloca
 # suficientemente para o lado escolhido, com presença confirmada no NEAR-C.
@@ -2551,11 +2551,11 @@ LIMIAR_CURVA_VERDE_INICIADA = 0.20
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
 
 # Evita encerrar a prioridade por uma leitura central isolada.
-QUADROS_CENTRALIZADO_PARA_CONCLUIR = 15
+QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
-# Em 30 FPS, noventa frames correspondem a aproximadamente três segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 36
+# Em 30 FPS, sessenta frames correspondem a aproximadamente dois segundos.
+GREEN_MANEUVER_TIMEOUT_FRAMES = 6
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -4607,6 +4607,23 @@ def read_virtual_sensor(processed_line_mask, sensor_geometry):
     # normalizada sem contar novamente pixels na transição entre as partes.
     return float(active_pixels) / float(sensor_area)
 
+
+def select_virtual_trust_row_geometry(row_geometry, green_direction):
+    """Isola o lado escolhido pelo verde antes de calcular o trust da fileira."""
+
+    selected_side = {
+        "ESQUERDA": "left",
+        "DIREITA": "right",
+    }.get(green_direction)
+    if selected_side is None:
+        return row_geometry
+
+    selected_geometry = row_geometry.get(selected_side)
+    if selected_geometry is None:
+        return row_geometry
+    return {selected_side: selected_geometry}
+
+
 def calculate_virtual_row_position(
     left,
     center,
@@ -4672,15 +4689,24 @@ def read_virtual_line_sensors(
         processed_line_mask.shape
     )
 
-    # Estas medições usam somente a máscara final do frame atual. O trust
-    # decide se a fileira pode participar do controle, sem alterar a máscara.
+    # Durante o GREEN, o trust precisa avaliar somente o ramo escolhido. Medir
+    # a interseção inteira pode rejeitar uma curva válida por causa da espessura
+    # ou da continuidade dos outros ramos que não participarão do controle.
+    far_trust_geometry = select_virtual_trust_row_geometry(
+        geometry["far"],
+        direcao_verde_ativa,
+    )
+    medium_trust_geometry = select_virtual_trust_row_geometry(
+        geometry["medium"],
+        direcao_verde_ativa,
+    )
     far_line_measurement = measure_virtual_row_line_confidence(
         processed_line_mask,
-        geometry["far"],
+        far_trust_geometry,
     )
     medium_line_measurement = measure_virtual_row_line_confidence(
         processed_line_mask,
-        geometry["medium"],
+        medium_trust_geometry,
     )
     far_trusted = line_measurement_is_trusted(
         far_line_measurement,
@@ -5146,6 +5172,15 @@ class VirtualLineSearchTracker:
         return direction
 
 
+def green_direction_to_search_direction(direction):
+    """Converte a direção do GREEN para o vocabulário usado pela busca cega."""
+
+    return {
+        "ESQUERDA": "LEFT",
+        "DIREITA": "RIGHT",
+    }.get(direction)
+
+
 def update_gap_forward_recovery(
     active,
     forward_frames,
@@ -5227,7 +5262,11 @@ def update_green_maneuver_state(
         "direction": "NENHUMA",
         "activeFrames": 0,
         "timedOut": True,
-        "searchDirection": None if raw_line_visible else direction,
+        "searchDirection": (
+            None
+            if raw_line_visible
+            else green_direction_to_search_direction(direction)
+        ),
     }
 
 
@@ -5626,7 +5665,25 @@ def calculate_line_follower_command(
             virtual_turn_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
-        steering_error = protected_virtual_steering
+        green_branch_visible = (
+            trusted_far_position is not None
+            or trusted_medium_position is not None
+        )
+        if green_branch_visible and protected_virtual_steering is not None:
+            steering_error = protected_virtual_steering
+        else:
+            # O verde pode ser reconhecido antes de o novo ramo alcançar FAR e
+            # MEDIUM, ou apenas uma fileira pode vê-lo sem formar heading. Nesse
+            # intervalo, parar abandona a interseção; mantém o pivot confirmado.
+            green_search_direction = green_direction_to_search_direction(
+                direcao_verde_ativa
+            )
+            if green_search_direction == "LEFT":
+                steering_error = -1.0
+            elif green_search_direction == "RIGHT":
+                steering_error = 1.0
+            else:
+                steering_error = None
         control_source = "virtual-green"
 
     elif gap_forward_active:
