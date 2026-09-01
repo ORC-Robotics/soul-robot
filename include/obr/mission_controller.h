@@ -56,6 +56,7 @@ private:
         double targetDistanceCm);
     void updateAlignClosestBall(
         RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
         const ForwardBallSnapshot& forwardBallSnapshot);
     void resetMissionState();
 

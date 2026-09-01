@@ -566,6 +566,36 @@ Ele mostra centro, raio, diâmetro, distância calibrada, ângulo e direção. O
 de calibração, os ajustes HSV e a saída JSON preparada para a ESP32 estão em
 `scripts/ball_vision/README.md`.
 
+### Missão de debug: alinhamento com bola
+
+A opção `ALINHAR COM BOLA MAIS PRÓXIMA` é uma missão autônoma isolada e não
+participa da Missão Principal. Ative a câmera frontal, selecione essa missão e
+só então use `Autônomo`. O maior raio visual válido representa a bola mais
+próxima.
+
+O controle gira pelo `tx`: negativo para a esquerda e positivo para a direita.
+O robô considera alinhado somente dentro de `±2°`. Fora dessa zona, o pivot
+parte com potência `0,70`. Assim que os dois encoders confirmam movimento no
+sentido comandado, entra no controle proporcional: usa `0,68` com erro igual ou
+maior que `12°` e reduz linearmente até `0,61` ao se aproximar de `2°`. A posição
+usada pelo controle é publicada em RAM a cada frame. Se o `tx` cruzar o centro
+entre dois frames, o PWM é zerado por `160 ms` antes de permitir uma correção
+oposta. Perda da bola, câmera desligada ou IPC com mais de `500 ms` zera os dois
+lados imediatamente.
+
+Para limitar aquecimento, o stream frontal integrado captura a `15 FPS`, limita
+o OpenCV a duas threads e executa a etapa Hough da bola prata em meia resolução,
+convertendo centro e raio de volta para `960×540`. O desenho e a compressão JPEG
+só são executados enquanto existe um cliente acompanhando o dashboard, com o
+vídeo de depuração limitado a `12 FPS`. O `tx` de controle continua sendo
+publicado em cada frame analisado. As câmeras continuam independentes: ativar
+uma delas manualmente não altera o estado solicitado da outra. A política da
+missão é explícita: `ALINHAR COM BOLA` liga a frontal, desliga a inferior e
+habilita HSV/Hough; fora desse modo, a frontal pode transmitir vídeo cru, mas
+não executa nem publica detecção de bolas, e o loop C++ não consulta o IPC de
+bolas. Ao selecionar `MISSÃO PRINCIPAL`, a detecção de bolas é desligada e a
+câmera inferior é solicitada novamente.
+
 ```sh
 cd /home/raspberry/OBR2026K
 python3 scripts/camera_line_frame.py

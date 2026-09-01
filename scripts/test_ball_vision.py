@@ -275,9 +275,9 @@ class SilverBallDetectorTest(unittest.TestCase):
 
 class BallTrackerTest(unittest.TestCase):
     @staticmethod
-    def candidate(center_x, center_y, radius):
+    def candidate(center_x, center_y, radius, ball_type="silver_ball"):
         return BallCandidate(
-            ball_type="silver_ball",
+            ball_type=ball_type,
             center_x=float(center_x),
             center_y=float(center_y),
             radius_pixels=float(radius),
@@ -328,6 +328,27 @@ class BallTrackerTest(unittest.TestCase):
         tracker.update([self.candidate(480, 20, 50)])
 
         self.assertEqual(tracker.update([]), [])
+
+    def test_combined_detector_selects_larger_distinct_ball_as_closest(self):
+        class FixedDetector:
+            def __init__(self, candidates):
+                self.candidates = candidates
+
+            def detect(self, frame):
+                del frame
+                return self.candidates
+
+        black = self.candidate(220, 250, 40, "black_ball")
+        silver = self.candidate(700, 230, 75)
+        detector = BallDetector(
+            black_detector=FixedDetector([black]),
+            silver_detector=FixedDetector([silver]),
+        )
+
+        candidates = detector.detect(np.zeros((540, 960, 3), dtype=np.uint8))
+
+        self.assertEqual(candidates[0].ball_type, "silver_ball")
+        self.assertEqual(candidates[0].radius_pixels, 75.0)
 
 
 class BallObservationTest(unittest.TestCase):

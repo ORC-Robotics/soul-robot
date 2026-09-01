@@ -33,6 +33,11 @@ tempo gasto no ciclo periódico do servidor sem instrumentar o loop de controle.
 - snapshot JPEG em `/tmp`: 2 Hz;
 - IPC rápido da linha em `/dev/shm`: uma publicação por frame processado;
 - câmera frontal desligada: consulta seu arquivo de controle a 10 Hz;
+- captura frontal ativa: 960×540, alvo de 15 FPS e duas threads do OpenCV;
+- Hough frontal da bola prata: meia resolução, com saída convertida para 960×540;
+- HSV/Hough frontal: executados somente com a missão de alinhamento selecionada;
+- publicação MJPEG frontal: até 12 FPS e somente com cliente conectado;
+- IPC rápido da bola em `/dev/shm`: uma publicação por frame processado;
 - reconexão do WebSocket e do MJPEG: tentativa após 1 segundo;
 - `requestAnimationFrame`: uma chamada isolada ao trocar a origem do MJPEG, sem loop.
 

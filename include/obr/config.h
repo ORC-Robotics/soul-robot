@@ -68,8 +68,20 @@ constexpr const char* kForwardCameraTemporaryControlPath =
 constexpr const char* kForwardCameraStatusPath =
     "/tmp/obr_forward_camera_status.json";
 
+// A missão de alinhamento habilita este IPC para executar HSV e Hough.
+// O stream frontal pode continuar ativo sem gastar CPU detectando bolas.
+constexpr const char* kForwardBallDetectionControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled";
+constexpr const char* kForwardBallDetectionTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled.tmp";
+
+// IPC rápido, mantido em RAM, com a posição mais recente da bola frontal.
+// Separá-lo do status completo permite que o controle receba um tx por frame.
+constexpr const char* kForwardBallStatusPath =
+    "/dev/shm/obr_forward_ball_status.json";
+
 // Idade máxima, em milissegundos, aceita para a posição da bola frontal.
-// O stream publica a 5 Hz; perder duas atualizações interrompe o alinhamento.
+// Se a visão parar de publicar, o alinhamento interrompe os motores.
 constexpr int kForwardBallStatusTimeoutMs = 500;
 
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
@@ -95,31 +107,6 @@ constexpr double kMaxMotorOutput = 1.0;
 // Potência mínima para iniciar uma roda que estava parada.
 // Este valor foi validado fisicamente; reduzi-lo pode impedir a partida do motor.
 constexpr double kMotorStartMinimumPower = 0.67;
-
-// Erro horizontal, em graus, aceito pela missão isolada de alinhamento.
-// Uma zona morta evita alternar rapidamente o sentido perto do centro.
-constexpr double kBallAlignmentDeadbandDegrees = 3.0;
-
-// Erro que retira o robô do estado alinhado. A histerese maior que a zona
-// morta impede novos pulsos por pequenas oscilações do detector.
-constexpr double kBallAlignmentExitDeadbandDegrees = 5.0;
-
-// Potência normalizada do pivot de debug. Ela coincide com o piso de partida
-// medido dos motores; aumentar este valor torna o alinhamento mais agressivo.
-constexpr double kBallAlignmentTurnPower = kMotorStartMinimumPower;
-
-// Duração do pulso e pausa de estabilização, em milissegundos.
-// O PWM curto reduz a ultrapassagem enquanto a visão frontal atualiza a 5 Hz.
-constexpr int kBallAlignmentPulseMs = 70;
-constexpr int kBallAlignmentSettleMs = 230;
-
-static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
-                  kBallAlignmentExitDeadbandDegrees >
-                      kBallAlignmentDeadbandDegrees &&
-                  kBallAlignmentTurnPower >= kMotorStartMinimumPower &&
-                  kBallAlignmentTurnPower <= kMaxMotorOutput &&
-                  kBallAlignmentPulseMs > 0 && kBallAlignmentSettleMs > 0,
-              "A missão de alinhamento deve preservar limites seguros.");
 
 // Potência mínima para manter uma roda que os encoders já confirmaram em movimento.
 // Ela permite desacelerar a roda interna nas curvas sem voltar ao piso de partida.
@@ -149,6 +136,39 @@ static_assert(kMotorRunMinimumPower > 0.0 &&
 static_assert(kMotorRunConfirmationMinimumRateCountsPerSecond > 0.0 &&
                   kMotorRunConfirmationSamples > 0 && kMotorRunLossSamples > 0,
               "A confirmação de movimento pelos encoders deve ser positiva.");
+
+// Erro horizontal, em graus, aceito pela missão isolada de alinhamento.
+// Uma zona morta evita alternar rapidamente o sentido perto do centro.
+constexpr double kBallAlignmentDeadbandDegrees = 2.0;
+
+// Potência normalizada usada para vencer a inércia no início do pivot.
+constexpr double kBallAlignmentStartPower = 0.70;
+
+// Limites do controle proporcional depois que os encoders confirmam movimento.
+// Perto do centro, o piso de execução reduz a inércia sem parar uma roda.
+constexpr double kBallAlignmentMinimumRunPower = kMotorRunMinimumPower;
+constexpr double kBallAlignmentMaximumRunPower = 0.68;
+
+// Erro, em graus, a partir do qual o proporcional usa a potência máxima de giro.
+// Reduzir este valor torna a aproximação mais agressiva perto do centro.
+constexpr double kBallAlignmentFullPowerErrorDegrees = 12.0;
+
+// Tempo sem PWM após o tx cruzar o centro, em milissegundos.
+// A pausa dissipa a inércia antes de uma eventual correção no sentido oposto.
+constexpr int kBallAlignmentCrossingBrakeMs = 160;
+
+static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
+                  kBallAlignmentFullPowerErrorDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentStartPower >=
+                      kBallAlignmentMaximumRunPower &&
+                  kBallAlignmentMaximumRunPower >=
+                      kBallAlignmentMinimumRunPower &&
+                  kBallAlignmentMinimumRunPower >=
+                      kMotorRunMinimumPower &&
+                  kBallAlignmentStartPower <= kMaxMotorOutput &&
+                  kBallAlignmentCrossingBrakeMs > 0,
+              "A missão de alinhamento deve preservar limites seguros.");
 
 // O sincronismo atua somente quando os dois lados avançam ou recuam juntos.
 // Ele reduz gradualmente o lado mais rápido, mas o PWM corrigido nunca pode

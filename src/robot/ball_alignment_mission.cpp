@@ -38,10 +38,53 @@ double alignmentProgress(double txDegrees)
         0.0,
         100.0);
 }
+
+double proportionalTurnPower(double absoluteTxDegrees)
+{
+    const double errorRangeDegrees =
+        config::kBallAlignmentFullPowerErrorDegrees -
+        config::kBallAlignmentDeadbandDegrees;
+    const double normalizedError = std::clamp(
+        (absoluteTxDegrees - config::kBallAlignmentDeadbandDegrees) /
+            errorRangeDegrees,
+        0.0,
+        1.0);
+    return config::kBallAlignmentMinimumRunPower +
+           normalizedError *
+               (config::kBallAlignmentMaximumRunPower -
+                config::kBallAlignmentMinimumRunPower);
+}
+
+std::string powerText(double power)
+{
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(2) << power;
+    return text.str();
+}
+
+bool encodersConfirmMotion(
+    const Esp32TelemetrySnapshot& telemetry,
+    double turnDirection)
+{
+    // A potência aplicada confirma que a taxa pertence ao pivot atual, e não
+    // à inércia restante de um comando anterior ou do sentido oposto.
+    return telemetry.sensorFresh &&
+           std::isfinite(telemetry.leftEncoderRate) &&
+           std::isfinite(telemetry.rightEncoderRate) &&
+           std::isfinite(telemetry.appliedLeftPower) &&
+           std::isfinite(telemetry.appliedRightPower) &&
+           telemetry.appliedLeftPower * turnDirection > 0.0 &&
+           telemetry.appliedRightPower * -turnDirection > 0.0 &&
+           std::abs(telemetry.leftEncoderRate) >=
+               config::kMotorRunConfirmationMinimumRateCountsPerSecond &&
+           std::abs(telemetry.rightEncoderRate) >=
+               config::kMotorRunConfirmationMinimumRateCountsPerSecond;
+}
 }
 
 BallAlignmentOutput BallAlignmentMission::update(
     const ForwardBallSnapshot& ball,
+    const Esp32TelemetrySnapshot& telemetry,
     std::chrono::steady_clock::time_point now)
 {
     BallAlignmentOutput output;
@@ -64,56 +107,12 @@ BallAlignmentOutput BallAlignmentMission::update(
 
     const double absoluteTx = std::abs(ball.txDegrees);
     const double progress = alignmentProgress(ball.txDegrees);
-    if (phase_ == Phase::Aligned)
-    {
-        if (absoluteTx <= config::kBallAlignmentExitDeadbandDegrees)
-        {
-            output.status = makeStatus(
-                "ball_aligned",
-                "Bola alinhada; tx=" + txText(ball.txDegrees),
-                100.0);
-            return output;
-        }
-        phase_ = Phase::Idle;
-    }
-
-    if (phase_ == Phase::TurningPulse)
-    {
-        if (now - phaseStartedAt_ <
-            std::chrono::milliseconds(config::kBallAlignmentPulseMs))
-        {
-            output.leftPower =
-                pulseDirection_ * config::kBallAlignmentTurnPower;
-            output.rightPower = -output.leftPower;
-            output.status = makeStatus(
-                "ball_alignment_turning",
-                std::string("Pulso para a ") +
-                    (pulseDirection_ > 0.0 ? "direita" : "esquerda") +
-                    "; tx=" + txText(ball.txDegrees),
-                progress);
-            return output;
-        }
-        phase_ = Phase::Settling;
-        phaseStartedAt_ = now;
-    }
-
-    if (phase_ == Phase::Settling)
-    {
-        if (now - phaseStartedAt_ <
-            std::chrono::milliseconds(config::kBallAlignmentSettleMs))
-        {
-            output.status = makeStatus(
-                "ball_alignment_settling",
-                "PWM zerado: aguardando nova leitura de tx",
-                progress);
-            return output;
-        }
-        phase_ = Phase::Idle;
-    }
-
     if (absoluteTx <= config::kBallAlignmentDeadbandDegrees)
     {
-        phase_ = Phase::Aligned;
+        phase_ = Phase::Tracking;
+        lastTurnDirection_ = 0.0;
+        startCommandIssued_ = false;
+        motionConfirmed_ = false;
         output.status = makeStatus(
             "ball_aligned",
             "Bola alinhada; tx=" + txText(ball.txDegrees),
@@ -123,23 +122,82 @@ BallAlignmentOutput BallAlignmentMission::update(
 
     // tx positivo indica bola à direita: lado esquerdo avança e o direito
     // recua. tx negativo aplica exatamente o pivot oposto.
-    pulseDirection_ = ball.txDegrees > 0.0 ? 1.0 : -1.0;
-    phase_ = Phase::TurningPulse;
-    phaseStartedAt_ = now;
-    output.leftPower = pulseDirection_ * config::kBallAlignmentTurnPower;
+    const double turnDirection = ball.txDegrees > 0.0 ? 1.0 : -1.0;
+
+    if (phase_ == Phase::BrakingAfterCrossing)
+    {
+        const bool brakeFinished =
+            now - brakingStartedAt_ >=
+            std::chrono::milliseconds(config::kBallAlignmentCrossingBrakeMs);
+        const bool hasNewMeasurement = ball.timestamp > crossingTimestamp_;
+        if (!brakeFinished || !hasNewMeasurement)
+        {
+            output.status = makeStatus(
+                "ball_alignment_braking",
+                "Centro cruzado: freando antes de corrigir; tx=" +
+                    txText(ball.txDegrees),
+                progress);
+            return output;
+        }
+        phase_ = Phase::Tracking;
+        lastTurnDirection_ = 0.0;
+        startCommandIssued_ = false;
+        motionConfirmed_ = false;
+    }
+
+    if (lastTurnDirection_ != 0.0 &&
+        turnDirection != lastTurnDirection_)
+    {
+        // Uma troca de sinal entre frames significa que o centro foi cruzado.
+        // Zerar o PWM evita ampliar a ultrapassagem com uma reversão imediata.
+        phase_ = Phase::BrakingAfterCrossing;
+        crossingTimestamp_ = ball.timestamp;
+        brakingStartedAt_ = now;
+        lastTurnDirection_ = 0.0;
+        startCommandIssued_ = false;
+        motionConfirmed_ = false;
+        output.status = makeStatus(
+            "ball_alignment_braking",
+            "Centro cruzado: PWM zerado; tx=" + txText(ball.txDegrees),
+            progress);
+        return output;
+    }
+
+    if (lastTurnDirection_ != turnDirection)
+    {
+        startCommandIssued_ = false;
+        motionConfirmed_ = false;
+    }
+    lastTurnDirection_ = turnDirection;
+    if (startCommandIssued_ && !motionConfirmed_ &&
+        encodersConfirmMotion(telemetry, turnDirection))
+    {
+        motionConfirmed_ = true;
+    }
+
+    const double turnPower = motionConfirmed_
+        ? proportionalTurnPower(absoluteTx)
+        : config::kBallAlignmentStartPower;
+    output.leftPower = turnDirection * turnPower;
     output.rightPower = -output.leftPower;
+    startCommandIssued_ = true;
     output.status = makeStatus(
         "ball_alignment_turning",
-        std::string("Iniciando pulso para a ") +
-            (pulseDirection_ > 0.0 ? "direita" : "esquerda") +
-            "; tx=" + txText(ball.txDegrees),
+        std::string(motionConfirmed_ ? "Controle proporcional para a "
+                                     : "Vencendo inércia para a ") +
+            (turnDirection > 0.0 ? "direita" : "esquerda") +
+            "; tx=" + txText(ball.txDegrees) +
+            "; potência=" + powerText(turnPower),
         progress);
     return output;
 }
 
 void BallAlignmentMission::reset()
 {
-    phase_ = Phase::Idle;
-    pulseDirection_ = 0.0;
-    phaseStartedAt_ = {};
+    phase_ = Phase::Tracking;
+    lastTurnDirection_ = 0.0;
+    crossingTimestamp_ = 0.0;
+    startCommandIssued_ = false;
+    motionConfirmed_ = false;
+    brakingStartedAt_ = {};
 }

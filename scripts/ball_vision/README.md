@@ -6,7 +6,9 @@ segue-faixa.
 
 O detector também está integrado ao stream frontal normal. No dashboard,
 selecione `Frontal` e pressione `ATIVAR` para ver o vídeo anotado e o HUD com os
-dados da bola, sem executar outro comando.
+dados da bola. HSV e Hough só são executados quando a missão autônoma selecionada
+é `ALINHAR COM BOLA MAIS PRÓXIMA`; fora dela, o stream permanece disponível como
+vídeo cru e o IPC não publica uma bola antiga.
 
 ## Dependências
 
@@ -76,7 +78,9 @@ OBR_FORWARD_CAMERA_INDEX=1 python3 scripts/ball_vision/main.py
 4. Para a bola prata, o detector realça o contraste local, procura circunferências
    com Hough e valida o brilho, a variação de intensidade, a textura interna e
    a cobertura da circunferência. A textura amassada do alumínio é necessária
-   para não confundir o piso claro com a bola.
+   para não confundir o piso claro com a bola. No stream integrado, a etapa
+   Hough usa meia resolução e converte a geometria encontrada de volta para a
+   escala original, reduzindo CPU sem invalidar a calibração em 960×540.
 5. `distance_calibration.py` interpola os cinco pontos medidos. Fora da faixa,
    usa uma relação inversa ancorada no ponto extremo para permanecer contínua e
    positiva.

@@ -8,6 +8,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+import cv2  # type: ignore
+
 import camera_line_frame
 from ball_vision.ball_detector import BallDetector
 from ball_vision.distance_calibration import DistanceCalibration
@@ -21,10 +23,19 @@ from ball_vision.main import (
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
 TEMP_CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled.tmp"
+BALL_DETECTION_CONTROL_PATH = "/dev/shm/obr_forward_ball_detection_enabled"
+TEMP_BALL_DETECTION_CONTROL_PATH = (
+    "/dev/shm/obr_forward_ball_detection_enabled.tmp"
+)
 STATUS_PATH = "/tmp/obr_forward_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_forward_camera_status.tmp.json"
+BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.json"
+TEMP_BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.tmp.json"
 STREAM_PORT = 8091
 STREAM_PATH = "/stream.mjpg"
+STREAM_FPS = 12
+STREAM_JPEG_QUALITY = 70
+OPENCV_THREAD_COUNT = 2
 STATUS_FPS = 5
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
@@ -33,17 +44,18 @@ running = True
 camera_active = False
 latest_jpeg = None
 latest_jpeg_sequence = 0
+active_stream_clients = 0
 frame_condition = threading.Condition()
 ball_detector = BallDetector()
 distance_calibration = DistanceCalibration()
 ball_tracker = BallTracker()
 
 
-def empty_ball_status(processing_ms=0.0):
+def empty_ball_status(processing_ms=0.0, detection_enabled=True):
     """Remove qualquer detecção antiga quando o frame atual não tem bola."""
 
     return {
-        "ballDetectionEnabled": True,
+        "ballDetectionEnabled": bool(detection_enabled),
         "ballDetected": False,
         "ballType": "",
         "ballCenterX": None,
@@ -94,8 +106,26 @@ def build_ball_status(observation, processing_ms):
     }
 
 
-def process_ball_frame(frame):
-    """Analisa e anota um frame sem abrir outra instância da câmera frontal."""
+def save_ball_control_status(active, ball_status=None):
+    """Publica em RAM somente os campos usados pelo controle de alinhamento."""
+
+    current_ball = ball_status or empty_ball_status()
+    status = {
+        "active": bool(active),
+        "timestamp": time.time(),
+        "ballDetected": bool(current_ball["ballDetected"]),
+        "ballType": current_ball["ballType"],
+        "ballTxDegrees": current_ball["ballTxDegrees"],
+        "ballDistanceCm": current_ball["ballDistanceCm"],
+        "ballRadiusPixels": current_ball["ballRadiusPixels"],
+    }
+    with open(TEMP_BALL_STATUS_PATH, "w", encoding="utf-8") as status_file:
+        json.dump(status, status_file, allow_nan=False)
+    os.replace(TEMP_BALL_STATUS_PATH, BALL_STATUS_PATH)
+
+
+def analyze_ball_frame(frame):
+    """Analisa um frame sem gastar CPU com desenho ou JPEG."""
 
     processing_started = time.perf_counter()
     observation, candidates = analyze_frame(
@@ -104,9 +134,28 @@ def process_ball_frame(frame):
         distance_calibration,
         tracker=ball_tracker,
     )
-    display_frame = draw_overlay(frame, observation, candidates)
     processing_ms = (time.perf_counter() - processing_started) * 1000.0
-    return display_frame, build_ball_status(observation, processing_ms)
+    return (
+        observation,
+        candidates,
+        build_ball_status(observation, processing_ms),
+    )
+
+
+def analyze_requested_ball_frame(frame, detection_enabled):
+    """Executa a visão somente quando a missão de alinhamento a autoriza."""
+
+    if not detection_enabled:
+        return None, [], empty_ball_status(detection_enabled=False)
+    return analyze_ball_frame(frame)
+
+
+def process_ball_frame(frame):
+    """Analisa e anota um frame para testes ou visualização local."""
+
+    observation, candidates, ball_status = analyze_ball_frame(frame)
+    display_frame = draw_overlay(frame, observation, candidates)
+    return display_frame, ball_status
 
 
 def environment_enabled():
@@ -135,6 +184,35 @@ def requested_enabled():
 
     try:
         with open(CONTROL_PATH, "r", encoding="utf-8") as control_file:
+            return control_file.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def write_requested_ball_detection_enabled(enabled):
+    """Define se a missão atual autoriza executar os detectores de bolas."""
+
+    with open(
+        TEMP_BALL_DETECTION_CONTROL_PATH,
+        "w",
+        encoding="utf-8",
+    ) as control_file:
+        control_file.write("1\n" if enabled else "0\n")
+    os.replace(
+        TEMP_BALL_DETECTION_CONTROL_PATH,
+        BALL_DETECTION_CONTROL_PATH,
+    )
+
+
+def requested_ball_detection_enabled():
+    """Retorna falso fora da missão de alinhamento ou com IPC inválido."""
+
+    try:
+        with open(
+            BALL_DETECTION_CONTROL_PATH,
+            "r",
+            encoding="utf-8",
+        ) as control_file:
             return control_file.read().strip() == "1"
     except OSError:
         return False
@@ -175,10 +253,20 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "targetCameraFps": profile["target_fps"],
         "streamPort": STREAM_PORT,
         "streamPath": STREAM_PATH,
+        "streamFps": STREAM_FPS,
+        "jpegQuality": STREAM_JPEG_QUALITY,
+        "opencvThreads": OPENCV_THREAD_COUNT,
+        "silverProcessingScale": (
+            ball_detector.silver_detector.config.processing_scale
+        ),
         "error": error_message,
         "timestamp": time.time(),
     }
-    status.update(ball_status or empty_ball_status())
+    status.update(
+        ball_status or empty_ball_status(
+            detection_enabled=requested_ball_detection_enabled()
+        )
+    )
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -192,6 +280,38 @@ def publish_frame(jpeg):
         latest_jpeg = jpeg
         latest_jpeg_sequence += 1
         frame_condition.notify_all()
+
+
+def register_stream_client():
+    """Habilita desenho e JPEG somente quando alguém acompanha o dashboard."""
+
+    global active_stream_clients
+    with frame_condition:
+        active_stream_clients += 1
+
+
+def unregister_stream_client():
+    """Remove um cliente sem permitir que o contador fique negativo."""
+
+    global active_stream_clients
+    with frame_condition:
+        active_stream_clients = max(0, active_stream_clients - 1)
+
+
+def stream_frame_is_due(now, last_stream_time):
+    """Limita o vídeo de debug sem reduzir a frequência do tx de controle."""
+
+    with frame_condition:
+        has_clients = active_stream_clients > 0
+    return has_clients and now - last_stream_time >= 1.0 / STREAM_FPS
+
+
+def encode_stream_frame(frame):
+    """Codifica o stream frontal com qualidade suficiente para depuração."""
+
+    parameters = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_JPEG_QUALITY]
+    ok, encoded = cv2.imencode(".jpg", frame, parameters)
+    return encoded.tobytes() if ok else None
 
 
 def clear_frame():
@@ -241,6 +361,7 @@ class ForwardStreamHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         last_sequence = -1
+        register_stream_client()
         try:
             while running and camera_active:
                 with frame_condition:
@@ -263,6 +384,8 @@ class ForwardStreamHandler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             return
+        finally:
+            unregister_stream_client()
 
     def do_HEAD(self):
         if self.path.split("?", 1)[0] != STREAM_PATH:
@@ -330,28 +453,36 @@ def close_forward_camera(camera):
 def main():
     global camera_active
 
+    # Limitar o paralelismo evita que uma única câmera ocupe todos os núcleos
+    # da Raspberry Pi e eleve desnecessariamente a temperatura do processador.
+    cv2.setNumThreads(OPENCV_THREAD_COUNT)
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
     if camera_line_frame.Picamera2 is None:
         save_status(False, False, "error", error_message="Picamera2 indisponível.")
+        save_ball_control_status(False)
         return 1
 
     initial_enabled = environment_enabled()
     write_requested_enabled(initial_enabled)
     save_status(initial_enabled, False, "starting" if initial_enabled else "disabled")
+    save_ball_control_status(False)
     stream_server = start_stream_server()
     camera = None
     camera_format = ""
     details = {}
-    ball_status = empty_ball_status()
+    ball_detection_active = False
+    ball_status = empty_ball_status(detection_enabled=False)
     previous_time = 0.0
     smoothed_fps = 0.0
     last_status_time = 0.0
+    last_stream_time = 0.0
     next_retry_time = 0.0
 
     try:
         while running:
             enabled = requested_enabled()
+            detection_requested = requested_ball_detection_enabled()
             if not enabled:
                 state_changed = False
                 if camera is not None:
@@ -361,7 +492,10 @@ def main():
                     camera = None
                     camera_format = ""
                     details = {}
-                    ball_status = empty_ball_status()
+                    ball_detection_active = False
+                    ball_status = empty_ball_status(
+                        detection_enabled=detection_requested
+                    )
                     ball_tracker.reset()
                     state_changed = True
                     print("Câmera frontal desativada e liberada.", flush=True)
@@ -374,6 +508,7 @@ def main():
                         "disabled",
                         ball_status=ball_status,
                     )
+                    save_ball_control_status(False, ball_status)
                     last_status_time = current_time
                 time.sleep(IDLE_POLL_SECONDS)
                 continue
@@ -384,12 +519,16 @@ def main():
                     time.sleep(IDLE_POLL_SECONDS)
                     continue
                 save_status(True, False, "starting")
+                save_ball_control_status(False)
                 try:
                     camera, camera_format, details = open_forward_camera()
                     previous_time = time.monotonic()
                     smoothed_fps = 0.0
                     last_status_time = 0.0
-                    ball_status = empty_ball_status()
+                    ball_detection_active = False
+                    ball_status = empty_ball_status(
+                        detection_enabled=detection_requested
+                    )
                     ball_tracker.reset()
                     camera_active = True
                     print("Câmera frontal ativada.", flush=True)
@@ -400,22 +539,46 @@ def main():
                     clear_frame()
                     next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                     save_status(True, False, "error", error_message=str(error))
+                    save_ball_control_status(False)
                     print(f"Câmera frontal não pôde ser ativada: {error}", flush=True)
                     continue
 
             try:
                 frame = camera.capture_array("main")
-                display_frame, ball_status = process_ball_frame(frame)
-                jpeg = camera_line_frame.encode_frame(display_frame)
+                detection_requested = requested_ball_detection_enabled()
+                if detection_requested != ball_detection_active:
+                    ball_tracker.reset()
+                    ball_detection_active = detection_requested
+
+                # Fora do alinhamento, mantém somente captura e stream cru.
+                # Nenhum HSV, Hough, payload ou tx antigo pode ser publicado.
+                observation, candidates, ball_status = (
+                    analyze_requested_ball_frame(frame, ball_detection_active)
+                )
+
+                # O IPC rápido só fica ativo quando a missão autoriza detecção.
+                save_ball_control_status(ball_detection_active, ball_status)
+                current_time = time.monotonic()
+                jpeg = None
+                if stream_frame_is_due(current_time, last_stream_time):
+                    display_frame = (
+                        draw_overlay(frame, observation, candidates)
+                        if ball_detection_active else frame
+                    )
+                    jpeg = encode_stream_frame(display_frame)
+                    last_stream_time = current_time
             except Exception as error:
                 camera_active = False
                 clear_frame()
                 close_forward_camera(camera)
                 camera = None
-                ball_status = empty_ball_status()
+                ball_status = empty_ball_status(
+                    detection_enabled=detection_requested
+                )
                 ball_tracker.reset()
                 next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                 save_status(True, False, "error", error_message=str(error))
+                save_ball_control_status(False)
                 print(f"Captura frontal falhou; nova tentativa será feita: {error}",
                       flush=True)
                 continue
@@ -450,8 +613,10 @@ def main():
             False,
             False,
             "stopped",
-            ball_status=empty_ball_status(),
+            ball_status=empty_ball_status(detection_enabled=False),
         )
+        save_ball_control_status(False)
+        write_requested_ball_detection_enabled(False)
         stream_server.shutdown()
         stream_server.server_close()
 

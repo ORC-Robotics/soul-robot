@@ -165,13 +165,28 @@ int main()
             consumeNextStartButtonShortPress = false;
         }
 
-        const bool cameraReady = cameraMonitor.ready();
-        const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
-        const ForwardBallSnapshot forwardBallSnapshot =
-            cameraMonitor.forwardBallSnapshot();
+        const AutonomousMission selectedMission =
+            robotState.snapshot().autonomousMission;
+        bool cameraReady = false;
+        CameraLineSnapshot cameraLineSnapshot;
+        ForwardBallSnapshot forwardBallSnapshot;
+        if (selectedMission == AutonomousMission::AlignClosestBall)
+        {
+            // Durante o alinhamento, a câmera inferior está desligada e somente
+            // o IPC frontal participa da decisão de movimento.
+            forwardBallSnapshot = cameraMonitor.forwardBallSnapshot();
+        }
+        else if (selectedMission == AutonomousMission::MainMission)
+        {
+            // Fora da missão principal, nem mesmo o IPC do segue-faixa precisa
+            // ser consultado pelo loop de controle.
+            cameraReady = cameraMonitor.ready();
+            cameraLineSnapshot = cameraMonitor.lineSnapshot();
+        }
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
-        if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
-            std::chrono::seconds(1))
+        if (selectedMission == AutonomousMission::MainMission &&
+            cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
+                std::chrono::seconds(1))
         {
             // Este log apenas mostra a percepção. A classificação verde não
             // participa de nenhuma decisão de movimento nesta etapa.
@@ -285,8 +300,14 @@ int main()
         robotState.enforceCommandTimeout(std::chrono::milliseconds(config::kCommandTimeoutMs));
 
         const RobotSnapshot robotSnapshot = robotState.snapshot();
+        const bool selectedCameraReady =
+            robotSnapshot.autonomousMission ==
+                    AutonomousMission::AlignClosestBall
+                ? forwardBallSnapshot.sourceFresh
+                : cameraReady;
         const bool systemReady = esp32Telemetry.readyForOperation() &&
-                                 !robotSnapshot.emergencyStop && cameraReady;
+                                 !robotSnapshot.emergencyStop &&
+                                 selectedCameraReady;
         readyLed.setReady(systemReady);
 
         // A conclusão do boot fica travada até o processo reiniciar. Uma falha

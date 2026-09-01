@@ -41,6 +41,7 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 class ForwardCameraStreamTest(unittest.TestCase):
     def setUp(self):
         forward_camera_stream.ball_tracker.reset()
+        forward_camera_stream.active_stream_clients = 0
 
     @staticmethod
     def silver_ball_frame():
@@ -99,6 +100,92 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 forward_camera_stream.write_requested_enabled(False)
                 self.assertFalse(forward_camera_stream.requested_enabled())
 
+    def test_ball_detection_control_file_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            control_path = os.path.join(temporary_directory, "ball_enabled")
+            temporary_path = os.path.join(
+                temporary_directory,
+                "ball_enabled.tmp",
+            )
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_DETECTION_CONTROL_PATH",
+                control_path,
+            ), mock.patch.object(
+                forward_camera_stream,
+                "TEMP_BALL_DETECTION_CONTROL_PATH",
+                temporary_path,
+            ):
+                forward_camera_stream.write_requested_ball_detection_enabled(True)
+                self.assertTrue(
+                    forward_camera_stream.requested_ball_detection_enabled()
+                )
+                forward_camera_stream.write_requested_ball_detection_enabled(False)
+                self.assertFalse(
+                    forward_camera_stream.requested_ball_detection_enabled()
+                )
+
+    def test_disabled_ball_detection_skips_opencv_pipeline(self):
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        with mock.patch.object(forward_camera_stream, "analyze_frame") as detector:
+            observation, candidates, status = (
+                forward_camera_stream.analyze_requested_ball_frame(frame, False)
+            )
+
+        detector.assert_not_called()
+        self.assertIsNone(observation)
+        self.assertEqual(candidates, [])
+        self.assertFalse(status["ballDetectionEnabled"])
+        self.assertFalse(status["ballDetected"])
+        self.assertIsNone(status["ballTxDegrees"])
+
+    def test_fast_ball_status_contains_control_fields(self):
+        ball_status = forward_camera_stream.empty_ball_status()
+        ball_status.update({
+            "ballDetected": True,
+            "ballType": "black_ball",
+            "ballTxDegrees": 7.5,
+            "ballDistanceCm": 42.0,
+            "ballRadiusPixels": 70.0,
+        })
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            status_path = os.path.join(temporary_directory, "ball.json")
+            temporary_path = os.path.join(temporary_directory, "ball.tmp.json")
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_STATUS_PATH",
+                status_path,
+            ), mock.patch.object(
+                forward_camera_stream,
+                "TEMP_BALL_STATUS_PATH",
+                temporary_path,
+            ):
+                forward_camera_stream.save_ball_control_status(True, ball_status)
+
+            with open(status_path, "r", encoding="utf-8") as status_file:
+                status = json.load(status_file)
+
+        self.assertTrue(status["active"])
+        self.assertTrue(status["ballDetected"])
+        self.assertEqual(status["ballType"], "black_ball")
+        self.assertEqual(status["ballTxDegrees"], 7.5)
+        self.assertNotIn("ballPayload", status)
+
+    def test_stream_encoding_requires_connected_client_and_respects_fps(self):
+        self.assertFalse(forward_camera_stream.stream_frame_is_due(10.0, 0.0))
+
+        forward_camera_stream.register_stream_client()
+        interval = 1.0 / forward_camera_stream.STREAM_FPS
+        self.assertFalse(
+            forward_camera_stream.stream_frame_is_due(10.0, 10.0 - interval / 2.0)
+        )
+        self.assertTrue(
+            forward_camera_stream.stream_frame_is_due(10.0, 10.0 - interval)
+        )
+
+        forward_camera_stream.unregister_stream_client()
+        self.assertFalse(forward_camera_stream.stream_frame_is_due(10.0, 0.0))
+
     def test_disabled_status_keeps_forward_profile_without_line_data(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             status_path = os.path.join(temporary_directory, "status.json")
@@ -124,8 +211,12 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["mainResolution"], {"width": 960, "height": 540})
         self.assertEqual(status["sensorMode"]["width"], 1920)
         self.assertEqual(status["sensorMode"]["height"], 1080)
+        self.assertEqual(status["targetCameraFps"], 15)
+        self.assertEqual(status["streamFps"], 12)
+        self.assertEqual(status["opencvThreads"], 2)
+        self.assertEqual(status["silverProcessingScale"], 0.5)
         self.assertNotIn("lineSequence", status)
-        self.assertTrue(status["ballDetectionEnabled"])
+        self.assertFalse(status["ballDetectionEnabled"])
         self.assertFalse(status["ballDetected"])
         self.assertIsNone(status["ballPayload"])
 

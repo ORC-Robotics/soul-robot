@@ -200,6 +200,7 @@ class BlackBallDetector:
 class SilverBallDetectorConfig:
     """Centraliza os limites do detector de círculos claros e texturizados."""
 
+    processing_scale: float = 0.50
     minimum_radius_pixels: int = 18
     maximum_radius_ratio: float = 0.49
     hough_dp: float = 1.2
@@ -215,6 +216,8 @@ class SilverBallDetectorConfig:
     border_tolerance_pixels: int = 3
 
     def validate(self):
+        if not 0.0 < self.processing_scale <= 1.0:
+            raise ValueError("processing_scale deve estar entre 0 e 1.")
         if self.minimum_radius_pixels <= 0:
             raise ValueError("O raio mínimo da bola prata deve ser positivo.")
         if not 0.0 < self.maximum_radius_ratio <= 0.5:
@@ -287,7 +290,19 @@ class SilverBallDetector:
         if frame.shape[2] != 3 or frame.size == 0:
             raise ValueError("O frame deve ser uma imagem BGR não vazia.")
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        scale = self.config.processing_scale
+        if scale < 1.0:
+            processing_frame = cv2.resize(
+                frame,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_AREA,
+            )
+        else:
+            processing_frame = frame
+
+        gray = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2GRAY)
         enhanced = self._clahe.apply(gray)
         blurred = cv2.GaussianBlur(enhanced, (9, 9), 1.6)
         edges = cv2.Canny(
@@ -296,22 +311,22 @@ class SilverBallDetector:
             self.config.hough_canny_threshold,
         )
         maximum_radius = int(
-            min(frame.shape[:2]) * self.config.maximum_radius_ratio
+            min(processing_frame.shape[:2]) * self.config.maximum_radius_ratio
         )
         circles = cv2.HoughCircles(
             blurred,
             cv2.HOUGH_GRADIENT,
             dp=self.config.hough_dp,
-            minDist=self.config.hough_minimum_distance_pixels,
+            minDist=self.config.hough_minimum_distance_pixels * scale,
             param1=self.config.hough_canny_threshold,
-            param2=self.config.hough_accumulator_threshold,
-            minRadius=self.config.minimum_radius_pixels,
+            param2=max(1.0, self.config.hough_accumulator_threshold * scale),
+            minRadius=max(2, int(round(self.config.minimum_radius_pixels * scale))),
             maxRadius=maximum_radius,
         )
         if circles is None:
             return []
 
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(processing_frame, cv2.COLOR_BGR2HSV)
         value_channel = hsv[:, :, 2]
         candidates = []
         for center_x, center_y, radius in circles[0]:
@@ -360,15 +375,19 @@ class SilverBallDetector:
                 continue
 
             top_clipped = (
-                center_y - radius <= self.config.border_tolerance_pixels
+                center_y - radius <= self.config.border_tolerance_pixels * scale
             )
+            output_scale = 1.0 / scale
+            output_center_x = center_x * output_scale
+            output_center_y = center_y * output_scale
+            output_radius = radius * output_scale
             candidates.append(BallCandidate(
                 ball_type="silver_ball",
-                center_x=center_x,
-                center_y=center_y,
-                radius_pixels=radius,
-                diameter_pixels=radius * 2.0,
-                contour_area_pixels=math.pi * radius * radius,
+                center_x=output_center_x,
+                center_y=output_center_y,
+                radius_pixels=output_radius,
+                diameter_pixels=output_radius * 2.0,
+                contour_area_pixels=math.pi * output_radius * output_radius,
                 circularity=boundary_coverage,
                 circle_fill_ratio=edge_density,
                 top_clipped=top_clipped,

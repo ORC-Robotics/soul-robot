@@ -163,7 +163,9 @@ private:
                                   bool acceptsDisplayMode);
     static bool sendCameraStatus(SocketHandle client, const char* statusPath);
     static bool setForwardCameraEnabled(bool enabled);
+    static bool setForwardBallDetectionEnabled(bool enabled);
     static bool setLineCameraEnabled(bool enabled);
+    static bool applyAutonomousMissionCameraPolicy(AutonomousMission mission);
     static bool sendAll(SocketHandle client, const char* data, size_t size);
     static std::string getHeaderValue(const std::string& request, const std::string& header);
     static bool sendWebSocketText(SocketHandle client, const std::string& message);

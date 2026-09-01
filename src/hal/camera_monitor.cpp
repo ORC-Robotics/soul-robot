@@ -402,7 +402,7 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
     ForwardBallSnapshot snapshot;
     try
     {
-        std::ifstream file(config::kForwardCameraStatusPath);
+        std::ifstream file(config::kForwardBallStatusPath);
         if (!file)
         {
             return snapshot;

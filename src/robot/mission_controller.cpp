@@ -129,7 +129,8 @@ void MissionController::update(
         testTurnController_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.reset();
-        updateAlignClosestBall(robotState, forwardBallSnapshot);
+        updateAlignClosestBall(
+            robotState, esp32Telemetry, forwardBallSnapshot);
         return;
     case AutonomousMission::MainMission:
     default:
@@ -147,10 +148,11 @@ void MissionController::update(
 
 void MissionController::updateAlignClosestBall(
     RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
     const ForwardBallSnapshot& forwardBallSnapshot)
 {
     const BallAlignmentOutput output =
-        ballAlignmentMission_.update(forwardBallSnapshot);
+        ballAlignmentMission_.update(forwardBallSnapshot, esp32Telemetry);
     // A ausência ou expiração da visão produz zero neste mesmo ciclo.
     // O RobotState ainda aplica clamp, E-Stop e timeout antes dos motores.
     robotState.driveAutonomous(output.leftPower, output.rightPower);

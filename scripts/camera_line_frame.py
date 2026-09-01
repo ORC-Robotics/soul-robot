@@ -337,7 +337,9 @@ CAMERA_PROFILES = {
         "main_size": (960, 540),
         "sensor_size": (1920, 1080),
         "sensor_bit_depth": 10,
-        "target_fps": 30,
+        # A visão de bolas usa Hough e não precisa saturar a CPU a 30 FPS.
+        # Quinze atualizações por segundo preservam o controle e reduzem calor.
+        "target_fps": 15,
         "vision": {
             "line_roi_start_ratio": 0.0,
             "line_threshold": 100,

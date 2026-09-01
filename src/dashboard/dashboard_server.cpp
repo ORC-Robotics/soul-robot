@@ -27,6 +27,33 @@ std::string lowerCopy(std::string text)
     });
     return text;
 }
+
+bool writeBooleanControlFile(
+    const char* path,
+    const char* temporaryPath,
+    bool enabled)
+{
+    // A escrita temporária impede que os processos de visão leiam um comando
+    // parcial durante a troca de missão ou durante um clique no dashboard.
+    {
+        std::ofstream control(temporaryPath, std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << (enabled ? "1\n" : "0\n");
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(temporaryPath, path) != 0)
+    {
+        std::remove(temporaryPath);
+        return false;
+    }
+    return true;
+}
 }
 
 DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
@@ -43,6 +70,14 @@ DashboardServer::~DashboardServer()
 
 bool DashboardServer::start()
 {
+#ifndef _WIN32
+    // A missão padrão após iniciar o processo é a principal. Publicar zero
+    // antes de aceitar clientes impede reutilizar uma detecção de outro boot.
+    if (!setForwardBallDetectionEnabled(false))
+    {
+        std::cerr << "Initial ball detection state could not be written\n";
+    }
+#endif
     if (!initializeSockets())
     {
         std::cerr << "Failed to initialize sockets\n";
@@ -107,6 +142,11 @@ void DashboardServer::stop()
     }
 
     running_ = false;
+#ifndef _WIN32
+    // O processo Python pode levar alguns instantes para receber o sinal do
+    // serviço; desabilitar a visão antes evita Hough durante o encerramento.
+    setForwardBallDetectionEnabled(false);
+#endif
     shutdownSocket(server_);
 
     {
@@ -432,37 +472,69 @@ void DashboardServer::handleCommand(const std::string& message)
     }
     else if (message.find("\"command\":\"set_autonomous_mission\"") != std::string::npos)
     {
+        // A política de câmera escreve IPCs antes de concluir a seleção.
+        // Parar agora impede que a missão anterior mova o robô durante essa troca.
+        robotState_.stop();
         if (message.find("\"mission\":\"main_mission\"") != std::string::npos)
         {
-            robotState_.setAutonomousMission(AutonomousMission::MainMission);
-            std::cout << "Autonomous mission selected: main_mission\n";
+            if (applyAutonomousMissionCameraPolicy(
+                    AutonomousMission::MainMission))
+            {
+                robotState_.setAutonomousMission(AutonomousMission::MainMission);
+                std::cout << "Autonomous mission selected: main_mission\n";
+            }
+            else
+            {
+                std::cerr << "Main mission camera policy could not be applied\n";
+            }
         }
         else if (message.find("\"mission\":\"turn_right_90\"") != std::string::npos)
         {
-            robotState_.setAutonomousMission(AutonomousMission::TurnRight90);
-            std::cout << "Autonomous mission selected: turn_right_90\n";
+            if (applyAutonomousMissionCameraPolicy(
+                    AutonomousMission::TurnRight90))
+            {
+                robotState_.setAutonomousMission(AutonomousMission::TurnRight90);
+                std::cout << "Autonomous mission selected: turn_right_90\n";
+            }
+            else
+            {
+                std::cerr << "Turn mission camera policy could not be applied\n";
+            }
         }
         else if (message.find("\"mission\":\"drive_distance\"") != std::string::npos)
         {
             const double targetCm = getJsonNumber(
                 message, "distanceCm", config::kDriveDistanceDefaultTargetCm);
-            if (robotState_.setDriveDistanceTargetCm(targetCm))
+            if (!robotState_.setDriveDistanceTargetCm(targetCm))
+            {
+                // Alvos inválidos não podem substituir a missão segura atual.
+                std::cerr << "Invalid drive-distance target ignored\n";
+            }
+            else if (!applyAutonomousMissionCameraPolicy(
+                         AutonomousMission::DriveDistance))
+            {
+                std::cerr << "Distance mission camera policy could not be applied\n";
+            }
+            else
             {
                 robotState_.setAutonomousMission(AutonomousMission::DriveDistance);
                 std::cout << "Autonomous mission selected: drive_distance, target="
                           << targetCm << " cm\n";
             }
-            else
-            {
-                // Alvos inválidos não podem substituir a missão segura atual.
-                std::cerr << "Invalid drive-distance target ignored\n";
-            }
         }
         else if (message.find("\"mission\":\"align_closest_ball\"") != std::string::npos)
         {
-            robotState_.setAutonomousMission(
-                AutonomousMission::AlignClosestBall);
-            std::cout << "Autonomous mission selected: align_closest_ball\n";
+            if (applyAutonomousMissionCameraPolicy(
+                    AutonomousMission::AlignClosestBall))
+            {
+                robotState_.setAutonomousMission(
+                    AutonomousMission::AlignClosestBall);
+                std::cout << "Autonomous mission selected: align_closest_ball\n";
+            }
+            else
+            {
+                std::cerr << "Ball alignment camera policy could not be applied\n";
+            }
         }
         else
         {
@@ -520,6 +592,12 @@ void DashboardServer::handleCommand(const std::string& message)
         {
             std::cerr << "Forward camera command ignored: enabled must be boolean\n";
         }
+        else if (!enabled &&
+                 robotState_.snapshot().autonomousMission ==
+                     AutonomousMission::AlignClosestBall)
+        {
+            std::cerr << "Forward camera command ignored during ball alignment mission\n";
+        }
         else if (!setForwardCameraEnabled(enabled))
         {
             std::cerr << "Forward camera state could not be written\n";
@@ -536,6 +614,12 @@ void DashboardServer::handleCommand(const std::string& message)
         if (!getJsonBool(message, "enabled", enabled))
         {
             std::cerr << "Line camera command ignored: enabled must be boolean\n";
+        }
+        else if (enabled &&
+                 robotState_.snapshot().autonomousMission ==
+                     AutonomousMission::AlignClosestBall)
+        {
+            std::cerr << "Line camera command ignored during ball alignment mission\n";
         }
         else if (!setLineCameraEnabled(enabled))
         {
@@ -1507,7 +1591,7 @@ std::string DashboardServer::dashboardHtml()
         transitionDeadlineMs: 0,
         error: "",
         metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" },
-        ball: { detected: false, type: "", position: "nenhuma", distanceCm: null, extrapolated: false, angleDegrees: null, centerX: null, centerY: null, radiusPixels: null, diameterPixels: null, circularity: null, topClipped: false, detectionMethod: "", processingMs: null }
+        ball: { enabled: false, detected: false, type: "", position: "nenhuma", distanceCm: null, extrapolated: false, angleDegrees: null, centerX: null, centerY: null, radiusPixels: null, diameterPixels: null, circularity: null, topClipped: false, detectionMethod: "", processingMs: null }
       }
     };
     const connection = element("connection");
@@ -1682,7 +1766,7 @@ std::string DashboardServer::dashboardHtml()
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
           : mission === "align_closest_ball"
-            ? "Gira em pulsos curtos até centralizar a bola mais próxima; exige a câmera frontal ativa."
+            ? "Gira com potência proporcional ao tx até centralizar a bola mais próxima; exige a câmera frontal ativa."
           : "Segue a linha, executa retornos verdes e contorna obstáculos pelo ultrassônico.";
     }
 
@@ -1702,7 +1786,7 @@ std::string DashboardServer::dashboardHtml()
         ball_alignment_camera_stale: ["BOLA: CÂMERA SEM DADOS", "danger", "machineStepPerception"],
         ball_alignment_waiting_ball: ["BOLA: AGUARDANDO ALVO", "warn", "machineStepPerception"],
         ball_alignment_turning: ["BOLA: ALINHANDO", "active", "machineStepMotion"],
-        ball_alignment_settling: ["BOLA: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        ball_alignment_braking: ["BOLA: FREANDO NO CENTRO", "warn", "machineStepFeedback"],
         ball_aligned: ["BOLA ALINHADA", "active", "machineStepFeedback"],
         obstacle_waiting_sensors: ["OBSTÁCULO: SENSORES", "warn", "machineStepPerception"],
         obstacle_detected: ["OBSTÁCULO DETECTADO", "warn", "machineStepDecision"],
@@ -2308,9 +2392,15 @@ std::string DashboardServer::dashboardHtml()
 
     function renderForwardBallTelemetry() {
       const ball = cameras.forward.ball;
+      const detectionEnabled = ball.enabled === true;
       const detected = ball.detected === true;
       const ballName = ball.type === "silver_ball" ? "BOLA PRATA" : "BOLA PRETA";
-      setTextIfChanged(forwardBallFields.state, detected ? `${ballName} DETECTADA` : "PROCURANDO BOLAS");
+      setTextIfChanged(
+        forwardBallFields.state,
+        !detectionEnabled
+          ? "DETECÇÃO INATIVA FORA DO ALINHAMENTO"
+          : detected ? `${ballName} DETECTADA` : "PROCURANDO BOLAS"
+      );
       forwardBallFields.state.className = `camera-hud-line ${detected ? "valid" : "searching"}`;
       setTextIfChanged(forwardBallFields.processing, Number.isFinite(ball.processingMs) ? `${ball.processingMs.toFixed(1)} ms` : "-- ms");
       setTextIfChanged(forwardBallFields.position, detected ? String(ball.position || "nenhuma").toUpperCase() : "NENHUMA");
@@ -2879,6 +2969,7 @@ std::string DashboardServer::dashboardHtml()
         camera.metadata.format = data.cameraFormat || "--";
         const finiteBallValue = value => value !== null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
         camera.ball = {
+          enabled: data.ballDetectionEnabled === true,
           detected: data.ballDetected === true,
           type: String(data.ballType || ""),
           position: String(data.ballPosition || "nenhuma"),
@@ -3241,56 +3332,57 @@ bool DashboardServer::sendCameraStatus(SocketHandle client, const char* statusPa
 
 bool DashboardServer::setForwardCameraEnabled(bool enabled)
 {
-    // A troca atômica impede que o processo Python leia um comando incompleto.
-    // Este IPC controla apenas a CAM1 e nunca altera o estado ou os motores.
-    {
-        std::ofstream control(config::kForwardCameraTemporaryControlPath,
-                              std::ios::trunc);
-        if (!control)
-        {
-            return false;
-        }
-        control << (enabled ? "1\n" : "0\n");
-        if (!control)
-        {
-            return false;
-        }
-    }
+    return writeBooleanControlFile(
+        config::kForwardCameraControlPath,
+        config::kForwardCameraTemporaryControlPath,
+        enabled);
+}
 
-    if (std::rename(config::kForwardCameraTemporaryControlPath,
-                    config::kForwardCameraControlPath) != 0)
-    {
-        std::remove(config::kForwardCameraTemporaryControlPath);
-        return false;
-    }
-    return true;
+bool DashboardServer::setForwardBallDetectionEnabled(bool enabled)
+{
+    return writeBooleanControlFile(
+        config::kForwardBallDetectionControlPath,
+        config::kForwardBallDetectionTemporaryControlPath,
+        enabled);
 }
 
 bool DashboardServer::setLineCameraEnabled(bool enabled)
 {
-    // A troca atômica impede que o gerenciador leia um comando incompleto.
-    // Este IPC não executa comandos Linux e não tem efeito direto nos motores.
+    return writeBooleanControlFile(
+        config::kLineCameraControlPath,
+        config::kLineCameraTemporaryControlPath,
+        enabled);
+}
+
+bool DashboardServer::applyAutonomousMissionCameraPolicy(
+    AutonomousMission mission)
+{
+#ifdef _WIN32
+    // A prévia local do dashboard não possui /dev/shm nem câmeras físicas.
+    // A seleção visual da missão deve continuar disponível para desenvolvimento.
+    (void)mission;
+    return true;
+#else
+    if (mission == AutonomousMission::AlignClosestBall)
     {
-        std::ofstream control(config::kLineCameraTemporaryControlPath,
-                              std::ios::trunc);
-        if (!control)
-        {
-            return false;
-        }
-        control << (enabled ? "1\n" : "0\n");
-        if (!control)
-        {
-            return false;
-        }
+        // O alinhamento usa apenas a CAM1. Desligar a inferior remove o
+        // processamento do segue-faixa enquanto HSV e Hough estão ativos.
+        return setLineCameraEnabled(false) &&
+               setForwardCameraEnabled(true) &&
+               setForwardBallDetectionEnabled(true);
     }
 
-    if (std::rename(config::kLineCameraTemporaryControlPath,
-                    config::kLineCameraControlPath) != 0)
+    if (!setForwardBallDetectionEnabled(false))
     {
-        std::remove(config::kLineCameraTemporaryControlPath);
         return false;
     }
+    if (mission == AutonomousMission::MainMission)
+    {
+        // Ao voltar para a prova principal, restaura a câmera inferior.
+        return setLineCameraEnabled(true);
+    }
     return true;
+#endif
 }
 
 bool DashboardServer::sendAll(SocketHandle client, const char* data, size_t size)
