@@ -393,7 +393,7 @@ CAMERA_PROFILES = {
             # Uma linha ou cruzamento normal não deve ocupar mais de 30% da
             # máscara. Componentes maiores indicam sombra ou obstrução e
             # são rejeitados para o robô não seguir um falso contorno.
-            "full_line_max_area_ratio": 1.0,
+            "full_line_max_area_ratio": 0.30,
             # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se
             # a altura real do frame for diferente durante um diagnóstico.
@@ -1803,7 +1803,7 @@ def find_green_candidates(
 
 
 def green_minimum_area(frame_width, useful_height):
-    """Escala os 4.000 px de referência pela área útil da resolução atual."""
+    """Escala os 2.600 px de referência pela área útil da resolução atual."""
 
     return float(frame_width) * float(useful_height) * GREEN_MIN_AREA_RATIO
 
