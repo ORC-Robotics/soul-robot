@@ -94,7 +94,8 @@ void MissionController::update(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
-    const CameraLineSnapshot& cameraLineSnapshot)
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardBallSnapshot& forwardBallSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -120,12 +121,20 @@ void MissionController::update(
         return;
     case AutonomousMission::DriveDistance:
         testTurnController_.reset();
+        ballAlignmentMission_.reset();
         updateDriveDistance(
             robotState, esp32Telemetry, snapshot.driveDistanceTargetCm);
+        return;
+    case AutonomousMission::AlignClosestBall:
+        testTurnController_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateAlignClosestBall(robotState, forwardBallSnapshot);
         return;
     case AutonomousMission::MainMission:
     default:
         testTurnController_.reset();
+        ballAlignmentMission_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.update(
             robotState,
@@ -134,6 +143,18 @@ void MissionController::update(
             cameraLineSnapshot);
         return;
     }
+}
+
+void MissionController::updateAlignClosestBall(
+    RobotState& robotState,
+    const ForwardBallSnapshot& forwardBallSnapshot)
+{
+    const BallAlignmentOutput output =
+        ballAlignmentMission_.update(forwardBallSnapshot);
+    // A ausência ou expiração da visão produz zero neste mesmo ciclo.
+    // O RobotState ainda aplica clamp, E-Stop e timeout antes dos motores.
+    robotState.driveAutonomous(output.leftPower, output.rightPower);
+    robotState.updateAutonomousStatus(output.status);
 }
 
 void MissionController::updateTurnRight90(
@@ -436,6 +457,7 @@ void MissionController::updateDriveDistance(
 void MissionController::resetMissionState()
 {
     mainMission_.reset();
+    ballAlignmentMission_.reset();
     testTurnController_.reset();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;

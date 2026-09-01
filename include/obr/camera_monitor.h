@@ -37,6 +37,7 @@ struct CameraLineSnapshot
     double lineFollowerRightPower = 0.0;
     std::string lineControlSource = "unknown";
     bool lineNearDetected = false;
+    bool lineNearAnyDetected = false;
 
     bool greenPathBlackValid = false;
     std::uint64_t greenCandidateCount = 0;
@@ -49,12 +50,27 @@ struct CameraLineSnapshot
     CameraCurveDiagnostics curveDiagnostics;
 };
 
+// Leitura da bola mais próxima publicada pelo processo da câmera frontal.
+// tx é negativo à esquerda e positivo à direita do centro da imagem.
+struct ForwardBallSnapshot
+{
+    bool sourceFresh = false;
+    bool detected = false;
+    std::string type;
+    double txDegrees = std::numeric_limits<double>::quiet_NaN();
+    double distanceCm = std::numeric_limits<double>::quiet_NaN();
+    double radiusPixels = std::numeric_limits<double>::quiet_NaN();
+    double timestamp = 0.0;
+    double ageMs = 0.0;
+};
+
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.
 class CameraMonitor
 {
 public:
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
+    ForwardBallSnapshot forwardBallSnapshot() const;
 
 private:
     CameraLineSnapshot cachedLineSnapshot_;

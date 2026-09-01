@@ -41,13 +41,16 @@ Esp32TelemetrySnapshot readyTelemetry()
 
 CameraLineSnapshot freshVision(
     GreenInterpretation interpretation,
-    bool lineNearDetected = true)
+    bool lineNearDetected = true,
+    bool lineNearAnyDetected = false)
 {
     CameraLineSnapshot snapshot;
     snapshot.sourceFresh = true;
     snapshot.lineFollowerLeftPower = 0.68;
     snapshot.lineFollowerRightPower = 0.67;
     snapshot.lineNearDetected = lineNearDetected;
+    snapshot.lineNearAnyDetected =
+        lineNearDetected || lineNearAnyDetected;
     snapshot.lineSequence = 1;
     snapshot.greenCandidateCount =
         interpretation == GreenInterpretation::TurnAround180 ? 2 : 1;
@@ -98,6 +101,9 @@ RobotSnapshot startReturnImu(
     MissionFixture& fixture,
     const CameraLineSnapshot& returnVision)
 {
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionStopMs + 20));
     fixture.update(returnVision);
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
@@ -177,6 +183,9 @@ void testUnequalEncoderDistancesDoNotInterruptForwardStage()
         GreenInterpretation::TurnAround180,
         false);
     fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionStopMs + 20));
+    fixture.update(returnVision);
 
     fixture.telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
         8.0 * config::kEncoderCountsPerCentimeter));
@@ -197,6 +206,9 @@ void testMissingEncoderDataStopsAfterConfiguredSecond()
     const CameraLineSnapshot returnVision = freshVision(
         GreenInterpretation::TurnAround180,
         false);
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionStopMs + 20));
     fixture.update(returnVision);
 
     fixture.telemetry.lastSensorAgeMs =
@@ -220,10 +232,19 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
 
     RobotSnapshot snapshot = fixture.update(returnVision);
     require(
+        snapshot.autonomousStatus.phase ==
+                "turnaround_recognized_stopping" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O retorno reconhecido deve primeiro parar os dois motores.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundRecognitionStopMs + 20));
+    snapshot = fixture.update(returnVision);
+    require(
         snapshot.autonomousStatus.phase == "turnaround_forward" &&
             closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
             closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
-        "O retorno deve começar avançando com os dois motores.");
+        "Depois da parada, o retorno deve avançar com os dois motores.");
 
     const long long targetCounts = static_cast<long long>(std::ceil(
         config::kGreenTurnAroundForwardDistanceCm *
@@ -234,7 +255,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     require(
         snapshot.autonomousStatus.phase == "turnaround_forward_settling" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
-        "Após 9 cm o retorno deve parar antes do giro.");
+        "Após a distância configurada, o retorno deve parar antes do giro.");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kGreenTurnAroundForwardSettleMs + 20));
@@ -257,7 +278,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     require(
         snapshot.autonomousStatus.phase == "turnaround_imu" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
-        "Ao alcançar 150 graus o controlador deve estabilizar o giro.");
+        "Ao alcançar 125 graus o controlador deve estabilizar o giro.");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kTurn90SettleMs + 20));
@@ -272,7 +293,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
                 snapshot.right,
                 -expectedTurnSign *
                     config::kGreenTurnAroundLineSearchPower),
-        "Após estabilizar em 150 graus o pivot deve buscar a linha.");
+        "Após estabilizar em 125 graus o pivot deve buscar a linha.");
 
     CameraLineSnapshot recoveredVision = freshVision(
         GreenInterpretation::None,
@@ -291,7 +312,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
     requireFollowingLine(snapshot, "Linha próxima recuperada");
 }
 
-void testVisualSearchStopsAtAngularLimit()
+void testVisualSearchResumesLineFollowingAtAngularLimit()
 {
     MissionFixture fixture;
     const CameraLineSnapshot returnVision = freshVision(
@@ -322,11 +343,11 @@ void testVisualSearchStopsAtAngularLimit()
     const RobotSnapshot snapshot = fixture.update(returnVision);
 
     require(
-        snapshot.mode == "stopped" && snapshot.left == 0.0 &&
-            snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase ==
-                "turnaround_line_search_angle_limit",
-        "A busca visual deve parar antes de completar outra volta.");
+        snapshot.mode == "autonomous" &&
+            closeTo(snapshot.left, returnVision.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, returnVision.lineFollowerRightPower) &&
+            snapshot.autonomousStatus.phase == "line_following",
+        "A busca visual deve devolver o controle ao segue-linha em 200 graus.");
 }
 
 void testUnavailableCameraStopsMission()
@@ -339,6 +360,149 @@ void testUnavailableCameraStopsMission()
             snapshot.left == 0.0 && snapshot.right == 0.0 &&
             snapshot.autonomousStatus.phase == "camera_not_ready",
         "Câmera indisponível deve encerrar a missão com motores zerados.");
+}
+
+void testVisualSearchSlowsAndExtendsAfterSeeingNearSide()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg =
+        turnSign * config::kGreenTurnAroundImuDegrees;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kTurn90SettleMs + 20));
+    fixture.update(returnVision);
+
+    const auto searchYaw = [turnSign](double additionalDegrees)
+    {
+        double yaw = turnSign *
+                     (config::kGreenTurnAroundImuDegrees +
+                      additionalDegrees);
+        if (yaw > 180.0)
+        {
+            yaw -= 360.0;
+        }
+        else if (yaw < -180.0)
+        {
+            yaw += 360.0;
+        }
+        return yaw;
+    };
+
+    CameraLineSnapshot sideVision = freshVision(
+        GreenInterpretation::None,
+        false,
+        true);
+    fixture.telemetry.yawZDeg = searchYaw(40.0);
+    RobotSnapshot snapshot = fixture.update(sideVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_searching_line" &&
+            closeTo(
+                std::abs(snapshot.left),
+                config::kGreenTurnAroundLineApproachPower) &&
+            closeTo(
+                std::abs(snapshot.right),
+                config::kGreenTurnAroundLineApproachPower),
+        "A linha lateral deve reduzir a potência sem encerrar o retorno.");
+
+    fixture.telemetry.yawZDeg = searchYaw(65.0);
+    snapshot = fixture.update(freshVision(
+        GreenInterpretation::None,
+        false,
+        false));
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_searching_line",
+        "A aproximação deve continuar enquanto o total estiver abaixo de 200 graus.");
+
+    const CameraLineSnapshot centeredVision = freshVision(
+        GreenInterpretation::None,
+        true,
+        true);
+    fixture.update(centeredVision);
+    snapshot = fixture.update(centeredVision);
+    requireFollowingLine(snapshot, "Linha centralizada após retorno");
+}
+
+void testVisualSearchResumesAtTwoHundredDegreesAfterSeeingNearSide()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg =
+        turnSign * config::kGreenTurnAroundImuDegrees;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kTurn90SettleMs + 20));
+    fixture.update(returnVision);
+
+    CameraLineSnapshot sideVision = freshVision(
+        GreenInterpretation::None,
+        false,
+        true);
+    fixture.telemetry.yawZDeg = turnSign * 170.0;
+    fixture.update(sideVision);
+
+    double limitedYaw = turnSign *
+                        (config::kGreenTurnAroundImuDegrees +
+                         config::kGreenTurnAroundLineSearchMaximumDegrees);
+    if (limitedYaw > 180.0)
+    {
+        limitedYaw -= 360.0;
+    }
+    else if (limitedYaw < -180.0)
+    {
+        limitedYaw += 360.0;
+    }
+    fixture.telemetry.yawZDeg = limitedYaw;
+    const RobotSnapshot snapshot = fixture.update(returnVision);
+
+    require(
+        snapshot.mode == "autonomous" &&
+            closeTo(snapshot.left, returnVision.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, returnVision.lineFollowerRightPower) &&
+            snapshot.autonomousStatus.phase == "line_following",
+        "A aproximação lateral deve retomar o segue-linha em aproximadamente 200 graus.");
+}
+
+void testActiveObstacleIgnoresCameraFailure()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot vision = freshVision(GreenInterpretation::None);
+    fixture.telemetry.ultrasonicDistanceCm = 6.4;
+
+    // Duas leituras consecutivas confirmam o obstáculo e tornam a sequência
+    // exclusiva antes de simular qualquer falha da câmera inferior.
+    fixture.update(vision);
+    RobotSnapshot snapshot = fixture.update(vision);
+    require(
+        snapshot.mode == "autonomous" &&
+            snapshot.autonomousStatus.phase == "obstacle_detected",
+        "O obstáculo deve ser confirmado antes da falha visual simulada.");
+
+    snapshot = fixture.update(vision, false);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "obstacle_settling",
+        "Câmera indisponível não deve cancelar um desvio já iniciado.");
+
+    vision.sourceFresh = false;
+    snapshot = fixture.update(vision, true);
+    require(
+        snapshot.mode == "autonomous" &&
+            snapshot.autonomousStatus.phase == "obstacle_settling",
+        "IPC visual antigo não deve cancelar um desvio já iniciado.");
 }
 }
 
@@ -353,8 +517,11 @@ int main()
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
         testMissingEncoderDataStopsAfterConfiguredSecond();
         testReturnRunsConfiguredSequenceAndRestoresFollower();
-        testVisualSearchStopsAtAngularLimit();
+        testVisualSearchResumesLineFollowingAtAngularLimit();
+        testVisualSearchSlowsAndExtendsAfterSeeingNearSide();
+        testVisualSearchResumesAtTwoHundredDegreesAfterSeeingNearSide();
         testUnavailableCameraStopsMission();
+        testActiveObstacleIgnoresCameraFailure();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }

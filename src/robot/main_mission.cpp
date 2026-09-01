@@ -38,6 +38,19 @@ AutonomousStatus makeTurnAroundForwardStatus(
     return status;
 }
 
+AutonomousStatus makeObstacleStatus(
+    const ObstacleAvoidanceOutput& output)
+{
+    AutonomousStatus status = makeMainMissionStatus(
+        output.phase, output.action, output.progressPercent);
+    status.targetDistanceCm = output.targetDistanceCm;
+    status.leftDistanceCm = output.leftDistanceCm;
+    status.rightDistanceCm = output.rightDistanceCm;
+    status.averageDistanceCm =
+        (output.leftDistanceCm + output.rightDistanceCm) * 0.5;
+    return status;
+}
+
 bool turnAroundDetected(const CameraLineSnapshot& snapshot)
 {
     return snapshot.greenConfirmed && snapshot.greenPathBlackValid &&
@@ -80,11 +93,13 @@ double shortestAngularDistanceDegrees(double first, double second)
 void MainMission::reset()
 {
     turnAroundPhase_ = TurnAroundPhase::Idle;
+    obstacleAvoidance_.reset();
     turnAroundController_.reset();
     turnAroundArmed_ = true;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
     lineReacquireFrames_ = 0;
+    lineSearchSawNearLine_ = false;
     lineSearchStartYawDegrees_ = 0.0;
 }
 
@@ -101,26 +116,54 @@ void MainMission::update(
         return;
     }
 
-    if (!esp32Telemetry.readyForOperation() || !cameraReady ||
-        !cameraLineSnapshot.sourceFresh)
+    // E-Stop, calibração e perda da ESP32 continuam acima de qualquer manobra.
+    // Sem essa telemetria não existe uma forma segura de manter os motores ativos.
+    if (!esp32Telemetry.readyForOperation())
     {
-        std::string phase;
-        std::string action;
-        if (!esp32Telemetry.readyForOperation())
-        {
-            phase = "esp32_not_ready";
-            action = "Missão interrompida: ESP32 sem telemetria pronta";
-        }
-        else if (!cameraReady)
-        {
-            phase = "camera_not_ready";
-            action = "Missão interrompida: câmera inferior indisponível";
-        }
-        else
-        {
-            phase = "line_ipc_stale";
-            action = "Missão interrompida: IPC visual ausente ou antigo";
-        }
+        reset();
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "esp32_not_ready",
+            "Missão interrompida: ESP32 sem telemetria pronta"));
+        std::cout << "MainMission stopped: esp32_not_ready" << std::endl;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    // O desvio só pode iniciar fora do retorno verde. Depois de iniciado, ele
+    // mantém autoridade até terminar a ré final ou falhar com os motores zerados.
+    const ObstacleAvoidanceOutput obstacleOutput = obstacleAvoidance_.update(
+        esp32Telemetry,
+        turnAroundPhase_ == TurnAroundPhase::Idle);
+    if (obstacleOutput.failed)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeObstacleStatus(obstacleOutput));
+        std::cout << "Obstacle avoidance stopped: "
+                  << obstacleOutput.phase << std::endl;
+        return;
+    }
+    if (obstacleOutput.hasControl)
+    {
+        robotState.driveAutonomous(
+            obstacleOutput.leftPower,
+            obstacleOutput.rightPower);
+        robotState.updateAutonomousStatus(makeObstacleStatus(obstacleOutput));
+        return;
+    }
+
+    // A câmera não participa dos giros nem dos deslocamentos do desvio. Sua
+    // indisponibilidade só é avaliada quando o módulo devolve a autoridade.
+    // Assim, linha, verde ou IPC visual antigo não interrompem uma sequência
+    // de obstáculo que já foi confirmada pelo ultrassônico.
+    if (!cameraReady || !cameraLineSnapshot.sourceFresh)
+    {
+        const std::string phase =
+            !cameraReady ? "camera_not_ready" : "line_ipc_stale";
+        const std::string action = !cameraReady
+                                       ? "Missão interrompida: câmera inferior indisponível"
+                                       : "Missão interrompida: IPC visual ausente ou antigo";
         reset();
         robotState.stop();
         robotState.updateAutonomousStatus(
@@ -129,7 +172,18 @@ void MainMission::update(
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
+    if (obstacleOutput.completed)
+    {
+        robotState.driveAutonomous(
+            cameraLineSnapshot.lineFollowerLeftPower,
+            cameraLineSnapshot.lineFollowerRightPower);
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "line_following",
+            "Desvio concluído: seguindo novamente a linha",
+            100.0));
+        return;
+    }
+
     const bool detected180 = turnAroundDetected(cameraLineSnapshot);
     if (turnAroundPhase_ == TurnAroundPhase::Idle && !detected180)
     {
@@ -152,12 +206,38 @@ void MainMission::update(
         }
 
         turnAroundArmed_ = false;
-        turnAroundPhase_ = TurnAroundPhase::DrivingForward;
-        forwardStartLeftCount_ = esp32Telemetry.leftEncoderCount;
-        forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        // A parada tem duração configurada. Os encoders só são referenciados
+        // depois da estabilização, imediatamente antes do avanço.
+        turnAroundPhase_ = TurnAroundPhase::RecognizedStopping;
         phaseStartedAt_ = now;
         lineReacquireFrames_ = 0;
+        lineSearchSawNearLine_ = false;
         lineSearchStartYawDegrees_ = 0.0;
+    }
+
+    if (turnAroundPhase_ == TurnAroundPhase::RecognizedStopping)
+    {
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "turnaround_recognized_stopping",
+            "Retorno 180° reconhecido: parando antes de avançar"));
+
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(
+                config::kGreenTurnAroundRecognitionStopMs))
+        {
+            return;
+        }
+
+        if (!turnAroundEncodersReady(esp32Telemetry) ||
+            !ImuTurnController::imuReady(esp32Telemetry))
+        {
+            return;
+        }
+
+        forwardStartLeftCount_ = esp32Telemetry.leftEncoderCount;
+        forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        turnAroundPhase_ = TurnAroundPhase::DrivingForward;
+        phaseStartedAt_ = now;
     }
 
     if (turnAroundPhase_ == TurnAroundPhase::Idle)
@@ -294,6 +374,7 @@ void MainMission::update(
             turnAroundPhase_ = TurnAroundPhase::SearchingLine;
             phaseStartedAt_ = now;
             lineReacquireFrames_ = 0;
+            lineSearchSawNearLine_ = false;
             lineSearchStartYawDegrees_ = esp32Telemetry.yawZDeg;
         }
         else
@@ -314,6 +395,13 @@ void MainMission::update(
                 "turn_imu_lost",
                 "Retorno interrompido: IMU perdida durante a busca da linha"));
             return;
+        }
+
+        // A fita pode entrar primeiro por uma lateral da faixa NEAR. Memorizar
+        // essa aproximação reduz o pivot, mas não altera o limite de 200°.
+        if (cameraLineSnapshot.lineNearAnyDetected)
+        {
+            lineSearchSawNearLine_ = true;
         }
 
         if (cameraLineSnapshot.lineNearDetected)
@@ -345,10 +433,17 @@ void MainMission::update(
         if (lineSearchDegrees >=
             config::kGreenTurnAroundLineSearchMaximumDegrees)
         {
-            robotState.stop();
+            // O limite encerra somente a manobra de retorno. A câmera está
+            // recente e volta a comandar o segue-linha sem permitir mais giro.
+            turnAroundPhase_ = TurnAroundPhase::Idle;
+            turnAroundController_.reset();
+            robotState.driveAutonomous(
+                cameraLineSnapshot.lineFollowerLeftPower,
+                cameraLineSnapshot.lineFollowerRightPower);
             robotState.updateAutonomousStatus(makeMainMissionStatus(
-                "turnaround_line_search_angle_limit",
-                "Retorno interrompido: limite angular da busca visual atingido"));
+                "line_following",
+                "Retorno encerrado em aproximadamente 200°: retomando o segue-linha",
+                100.0));
             return;
         }
         if (now - phaseStartedAt_ > std::chrono::milliseconds(
@@ -361,8 +456,11 @@ void MainMission::update(
             return;
         }
 
-        const double leftPower =
-            configuredTurnSign() * config::kGreenTurnAroundLineSearchPower;
+        const double searchPower =
+            lineSearchSawNearLine_
+                ? config::kGreenTurnAroundLineApproachPower
+                : config::kGreenTurnAroundLineSearchPower;
+        const double leftPower = configuredTurnSign() * searchPower;
         robotState.driveAutonomous(leftPower, -leftPower);
         robotState.updateAutonomousStatus(makeMainMissionStatus(
             "turnaround_searching_line",

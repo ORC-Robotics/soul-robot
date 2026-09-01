@@ -15,16 +15,19 @@ add_executable(robot_test
     src/hal/gpio.cpp
     src/hal/status_led.cpp
     src/robot/motor_controller.cpp
+    src/robot/ball_alignment_mission.cpp
     src/robot/curve_diagnostics_logger.cpp
     src/robot/imu_turn_controller.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
     src/robot/robot_state.cpp
+    obstacle_avoidance/obstacle_avoidance.cpp
     src/telemetry/telemetry.cpp
 )
 
 target_include_directories(robot_test PRIVATE
     include
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if(WIN32)
@@ -38,13 +41,43 @@ if(BUILD_TESTING)
         tests/main_mission_test.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/main_mission.cpp
+        obstacle_avoidance/obstacle_avoidance.cpp
         src/robot/robot_state.cpp
     )
-    target_include_directories(main_mission_test PRIVATE include)
+    target_include_directories(main_mission_test PRIVATE
+        include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
     if(NOT WIN32)
         target_link_libraries(main_mission_test pthread)
     endif()
     add_test(NAME main_mission_test COMMAND main_mission_test)
+
+    add_executable(ball_alignment_mission_test
+        tests/ball_alignment_mission_test.cpp
+        src/robot/ball_alignment_mission.cpp
+    )
+    target_include_directories(ball_alignment_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(ball_alignment_mission_test pthread)
+    endif()
+    add_test(
+        NAME ball_alignment_mission_test
+        COMMAND ball_alignment_mission_test)
+
+    add_executable(obstacle_avoidance_test
+        obstacle_avoidance/obstacle_avoidance_test.cpp
+        src/robot/imu_turn_controller.cpp
+        obstacle_avoidance/obstacle_avoidance.cpp
+    )
+    target_include_directories(obstacle_avoidance_test PRIVATE
+        include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+    if(NOT WIN32)
+        target_link_libraries(obstacle_avoidance_test pthread)
+    endif()
+    add_test(NAME obstacle_avoidance_test COMMAND obstacle_avoidance_test)
 
     add_executable(curve_diagnostics_logger_test
         tests/curve_diagnostics_logger_test.cpp

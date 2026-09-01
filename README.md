@@ -454,6 +454,23 @@ O dashboard identifica o segue-faixa como `CONTROLE PENDENTE` e continua mostran
 a saúde da câmera, FPS, resolução, sequência da visão, reparo especular e resultado
 verde, além da telemetria geral do robô.
 
+### Desvio autônomo de obstáculo
+
+A Missão Principal confirma um obstáculo frontal com duas leituras consecutivas
+de até `8 cm`. A lógica fica isolada na pasta `obstacle_avoidance/` e executa o
+percurso medido: direita `45°`, frente `25 cm`, esquerda `45°`, frente `30 cm`,
+esquerda `90°`, frente `21,5 cm`, direita `90°` e ré de `5 cm`. Os ângulos usam o
+MPU6050 e os deslocamentos usam os dois encoders.
+
+Cada transição interrompe os motores antes de capturar uma nova referência. Perda de
+telemetria, encoder ou IMU encerra a missão com potência zero. Todos os valores
+de calibração ficam em `obstacle_avoidance/config.h`.
+
+Depois que o ultrassônico confirma o obstáculo, o módulo mantém autoridade até
+terminar a ré final. Leituras de linha, decisões verdes e indisponibilidade da
+câmera não trocam nem cancelam suas etapas. E-Stop, comando Parar, perda da ESP32,
+IMU ou encoders e os timeouts de segurança continuam interrompendo o movimento.
+
 O seletor `Missão autônoma` inicia sempre em `MISSÃO PRINCIPAL` quando o programa
 é aberto. A missão escolhida pode ser iniciada pelo botão `Autônomo` do painel ou
 por um toque curto no Start físico. Trocar a seleção força o robô para o modo
@@ -505,8 +522,8 @@ resolução, o formato e a disponibilidade da captura vêm de
 
 A câmera frontal usa a CAM1 e fica fisicamente fechada por padrão. No dashboard,
 abra a visualização `Frontal` ou `Dupla` e use o botão `ATIVAR`. Quando ligada, o
-gerenciador `forward_camera_stream.py` entrega imagem bruta em `960x540`, usando o
-modo físico `1920x1080` de 10 bits, pela rota:
+gerenciador `forward_camera_stream.py` entrega imagem anotada pelo detector de
+bolas em `960x540`, usando o modo físico `1920x1080` de 10 bits, pela rota:
 
 ```txt
 http://obr.local:8080/forward-camera-stream.mjpg
@@ -527,6 +544,27 @@ OBR_FORWARD_CAMERA_ENABLED=1 bash scripts/run_robot.sh
 Sem essa variável, ou com valor `0`, cada início do serviço volta ao estado seguro
 desligado. O dashboard envia o mesmo controle pelo WebSocket com
 `{"command":"set_forward_camera","enabled":true}` ou `false`.
+
+### Detector de bolas na câmera frontal
+
+O detector leve de bolas pretas e pratas fica em `scripts/ball_vision/` e usa somente a
+CAM1. Para vê-lo no dashboard, selecione `Frontal` e pressione `ATIVAR`. O mesmo
+processo que possui a câmera desenha o círculo no stream e publica no painel
+tipo, centro, raio, diâmetro, distância, ângulo, direção e geometria. A bola
+preta usa segmentação HSV e contornos; a prata usa Hough com validação da
+textura metálica para rejeitar o piso claro.
+
+O comando abaixo é uma alternativa de diagnóstico local. Antes de executá-lo,
+desative a câmera frontal no dashboard para liberar o Picamera2; o serviço da
+câmera inferior pode continuar ativo normalmente.
+
+```sh
+python3 scripts/ball_vision/main.py
+```
+
+Ele mostra centro, raio, diâmetro, distância calibrada, ângulo e direção. O guia
+de calibração, os ajustes HSV e a saída JSON preparada para a ESP32 estão em
+`scripts/ball_vision/README.md`.
 
 ```sh
 cd /home/raspberry/OBR2026K

@@ -26,6 +26,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "drive_distance";
     case AutonomousMission::TurnRight90:
         return "turn_right_90";
+    case AutonomousMission::AlignClosestBall:
+        return "align_closest_ball";
     case AutonomousMission::MainMission:
     default:
         return "main_mission";

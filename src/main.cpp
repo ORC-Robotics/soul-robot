@@ -51,7 +51,8 @@ bool selectedMissionReady(
     AutonomousMission mission,
     const Esp32TelemetrySnapshot& telemetry,
     bool cameraReady,
-    const CameraLineSnapshot& cameraLineSnapshot)
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardBallSnapshot& forwardBallSnapshot)
 {
     if (mission == AutonomousMission::TurnRight90)
     {
@@ -60,6 +61,12 @@ bool selectedMissionReady(
     if (mission == AutonomousMission::DriveDistance)
     {
         return driveDistanceEncodersReady(telemetry);
+    }
+    if (mission == AutonomousMission::AlignClosestBall)
+    {
+        // A missão pode iniciar sem bola, mas nunca sem um IPC frontal recente.
+        // Assim o operador depura a busca mantendo os motores parados.
+        return forwardBallSnapshot.sourceFresh;
     }
     return cameraReady && cameraLineSnapshot.sourceFresh;
 }
@@ -86,6 +93,10 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::DriveDistance)
     {
         return "encoders";
+    }
+    if (mission == AutonomousMission::AlignClosestBall)
+    {
+        return "forward_ball_tx";
     }
     return "camera";
 }
@@ -156,6 +167,8 @@ int main()
 
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
+        const ForwardBallSnapshot forwardBallSnapshot =
+            cameraMonitor.forwardBallSnapshot();
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))
@@ -222,7 +235,8 @@ int main()
                         stateBeforeStart.autonomousMission,
                         esp32Telemetry,
                         cameraReady,
-                        cameraLineSnapshot);
+                        cameraLineSnapshot,
+                        forwardBallSnapshot);
                     const bool startAllowed = stateBeforeStart.mode == "stopped" &&
                                               !stateBeforeStart.emergencyStop &&
                                               esp32Telemetry.readyForOperation() && missionReady;
@@ -263,7 +277,8 @@ int main()
             robotState,
             esp32Telemetry,
             cameraReady,
-            cameraLineSnapshot);
+            cameraLineSnapshot,
+            forwardBallSnapshot);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.

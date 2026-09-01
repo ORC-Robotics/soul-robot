@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
+
 
 SCRIPT_DIRECTORY = os.path.dirname(__file__)
 CAMERA_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "camera_line_frame.py")
@@ -37,6 +39,36 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+    def setUp(self):
+        forward_camera_stream.ball_tracker.reset()
+
+    @staticmethod
+    def silver_ball_frame():
+        """Gera uma bola clara e texturizada sem depender da câmera real."""
+
+        frame = np.full((540, 960, 3), (205, 220, 205), dtype=np.uint8)
+        center = (300, 180)
+        radius = 75
+        cv2.circle(frame, center, radius, (145, 155, 150), -1, cv2.LINE_AA)
+        cv2.circle(frame, center, radius, (75, 90, 80), 4, cv2.LINE_AA)
+        random = np.random.default_rng(321)
+        for _ in range(75):
+            angle = float(random.uniform(0.0, 2.0 * np.pi))
+            start_radius = float(random.uniform(0.0, radius * 0.65))
+            length = float(random.uniform(radius * 0.25, radius * 0.90))
+            start = (
+                int(center[0] + np.cos(angle) * start_radius),
+                int(center[1] + np.sin(angle) * start_radius),
+            )
+            end_angle = angle + float(random.uniform(-1.0, 1.0))
+            end = (
+                int(start[0] + np.cos(end_angle) * length),
+                int(start[1] + np.sin(end_angle) * length),
+            )
+            value = int(random.integers(70, 230))
+            cv2.line(frame, start, end, (value, value, value), 2, cv2.LINE_AA)
+        return frame
+
     def test_environment_defaults_to_disabled(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertFalse(forward_camera_stream.environment_enabled())
@@ -93,6 +125,52 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["sensorMode"]["width"], 1920)
         self.assertEqual(status["sensorMode"]["height"], 1080)
         self.assertNotIn("lineSequence", status)
+        self.assertTrue(status["ballDetectionEnabled"])
+        self.assertFalse(status["ballDetected"])
+        self.assertIsNone(status["ballPayload"])
+
+    def test_ball_frame_is_annotated_and_published_in_status(self):
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        cv2.circle(frame, (700, 270), 72, (0, 0, 0), -1)
+
+        display, status = forward_camera_stream.process_ball_frame(frame)
+
+        self.assertEqual(display.shape, frame.shape)
+        self.assertTrue(status["ballDetected"])
+        self.assertEqual(status["ballType"], "black_ball")
+        self.assertEqual(status["ballPosition"], "direita")
+        self.assertAlmostEqual(status["ballCenterX"], 700.0, delta=1.0)
+        self.assertAlmostEqual(status["ballCenterY"], 270.0, delta=1.0)
+        self.assertGreater(status["ballRadiusPixels"], 70.0)
+        self.assertFalse(status["ballTopClipped"])
+        self.assertEqual(status["ballDetectionMethod"], "contour")
+        self.assertAlmostEqual(
+            status["ballTxDegrees"],
+            status["ballAngleDegrees"],
+        )
+        self.assertEqual(status["ballPayload"]["type"], "black_ball")
+
+    def test_silver_ball_is_annotated_and_published_in_status(self):
+        display, status = forward_camera_stream.process_ball_frame(
+            self.silver_ball_frame()
+        )
+
+        self.assertEqual(display.shape, (540, 960, 3))
+        self.assertTrue(status["ballDetected"])
+        self.assertEqual(status["ballType"], "silver_ball")
+        self.assertEqual(status["ballDetectionMethod"], "hough")
+        self.assertEqual(status["ballPosition"], "esquerda")
+        self.assertEqual(status["ballPayload"]["type"], "silver_ball")
+
+    def test_empty_frame_clears_previous_ball_values(self):
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+
+        _, status = forward_camera_stream.process_ball_frame(frame)
+
+        self.assertFalse(status["ballDetected"])
+        self.assertIsNone(status["ballCenterX"])
+        self.assertIsNone(status["ballDistanceCm"])
+        self.assertIsNone(status["ballPayload"])
 
 
 if __name__ == "__main__":

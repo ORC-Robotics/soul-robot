@@ -58,6 +58,7 @@ $remoteLineCameraRunScript = "$RemoteDir/scripts/run_line_camera.sh"
 $lineCameraServiceName = "obr-line-camera"
 $setupScriptPath = Join-Path $PSScriptRoot "install-service.ps1"
 $setupCommand = "powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1 -HostName $HostName"
+$obstacleAvoidancePath = Join-Path $workspace "obstacle_avoidance"
 
 # As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
@@ -70,6 +71,12 @@ foreach ($assetPath in $requiredDashboardAssets) {
     if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
         throw "Dashboard asset not found: $assetPath"
     }
+}
+
+# O CMake compila o módulo de desvio diretamente desta pasta exportável.
+# Validá-la antes de parar os serviços evita interromper o robô com um pacote incompleto.
+if (-not (Test-Path -LiteralPath $obstacleAvoidancePath -PathType Container)) {
+    throw "Obstacle avoidance module not found: $obstacleAvoidancePath"
 }
 
 if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) {
@@ -113,6 +120,12 @@ Invoke-Checked scp @(
     $scpArgs +
     "-r",
     "$workspace/include",
+    "${remote}:$RemoteDir/"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    $obstacleAvoidancePath,
     "${remote}:$RemoteDir/"
 )
 Invoke-Checked scp @(

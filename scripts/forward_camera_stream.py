@@ -9,6 +9,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 import camera_line_frame
+from ball_vision.ball_detector import BallDetector
+from ball_vision.distance_calibration import DistanceCalibration
+from ball_vision.ball_tracker import BallTracker
+from ball_vision.main import (
+    analyze_frame,
+    build_esp32_payload,
+    draw_overlay,
+)
 
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
@@ -26,6 +34,79 @@ camera_active = False
 latest_jpeg = None
 latest_jpeg_sequence = 0
 frame_condition = threading.Condition()
+ball_detector = BallDetector()
+distance_calibration = DistanceCalibration()
+ball_tracker = BallTracker()
+
+
+def empty_ball_status(processing_ms=0.0):
+    """Remove qualquer detecção antiga quando o frame atual não tem bola."""
+
+    return {
+        "ballDetectionEnabled": True,
+        "ballDetected": False,
+        "ballType": "",
+        "ballCenterX": None,
+        "ballCenterY": None,
+        "ballRadiusPixels": None,
+        "ballDiameterPixels": None,
+        "ballDistanceCm": None,
+        "ballDistanceExtrapolated": False,
+        "ballAngleDegrees": None,
+        "ballTxDegrees": None,
+        "ballPosition": "nenhuma",
+        "ballCircularity": None,
+        "ballTopClipped": False,
+        "ballDetectionMethod": "",
+        "ballProcessingMs": round(float(processing_ms), 2),
+        "ballPayload": None,
+    }
+
+
+def build_ball_status(observation, processing_ms):
+    """Converte a observação em valores simples consumidos pelo dashboard."""
+
+    if observation is None:
+        return empty_ball_status(processing_ms)
+    candidate = observation.candidate
+    return {
+        "ballDetectionEnabled": True,
+        "ballDetected": True,
+        "ballType": candidate.ball_type,
+        "ballCenterX": round(float(candidate.center_x), 2),
+        "ballCenterY": round(float(candidate.center_y), 2),
+        "ballRadiusPixels": round(float(candidate.radius_pixels), 2),
+        "ballDiameterPixels": round(float(candidate.diameter_pixels), 2),
+        "ballDistanceCm": round(float(observation.distance.distance_cm), 2),
+        "ballDistanceExtrapolated": bool(observation.distance.extrapolated),
+        "ballAngleDegrees": round(float(observation.angle_degrees), 2),
+        "ballTxDegrees": round(float(observation.angle_degrees), 2),
+        "ballPosition": observation.position,
+        "ballCircularity": round(float(candidate.circularity), 3),
+        "ballTopClipped": bool(candidate.top_clipped),
+        "ballDetectionMethod": candidate.detection_method,
+        "ballProcessingMs": round(float(processing_ms), 2),
+        "ballPayload": build_esp32_payload(
+            candidate.ball_type,
+            observation.distance.distance_cm,
+            observation.angle_degrees,
+        ),
+    }
+
+
+def process_ball_frame(frame):
+    """Analisa e anota um frame sem abrir outra instância da câmera frontal."""
+
+    processing_started = time.perf_counter()
+    observation, candidates = analyze_frame(
+        frame,
+        ball_detector,
+        distance_calibration,
+        tracker=ball_tracker,
+    )
+    display_frame = draw_overlay(frame, observation, candidates)
+    processing_ms = (time.perf_counter() - processing_started) * 1000.0
+    return display_frame, build_ball_status(observation, processing_ms)
 
 
 def environment_enabled():
@@ -60,7 +141,7 @@ def requested_enabled():
 
 
 def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
-                error_message=""):
+                error_message="", ball_status=None):
     """Expõe saúde e configuração sem publicar qualquer dado do segue-faixa."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
@@ -97,6 +178,7 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "error": error_message,
         "timestamp": time.time(),
     }
+    status.update(ball_status or empty_ball_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -261,6 +343,7 @@ def main():
     camera = None
     camera_format = ""
     details = {}
+    ball_status = empty_ball_status()
     previous_time = 0.0
     smoothed_fps = 0.0
     last_status_time = 0.0
@@ -278,12 +361,19 @@ def main():
                     camera = None
                     camera_format = ""
                     details = {}
+                    ball_status = empty_ball_status()
+                    ball_tracker.reset()
                     state_changed = True
                     print("Câmera frontal desativada e liberada.", flush=True)
                 current_time = time.monotonic()
                 if (state_changed or
                         current_time - last_status_time >= 1.0 / STATUS_FPS):
-                    save_status(False, False, "disabled")
+                    save_status(
+                        False,
+                        False,
+                        "disabled",
+                        ball_status=ball_status,
+                    )
                     last_status_time = current_time
                 time.sleep(IDLE_POLL_SECONDS)
                 continue
@@ -299,6 +389,8 @@ def main():
                     previous_time = time.monotonic()
                     smoothed_fps = 0.0
                     last_status_time = 0.0
+                    ball_status = empty_ball_status()
+                    ball_tracker.reset()
                     camera_active = True
                     print("Câmera frontal ativada.", flush=True)
                 except Exception as error:
@@ -313,12 +405,15 @@ def main():
 
             try:
                 frame = camera.capture_array("main")
-                jpeg = camera_line_frame.encode_frame(frame)
+                display_frame, ball_status = process_ball_frame(frame)
+                jpeg = camera_line_frame.encode_frame(display_frame)
             except Exception as error:
                 camera_active = False
                 clear_frame()
                 close_forward_camera(camera)
                 camera = None
+                ball_status = empty_ball_status()
+                ball_tracker.reset()
                 next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                 save_status(True, False, "error", error_message=str(error))
                 print(f"Captura frontal falhou; nova tentativa será feita: {error}",
@@ -337,14 +432,26 @@ def main():
                     if smoothed_fps > 0.0 else current_fps
                 )
             if current_time - last_status_time >= 1.0 / STATUS_FPS:
-                save_status(True, True, "online", smoothed_fps,
-                            camera_format, details)
+                save_status(
+                    True,
+                    True,
+                    "online",
+                    smoothed_fps,
+                    camera_format,
+                    details,
+                    ball_status=ball_status,
+                )
                 last_status_time = current_time
     finally:
         camera_active = False
         close_forward_camera(camera)
         clear_frame()
-        save_status(False, False, "stopped")
+        save_status(
+            False,
+            False,
+            "stopped",
+            ball_status=empty_ball_status(),
+        )
         stream_server.shutdown()
         stream_server.server_close()
 

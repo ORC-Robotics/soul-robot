@@ -207,7 +207,6 @@ GREEN_CLOSE_ITERATIONS = 2
 # Este limite aceita o marcador oficial observado na pista, enquanto os filtros
 # de HSV, formato e associação com a faixa continuam bloqueando falsos verdes.
 LINE_MIN_COMPONENT_AREA_PX = 120
-LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
 GREEN_MIN_AREA_RATIO = 2800.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
@@ -382,10 +381,16 @@ CAMERA_PROFILES = {
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
+            # Uma fresta pode ficar larga em poucos pontos por causa da
+            # perspectiva. Para ser aceita, uma parte relevante do componente
+            # precisa manter espessura compatível com a fita de 2 cm.
+            # O valor de referência vira 18 px no frame normal de 480×360.
+            "line_min_component_thickness_ratio": 24.0 / 480.0,
+            "line_min_component_core_ratio": 0.25,
             # Uma linha ou cruzamento normal não deve ocupar mais de 30% da
             # máscara. Componentes maiores indicam sombra ou obstrução e
             # são rejeitados para o robô não seguir um falso contorno.
-            "full_line_max_area_ratio": 1.0,
+            "full_line_max_area_ratio": 0.30,
             # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se
             # a altura real do frame for diferente durante um diagnóstico.
@@ -1223,7 +1228,11 @@ def create_structural_line_mask(
     return structural_mask
 
 
-def component_has_min_thickness(component_mask):
+def component_has_min_thickness(
+    component_mask,
+    minimum_thickness_px,
+    minimum_core_ratio,
+):
     """
     Rejeita componentes predominantemente finos,
     como frestas entre placas da pista.
@@ -1249,10 +1258,7 @@ def component_has_min_thickness(component_mask):
         3,
     )
 
-    minimum_radius = (
-        LINE_MIN_COMPONENT_THICKNESS_PX
-        / 2.0
-    )
+    minimum_radius = minimum_thickness_px / 2.0
 
     thick_core_pixels = int(
         np.count_nonzero(
@@ -1267,7 +1273,7 @@ def component_has_min_thickness(component_mask):
 
     return (
         thick_core_ratio
-        >= LINE_MIN_COMPONENT_CORE_RATIO
+        >= minimum_core_ratio
     )
 
 
@@ -1290,6 +1296,19 @@ def create_line_candidate_mask(
         * vision_profile[
             "full_line_min_short_side_ratio"
         ]
+    )
+
+    minimum_thickness_px = (
+        min(structural_mask.shape[:2])
+        * vision_profile.get(
+            "line_min_component_thickness_ratio",
+            vision_profile["full_line_min_short_side_ratio"],
+        )
+    )
+
+    minimum_core_ratio = vision_profile.get(
+        "line_min_component_core_ratio",
+        LINE_MIN_COMPONENT_CORE_RATIO,
     )
 
     maximum_area = (
@@ -1357,7 +1376,9 @@ def create_line_candidate_mask(
         )
 
         if not component_has_min_thickness(
-            component_mask
+            component_mask,
+            minimum_thickness_px,
+            minimum_core_ratio,
         ):
             continue
 
@@ -4213,6 +4234,17 @@ def read_virtual_line_sensors(
         processed_line_mask,
         geometry["near"]["center"],
     )
+    near_position_geometry = geometry["near"]["position"]
+    near_position_roi = processed_line_mask[
+        near_position_geometry["y0"]:near_position_geometry["y1"],
+        near_position_geometry["x0"]:near_position_geometry["x1"],
+    ]
+    # A busca do retorno precisa perceber a fita quando ela entra pela lateral.
+    # A conclusão da manobra continua dependendo do NEAR-C central e estável.
+    near_any_detected = bool(
+        near_position_roi.size > 0
+        and cv2.countNonZero(near_position_roi) > 0
+    )
 
     far_band_left = read_virtual_sensor(
         processed_line_mask,
@@ -4337,6 +4369,7 @@ def read_virtual_line_sensors(
         "mediumPosition": medium_position,
 
         "nearCenter": near_center,
+        "nearAnyDetected": near_any_detected,
         "nearFinePosition": near_fine_position,
         "headingAngle": heading_angle,
         "steeringError": steering_error,
@@ -5368,6 +5401,10 @@ def calculate_line_follower_command(
         "mediumPosition": sensors["mediumPosition"],
 
         "nearCenter": sensors["nearCenter"],
+        "nearAnyDetected": bool(sensors.get(
+            "nearAnyDetected",
+            virtual_sensor_is_active(sensors["nearCenter"]),
+        )),
         "nearFinePosition": sensors["nearFinePosition"],
 
         "headingAngle": sensors["headingAngle"],
@@ -5795,6 +5832,9 @@ def save_line_status(
             "lineFollowerRightPower": normal_right,
             "lineNearDetected": virtual_sensor_is_active(
                 line_follower_command["nearCenter"]
+            ),
+            "lineNearAnyDetected": bool(
+                line_follower_command.get("nearAnyDetected", False)
             ),
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")

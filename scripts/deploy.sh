@@ -73,6 +73,7 @@ REMOTE_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_robot.sh"
 REMOTE_LINE_CAMERA_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_line_camera.sh"
 LINE_CAMERA_SERVICE_NAME="obr-line-camera"
 SETUP_COMMAND="bash scripts/install-service.sh --host $HOST_NAME"
+OBSTACLE_AVOIDANCE_PATH="$WORKSPACE/obstacle_avoidance"
 
 # As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
@@ -87,6 +88,13 @@ for asset_path in "${required_dashboard_assets[@]}"; do
     exit 1
   fi
 done
+
+# O CMake compila o módulo de desvio diretamente desta pasta exportável.
+# Validá-la antes de parar os serviços evita interromper o robô com um pacote incompleto.
+if [[ ! -d "$OBSTACLE_AVOIDANCE_PATH" ]]; then
+  echo "Obstacle avoidance module not found: $OBSTACLE_AVOIDANCE_PATH" >&2
+  exit 1
+fi
 
 if [[ ! -f "$KEY_PATH" ]]; then
   echo "SSH key not found at $KEY_PATH. Run the one-time setup first: $SETUP_COMMAND" >&2
@@ -113,6 +121,7 @@ ssh "${SSH_ARGS[@]}" "$REMOTE" "sudo -n systemctl stop '${SERVICE_NAME}.service'
 scp "${SCP_ARGS[@]}" "$WORKSPACE/CMakeLists.txt" "${REMOTE}:${REMOTE_DIR}/CMakeLists.txt"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/src" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/include" "${REMOTE}:${REMOTE_DIR}/"
+scp "${SCP_ARGS[@]}" -r "$OBSTACLE_AVOIDANCE_PATH" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/scripts" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/assets" "${REMOTE}:${REMOTE_DIR}/"
 

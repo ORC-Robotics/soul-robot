@@ -243,6 +243,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.lineFollowerRightPower = 0.0;
     snapshot.lineControlSource = "unavailable";
     snapshot.lineNearDetected = false;
+    snapshot.lineNearAnyDetected = false;
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
@@ -340,6 +341,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         {
             candidate.lineControlSource = lineControlSource;
         }
+        // Processos de câmera antigos não publicam a faixa NEAR completa.
+        // Nesse caso, o centro continua sendo o fallback seguro e compatível.
+        candidate.lineNearAnyDetected = candidate.lineNearDetected;
+        tryGetJsonBool(
+            json, "lineNearAnyDetected", candidate.lineNearAnyDetected);
 
         // O baseline abaixo é opcional e nunca invalida o comando visual.
         // Ausência ou valor inválido permanece como NaN/INVALID no CSV.
@@ -388,5 +394,66 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
     {
         return unavailableLineSnapshot(
             cachedLineSnapshot_, hasCachedLineSnapshot_);
+    }
+}
+
+ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
+{
+    ForwardBallSnapshot snapshot;
+    try
+    {
+        std::ifstream file(config::kForwardCameraStatusPath);
+        if (!file)
+        {
+            return snapshot;
+        }
+        std::ostringstream content;
+        content << file.rdbuf();
+        if (file.bad())
+        {
+            return snapshot;
+        }
+        const std::string json = content.str();
+        const bool active = getJsonBool(json, "active", false);
+        if (!tryGetJsonBool(json, "ballDetected", snapshot.detected) ||
+            !tryGetJsonNumber(json, "timestamp", snapshot.timestamp))
+        {
+            return ForwardBallSnapshot{};
+        }
+
+        snapshot.ageMs = (currentUnixSeconds() - snapshot.timestamp) * 1000.0;
+        snapshot.sourceFresh = active && std::isfinite(snapshot.ageMs) &&
+                               snapshot.ageMs >= 0.0 &&
+                               snapshot.ageMs <=
+                                   config::kForwardBallStatusTimeoutMs;
+        if (!snapshot.sourceFresh || !snapshot.detected)
+        {
+            snapshot.detected = false;
+            return snapshot;
+        }
+
+        if (!tryGetJsonString(json, "ballType", snapshot.type) ||
+            !tryGetJsonNumber(json, "ballTxDegrees", snapshot.txDegrees) ||
+            !tryGetJsonNumber(json, "ballDistanceCm", snapshot.distanceCm) ||
+            !tryGetJsonNumber(json, "ballRadiusPixels", snapshot.radiusPixels))
+        {
+            return ForwardBallSnapshot{};
+        }
+        const bool valuesValid = !snapshot.type.empty() &&
+                                 std::isfinite(snapshot.txDegrees) &&
+                                 std::abs(snapshot.txDegrees) <= 45.0 &&
+                                 std::isfinite(snapshot.distanceCm) &&
+                                 snapshot.distanceCm > 0.0 &&
+                                 std::isfinite(snapshot.radiusPixels) &&
+                                 snapshot.radiusPixels > 0.0;
+        if (!valuesValid)
+        {
+            return ForwardBallSnapshot{};
+        }
+        return snapshot;
+    }
+    catch (const std::exception&)
+    {
+        return ForwardBallSnapshot{};
     }
 }

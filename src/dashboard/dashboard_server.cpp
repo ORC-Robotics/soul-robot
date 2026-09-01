@@ -458,6 +458,12 @@ void DashboardServer::handleCommand(const std::string& message)
                 std::cerr << "Invalid drive-distance target ignored\n";
             }
         }
+        else if (message.find("\"mission\":\"align_closest_ball\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::AlignClosestBall);
+            std::cout << "Autonomous mission selected: align_closest_ball\n";
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
@@ -924,6 +930,7 @@ std::string DashboardServer::dashboardHtml()
     .camera-hud-header > * { padding: 5px 8px; border: 1px solid var(--border-primary); border-radius: 6px; color: var(--text); background: var(--bg-overlay); font-size: .62rem; font-weight: 900; letter-spacing: .07em; }
     .camera-hud-line.valid { color: var(--green); border-color: var(--green); }
     .camera-hud-line.invalid { color: var(--danger); border-color: var(--danger); }
+    .camera-hud-line.searching { color: var(--yellow); border-color: var(--yellow); }
     .camera-hud-values { display: grid; grid-template-columns: .8fr .8fr repeat(3, 1fr) 1.45fr; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-overlay); overflow: hidden; }
     .camera-hud-value { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-right: 1px solid var(--border-subtle); }
     .camera-hud-value:last-child { border-right: 0; }
@@ -1213,6 +1220,20 @@ std::string DashboardServer::dashboardHtml()
               <div class="camera-hud-value pipeline"><span>Pipeline</span><strong id="operationPipelinePrimary">BIN — · SPEC — ms</strong><small id="operationPipelineSecondary">MORPH — · CONT — ms</small></div>
             </div>
           </div>
+          <div id="forwardBallTelemetry" class="camera-hud" aria-label="Detecção de bolas da câmera frontal" hidden>
+            <div class="camera-hud-header">
+              <strong id="forwardBallState" class="camera-hud-line searching">PROCURANDO BOLAS</strong>
+              <span id="forwardBallProcessing">-- ms</span>
+            </div>
+            <div class="camera-hud-values">
+              <div class="camera-hud-value green-status"><span>Posição</span><strong id="forwardBallPosition">NENHUMA</strong><small id="forwardBallType">BLACK / SILVER</small></div>
+              <div class="camera-hud-value"><span>Distância</span><strong id="forwardBallDistance">-- cm</strong><small id="forwardBallCalibration">CALIBRAÇÃO 960×540</small></div>
+              <div class="camera-hud-value"><span>Ângulo</span><strong id="forwardBallAngle">-- °</strong></div>
+              <div class="camera-hud-value"><span>Centro X / Y</span><strong id="forwardBallCenter">-- / -- px</strong></div>
+              <div class="camera-hud-value"><span>Raio / diâmetro</span><strong id="forwardBallSize">-- / -- px</strong></div>
+              <div class="camera-hud-value"><span>Geometria</span><strong id="forwardBallCircularity">CIRC --</strong><small id="forwardBallGeometry">Maior candidato circular</small></div>
+            </div>
+          </div>
         </section>
 
         <aside id="missionStateCard" class="card operation-control-panel mission-state-card" data-tone="idle">
@@ -1245,8 +1266,9 @@ std::string DashboardServer::dashboardHtml()
                 <option value="main_mission" selected>MISSÃO PRINCIPAL</option>
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
+                <option value="align_closest_ball">ALINHAR COM BOLA MAIS PRÓXIMA</option>
               </select>
-              <span id="missionHint" class="mission-hint">Orquestrador da prova; comportamentos ainda não instalados.</span>
+              <span id="missionHint" class="mission-hint">Segue a linha, executa retornos verdes e contorna obstáculos pelo ultrassônico.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
                 <span class="distance-input-label">Distância alvo</span>
                 <div class="distance-input">
@@ -1484,7 +1506,8 @@ std::string DashboardServer::dashboardHtml()
         requestedEnabled: false,
         transitionDeadlineMs: 0,
         error: "",
-        metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" }
+        metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" },
+        ball: { detected: false, type: "", position: "nenhuma", distanceCm: null, extrapolated: false, angleDegrees: null, centerX: null, centerY: null, radiusPixels: null, diameterPixels: null, circularity: null, topClipped: false, detectionMethod: "", processingMs: null }
       }
     };
     const connection = element("connection");
@@ -1499,6 +1522,20 @@ std::string DashboardServer::dashboardHtml()
     const operationCameraFps = element("operationCameraFps");
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
+    const forwardBallTelemetry = element("forwardBallTelemetry");
+    const forwardBallFields = {
+      state: element("forwardBallState"),
+      processing: element("forwardBallProcessing"),
+      position: element("forwardBallPosition"),
+      type: element("forwardBallType"),
+      distance: element("forwardBallDistance"),
+      calibration: element("forwardBallCalibration"),
+      angle: element("forwardBallAngle"),
+      center: element("forwardBallCenter"),
+      size: element("forwardBallSize"),
+      circularity: element("forwardBallCircularity"),
+      geometry: element("forwardBallGeometry")
+    };
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const operationCameraDiagnosticFields = {
       lineFollowerState: element("cameraLineFollowerState"),
@@ -1617,6 +1654,8 @@ std::string DashboardServer::dashboardHtml()
         ? "Executando giro de 90° à direita"
         : selectedMission === "drive_distance"
           ? "Percorrendo a distância selecionada pelos encoders"
+          : selectedMission === "align_closest_ball"
+            ? "Alinhando pela posição tx da bola mais próxima"
           : "Missão principal em execução";
       element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
@@ -1642,7 +1681,9 @@ std::string DashboardServer::dashboardHtml()
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
-          : "Orquestrador da prova; comportamentos ainda não instalados.";
+          : mission === "align_closest_ball"
+            ? "Gira em pulsos curtos até centralizar a bola mais próxima; exige a câmera frontal ativa."
+          : "Segue a linha, executa retornos verdes e contorna obstáculos pelo ultrassônico.";
     }
 
     function updateStateMachine(data) {
@@ -1658,7 +1699,35 @@ std::string DashboardServer::dashboardHtml()
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
+        ball_alignment_camera_stale: ["BOLA: CÂMERA SEM DADOS", "danger", "machineStepPerception"],
+        ball_alignment_waiting_ball: ["BOLA: AGUARDANDO ALVO", "warn", "machineStepPerception"],
+        ball_alignment_turning: ["BOLA: ALINHANDO", "active", "machineStepMotion"],
+        ball_alignment_settling: ["BOLA: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        ball_aligned: ["BOLA ALINHADA", "active", "machineStepFeedback"],
+        obstacle_waiting_sensors: ["OBSTÁCULO: SENSORES", "warn", "machineStepPerception"],
+        obstacle_detected: ["OBSTÁCULO DETECTADO", "warn", "machineStepDecision"],
+        obstacle_settling: ["DESVIO: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        obstacle_turning: ["DESVIO: GIRO", "active", "machineStepMotion"],
+        obstacle_turn_settling: ["DESVIO: GIRO ESTÁVEL", "warn", "machineStepFeedback"],
+        obstacle_turn_correction: ["DESVIO: CORRIGINDO GIRO", "active", "machineStepMotion"],
+        obstacle_first_forward_start: ["DESVIO: 1ª RETA", "warn", "machineStepFeedback"],
+        obstacle_first_forward: ["DESVIO: 1ª RETA", "active", "machineStepMotion"],
+        obstacle_second_forward_start: ["DESVIO: 2ª RETA", "warn", "machineStepFeedback"],
+        obstacle_second_forward: ["DESVIO: 2ª RETA", "active", "machineStepMotion"],
+        obstacle_third_forward_start: ["DESVIO: 3ª RETA", "warn", "machineStepFeedback"],
+        obstacle_third_forward: ["DESVIO: 3ª RETA", "active", "machineStepMotion"],
+        obstacle_reverse_start: ["DESVIO: INICIANDO RÉ", "warn", "machineStepFeedback"],
+        obstacle_reversing: ["DESVIO: RÉ 5 CM", "active", "machineStepMotion"],
+        obstacle_stage_completed: ["DESVIO: ETAPA CONCLUÍDA", "warn", "machineStepFeedback"],
+        obstacle_completed: ["DESVIO CONCLUÍDO", "active", "machineStepFeedback"],
+        obstacle_encoder_lost: ["DESVIO: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        obstacle_distance_timeout: ["DESVIO: TIMEOUT", "danger", "machineStepFeedback"],
+        obstacle_turn_start_failed: ["DESVIO: IMU INVÁLIDA", "danger", "machineStepFeedback"],
+        obstacle_turn_timeout: ["DESVIO: GIRO EXPIRADO", "danger", "machineStepFeedback"],
+        obstacle_turn_imu_lost: ["DESVIO: IMU PERDIDA", "danger", "machineStepFeedback"],
+        obstacle_turn_correction_failed: ["DESVIO: GIRO INCOMPLETO", "danger", "machineStepFeedback"],
         turnaround_waiting_sensors: ["RETORNO: SENSORES", "warn", "machineStepPerception"],
+        turnaround_recognized_stopping: ["RETORNO: PARANDO", "warn", "machineStepFeedback"],
         turnaround_forward: ["RETORNO: AVANÇO", "active", "machineStepMotion"],
         turnaround_forward_settling: ["RETORNO: ESTABILIZANDO", "warn", "machineStepFeedback"],
         turnaround_imu: ["RETORNO: GIRO IMU", "active", "machineStepMotion"],
@@ -1714,13 +1783,22 @@ std::string DashboardServer::dashboardHtml()
       const mission = String(data.autonomousMission || "main_mission");
       element("machineMission").textContent = mission === "turn_right_90"
         ? "Giro 90° à direita"
-        : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
+        : mission === "drive_distance"
+          ? "Percorrer distância"
+          : mission === "align_closest_ball"
+            ? "Alinhar com bola"
+            : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
+      const obstacleActive = phase.startsWith("obstacle_");
       element("machineBehavior").textContent = mission === "turn_right_90"
         ? "TESTE DE GIRO"
         : mission === "drive_distance"
           ? "TESTE DE DISTÂNCIA"
-          : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
+          : mission === "align_closest_ball"
+            ? "ALINHAMENTO POR TX"
+          : turnAroundActive
+            ? "RETORNO 180°"
+            : obstacleActive ? "DESVIO DE OBSTÁCULO" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;
       element("machineAppliedSpeed").textContent = fresh
@@ -1733,12 +1811,16 @@ std::string DashboardServer::dashboardHtml()
           : "-- / -- cont/s"
       );
       const distanceMission = mission === "drive_distance";
-      element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
-      element("machineDistanceSides").textContent = distanceMission
+      const showAutonomousDistance = distanceMission || obstacleActive;
+      const shownTargetDistance = distanceMission
+        ? data.driveDistanceTargetCm
+        : data.autonomousTargetDistanceCm;
+      element("machineDistanceTarget").textContent = showAutonomousDistance ? `${formatNumber(shownTargetDistance, 1)} cm` : "-- cm";
+      element("machineDistanceSides").textContent = showAutonomousDistance
         ? `${formatNumber(data.autonomousLeftDistanceCm, 1)} / ${formatNumber(data.autonomousRightDistanceCm, 1)} cm`
         : "-- / -- cm";
-      element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
-      element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
+      element("machineDistanceAverage").textContent = showAutonomousDistance ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
+      element("machineEncoderCalibration").textContent = showAutonomousDistance ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
       const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
@@ -2224,6 +2306,29 @@ std::string DashboardServer::dashboardHtml()
       setTextIfChanged(cameraHudFps, cameraFpsText(cameras.downward));
     }
 
+    function renderForwardBallTelemetry() {
+      const ball = cameras.forward.ball;
+      const detected = ball.detected === true;
+      const ballName = ball.type === "silver_ball" ? "BOLA PRATA" : "BOLA PRETA";
+      setTextIfChanged(forwardBallFields.state, detected ? `${ballName} DETECTADA` : "PROCURANDO BOLAS");
+      forwardBallFields.state.className = `camera-hud-line ${detected ? "valid" : "searching"}`;
+      setTextIfChanged(forwardBallFields.processing, Number.isFinite(ball.processingMs) ? `${ball.processingMs.toFixed(1)} ms` : "-- ms");
+      setTextIfChanged(forwardBallFields.position, detected ? String(ball.position || "nenhuma").toUpperCase() : "NENHUMA");
+      setTextIfChanged(forwardBallFields.type, detected ? String(ball.type || "black_ball").toUpperCase() : "BLACK / SILVER");
+      setTextIfChanged(forwardBallFields.distance, detected && Number.isFinite(ball.distanceCm) ? `${ball.distanceCm.toFixed(1)} cm` : "-- cm");
+      setTextIfChanged(forwardBallFields.calibration, detected && ball.extrapolated ? "DISTÂNCIA EXTRAPOLADA" : "CALIBRAÇÃO 960×540");
+      setTextIfChanged(forwardBallFields.angle, detected && Number.isFinite(ball.angleDegrees) ? `${ball.angleDegrees >= 0 ? "+" : ""}${ball.angleDegrees.toFixed(1)} °` : "-- °");
+      setTextIfChanged(forwardBallFields.center, detected && Number.isFinite(ball.centerX) && Number.isFinite(ball.centerY) ? `${ball.centerX.toFixed(0)} / ${ball.centerY.toFixed(0)} px` : "-- / -- px");
+      setTextIfChanged(forwardBallFields.size, detected && Number.isFinite(ball.radiusPixels) && Number.isFinite(ball.diameterPixels) ? `${ball.radiusPixels.toFixed(1)} / ${ball.diameterPixels.toFixed(1)} px` : "-- / -- px");
+      setTextIfChanged(forwardBallFields.circularity, detected && ball.detectionMethod === "hough" ? "HOUGH + TRACK" : detected && Number.isFinite(ball.circularity) ? `CIRC ${ball.circularity.toFixed(3)}` : "CIRC --");
+      const geometryText = detected && ball.topClipped
+        ? "CÍRCULO CORTADO NO TOPO"
+        : detected && ball.detectionMethod === "hough"
+          ? "BORDA + TEXTURA METÁLICA"
+          : "Maior candidato circular";
+      setTextIfChanged(forwardBallFields.geometry, geometryText);
+    }
+
     function renderCameraMetadata() {
       updateOperationCameraFps();
       const visibleCameras = visibleCameraIds().map(cameraId => cameras[cameraId]);
@@ -2515,6 +2620,7 @@ std::string DashboardServer::dashboardHtml()
       if (shouldMountStream) mountCameraStream(camera, frame, generation);
       else buildCameraPlaceholder(camera, frame);
       if (camera.id === "downward") frame.appendChild(downwardCameraTelemetry);
+      if (camera.id === "forward") frame.appendChild(forwardBallTelemetry);
       feed.append(header, frame);
       updateForwardCameraButtons();
       updateLineCameraButtons();
@@ -2552,6 +2658,8 @@ std::string DashboardServer::dashboardHtml()
         cameraFeeds.appendChild(buildCameraFeed(cameraId, generation));
       });
       downwardCameraTelemetry.hidden = view === "forward";
+      forwardBallTelemetry.hidden = view === "downward";
+      renderForwardBallTelemetry();
       renderCameraMetadata();
       if (cameraIsVisible("downward")) refreshCameraStatus();
       if (cameraIsVisible("forward")) refreshForwardCameraStatus();
@@ -2769,6 +2877,24 @@ std::string DashboardServer::dashboardHtml()
         camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "1920×1080 10-bit";
         camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
         camera.metadata.format = data.cameraFormat || "--";
+        const finiteBallValue = value => value !== null && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
+        camera.ball = {
+          detected: data.ballDetected === true,
+          type: String(data.ballType || ""),
+          position: String(data.ballPosition || "nenhuma"),
+          distanceCm: finiteBallValue(data.ballDistanceCm),
+          extrapolated: data.ballDistanceExtrapolated === true,
+          angleDegrees: finiteBallValue(data.ballAngleDegrees),
+          centerX: finiteBallValue(data.ballCenterX),
+          centerY: finiteBallValue(data.ballCenterY),
+          radiusPixels: finiteBallValue(data.ballRadiusPixels),
+          diameterPixels: finiteBallValue(data.ballDiameterPixels),
+          circularity: finiteBallValue(data.ballCircularity),
+          topClipped: data.ballTopClipped === true,
+          detectionMethod: String(data.ballDetectionMethod || ""),
+          processingMs: finiteBallValue(data.ballProcessingMs)
+        };
+        renderForwardBallTelemetry();
 
         let status = "INICIANDO";
         if (!camera.enabled) status = "DESLIGADA";

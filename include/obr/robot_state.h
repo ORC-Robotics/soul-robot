@@ -10,7 +10,8 @@ enum class AutonomousMission
 {
     MainMission,
     TurnRight90,
-    DriveDistance
+    DriveDistance,
+    AlignClosestBall
 };
 
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.

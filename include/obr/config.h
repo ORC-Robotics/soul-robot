@@ -68,6 +68,10 @@ constexpr const char* kForwardCameraTemporaryControlPath =
 constexpr const char* kForwardCameraStatusPath =
     "/tmp/obr_forward_camera_status.json";
 
+// Idade máxima, em milissegundos, aceita para a posição da bola frontal.
+// O stream publica a 5 Hz; perder duas atualizações interrompe o alinhamento.
+constexpr int kForwardBallStatusTimeoutMs = 500;
+
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
 // Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.
 constexpr int kCameraLightPinBoard = 40;
@@ -91,6 +95,31 @@ constexpr double kMaxMotorOutput = 1.0;
 // Potência mínima para iniciar uma roda que estava parada.
 // Este valor foi validado fisicamente; reduzi-lo pode impedir a partida do motor.
 constexpr double kMotorStartMinimumPower = 0.67;
+
+// Erro horizontal, em graus, aceito pela missão isolada de alinhamento.
+// Uma zona morta evita alternar rapidamente o sentido perto do centro.
+constexpr double kBallAlignmentDeadbandDegrees = 3.0;
+
+// Erro que retira o robô do estado alinhado. A histerese maior que a zona
+// morta impede novos pulsos por pequenas oscilações do detector.
+constexpr double kBallAlignmentExitDeadbandDegrees = 5.0;
+
+// Potência normalizada do pivot de debug. Ela coincide com o piso de partida
+// medido dos motores; aumentar este valor torna o alinhamento mais agressivo.
+constexpr double kBallAlignmentTurnPower = kMotorStartMinimumPower;
+
+// Duração do pulso e pausa de estabilização, em milissegundos.
+// O PWM curto reduz a ultrapassagem enquanto a visão frontal atualiza a 5 Hz.
+constexpr int kBallAlignmentPulseMs = 70;
+constexpr int kBallAlignmentSettleMs = 230;
+
+static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
+                  kBallAlignmentExitDeadbandDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentTurnPower >= kMotorStartMinimumPower &&
+                  kBallAlignmentTurnPower <= kMaxMotorOutput &&
+                  kBallAlignmentPulseMs > 0 && kBallAlignmentSettleMs > 0,
+              "A missão de alinhamento deve preservar limites seguros.");
 
 // Potência mínima para manter uma roda que os encoders já confirmaram em movimento.
 // Ela permite desacelerar a roda interna nas curvas sem voltar ao piso de partida.
@@ -281,8 +310,11 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
               "O controle fechado da missão de distância deve permanecer seguro.");
 
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
-// Primeiro o robô avança pelos encoders, depois gira pelo MPU6050 e continua
-// no mesmo sentido até a câmera inferior confirmar novamente a linha próxima.
+// Primeiro o robô para, avança pelos encoders, gira 125° pelo MPU6050 e
+// continua no mesmo sentido até reencontrar a linha ou atingir cerca de 200°.
+// Tempo parado, em milissegundos, após reconhecer o retorno.
+// Esta espera encerra o comando anterior antes de referenciar os encoders.
+constexpr int kGreenTurnAroundRecognitionStopMs = 250;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
 constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
@@ -295,28 +327,38 @@ constexpr int kGreenTurnAroundForwardSettleMs = 250;
 // O avanço só é interrompido por encoder quando a telemetria fica ausente.
 constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
 
-// Limite absoluto de segurança, em milissegundos, para o avanço de 9 cm.
+// Limite absoluto de segurança, em milissegundos, para o avanço configurado.
 // Ele não controla a distância; apenas impede movimento indefinido se uma
 // contagem congelada continuar chegando como telemetria aparentemente válida.
 constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
-// Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
-constexpr double kGreenTurnAroundImuDegrees = 150.0;
+// Ângulo aproximado, em graus, controlado pelo MPU6050 antes da busca visual.
+// A câmera passa a decidir o fim da manobra somente depois desta rotação.
+constexpr double kGreenTurnAroundImuDegrees = 125.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
 constexpr double kGreenTurnAroundImuToleranceDegrees = 5.0;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
 constexpr bool kGreenTurnAroundTurnsRight = true;
 // Potência normalizada do pivot que continua até o NEAR encontrar a linha.
 constexpr double kGreenTurnAroundLineSearchPower = kTurn90CommandPower;
+// Potência usada depois que a linha entra pela lateral da faixa NEAR.
+// A redução evita atravessar o sensor central entre dois frames da câmera.
+constexpr double kGreenTurnAroundLineApproachPower =
+    kMotorStartMinimumPower;
+// Ângulo total máximo, em graus, permitido para o retorno.
+// Ao atingir este valor sem confirmar a linha, o segue-linha reassume o controle.
+constexpr double kGreenTurnAroundMaximumDegrees = 200.0;
 // Giro adicional máximo, em graus, permitido durante a busca visual da linha.
-// Com o alvo atual, ele limita o retorno a aproximadamente 195° se a câmera
-// não reconhecer o NEAR, em vez de permitir uma volta quase completa.
-constexpr double kGreenTurnAroundLineSearchMaximumDegrees = 45.0;
+// Somado aos 125° iniciais, limita a manobra a aproximadamente 200° mesmo
+// quando a câmera não consegue confirmar novamente o centro da linha.
+constexpr double kGreenTurnAroundLineSearchMaximumDegrees =
+    kGreenTurnAroundMaximumDegrees - kGreenTurnAroundImuDegrees;
 // Quantidade de frames consecutivos com NEAR válido para retomar o seguidor.
 constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
 
-static_assert(kGreenTurnAroundForwardDistanceCm > 0.0 &&
+static_assert(kGreenTurnAroundRecognitionStopMs > 0 &&
+                  kGreenTurnAroundForwardDistanceCm > 0.0 &&
                   kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
                   kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
                   kGreenTurnAroundForwardSettleMs >= 0 &&
@@ -331,8 +373,15 @@ static_assert(kGreenTurnAroundImuDegrees > 0.0 &&
                       kGreenTurnAroundImuDegrees &&
                   kGreenTurnAroundLineSearchPower > 0.0 &&
                   kGreenTurnAroundLineSearchPower <= kMaxMotorOutput &&
+                  kGreenTurnAroundLineApproachPower >=
+                      kMotorRunMinimumPower &&
+                  kGreenTurnAroundLineApproachPower <=
+                      kGreenTurnAroundLineSearchPower &&
+                  kGreenTurnAroundMaximumDegrees >
+                      kGreenTurnAroundImuDegrees &&
+                  kGreenTurnAroundMaximumDegrees <= 360.0 &&
                   kGreenTurnAroundLineSearchMaximumDegrees > 0.0 &&
-                  kGreenTurnAroundLineSearchMaximumDegrees < 180.0 &&
+                  kGreenTurnAroundLineSearchMaximumDegrees <= 180.0 &&
                   kGreenTurnAroundLineReacquireFrames > 0 &&
                   kGreenTurnAroundLineSearchTimeoutMs > 0,
               "O giro e a busca visual do retorno verde devem ser válidos.")

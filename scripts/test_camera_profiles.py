@@ -148,6 +148,45 @@ class CameraProfilesTest(unittest.TestCase):
         result = camera_line_frame.create_line_candidate_mask(mask, profile)
         self.assertEqual(np.count_nonzero(result), 0)
 
+    def test_line_candidate_mask_rejects_long_tapered_floor_seam(self):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        seam = np.array(
+            [[[235, 0]], [[245, 0]], [[259, 359]], [[237, 359]]],
+            dtype=np.int32,
+        )
+        cv2.drawContours(mask, [seam], -1, 255, cv2.FILLED)
+
+        result = camera_line_frame.create_line_candidate_mask(mask, profile)
+
+        self.assertEqual(np.count_nonzero(result), 0)
+
+    def test_line_candidate_mask_keeps_tape_with_sustained_width(self):
+        profile = camera_line_frame.CAMERA_PROFILES["down"]["vision"]
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        tape = np.array(
+            [[[228, 0]], [[252, 0]], [[274, 359]], [[226, 359]]],
+            dtype=np.int32,
+        )
+        cv2.drawContours(mask, [tape], -1, 255, cv2.FILLED)
+
+        result = camera_line_frame.create_line_candidate_mask(mask, profile)
+
+        self.assertGreater(np.count_nonzero(result), 0)
+
+    def test_near_band_detects_line_before_it_reaches_center(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        mask[300:360, 20:50] = 255
+
+        sensors = camera_line_frame.read_virtual_line_sensors(mask)
+
+        self.assertTrue(sensors["nearAnyDetected"])
+        self.assertFalse(
+            camera_line_frame.virtual_sensor_is_active(
+                sensors["nearCenter"]
+            )
+        )
+
     def test_display_line_mode_does_not_modify_source_masks(self):
         raw = np.zeros((80, 120, 3), dtype=np.uint8)
         structural = np.zeros((80, 120), dtype=np.uint8)
@@ -461,6 +500,7 @@ class CameraProfilesTest(unittest.TestCase):
                         "right_power": 0.0,
                         "controlSource": "virtual",
                         "nearCenter": 0.20,
+                        "nearAnyDetected": True,
                         "nearFinePosition": 0.12,
                         "mediumPosition": 0.08,
                         "farBandPosition": -0.04,
@@ -485,6 +525,7 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["lineFollowerLeftPower"], 0.0)
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
         self.assertTrue(published["lineNearDetected"])
+        self.assertTrue(published["lineNearAnyDetected"])
         self.assertEqual(published["lineControlSource"], "virtual")
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
         self.assertEqual(published["nearFinePosition"], 0.12)
@@ -498,6 +539,7 @@ class CameraProfilesTest(unittest.TestCase):
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
             "lineNearDetected",
+            "lineNearAnyDetected",
             "lineControlSource",
             "nearFinePosition",
             "mediumPosition",
