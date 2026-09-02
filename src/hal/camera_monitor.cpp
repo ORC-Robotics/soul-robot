@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -416,7 +417,10 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
         const std::string json = content.str();
         const bool active = getJsonBool(json, "active", false);
         if (!tryGetJsonBool(json, "ballDetected", snapshot.detected) ||
-            !tryGetJsonNumber(json, "timestamp", snapshot.timestamp))
+            !tryGetJsonNumber(json, "timestamp", snapshot.timestamp) ||
+            !tryGetJsonUnsignedInteger(
+                json, "targetSequence", snapshot.targetSequence) ||
+            !tryGetJsonBool(json, "targetLocked", snapshot.targetLocked))
         {
             return ForwardBallSnapshot{};
         }
@@ -435,7 +439,9 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
         if (!tryGetJsonString(json, "ballType", snapshot.type) ||
             !tryGetJsonNumber(json, "ballTxDegrees", snapshot.txDegrees) ||
             !tryGetJsonNumber(json, "ballDistanceCm", snapshot.distanceCm) ||
-            !tryGetJsonNumber(json, "ballRadiusPixels", snapshot.radiusPixels))
+            !tryGetJsonNumber(json, "ballRadiusPixels", snapshot.radiusPixels) ||
+            !tryGetJsonNumber(
+                json, "visibleAreaPixels", snapshot.visibleAreaPixels))
         {
             return ForwardBallSnapshot{};
         }
@@ -445,7 +451,10 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
                                  std::isfinite(snapshot.distanceCm) &&
                                  snapshot.distanceCm > 0.0 &&
                                  std::isfinite(snapshot.radiusPixels) &&
-                                 snapshot.radiusPixels > 0.0;
+                                 snapshot.radiusPixels > 0.0 &&
+                                 std::isfinite(snapshot.visibleAreaPixels) &&
+                                 snapshot.visibleAreaPixels > 0.0 &&
+                                 snapshot.targetLocked;
         if (!valuesValid)
         {
             return ForwardBallSnapshot{};
@@ -456,4 +465,36 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
     {
         return ForwardBallSnapshot{};
     }
+}
+
+bool CameraMonitor::requestForwardBallTargetSequence(
+    std::uint64_t sequence) const
+{
+#ifdef _WIN32
+    (void)sequence;
+    return true;
+#else
+    {
+        std::ofstream control(
+            config::kForwardBallTargetSequenceTemporaryControlPath,
+            std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << sequence << '\n';
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(
+            config::kForwardBallTargetSequenceTemporaryControlPath,
+            config::kForwardBallTargetSequenceControlPath) != 0)
+    {
+        std::remove(config::kForwardBallTargetSequenceTemporaryControlPath);
+        return false;
+    }
+    return true;
+#endif
 }

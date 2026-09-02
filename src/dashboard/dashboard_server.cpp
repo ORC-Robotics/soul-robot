@@ -1350,7 +1350,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="main_mission" selected>MISSÃO PRINCIPAL</option>
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
-                <option value="align_closest_ball">ALINHAR COM BOLA MAIS PRÓXIMA</option>
+                <option value="align_closest_ball">ALINHAR COM MAIOR BOLA VISÍVEL</option>
               </select>
               <span id="missionHint" class="mission-hint">Segue a linha, executa retornos verdes e contorna obstáculos pelo ultrassônico.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
@@ -1739,7 +1739,7 @@ std::string DashboardServer::dashboardHtml()
         : selectedMission === "drive_distance"
           ? "Percorrendo a distância selecionada pelos encoders"
           : selectedMission === "align_closest_ball"
-            ? "Alinhando pela posição tx da bola mais próxima"
+            ? "Alinhando pelo tx do alvo travado por área visível"
           : "Missão principal em execução";
       element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
@@ -1766,7 +1766,7 @@ std::string DashboardServer::dashboardHtml()
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
           : mission === "align_closest_ball"
-            ? "Gira com potência proporcional ao tx até centralizar a bola mais próxima; exige a câmera frontal ativa."
+            ? "Seleciona a maior área visível, trava o alvo e alinha continuamente pelo tx."
           : "Segue a linha, executa retornos verdes e contorna obstáculos pelo ultrassônico.";
     }
 
@@ -1784,10 +1784,17 @@ std::string DashboardServer::dashboardHtml()
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
         ball_alignment_camera_stale: ["BOLA: CÂMERA SEM DADOS", "danger", "machineStepPerception"],
-        ball_alignment_waiting_ball: ["BOLA: AGUARDANDO ALVO", "warn", "machineStepPerception"],
-        ball_alignment_turning: ["BOLA: ALINHANDO", "active", "machineStepMotion"],
-        ball_alignment_braking: ["BOLA: FREANDO NO CENTRO", "warn", "machineStepFeedback"],
-        ball_aligned: ["BOLA ALINHADA", "active", "machineStepFeedback"],
+        ball_alignment_waiting_target: ["BOLA: ADQUIRINDO ALVO", "warn", "machineStepPerception"],
+        ball_alignment_target_lost: ["BOLA: ALVO TEMPORARIAMENTE PERDIDO", "warn", "machineStepPerception"],
+        ball_alignment_target_lost_timeout: ["BOLA: ALVO PERDIDO", "danger", "machineStepFeedback"],
+        ball_alignment_turning: ["BOLA: GIRO POR TX", "active", "machineStepMotion"],
+        ball_alignment_braking: ["BOLA: FRENAGEM CENTRAL", "warn", "machineStepFeedback"],
+        ball_alignment_verifying: ["BOLA: CONFIRMANDO CENTRO", "warn", "machineStepPerception"],
+        ball_alignment_fine_correction: ["BOLA: CORREÇÃO FINA", "active", "machineStepMotion"],
+        ball_approaching: ["BOLA: APROXIMANDO", "active", "machineStepMotion"],
+        ball_approach_paused: ["BOLA: REALINHANDO", "warn", "machineStepFeedback"],
+        ball_approach_waiting_distance: ["BOLA: AGUARDANDO DISTÂNCIA", "warn", "machineStepPerception"],
+        ball_reached: ["BOLA ALCANÇADA", "active", "machineStepFeedback"],
         obstacle_waiting_sensors: ["OBSTÁCULO: SENSORES", "warn", "machineStepPerception"],
         obstacle_detected: ["OBSTÁCULO DETECTADO", "warn", "machineStepDecision"],
         obstacle_settling: ["DESVIO: ESTABILIZANDO", "warn", "machineStepFeedback"],

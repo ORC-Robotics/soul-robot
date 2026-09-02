@@ -10,14 +10,15 @@ import statistics
 class BallTrackerConfig:
     """Centraliza os limites temporais do rastreamento da bola."""
 
+    acquisition_frames: int = 3
     history_size: int = 5
     smoothing_alpha: float = 0.30
     maximum_center_jump_radii: float = 1.75
     minimum_center_jump_pixels: float = 35.0
-    maximum_radius_change_ratio: float = 0.55
-    reset_after_missing_frames: int = 5
 
     def validate(self):
+        if self.acquisition_frames <= 0:
+            raise ValueError("A aquisição deve exigir ao menos um frame.")
         if self.history_size <= 0:
             raise ValueError("O histórico do rastreador deve ser positivo.")
         if not 0.0 < self.smoothing_alpha <= 1.0:
@@ -26,10 +27,6 @@ class BallTrackerConfig:
             raise ValueError("O salto máximo do centro deve ser positivo.")
         if self.minimum_center_jump_pixels <= 0.0:
             raise ValueError("O salto mínimo em pixels deve ser positivo.")
-        if not 0.0 < self.maximum_radius_change_ratio < 1.0:
-            raise ValueError("A variação máxima do raio deve estar entre 0 e 1.")
-        if self.reset_after_missing_frames <= 0:
-            raise ValueError("O limite de frames ausentes deve ser positivo.")
 
 
 class BallTracker:
@@ -41,32 +38,45 @@ class BallTracker:
         self.reset()
 
     def reset(self):
-        """Descarta o histórico quando a câmera ou o alvo deixa de existir."""
+        """Descarta o alvo somente quando uma nova execução é iniciada."""
 
         self._measurements = deque(maxlen=self.config.history_size)
         self._ball_type = None
         self._filtered_geometry = None
         self._missing_frames = 0
+        self._acquisition_frames = 0
+        self._acquisition_candidate = None
+        self._last_raw_center = None
+        self._velocity = (0.0, 0.0)
+        self._locked = False
+
+    @property
+    def locked(self):
+        """Informa se a aquisição já travou um alvo para a execução atual."""
+
+        return self._locked
 
     def _association_cost(self, candidate):
         previous_x, previous_y, previous_radius = self._filtered_geometry
+        if self._last_raw_center is None:
+            expected_x, expected_y = previous_x, previous_y
+        else:
+            expected_x = self._last_raw_center[0] + self._velocity[0]
+            expected_y = self._last_raw_center[1] + self._velocity[1]
         center_distance = math.hypot(
-            candidate.center_x - previous_x,
-            candidate.center_y - previous_y,
+            candidate.center_x - expected_x,
+            candidate.center_y - expected_y,
         )
         center_limit = max(
             self.config.minimum_center_jump_pixels,
             previous_radius * self.config.maximum_center_jump_radii,
         )
-        radius_change = abs(candidate.radius_pixels - previous_radius) / max(
-            previous_radius,
-            1.0,
-        )
         if center_distance > center_limit:
             return math.inf
-        if radius_change > self.config.maximum_radius_change_ratio:
-            return math.inf
-        return center_distance / center_limit + radius_change
+        # Durante o giro, a perspectiva altera o raio aparente e pode inverter
+        # a ordem de tamanho das bolas. A identidade depende apenas da posição
+        # entre frames; o raio continua sendo filtrado somente para a distância.
+        return center_distance / center_limit
 
     def _select_candidate(self, candidates):
         if self._filtered_geometry is None:
@@ -123,20 +133,60 @@ class BallTracker:
         """Retorna o alvo atual suavizado sem publicar frames antigos ausentes."""
 
         if not candidates:
+            self._acquisition_frames = 0
             self._missing_frames += 1
-            if self._missing_frames >= self.config.reset_after_missing_frames:
-                self.reset()
             return []
 
-        selected = self._select_candidate(candidates)
+        if not self._locked:
+            # Antes de liberar qualquer movimento, aguarda alguns frames para
+            # confirmar que a mesma vencedora por área continua visível.
+            selected = max(
+                candidates,
+                key=lambda candidate: candidate.visible_area_pixels,
+            )
+            previous = self._acquisition_candidate
+            same_candidate = previous is not None and (
+                previous.ball_type == selected.ball_type and
+                math.hypot(
+                    previous.center_x - selected.center_x,
+                    previous.center_y - selected.center_y,
+                ) <= max(
+                    self.config.minimum_center_jump_pixels,
+                    previous.radius_pixels *
+                    self.config.maximum_center_jump_radii,
+                )
+            )
+            self._acquisition_frames = (
+                self._acquisition_frames + 1 if same_candidate else 1
+            )
+            self._acquisition_candidate = selected
+            if self._acquisition_frames < self.config.acquisition_frames:
+                return []
+            self._locked = True
+        else:
+            selected = self._select_candidate(candidates)
         if selected is None:
-            # Uma mudança incompatível inicia outro alvo em vez de arrastar
-            # a geometria antiga para uma bola diferente.
-            self.reset()
-            selected = candidates[0]
+            # Um alvo incompatível nunca assume a execução atual. A ausência é
+            # publicada para o C++ parar os motores e controlar o timeout.
+            self._missing_frames += 1
+            return []
 
         self._missing_frames = 0
+        self._acquisition_frames = 0
         self._ball_type = selected.ball_type
+        if self._last_raw_center is not None:
+            measured_velocity = (
+                selected.center_x - self._last_raw_center[0],
+                selected.center_y - self._last_raw_center[1],
+            )
+            self._velocity = tuple(
+                previous * 0.5 + measured * 0.5
+                for previous, measured in zip(
+                    self._velocity,
+                    measured_velocity,
+                )
+            )
+        self._last_raw_center = (selected.center_x, selected.center_y)
         self._measurements.append((
             selected.center_x,
             selected.center_y,

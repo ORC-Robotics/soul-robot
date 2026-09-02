@@ -40,7 +40,8 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 class ForwardCameraStreamTest(unittest.TestCase):
     def setUp(self):
-        forward_camera_stream.ball_tracker.reset()
+        forward_camera_stream.ball_vision_pipeline.reset()
+        forward_camera_stream.active_ball_target_sequence = 0
         forward_camera_stream.active_stream_clients = 0
 
     @staticmethod
@@ -125,9 +126,46 @@ class ForwardCameraStreamTest(unittest.TestCase):
                     forward_camera_stream.requested_ball_detection_enabled()
                 )
 
+    def test_reads_target_sequence_and_rejects_invalid_value(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            control_path = os.path.join(temporary_directory, "sequence")
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_TARGET_SEQUENCE_CONTROL_PATH",
+                control_path,
+            ):
+                with open(control_path, "w", encoding="utf-8") as control_file:
+                    control_file.write("42\n")
+                self.assertEqual(
+                    forward_camera_stream.requested_ball_target_sequence(),
+                    42,
+                )
+                with open(control_path, "w", encoding="utf-8") as control_file:
+                    control_file.write("inválido\n")
+                self.assertEqual(
+                    forward_camera_stream.requested_ball_target_sequence(),
+                    0,
+                )
+
+    def test_new_target_sequence_releases_previous_lock(self):
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        cv2.circle(frame, (700, 270), 72, (0, 0, 0), -1)
+        for _ in range(3):
+            forward_camera_stream.process_ball_frame(frame)
+        self.assertTrue(forward_camera_stream.ball_vision_pipeline.target_locked)
+
+        changed = forward_camera_stream.synchronize_ball_target_sequence(12)
+
+        self.assertTrue(changed)
+        self.assertEqual(forward_camera_stream.active_ball_target_sequence, 12)
+        self.assertFalse(forward_camera_stream.ball_vision_pipeline.target_locked)
+
     def test_disabled_ball_detection_skips_opencv_pipeline(self):
         frame = np.full((540, 960, 3), 255, dtype=np.uint8)
-        with mock.patch.object(forward_camera_stream, "analyze_frame") as detector:
+        with mock.patch.object(
+            forward_camera_stream.ball_vision_pipeline,
+            "analyze",
+        ) as detector:
             observation, candidates, status = (
                 forward_camera_stream.analyze_requested_ball_frame(frame, False)
             )
@@ -147,6 +185,9 @@ class ForwardCameraStreamTest(unittest.TestCase):
             "ballTxDegrees": 7.5,
             "ballDistanceCm": 42.0,
             "ballRadiusPixels": 70.0,
+            "visibleAreaPixels": 15000.0,
+            "targetSequence": 8,
+            "targetLocked": True,
         })
         with tempfile.TemporaryDirectory() as temporary_directory:
             status_path = os.path.join(temporary_directory, "ball.json")
@@ -169,6 +210,9 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertTrue(status["ballDetected"])
         self.assertEqual(status["ballType"], "black_ball")
         self.assertEqual(status["ballTxDegrees"], 7.5)
+        self.assertEqual(status["visibleAreaPixels"], 15000.0)
+        self.assertEqual(status["targetSequence"], 8)
+        self.assertTrue(status["targetLocked"])
         self.assertNotIn("ballPayload", status)
 
     def test_stream_encoding_requires_connected_client_and_respects_fps(self):
@@ -224,6 +268,8 @@ class ForwardCameraStreamTest(unittest.TestCase):
         frame = np.full((540, 960, 3), 255, dtype=np.uint8)
         cv2.circle(frame, (700, 270), 72, (0, 0, 0), -1)
 
+        forward_camera_stream.process_ball_frame(frame)
+        forward_camera_stream.process_ball_frame(frame)
         display, status = forward_camera_stream.process_ball_frame(frame)
 
         self.assertEqual(display.shape, frame.shape)
@@ -235,6 +281,8 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertGreater(status["ballRadiusPixels"], 70.0)
         self.assertFalse(status["ballTopClipped"])
         self.assertEqual(status["ballDetectionMethod"], "contour")
+        self.assertGreater(status["visibleAreaPixels"], 15000.0)
+        self.assertTrue(status["targetLocked"])
         self.assertAlmostEqual(
             status["ballTxDegrees"],
             status["ballAngleDegrees"],
@@ -242,9 +290,10 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["ballPayload"]["type"], "black_ball")
 
     def test_silver_ball_is_annotated_and_published_in_status(self):
-        display, status = forward_camera_stream.process_ball_frame(
-            self.silver_ball_frame()
-        )
+        frame = self.silver_ball_frame()
+        forward_camera_stream.process_ball_frame(frame)
+        forward_camera_stream.process_ball_frame(frame)
+        display, status = forward_camera_stream.process_ball_frame(frame)
 
         self.assertEqual(display.shape, (540, 960, 3))
         self.assertTrue(status["ballDetected"])
@@ -252,6 +301,21 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertEqual(status["ballDetectionMethod"], "hough")
         self.assertEqual(status["ballPosition"], "esquerda")
         self.assertEqual(status["ballPayload"]["type"], "silver_ball")
+
+    def test_larger_candidate_does_not_replace_locked_target(self):
+        far_frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        cv2.circle(far_frame, (800, 270), 55, (0, 0, 0), -1)
+        forward_camera_stream.process_ball_frame(far_frame)
+        forward_camera_stream.process_ball_frame(far_frame)
+        forward_camera_stream.process_ball_frame(far_frame)
+
+        frame = far_frame.copy()
+        cv2.circle(frame, (480, 270), 110, (0, 0, 0), -1)
+        _display, status = forward_camera_stream.process_ball_frame(frame)
+
+        self.assertGreater(status["ballTxDegrees"], 15.0)
+        self.assertLess(status["ballRadiusPixels"], 70.0)
+        self.assertTrue(status["targetLocked"])
 
     def test_empty_frame_clears_previous_ball_values(self):
         frame = np.full((540, 960, 3), 255, dtype=np.uint8)

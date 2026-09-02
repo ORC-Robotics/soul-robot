@@ -4,10 +4,41 @@ Esta ferramenta detecta bolas pretas e pratas com OpenCV e abre exclusivamente a
 frontal. Ela não envia comandos aos motores e não acessa a câmera inferior do
 segue-faixa.
 
+## Uso como módulo independente
+
+Toda a detecção está contida nesta pasta. Para reutilizá-la em outro projeto,
+copie o diretório `ball_vision` e importe somente a interface pública:
+
+```python
+from ball_vision import BallVisionPipeline
+
+pipeline = BallVisionPipeline()
+result = pipeline.analyze(frame_bgr)
+
+if result.observation is not None:
+    ball = result.observation
+    print(ball.candidate.ball_type, ball.distance.distance_cm, ball.angle_degrees)
+
+frame_annotated = pipeline.draw(frame_bgr, result)
+```
+
+Use `pipeline.reset()` quando uma nova missão começar. O chamador fornece um
+frame BGR do OpenCV; o módulo não depende do dashboard, do WebSocket, do IPC nem
+do controle dos motores.
+
+Arquivos internos:
+
+- `pipeline.py`: interface pública e composição do detector.
+- `ball_detector.py`: candidatos pretos e prateados.
+- `ball_tracker.py`: estabilidade temporal e aquisição inicial.
+- `distance_calibration.py`: conversão de raio para distância.
+- `camera.py`: captura opcional da câmera frontal.
+- `main.py`: execução local pela linha de comando.
+
 O detector também está integrado ao stream frontal normal. No dashboard,
 selecione `Frontal` e pressione `ATIVAR` para ver o vídeo anotado e o HUD com os
 dados da bola. HSV e Hough só são executados quando a missão autônoma selecionada
-é `ALINHAR COM BOLA MAIS PRÓXIMA`; fora dela, o stream permanece disponível como
+é `ALINHAR COM MAIOR BOLA VISÍVEL`; fora dela, o stream permanece disponível como
 vídeo cru e o IPC não publica uma bola antiga.
 
 ## Dependências
@@ -84,13 +115,20 @@ OBR_FORWARD_CAMERA_INDEX=1 python3 scripts/ball_vision/main.py
 5. `distance_calibration.py` interpola os cinco pontos medidos. Fora da faixa,
    usa uma relação inversa ancorada no ponto extremo para permanecer contínua e
    positiva.
-6. `main.py` combina os dois detectores, escolhe o maior alvo válido, calcula o
-   ângulo pelo FOV horizontal e desenha todos os dados. Os dois tipos produzem o
-   mesmo `BallCandidate`, permitindo adicionar outros detectores sem mudar o
-   formato de saída.
+6. `main.py` combina os dois detectores, calcula o ângulo pelo FOV horizontal e
+   desenha todos os dados. Os dois tipos produzem o mesmo `BallCandidate`, com a
+   área visível em pixels para permitir uma seleção inicial comum.
 7. `ball_tracker.py` associa a mesma bola entre frames e aplica uma mediana curta
    seguida de suavização exponencial ao centro e ao raio. O filtro reduz saltos
    do Hough sem publicar uma posição antiga quando o frame atual não tem bola.
+   Antes de travar o alvo, três frames de aquisição mantêm os motores parados e
+   confirmam espacialmente a bola de maior área visível. A bola preta usa a área
+   real do contorno; a prata conta somente os pixels de seu círculo que cabem no
+   frame. Durante o giro, variações de raio e novas bolas maiores não trocam o
+   alvo. Se ele desaparecer, o rastreador publica ausência sem liberar outro
+   objeto; somente `reset()` no começo de outra execução permite nova escolha.
+   O IPC publica `targetSequence`, `targetLocked` e `visibleAreaPixels` para
+   impedir que o C++ use uma observação herdada de uma execução anterior.
 
 ## Ajustes de campo
 

@@ -151,8 +151,10 @@ void MissionController::updateAlignClosestBall(
     const Esp32TelemetrySnapshot& esp32Telemetry,
     const ForwardBallSnapshot& forwardBallSnapshot)
 {
-    const BallAlignmentOutput output =
-        ballAlignmentMission_.update(forwardBallSnapshot, esp32Telemetry);
+    const BallAlignmentOutput output = ballAlignmentMission_.update(
+        forwardBallSnapshot,
+        esp32Telemetry,
+        activeAutonomousRunSequence_);
     // A ausência ou expiração da visão produz zero neste mesmo ciclo.
     // O RobotState ainda aplica clamp, E-Stop e timeout antes dos motores.
     robotState.driveAutonomous(output.leftPower, output.rightPower);

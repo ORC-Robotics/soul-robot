@@ -568,20 +568,23 @@ de calibração, os ajustes HSV e a saída JSON preparada para a ESP32 estão em
 
 ### Missão de debug: alinhamento com bola
 
-A opção `ALINHAR COM BOLA MAIS PRÓXIMA` é uma missão autônoma isolada e não
+A opção `ALINHAR COM MAIOR BOLA VISÍVEL` é uma missão autônoma isolada e não
 participa da Missão Principal. Ative a câmera frontal, selecione essa missão e
-só então use `Autônomo`. O maior raio visual válido representa a bola mais
-próxima.
+só então use `Autônomo`. Durante três frames estáveis, vence a bola que ocupa a
+maior área visível em pixels, inclusive quando parte dela está fora do frame.
 
-O controle gira pelo `tx`: negativo para a esquerda e positivo para a direita.
-O robô considera alinhado somente dentro de `±2°`. Fora dessa zona, o pivot
-parte com potência `0,70`. Assim que os dois encoders confirmam movimento no
-sentido comandado, entra no controle proporcional: usa `0,68` com erro igual ou
-maior que `12°` e reduz linearmente até `0,61` ao se aproximar de `2°`. A posição
-usada pelo controle é publicada em RAM a cada frame. Se o `tx` cruzar o centro
-entre dois frames, o PWM é zerado por `160 ms` antes de permitir uma correção
-oposta. Perda da bola, câmera desligada ou IPC com mais de `500 ms` zera os dois
-lados imediatamente.
+Depois da aquisição, o alvo fica travado até uma nova execução autônoma. Outra
+bola maior, uma mudança forte de raio ou uma candidata mais central não pode
+substituí-lo. O controle usa continuamente o `tx` desse alvo: negativo para a
+esquerda e positivo para a direita. Dentro de `±1°`, conclui e permanece parado.
+O pivot parte com potência `0,70` e usa controle proporcional entre `0,61` e
+`0,68` depois que os encoders confirmam movimento. Ao chegar a `±3°`, o PWM é
+zerado por pelo menos `160 ms` e os encoders precisam confirmar a parada. Fora
+de `±1°`, a aproximação final usa pulsos de `80 ms`, sempre intercalados com uma
+nova parada e medição. A conclusão exige três frames novos dentro de `±1°`,
+evitando aceitar uma leitura enquanto o robô ainda está sob inércia. Se o alvo
+desaparecer, os dois motores param no mesmo ciclo; o mesmo alvo pode reaparecer
+em até um segundo. Depois disso, a missão falha e exige uma nova execução.
 
 Para limitar aquecimento, o stream frontal integrado captura a `15 FPS`, limita
 o OpenCV a duas threads e executa a etapa Hough da bola prata em meia resolução,

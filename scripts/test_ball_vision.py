@@ -5,6 +5,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
+from ball_vision import BallVisionPipeline
 from ball_vision.ball_detector import (
     BallCandidate,
     BallDetector,
@@ -12,7 +13,7 @@ from ball_vision.ball_detector import (
     BlackBallDetector,
     SilverBallDetector,
 )
-from ball_vision.ball_tracker import BallTracker
+from ball_vision.ball_tracker import BallTracker, BallTrackerConfig
 from ball_vision.camera import CameraConfig, FrontCamera
 import ball_vision.camera as camera_module
 from ball_vision.distance_calibration import DistanceCalibration
@@ -262,6 +263,10 @@ class SilverBallDetectorTest(unittest.TestCase):
         self.assertTrue(candidates[0].top_clipped)
         self.assertAlmostEqual(candidates[0].center_x, 480.0, delta=5.0)
         self.assertAlmostEqual(candidates[0].center_y, 20.0, delta=5.0)
+        self.assertLess(
+            candidates[0].visible_area_pixels,
+            math.pi * candidates[0].radius_pixels ** 2,
+        )
 
     def test_combined_detector_does_not_duplicate_black_ball_as_silver(self):
         frame = np.full((540, 960, 3), 255, dtype=np.uint8)
@@ -275,7 +280,15 @@ class SilverBallDetectorTest(unittest.TestCase):
 
 class BallTrackerTest(unittest.TestCase):
     @staticmethod
-    def candidate(center_x, center_y, radius, ball_type="silver_ball"):
+    def candidate(
+        center_x,
+        center_y,
+        radius,
+        ball_type="silver_ball",
+        visible_area_pixels=None,
+    ):
+        if visible_area_pixels is None:
+            visible_area_pixels = math.pi * radius * radius
         return BallCandidate(
             ball_type=ball_type,
             center_x=float(center_x),
@@ -287,10 +300,11 @@ class BallTrackerTest(unittest.TestCase):
             circle_fill_ratio=0.08,
             top_clipped=True,
             detection_method="hough",
+            visible_area_pixels=float(visible_area_pixels),
         )
 
     def test_reduces_radius_and_center_variation_for_stationary_ball(self):
-        tracker = BallTracker()
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
         measurements = (
             (466, 9, 39),
             (501, 4, 52),
@@ -324,10 +338,92 @@ class BallTrackerTest(unittest.TestCase):
         self.assertGreater(stable_filtered[-1].radius_pixels, 48.0)
 
     def test_does_not_publish_previous_ball_when_current_frame_is_empty(self):
-        tracker = BallTracker()
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
         tracker.update([self.candidate(480, 20, 50)])
 
         self.assertEqual(tracker.update([]), [])
+
+    def test_keeps_target_when_radius_ranking_changes_during_turn(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        current_target = self.candidate(220, 240, 80)
+        other_ball = self.candidate(700, 240, 50)
+        tracker.update([current_target, other_ball])
+
+        enlarged_other_ball = self.candidate(300, 240, 80)
+        changed_current_target = self.candidate(235, 240, 30)
+        tracked = tracker.update([
+            enlarged_other_ball,
+            changed_current_target,
+        ])
+
+        self.assertLess(tracked[0].center_x, 300.0)
+        self.assertEqual(tracked[0].ball_type, changed_current_target.ball_type)
+        self.assertIs(tracked[1], enlarged_other_ball)
+
+    def test_never_accepts_an_incompatible_target_until_reset(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update([self.candidate(200, 240, 50)])
+        new_target = self.candidate(700, 240, 90)
+
+        for _ in range(10):
+            self.assertEqual(tracker.update([new_target]), [])
+
+        tracker.reset()
+        selected = tracker.update([new_target])
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].center_x, new_target.center_x)
+
+    def test_waits_for_three_stable_frames_of_largest_visible_area(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=3))
+        larger_radius = self.candidate(
+            650, 240, 85, visible_area_pixels=4000
+        )
+        larger_visible_area = self.candidate(
+            280, 200, 60, visible_area_pixels=7000
+        )
+
+        self.assertEqual(
+            tracker.update([larger_radius, larger_visible_area]), []
+        )
+        self.assertEqual(
+            tracker.update([larger_radius, larger_visible_area]), []
+        )
+        selected = tracker.update([larger_radius, larger_visible_area])
+
+        self.assertEqual(len(selected), 2)
+        self.assertLess(selected[0].center_x, 400.0)
+        self.assertEqual(selected[0].visible_area_pixels, 7000)
+        self.assertIs(selected[1], larger_radius)
+        self.assertTrue(tracker.locked)
+
+    def test_largest_visible_area_wins_even_at_frame_edge(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        edge_ball = self.candidate(
+            -8, 180, 90, visible_area_pixels=9000
+        )
+        central_ball = self.candidate(
+            480, 180, 100, visible_area_pixels=8000
+        )
+
+        selected = tracker.update([central_ball, edge_ball])
+
+        self.assertEqual(selected[0].center_x, edge_ball.center_x)
+        self.assertEqual(selected[0].visible_area_pixels, 9000)
+
+    def test_larger_ball_does_not_replace_locked_target(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        locked = self.candidate(200, 240, 50, visible_area_pixels=6000)
+        tracker.update([locked])
+
+        same_target = self.candidate(215, 240, 30, visible_area_pixels=2500)
+        new_larger_ball = self.candidate(
+            700, 240, 100, visible_area_pixels=25000
+        )
+        selected = tracker.update([new_larger_ball, same_target])
+
+        self.assertLess(selected[0].center_x, 300.0)
+        self.assertIs(selected[1], new_larger_ball)
 
     def test_combined_detector_selects_larger_distinct_ball_as_closest(self):
         class FixedDetector:
@@ -394,6 +490,21 @@ class BallObservationTest(unittest.TestCase):
             "distance_cm": 42,
             "angle": 15,
         })
+
+
+class PublicBallVisionPipelineTest(unittest.TestCase):
+    def test_public_pipeline_can_be_imported_from_package(self):
+        pipeline = BallVisionPipeline(
+            tracker=BallTracker(BallTrackerConfig(acquisition_frames=1))
+        )
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        cv2.circle(frame, (480, 270), 70, (0, 0, 0), -1)
+
+        result = pipeline.analyze(frame)
+
+        self.assertIsNotNone(result.observation)
+        self.assertAlmostEqual(result.observation.angle_degrees, 0.0, delta=1.0)
+        self.assertGreater(result.observation.candidate.radius_pixels, 65.0)
 
 
 if __name__ == "__main__":

@@ -11,14 +11,7 @@ from urllib.parse import urlsplit
 import cv2  # type: ignore
 
 import camera_line_frame
-from ball_vision.ball_detector import BallDetector
-from ball_vision.distance_calibration import DistanceCalibration
-from ball_vision.ball_tracker import BallTracker
-from ball_vision.main import (
-    analyze_frame,
-    build_esp32_payload,
-    draw_overlay,
-)
+from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
@@ -26,6 +19,9 @@ TEMP_CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled.tmp"
 BALL_DETECTION_CONTROL_PATH = "/dev/shm/obr_forward_ball_detection_enabled"
 TEMP_BALL_DETECTION_CONTROL_PATH = (
     "/dev/shm/obr_forward_ball_detection_enabled.tmp"
+)
+BALL_TARGET_SEQUENCE_CONTROL_PATH = (
+    "/dev/shm/obr_forward_ball_target_sequence"
 )
 STATUS_PATH = "/tmp/obr_forward_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_forward_camera_status.tmp.json"
@@ -46,9 +42,8 @@ latest_jpeg = None
 latest_jpeg_sequence = 0
 active_stream_clients = 0
 frame_condition = threading.Condition()
-ball_detector = BallDetector()
-distance_calibration = DistanceCalibration()
-ball_tracker = BallTracker()
+ball_vision_pipeline = BallVisionPipeline()
+active_ball_target_sequence = 0
 
 
 def empty_ball_status(processing_ms=0.0, detection_enabled=True):
@@ -66,6 +61,9 @@ def empty_ball_status(processing_ms=0.0, detection_enabled=True):
         "ballDistanceExtrapolated": False,
         "ballAngleDegrees": None,
         "ballTxDegrees": None,
+        "visibleAreaPixels": None,
+        "targetSequence": active_ball_target_sequence,
+        "targetLocked": ball_vision_pipeline.target_locked,
         "ballPosition": "nenhuma",
         "ballCircularity": None,
         "ballTopClipped": False,
@@ -93,6 +91,12 @@ def build_ball_status(observation, processing_ms):
         "ballDistanceExtrapolated": bool(observation.distance.extrapolated),
         "ballAngleDegrees": round(float(observation.angle_degrees), 2),
         "ballTxDegrees": round(float(observation.angle_degrees), 2),
+        "visibleAreaPixels": round(
+            float(candidate.visible_area_pixels),
+            2,
+        ),
+        "targetSequence": active_ball_target_sequence,
+        "targetLocked": ball_vision_pipeline.target_locked,
         "ballPosition": observation.position,
         "ballCircularity": round(float(candidate.circularity), 3),
         "ballTopClipped": bool(candidate.top_clipped),
@@ -116,6 +120,9 @@ def save_ball_control_status(active, ball_status=None):
         "ballDetected": bool(current_ball["ballDetected"]),
         "ballType": current_ball["ballType"],
         "ballTxDegrees": current_ball["ballTxDegrees"],
+        "visibleAreaPixels": current_ball["visibleAreaPixels"],
+        "targetSequence": current_ball["targetSequence"],
+        "targetLocked": current_ball["targetLocked"],
         "ballDistanceCm": current_ball["ballDistanceCm"],
         "ballRadiusPixels": current_ball["ballRadiusPixels"],
     }
@@ -128,12 +135,9 @@ def analyze_ball_frame(frame):
     """Analisa um frame sem gastar CPU com desenho ou JPEG."""
 
     processing_started = time.perf_counter()
-    observation, candidates = analyze_frame(
-        frame,
-        ball_detector,
-        distance_calibration,
-        tracker=ball_tracker,
-    )
+    result = ball_vision_pipeline.analyze(frame)
+    observation = result.observation
+    candidates = result.candidates
     processing_ms = (time.perf_counter() - processing_started) * 1000.0
     return (
         observation,
@@ -154,7 +158,8 @@ def process_ball_frame(frame):
     """Analisa e anota um frame para testes ou visualização local."""
 
     observation, candidates, ball_status = analyze_ball_frame(frame)
-    display_frame = draw_overlay(frame, observation, candidates)
+    result = BallVisionResult(observation, tuple(candidates))
+    display_frame = ball_vision_pipeline.draw(frame, result)
     return display_frame, ball_status
 
 
@@ -218,6 +223,33 @@ def requested_ball_detection_enabled():
         return False
 
 
+def requested_ball_target_sequence():
+    """Lê a execução que deve possuir o próximo alvo travado."""
+
+    try:
+        with open(
+            BALL_TARGET_SEQUENCE_CONTROL_PATH,
+            "r",
+            encoding="utf-8",
+        ) as control_file:
+            value = int(control_file.read().strip())
+            return max(0, value)
+    except (OSError, ValueError):
+        return 0
+
+
+def synchronize_ball_target_sequence(target_sequence):
+    """Limpa o alvo quando o C++ inicia uma nova execução autônoma."""
+
+    global active_ball_target_sequence
+    target_sequence = max(0, int(target_sequence))
+    if target_sequence == active_ball_target_sequence:
+        return False
+    ball_vision_pipeline.reset()
+    active_ball_target_sequence = target_sequence
+    return True
+
+
 def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
                 error_message="", ball_status=None):
     """Expõe saúde e configuração sem publicar qualquer dado do segue-faixa."""
@@ -257,7 +289,7 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "jpegQuality": STREAM_JPEG_QUALITY,
         "opencvThreads": OPENCV_THREAD_COUNT,
         "silverProcessingScale": (
-            ball_detector.silver_detector.config.processing_scale
+            ball_vision_pipeline.silver_processing_scale
         ),
         "error": error_message,
         "timestamp": time.time(),
@@ -451,7 +483,7 @@ def close_forward_camera(camera):
 
 
 def main():
-    global camera_active
+    global camera_active, active_ball_target_sequence
 
     # Limitar o paralelismo evita que uma única câmera ocupe todos os núcleos
     # da Raspberry Pi e eleve desnecessariamente a temperatura do processador.
@@ -472,6 +504,7 @@ def main():
     camera_format = ""
     details = {}
     ball_detection_active = False
+    active_ball_target_sequence = requested_ball_target_sequence()
     ball_status = empty_ball_status(detection_enabled=False)
     previous_time = 0.0
     smoothed_fps = 0.0
@@ -496,7 +529,7 @@ def main():
                     ball_status = empty_ball_status(
                         detection_enabled=detection_requested
                     )
-                    ball_tracker.reset()
+                    ball_vision_pipeline.reset()
                     state_changed = True
                     print("Câmera frontal desativada e liberada.", flush=True)
                 current_time = time.monotonic()
@@ -529,7 +562,7 @@ def main():
                     ball_status = empty_ball_status(
                         detection_enabled=detection_requested
                     )
-                    ball_tracker.reset()
+                    ball_vision_pipeline.reset()
                     camera_active = True
                     print("Câmera frontal ativada.", flush=True)
                 except Exception as error:
@@ -546,8 +579,10 @@ def main():
             try:
                 frame = camera.capture_array("main")
                 detection_requested = requested_ball_detection_enabled()
+                target_sequence = requested_ball_target_sequence()
+                synchronize_ball_target_sequence(target_sequence)
                 if detection_requested != ball_detection_active:
-                    ball_tracker.reset()
+                    ball_vision_pipeline.reset()
                     ball_detection_active = detection_requested
 
                 # Fora do alinhamento, mantém somente captura e stream cru.
@@ -562,7 +597,10 @@ def main():
                 jpeg = None
                 if stream_frame_is_due(current_time, last_stream_time):
                     display_frame = (
-                        draw_overlay(frame, observation, candidates)
+                        ball_vision_pipeline.draw(
+                            frame,
+                            BallVisionResult(observation, tuple(candidates)),
+                        )
                         if ball_detection_active else frame
                     )
                     jpeg = encode_stream_frame(display_frame)
@@ -575,7 +613,7 @@ def main():
                 ball_status = empty_ball_status(
                     detection_enabled=detection_requested
                 )
-                ball_tracker.reset()
+                ball_vision_pipeline.reset()
                 next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                 save_status(True, False, "error", error_message=str(error))
                 save_ball_control_status(False)

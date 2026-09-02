@@ -12,9 +12,11 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <csignal>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -136,6 +138,8 @@ int main()
 #endif
 
     unsigned long long handledStartButtonPressSequence = 0;
+    std::uint64_t requestedBallTargetSequence =
+        std::numeric_limits<std::uint64_t>::max();
     bool previousStartButtonPressed = false;
     bool consumeNextStartButtonShortPress = false;
     bool startupComplete = false;
@@ -165,8 +169,27 @@ int main()
             consumeNextStartButtonShortPress = false;
         }
 
+        const RobotSnapshot stateAtLoopStart = robotState.snapshot();
         const AutonomousMission selectedMission =
-            robotState.snapshot().autonomousMission;
+            stateAtLoopStart.autonomousMission;
+        if (selectedMission == AutonomousMission::AlignClosestBall &&
+            stateAtLoopStart.mode == "autonomous" &&
+            requestedBallTargetSequence !=
+                stateAtLoopStart.autonomousRunSequence)
+        {
+            // A visão deve confirmar a mesma sequência antes que o controle use
+            // qualquer alvo. Isso impede herdar uma bola da execução anterior.
+            if (cameraMonitor.requestForwardBallTargetSequence(
+                    stateAtLoopStart.autonomousRunSequence))
+            {
+                requestedBallTargetSequence =
+                    stateAtLoopStart.autonomousRunSequence;
+            }
+            else
+            {
+                std::cerr << "Ball target sequence could not be published\n";
+            }
+        }
         bool cameraReady = false;
         CameraLineSnapshot cameraLineSnapshot;
         ForwardBallSnapshot forwardBallSnapshot;

@@ -50,7 +50,7 @@ struct CameraLineSnapshot
     CameraCurveDiagnostics curveDiagnostics;
 };
 
-// Leitura da bola mais próxima publicada pelo processo da câmera frontal.
+// Leitura do alvo travado publicada pelo processo da câmera frontal.
 // tx é negativo à esquerda e positivo à direita do centro da imagem.
 struct ForwardBallSnapshot
 {
@@ -60,6 +60,9 @@ struct ForwardBallSnapshot
     double txDegrees = std::numeric_limits<double>::quiet_NaN();
     double distanceCm = std::numeric_limits<double>::quiet_NaN();
     double radiusPixels = std::numeric_limits<double>::quiet_NaN();
+    double visibleAreaPixels = std::numeric_limits<double>::quiet_NaN();
+    std::uint64_t targetSequence = 0;
+    bool targetLocked = false;
     double timestamp = 0.0;
     double ageMs = 0.0;
 };
@@ -71,6 +74,7 @@ public:
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardBallSnapshot forwardBallSnapshot() const;
+    bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
 
 private:
     CameraLineSnapshot cachedLineSnapshot_;

@@ -220,6 +220,7 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_mismatch" ||
                                        status.phase == "distance_correction_failed" ||
                                        status.phase == "distance_invalid_target" ||
+                                       status.phase == "ball_alignment_target_lost_timeout" ||
                                        status.phase == "turnaround_forward_timeout" ||
                                        status.phase == "turnaround_encoder_lost" ||
                                        status.phase == "turnaround_line_search_angle_limit" ||

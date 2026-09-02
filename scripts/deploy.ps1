@@ -122,6 +122,13 @@ Invoke-Checked scp @(
     "$workspace/include",
     "${remote}:$RemoteDir/"
 )
+# O config.h concentra constantes usadas por vários módulos. A cópia explícita
+# evita que uma árvore include existente na Raspberry preserve uma versão antiga.
+Invoke-Checked scp @(
+    $scpArgs +
+    "$workspace/include/obr/config.h",
+    "${remote}:$RemoteDir/include/obr/config.h"
+)
 Invoke-Checked scp @(
     $scpArgs +
     "-r",

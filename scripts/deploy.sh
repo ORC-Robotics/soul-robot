@@ -121,6 +121,9 @@ ssh "${SSH_ARGS[@]}" "$REMOTE" "sudo -n systemctl stop '${SERVICE_NAME}.service'
 scp "${SCP_ARGS[@]}" "$WORKSPACE/CMakeLists.txt" "${REMOTE}:${REMOTE_DIR}/CMakeLists.txt"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/src" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/include" "${REMOTE}:${REMOTE_DIR}/"
+# O config.h concentra constantes usadas por vários módulos. A cópia explícita
+# evita que uma árvore include existente na Raspberry preserve uma versão antiga.
+scp "${SCP_ARGS[@]}" "$WORKSPACE/include/obr/config.h" "${REMOTE}:${REMOTE_DIR}/include/obr/config.h"
 scp "${SCP_ARGS[@]}" -r "$OBSTACLE_AVOIDANCE_PATH" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/scripts" "${REMOTE}:${REMOTE_DIR}/"
 scp "${SCP_ARGS[@]}" -r "$WORKSPACE/assets" "${REMOTE}:${REMOTE_DIR}/"

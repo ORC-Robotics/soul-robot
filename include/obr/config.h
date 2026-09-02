@@ -75,6 +75,13 @@ constexpr const char* kForwardBallDetectionControlPath =
 constexpr const char* kForwardBallDetectionTemporaryControlPath =
     "/dev/shm/obr_forward_ball_detection_enabled.tmp";
 
+// Sequência da execução autônoma que deve possuir o alvo visual travado.
+// Um novo valor força a visão a descartar qualquer bola da execução anterior.
+constexpr const char* kForwardBallTargetSequenceControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence";
+constexpr const char* kForwardBallTargetSequenceTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence.tmp";
+
 // IPC rápido, mantido em RAM, com a posição mais recente da bola frontal.
 // Separá-lo do status completo permite que o controle receba um tx por frame.
 constexpr const char* kForwardBallStatusPath =
@@ -139,7 +146,32 @@ static_assert(kMotorRunConfirmationMinimumRateCountsPerSecond > 0.0 &&
 
 // Erro horizontal, em graus, aceito pela missão isolada de alinhamento.
 // Uma zona morta evita alternar rapidamente o sentido perto do centro.
-constexpr double kBallAlignmentDeadbandDegrees = 2.0;
+constexpr double kBallAlignmentDeadbandDegrees = 1.0;
+
+// Tempo, em milissegundos, com PWM zerado ao cruzar o centro da imagem.
+// A pausa reduz a ultrapassagem antes de permitir uma correção no sentido oposto.
+constexpr int kBallAlignmentCrossingBrakeMs = 160;
+
+// Ao entrar nesta faixa, em graus, o giro contínuo é interrompido antes do
+// centro. A posição final passa a ser ajustada com pulsos curtos e verificações.
+constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 3.0;
+
+// Duração, em milissegundos, de cada correção próxima do centro.
+// A potência de partida ainda vence a inércia, mas o pulso limita o avanço.
+constexpr int kBallAlignmentFineCorrectionPulseMs = 80;
+
+// Frames novos dentro de ±1° exigidos depois que o robô estiver parado.
+// Isso impede concluir por uma única leitura transitória durante a frenagem.
+constexpr int kBallAlignmentStableFrames = 3;
+
+// Taxa máxima, em contagens por segundo, para verificar o tx como posição final.
+// Os encoders confirmam apenas a parada; não definem o objetivo angular.
+constexpr double kBallAlignmentStationaryRateCountsPerSecond = 20.0;
+
+// Tempo máximo, em milissegundos, para o alvo travado reaparecer.
+// Durante toda a espera os motores permanecem zerados; ao exceder o limite,
+// a execução falha e somente uma nova partida pode selecionar outra bola.
+constexpr int kBallAlignmentTargetLossTimeoutMs = 1000;
 
 // Potência normalizada usada para vencer a inércia no início do pivot.
 constexpr double kBallAlignmentStartPower = 0.70;
@@ -153,9 +185,21 @@ constexpr double kBallAlignmentMaximumRunPower = 0.68;
 // Reduzir este valor torna a aproximação mais agressiva perto do centro.
 constexpr double kBallAlignmentFullPowerErrorDegrees = 12.0;
 
-// Tempo sem PWM após o tx cruzar o centro, em milissegundos.
-// A pausa dissipa a inércia antes de uma eventual correção no sentido oposto.
-constexpr int kBallAlignmentCrossingBrakeMs = 160;
+// Distância visual, em centímetros, na qual a aproximação termina.
+// Um valor menor aproxima mais o robô da bola e deve ser validado no piso real.
+constexpr double kBallApproachStopDistanceCm = 5.0;
+
+// Potência central usada para avançar enquanto o tx corrige a trajetória.
+// A correção diferencial acelera um lado e reduz o outro simultaneamente.
+constexpr double kBallApproachBasePower = 0.70;
+
+// Maior correção diferencial aplicada durante o avanço.
+// O limite mantém a roda interna no piso de movimento e evita virar no lugar.
+constexpr double kBallApproachMaximumSteeringCorrection = 0.09;
+
+// Erro de tx, em graus, que aplica a correção diferencial máxima.
+// Erros menores produzem correções proporcionais mais suaves.
+constexpr double kBallApproachFullSteeringErrorDegrees = 10.0;
 
 static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
                   kBallAlignmentFullPowerErrorDegrees >
@@ -167,7 +211,24 @@ static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
                   kBallAlignmentMinimumRunPower >=
                       kMotorRunMinimumPower &&
                   kBallAlignmentStartPower <= kMaxMotorOutput &&
-                  kBallAlignmentCrossingBrakeMs > 0,
+                  kBallAlignmentCrossingBrakeMs > 0 &&
+                  kBallAlignmentFineCorrectionThresholdDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentFineCorrectionPulseMs > 0 &&
+                  kBallAlignmentStableFrames > 0 &&
+                  kBallAlignmentStationaryRateCountsPerSecond >= 0.0 &&
+                  kBallAlignmentTargetLossTimeoutMs > 0 &&
+                  kBallApproachStopDistanceCm > 0.0 &&
+                  kBallApproachBasePower >= kMotorStartMinimumPower &&
+                  kBallApproachBasePower +
+                          kBallApproachMaximumSteeringCorrection <=
+                      kMaxMotorOutput &&
+                  kBallApproachBasePower -
+                          kBallApproachMaximumSteeringCorrection >=
+                      kMotorRunMinimumPower &&
+                  kBallApproachMaximumSteeringCorrection > 0.0 &&
+                  kBallApproachFullSteeringErrorDegrees >
+                      kBallAlignmentDeadbandDegrees,
               "A missão de alinhamento deve preservar limites seguros.");
 
 // O sincronismo atua somente quando os dois lados avançam ou recuam juntos.

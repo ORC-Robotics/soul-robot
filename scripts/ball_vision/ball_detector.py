@@ -78,6 +78,7 @@ class BallCandidate:
     circle_fill_ratio: float
     top_clipped: bool
     detection_method: str
+    visible_area_pixels: float = 0.0
 
 
 class BlackBallDetector:
@@ -118,7 +119,7 @@ class BlackBallDetector:
         return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self._close_kernel)
 
     def detect(self, frame):
-        """Retorna candidatos válidos ordenados do maior raio para o menor."""
+        """Retorna candidatos ordenados pela área realmente visível no frame."""
 
         mask = self.create_mask(frame)
         contours, _ = cv2.findContours(
@@ -190,9 +191,13 @@ class BlackBallDetector:
                 circle_fill_ratio=float(fill_ratio),
                 top_clipped=top_clipped,
                 detection_method="contour",
+                visible_area_pixels=area,
             ))
 
-        candidates.sort(key=lambda candidate: candidate.radius_pixels, reverse=True)
+        candidates.sort(
+            key=lambda candidate: candidate.visible_area_pixels,
+            reverse=True,
+        )
         return candidates
 
 
@@ -255,6 +260,20 @@ class SilverBallDetector:
             -1,
         )
         return mask
+
+    @staticmethod
+    def _visible_circle_pixels(shape, center_x, center_y, radius):
+        """Conta somente a parte do círculo que está dentro do frame."""
+
+        mask = np.zeros(shape, dtype=np.uint8)
+        cv2.circle(
+            mask,
+            (int(round(center_x)), int(round(center_y))),
+            int(round(radius)),
+            255,
+            -1,
+        )
+        return int(cv2.countNonZero(mask))
 
     @staticmethod
     def _boundary_coverage(edges, center_x, center_y, radius):
@@ -339,8 +358,8 @@ class SilverBallDetector:
                 center_y,
                 radius,
             )
-            visible_pixels = int(cv2.countNonZero(region))
-            if visible_pixels <= 0:
+            validation_pixels = int(cv2.countNonZero(region))
+            if validation_pixels <= 0:
                 continue
 
             mean_value, intensity_stddev = cv2.meanStdDev(
@@ -350,7 +369,7 @@ class SilverBallDetector:
             mean_value = float(mean_value[0, 0])
             intensity_stddev = float(intensity_stddev[0, 0])
             edge_pixels = int(cv2.countNonZero(cv2.bitwise_and(edges, region)))
-            edge_density = float(edge_pixels) / float(visible_pixels)
+            edge_density = float(edge_pixels) / float(validation_pixels)
             boundary_coverage = self._boundary_coverage(
                 edges,
                 center_x,
@@ -381,6 +400,12 @@ class SilverBallDetector:
             output_center_x = center_x * output_scale
             output_center_y = center_y * output_scale
             output_radius = radius * output_scale
+            visible_circle_pixels = self._visible_circle_pixels(
+                gray.shape,
+                center_x,
+                center_y,
+                radius,
+            )
             candidates.append(BallCandidate(
                 ball_type="silver_ball",
                 center_x=output_center_x,
@@ -392,11 +417,13 @@ class SilverBallDetector:
                 circle_fill_ratio=edge_density,
                 top_clipped=top_clipped,
                 detection_method="hough",
+                visible_area_pixels=(
+                    float(visible_circle_pixels) * output_scale * output_scale
+                ),
             ))
 
-        # Mantém apenas uma hipótese por bola. Dentro de cada grupo, a primeira
-        # conserva a maior votação do Hough; entre bolas distintas, o maior raio
-        # vem primeiro porque representa o alvo fisicamente mais próximo.
+        # Mantém apenas uma hipótese por bola. Depois da remoção de duplicatas,
+        # a área do círculo que realmente cabe no frame define a ordenação.
         unique_candidates = []
         for candidate in candidates:
             overlaps_existing = any(
@@ -409,7 +436,7 @@ class SilverBallDetector:
             if not overlaps_existing:
                 unique_candidates.append(candidate)
         unique_candidates.sort(
-            key=lambda candidate: candidate.radius_pixels,
+            key=lambda candidate: candidate.visible_area_pixels,
             reverse=True,
         )
         return unique_candidates
@@ -449,14 +476,10 @@ class BallDetector:
             return black_candidates
 
         # Cada detector já ordenou seu melhor alvo. Entre os dois tipos, o
-        # maior raio continua tendo prioridade como alvo principal do robô.
-        primary = max(
-            (black_candidates[0], unique_silver[0]),
-            key=lambda candidate: candidate.radius_pixels,
+        # A área visível permite comparar os dois tipos pelo mesmo critério.
+        candidates = black_candidates + unique_silver
+        candidates.sort(
+            key=lambda candidate: candidate.visible_area_pixels,
+            reverse=True,
         )
-        remaining = [
-            candidate
-            for candidate in black_candidates + unique_silver
-            if candidate is not primary
-        ]
-        return [primary] + remaining
+        return candidates

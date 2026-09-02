@@ -103,13 +103,16 @@ def analyze_frame(
     center_angle_degrees=DEFAULT_CENTER_ANGLE_DEGREES,
     tracker=None,
 ):
-    """Seleciona a maior bola e não reutiliza observações de frames antigos."""
+    """Mede o alvo selecionado sem reutilizar observações de frames antigos."""
 
-    candidates = detector.detect(frame)
+    detected_candidates = detector.detect(frame)
+    candidates = detected_candidates
     if tracker is not None:
-        candidates = tracker.update(candidates)
+        candidates = tracker.update(detected_candidates)
     if not candidates:
-        return None, candidates
+        # Durante a aquisição ou perda do alvo, mantém os candidatos somente
+        # para desenhá-los em laranja; nenhum deles é publicado como alvo.
+        return None, detected_candidates
     candidate = candidates[0]
     distance = calibration.estimate(candidate.radius_pixels)
     angle_degrees = calculate_horizontal_angle(
@@ -125,7 +128,8 @@ def draw_overlay(frame, observation, candidates):
     """Desenha candidatos, alvo principal e valores usados na decisão."""
 
     display = frame.copy()
-    for candidate in candidates[1:]:
+    secondary_candidates = candidates[1:] if observation is not None else candidates
+    for candidate in secondary_candidates:
         center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
         cv2.circle(
             display,
@@ -152,7 +156,9 @@ def draw_overlay(frame, observation, candidates):
     candidate = observation.candidate
     is_silver = candidate.ball_type == "silver_ball"
     ball_label = "BOLA PRATA" if is_silver else "BOLA PRETA"
-    target_color = (0, 220, 255) if is_silver else (0, 255, 0)
+    # Verde sempre identifica o alvo travado; todas as outras candidatas ficam
+    # em laranja, independentemente de serem pretas ou pratas.
+    target_color = (0, 255, 0)
     center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
     radius = int(round(candidate.radius_pixels))
     cv2.circle(display, center, radius, target_color, 2, cv2.LINE_AA)
@@ -171,6 +177,7 @@ def draw_overlay(frame, observation, candidates):
         ball_label,
         f"Centro: ({candidate.center_x:.0f}, {candidate.center_y:.0f}) px",
         f"Raio: {candidate.radius_pixels:.1f} px | Diametro: {candidate.diameter_pixels:.1f} px",
+        f"Area visivel: {candidate.visible_area_pixels:.0f} px",
         f"Distancia: {observation.distance.distance_cm:.1f} cm{extrapolated_text}",
         f"Angulo: {observation.angle_degrees:+.1f} graus",
         f"Posicao: {observation.position}",
