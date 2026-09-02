@@ -424,6 +424,44 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertEqual(fusion_line["farPoint"]["x"], left_x)
         self.assertLess(fusion_line["angleDeg"], 90.0)
 
+    def test_previous_target_does_not_change_current_geometry_selection(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        connected_path = np.asarray(
+            [(240, 359), (240, 210), (30, 120), (450, 80)],
+            dtype=np.int32,
+        )
+        camera_line_frame.cv2.polylines(
+            mask,
+            [connected_path],
+            False,
+            255,
+            22,
+        )
+        instantaneous = camera_line_frame.extract_fusion_style_line(mask)
+        previous = {
+            "valid": True,
+            "angleDeg": 35.0,
+            "farPoint": {"x": 30, "y": 120},
+            "missedFrames": 0,
+        }
+        with_previous_target = camera_line_frame.extract_fusion_style_line(
+            mask,
+            previous,
+        )
+
+        self.assertEqual(
+            with_previous_target["referenceSource"],
+            instantaneous["referenceSource"],
+        )
+        self.assertEqual(
+            with_previous_target["farPoint"],
+            instantaneous["farPoint"],
+        )
+        self.assertEqual(
+            with_previous_target["angleDeg"],
+            instantaneous["angleDeg"],
+        )
+
     def test_empty_mask_keeps_experimental_result_invalid(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
 
@@ -653,6 +691,151 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
                     0.000001,
                 )
 
+    def test_straight_speed_recovers_progressively_with_stable_target(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
+        history = None
+        observed_powers = []
+        observed_scales = []
+
+        for _frame_index in range(
+            camera_line_frame.FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED
+        ):
+            fusion_line = camera_line_frame.extract_fusion_style_line(
+                mask,
+                history,
+            )
+            result = calculate_command(
+                sensor_values(steering_error=0.0),
+                fusion_style_line=fusion_line,
+            )
+            observed_powers.append(result["left_power"])
+            observed_scales.append(result["fusionSpeedScale"])
+            history = camera_line_frame.update_fusion_style_history(
+                history,
+                fusion_line,
+            )
+
+        self.assertTrue(math.isclose(observed_powers[0], 0.69))
+        self.assertTrue(math.isclose(observed_powers[-1], 0.75))
+        self.assertEqual(observed_powers, sorted(observed_powers))
+        self.assertEqual(observed_scales, sorted(observed_scales))
+
+    def test_speed_limit_preserves_mapper_yaw_differential(self):
+        raw_command = camera_line_frame.map_fusion_angle_to_motor_powers(100.0)
+        limited_command = camera_line_frame.apply_fusion_forward_speed_limit(
+            raw_command,
+            camera_line_frame.FUSION_MIN_FORWARD_SPEED_SCALE,
+        )
+
+        self.assertTrue(math.isclose(
+            raw_command["left_power"] - raw_command["right_power"],
+            limited_command["left_power"] - limited_command["right_power"],
+        ))
+        self.assertTrue(math.isclose(
+            (
+                limited_command["left_power"]
+                + limited_command["right_power"]
+            ) / 2.0,
+            camera_line_frame.NORMAL_BASE_POWER
+            * camera_line_frame.FUSION_MIN_FORWARD_SPEED_SCALE,
+        ))
+
+    def test_strong_correction_delays_full_speed_on_curve_exit(self):
+        strong_mask = np.zeros((360, 480), dtype=np.uint8)
+        straight_mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(
+            strong_mask,
+            (240, 359),
+            (0, 47),
+            255,
+            22,
+        )
+        camera_line_frame.cv2.line(
+            straight_mask,
+            (240, 359),
+            (240, 47),
+            255,
+            22,
+        )
+        strong_line = camera_line_frame.extract_fusion_style_line(strong_mask)
+        history = camera_line_frame.update_fusion_style_history(
+            None,
+            strong_line,
+        )
+
+        exit_powers = []
+        for _frame_index in range(
+            camera_line_frame.FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED
+        ):
+            straight_line = camera_line_frame.extract_fusion_style_line(
+                straight_mask,
+                history,
+            )
+            result = calculate_command(
+                sensor_values(steering_error=0.0),
+                fusion_style_line=straight_line,
+            )
+            exit_powers.append(result["left_power"])
+            history = camera_line_frame.update_fusion_style_history(
+                history,
+                straight_line,
+            )
+
+        self.assertLess(exit_powers[0], 0.75)
+        self.assertTrue(math.isclose(exit_powers[-1], 0.75))
+        self.assertEqual(exit_powers, sorted(exit_powers))
+
+    def test_short_or_reacquired_target_keeps_moderate_speed(self):
+        short_mask = np.zeros((360, 480), dtype=np.uint8)
+        full_mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(
+            short_mask,
+            (240, 359),
+            (240, 270),
+            255,
+            22,
+        )
+        camera_line_frame.cv2.line(
+            full_mask,
+            (240, 359),
+            (240, 47),
+            255,
+            22,
+        )
+        short_line = camera_line_frame.extract_fusion_style_line(short_mask)
+        short_result = calculate_command(
+            sensor_values(steering_error=0.0),
+            fusion_style_line=short_line,
+        )
+        self.assertLess(
+            short_line["targetLengthRatio"],
+            camera_line_frame.FUSION_TARGET_SHORT_LENGTH_RATIO,
+        )
+        self.assertTrue(math.isclose(short_result["left_power"], 0.69))
+
+        established = camera_line_frame.extract_fusion_style_line(full_mask)
+        history = camera_line_frame.update_fusion_style_history(
+            None,
+            established,
+        )
+        history = camera_line_frame.update_fusion_style_history(
+            history,
+            camera_line_frame.empty_fusion_style_line(),
+        )
+        reacquired = camera_line_frame.extract_fusion_style_line(
+            full_mask,
+            history,
+        )
+        reacquired_result = calculate_command(
+            sensor_values(steering_error=0.0),
+            fusion_style_line=reacquired,
+        )
+
+        self.assertTrue(reacquired["targetReacquired"])
+        self.assertEqual(reacquired["targetConsistency"], 0.0)
+        self.assertTrue(math.isclose(reacquired_result["left_power"], 0.69))
+
     def test_fusion_is_primary_only_in_normal_following(self):
         sensors = sensor_values(steering_error=-0.20)
         fusion_line = self.valid_fusion_line(110.0)
@@ -680,6 +863,27 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
         ))
         self.assertGreater(result["left_power"], 0.0)
         self.assertGreater(result["right_power"], 0.0)
+
+    def test_fusion_final_command_preserves_small_negative_power(self):
+        fusion_angle = 140.0
+        raw_command = camera_line_frame.map_fusion_angle_to_motor_powers(
+            fusion_angle
+        )
+        result = calculate_command(
+            sensor_values(steering_error=0.0),
+            fusion_style_line=self.valid_fusion_line(fusion_angle),
+        )
+
+        self.assertTrue(math.isclose(
+            result["left_power"],
+            raw_command["left_power"],
+        ))
+        self.assertTrue(math.isclose(
+            result["right_power"],
+            raw_command["right_power"],
+        ))
+        self.assertGreater(result["right_power"], -0.69)
+        self.assertLess(result["right_power"], 0.0)
 
     def test_current_fusion_target_prevents_new_blind_search(self):
         search_tracker = camera_line_frame.VirtualLineSearchTracker()

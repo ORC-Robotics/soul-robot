@@ -385,7 +385,7 @@ constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
 // Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
 constexpr double kGreenTurnAroundImuDegrees = 166.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
-constexpr double kGreenTurnAroundImuToleranceDegrees = 5.0;
+constexpr double kGreenTurnAroundImuToleranceDegrees = 8.0;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
 constexpr bool kGreenTurnAroundTurnsRight = true;
 // Potência normalizada do pivot que continua até o NEAR encontrar a linha.

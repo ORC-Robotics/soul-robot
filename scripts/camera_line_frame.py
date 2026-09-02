@@ -2585,6 +2585,27 @@ NORMAL_TRAJECTORY_MIN_VERTICAL_COVERAGE = 0.25
 FUSION_STYLE_TOP_BAND_HEIGHT_RATIO = 1.0 / 20.0
 FUSION_STYLE_MAX_TOP_SAMPLES = 20
 
+# Estes limites classificam apenas a consistência da observação; não filtram o
+# ângulo nem participam da seleção do target. Valores menores recuperam a
+# velocidade mais devagar após uma mudança.
+FUSION_TARGET_CONSISTENCY_ANGLE_SCALE_DEG = 60.0
+FUSION_TARGET_CONSISTENCY_SHIFT_WIDTH_RATIO = 0.25
+FUSION_TARGET_HISTORY_MAX_MISSED_FRAMES = 2
+FUSION_TARGET_STABLE_ANGLE_DELTA_DEG = 12.0
+FUSION_TARGET_STABLE_SHIFT_WIDTH_RATIO = 0.12
+FUSION_TARGET_SHORT_LENGTH_RATIO = 0.35
+FUSION_TARGET_ESTABLISHED_LENGTH_RATIO = 0.75
+FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED = 6
+FUSION_STRONG_CORRECTION_ERROR_DEG = 25.0
+
+# A recuperação começa no menor avanço que move as duas rodas e cresce até a
+# potência NORMAL. Este limite atua somente na recuperação da velocidade; o
+# diferencial contínuo do mapper Fusion permanece inalterado.
+FUSION_MIN_FORWARD_POWER = 0.69
+FUSION_MIN_FORWARD_SPEED_SCALE = (
+    FUSION_MIN_FORWARD_POWER / NORMAL_BASE_POWER
+)
+
 # Os limiares de trust bloqueiam candidatos fracos antes que FAR ou MEDIUM
 # participem do controle. Cada fileira permanece calibrável separadamente.
 FAR_TRUST_MIN_CONFIDENCE = 0.75
@@ -4184,6 +4205,13 @@ def empty_fusion_style_line(processing_ms=0.0):
         "candidateContourCount": 0,
         "contourAreaPx": 0.0,
         "selection": "none",
+        "targetLengthRatio": 0.0,
+        "targetConsistency": 0.0,
+        "targetStableFrames": 0,
+        "targetReacquired": False,
+        "speedRecoveryFrames": 0,
+        "fusionSpeedScale": FUSION_MIN_FORWARD_SPEED_SCALE,
+        "missedFrames": 0,
         "processingMs": max(0.0, float(processing_ms)),
     }
 
@@ -4295,8 +4323,50 @@ def calculate_fusion_style_top_contour(physical_mask, contour):
     return (far_x, far_y), top_y, band_end_y
 
 
+def calculate_fusion_style_angle(near_point, far_point):
+    """Calcula o ângulo bruto entre a âncora inferior e um target Fusion."""
+
+    delta_x = float(near_point[0] - far_point[0])
+    delta_y = float(near_point[1] - far_point[1])
+    if delta_x == 0.0 and delta_y == 0.0:
+        return None
+    return math.degrees(math.atan2(delta_y, delta_x))
+
+
+def fusion_style_previous_target(previous_fusion_line):
+    """Lê a observação anterior usada só na recuperação de velocidade."""
+
+    if not isinstance(previous_fusion_line, dict):
+        return None
+    if previous_fusion_line.get("valid") is not True:
+        return None
+    try:
+        missed_frames = int(previous_fusion_line.get("missedFrames", 0))
+        previous_angle = float(previous_fusion_line.get("angleDeg"))
+        previous_far = previous_fusion_line.get("farPoint", {})
+        previous_far_x = float(previous_far.get("x"))
+        previous_far_y = float(previous_far.get("y"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if (
+        missed_frames < 0
+        or missed_frames > FUSION_TARGET_HISTORY_MAX_MISSED_FRAMES
+        or not all(math.isfinite(value) for value in (
+            previous_angle,
+            previous_far_x,
+            previous_far_y,
+        ))
+    ):
+        return None
+    return {
+        "angleDeg": previous_angle,
+        "farPoint": (previous_far_x, previous_far_y),
+        "missedFrames": missed_frames,
+    }
+
+
 def select_fusion_style_reference_point(contour, top_point, envelope):
-    """Usa o topo distante ou a borda lateral nas curvas de 90°."""
+    """Usa apenas a geometria atual: topo distante ou borda em curva de 90°."""
 
     if top_point is None:
         return None, "none"
@@ -4320,17 +4390,17 @@ def select_fusion_style_reference_point(contour, top_point, envelope):
             left_edge_points.append((int(point_x), int(point_y)))
         if int(point_x) >= right_x - 1 - edge_margin_px:
             right_edge_points.append((int(point_x), int(point_y)))
+
     left_y = (
         int(np.mean([point[1] for point in left_edge_points]))
-        if len(left_edge_points) > 0
+        if left_edge_points
         else None
     )
     right_y = (
         int(np.mean([point[1] for point in right_edge_points]))
-        if len(right_edge_points) > 0
+        if right_edge_points
         else None
     )
-
     if left_y is not None and right_y is None:
         left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
         return (left_x, left_y), "leftEdge"
@@ -4338,8 +4408,8 @@ def select_fusion_style_reference_point(contour, top_point, envelope):
         _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
         return (right_x - 1, right_y), "rightEdge"
     if left_y is not None and right_y is not None:
-        # Sem o estado temporal prev_side, uma diferença vertical ainda permite
-        # repetir a decisão local publicada. Empate mantém o ponto superior.
+        # Sem estado temporal, a diferença vertical resolve a direção local.
+        # Em empate, o ponto superior continua sendo a referência geométrica.
         if left_y < right_y:
             left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
             return (left_x, left_y), "leftEdge"
@@ -4350,8 +4420,134 @@ def select_fusion_style_reference_point(contour, top_point, envelope):
     return top_point, "topBand"
 
 
-def extract_fusion_style_line(processed_line_mask):
-    """Extrai contorno, ponto distante e ângulo sem participar do controle."""
+def update_fusion_style_target_metrics(
+    result,
+    previous_fusion_line,
+    near_point,
+    far_point,
+    envelope,
+):
+    """Mede estabilidade do target sem alterar o ângulo escolhido no frame."""
+
+    forward_span_px = max(
+        1.0,
+        float(envelope["nearY"] - envelope["farY"]),
+    )
+    target_length_ratio = max(
+        0.0,
+        min(
+            1.0,
+            math.hypot(
+                float(far_point[0] - near_point[0]),
+                float(far_point[1] - near_point[1]),
+            ) / forward_span_px,
+        ),
+    )
+    previous_target = fusion_style_previous_target(previous_fusion_line)
+    continuous_observation = (
+        previous_target is not None
+        and previous_target["missedFrames"] == 0
+    )
+    target_consistency = 0.0
+    target_stable_frames = 1
+    if continuous_observation:
+        angle_delta_deg = abs(
+            float(result["angleDeg"]) - previous_target["angleDeg"]
+        )
+        target_shift_ratio = math.hypot(
+            float(far_point[0]) - previous_target["farPoint"][0],
+            float(far_point[1]) - previous_target["farPoint"][1],
+        ) / max(1.0, float(envelope["width"]))
+        angle_consistency = 1.0 - min(
+            1.0,
+            angle_delta_deg / FUSION_TARGET_CONSISTENCY_ANGLE_SCALE_DEG,
+        )
+        position_consistency = 1.0 - min(
+            1.0,
+            target_shift_ratio
+            / FUSION_TARGET_CONSISTENCY_SHIFT_WIDTH_RATIO,
+        )
+        target_consistency = (
+            0.70 * angle_consistency + 0.30 * position_consistency
+        )
+        if (
+            angle_delta_deg <= FUSION_TARGET_STABLE_ANGLE_DELTA_DEG
+            and target_shift_ratio
+            <= FUSION_TARGET_STABLE_SHIFT_WIDTH_RATIO
+        ):
+            try:
+                previous_stable_frames = int(
+                    previous_fusion_line.get("targetStableFrames", 0)
+                )
+            except (AttributeError, TypeError, ValueError):
+                previous_stable_frames = 0
+            target_stable_frames = max(1, previous_stable_frames + 1)
+
+    current_error_deg = abs(float(result["angleDeg"]) - 90.0)
+    if current_error_deg >= FUSION_STRONG_CORRECTION_ERROR_DEG:
+        speed_recovery_frames = 0
+    elif continuous_observation:
+        try:
+            previous_recovery_frames = int(
+                previous_fusion_line.get("speedRecoveryFrames", 0)
+            )
+        except (AttributeError, TypeError, ValueError):
+            previous_recovery_frames = 0
+        speed_recovery_frames = min(
+            FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED,
+            max(0, previous_recovery_frames) + 1,
+        )
+    else:
+        speed_recovery_frames = 1
+
+    length_confidence = max(
+        0.0,
+        min(
+            1.0,
+            (
+                target_length_ratio - FUSION_TARGET_SHORT_LENGTH_RATIO
+            ) / (
+                FUSION_TARGET_ESTABLISHED_LENGTH_RATIO
+                - FUSION_TARGET_SHORT_LENGTH_RATIO
+            ),
+        ),
+    )
+    stability_confidence = min(
+        1.0,
+        target_stable_frames
+        / FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED,
+    )
+    recovery_confidence = min(
+        1.0,
+        speed_recovery_frames
+        / FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED,
+    )
+    future_target_confidence = min(
+        length_confidence,
+        target_consistency,
+        stability_confidence,
+        recovery_confidence,
+    )
+    result.update({
+        "targetLengthRatio": round(target_length_ratio, 4),
+        "targetConsistency": round(target_consistency, 4),
+        "targetStableFrames": target_stable_frames,
+        "targetReacquired": not continuous_observation,
+        "speedRecoveryFrames": speed_recovery_frames,
+        "fusionSpeedScale": round(
+            FUSION_MIN_FORWARD_SPEED_SCALE
+            + (1.0 - FUSION_MIN_FORWARD_SPEED_SCALE)
+            * future_target_confidence,
+            4,
+        ),
+    })
+
+
+def extract_fusion_style_line(
+    processed_line_mask,
+    previous_fusion_line=None,
+):
+    """Extrai o target atual e mede confiança para recuperar velocidade."""
 
     extraction_started = time.perf_counter()
     if (
@@ -4419,17 +4615,22 @@ def extract_fusion_style_line(processed_line_mask):
     )
     result["referenceSource"] = reference_source
     if far_point is not None:
-        delta_x = float(near_point[0] - far_point[0])
-        delta_y = float(near_point[1] - far_point[1])
-        if delta_x != 0.0 or delta_y != 0.0:
+        angle_deg = calculate_fusion_style_angle(near_point, far_point)
+        if angle_deg is not None:
             # A convenção publicada deixa 90° como reto, valores menores para
             # a esquerda e valores maiores para a direita.
-            angle_deg = math.degrees(math.atan2(delta_y, delta_x))
             result.update({
                 "valid": True,
                 "angleDeg": round(float(angle_deg), 2),
                 "farPoint": {"x": far_point[0], "y": far_point[1]},
             })
+            update_fusion_style_target_metrics(
+                result,
+                previous_fusion_line,
+                near_point,
+                far_point,
+                envelope,
+            )
 
     result["processingMs"] = max(
         0.0,
@@ -4442,6 +4643,7 @@ def extract_line_diagnostics(
     processed_line_mask,
     camera_role,
     legacy_debug_enabled=False,
+    previous_fusion_line=None,
 ):
     """Executa somente os diagnósticos habilitados para a câmera inferior."""
 
@@ -4457,9 +4659,35 @@ def extract_line_diagnostics(
             processed_line_mask
         )
 
-    # O Fusion-style ainda é somente diagnóstico e não participa do steering.
-    fusion_style_line = extract_fusion_style_line(processed_line_mask)
+    # O Fusion-style fornece o steering NORMAL; o legado continua opcional e
+    # serve como diagnóstico ou fallback quando o target Fusion fica inválido.
+    fusion_style_line = extract_fusion_style_line(
+        processed_line_mask,
+        previous_fusion_line,
+    )
     return normal_trajectory, fusion_style_line
+
+
+def update_fusion_style_history(previous_fusion_line, fusion_style_line):
+    """Mantém somente a última observação válida e a idade da interrupção."""
+
+    if (
+        isinstance(fusion_style_line, dict)
+        and fusion_style_line.get("valid") is True
+    ):
+        return dict(fusion_style_line)
+    if (
+        not isinstance(previous_fusion_line, dict)
+        or previous_fusion_line.get("valid") is not True
+    ):
+        return None
+    history = dict(previous_fusion_line)
+    try:
+        missed_frames = int(history.get("missedFrames", 0))
+    except (TypeError, ValueError):
+        missed_frames = 0
+    history["missedFrames"] = max(0, missed_frames) + 1
+    return history
 
 
 def draw_fusion_style_line_overlay(
@@ -6187,6 +6415,11 @@ def calculate_fusion_control_status(fusion_style_line):
         "filteredFusionAngle": None,
         "fusionSteeringError": None,
         "fusionControlActive": False,
+        "fusionTargetLengthRatio": 0.0,
+        "fusionTargetConsistency": 0.0,
+        "fusionTargetStableFrames": 0,
+        "fusionTargetReacquired": False,
+        "fusionSpeedScale": FUSION_MIN_FORWARD_SPEED_SCALE,
     }
     if not isinstance(fusion_style_line, dict):
         return result
@@ -6211,6 +6444,42 @@ def calculate_fusion_control_status(fusion_style_line):
     result["fusionSteeringError"] = map_fusion_angle_to_steering_error(
         fusion_angle
     )
+    result["fusionTargetLengthRatio"] = max(
+        0.0,
+        min(
+            1.0,
+            finite_virtual_position(
+                fusion_style_line.get("targetLengthRatio")
+            ) or 0.0,
+        ),
+    )
+    result["fusionTargetConsistency"] = max(
+        0.0,
+        min(
+            1.0,
+            finite_virtual_position(
+                fusion_style_line.get("targetConsistency")
+            ) or 0.0,
+        ),
+    )
+    try:
+        result["fusionTargetStableFrames"] = max(
+            0,
+            int(fusion_style_line.get("targetStableFrames", 0)),
+        )
+    except (TypeError, ValueError):
+        result["fusionTargetStableFrames"] = 0
+    result["fusionTargetReacquired"] = (
+        fusion_style_line.get("targetReacquired") is True
+    )
+    speed_scale = finite_virtual_position(
+        fusion_style_line.get("fusionSpeedScale")
+    )
+    if speed_scale is not None:
+        result["fusionSpeedScale"] = max(
+            FUSION_MIN_FORWARD_SPEED_SCALE,
+            min(1.0, speed_scale),
+        )
     return result
 
 
@@ -6320,6 +6589,36 @@ def map_fusion_angle_to_motor_powers(fusion_angle):
     return {
         "left_power": NORMAL_BASE_POWER,
         "right_power": NORMAL_BASE_POWER,
+    }
+
+
+def apply_fusion_forward_speed_limit(command, speed_scale):
+    """Limita apenas o avanço médio e preserva o diferencial Fusion."""
+
+    if not isinstance(command, dict):
+        return None
+    left_power = finite_virtual_position(command.get("left_power"))
+    right_power = finite_virtual_position(command.get("right_power"))
+    speed_scale = finite_virtual_position(speed_scale)
+    if left_power is None or right_power is None or speed_scale is None:
+        return None
+
+    safe_scale = max(
+        FUSION_MIN_FORWARD_SPEED_SCALE,
+        min(1.0, speed_scale),
+    )
+    forward_mean = (left_power + right_power) / 2.0
+    maximum_forward_mean = NORMAL_BASE_POWER * safe_scale
+    if forward_mean > maximum_forward_mean:
+        # Subtrair o mesmo valor das duas rodas mantém o yaw produzido pelo
+        # mapper e reduz somente a componente que empurra o robô para frente.
+        forward_reduction = forward_mean - maximum_forward_mean
+        left_power -= forward_reduction
+        right_power -= forward_reduction
+
+    return {
+        "left_power": max(-1.0, min(1.0, left_power)),
+        "right_power": max(-1.0, min(1.0, right_power)),
     }
 
 
@@ -7345,6 +7644,10 @@ def calculate_line_follower_command(
         fusion_command = map_fusion_angle_to_motor_powers(
             fusion_control_status["fusionAngle"]
         )
+        fusion_command = apply_fusion_forward_speed_limit(
+            fusion_command,
+            fusion_control_status["fusionSpeedScale"],
+        )
         if fusion_command is None:
             left_power = 0.0
             right_power = 0.0
@@ -7568,6 +7871,19 @@ def calculate_line_follower_command(
         "fusionControlActive": fusion_control_status[
             "fusionControlActive"
         ],
+        "fusionTargetLengthRatio": fusion_control_status[
+            "fusionTargetLengthRatio"
+        ],
+        "fusionTargetConsistency": fusion_control_status[
+            "fusionTargetConsistency"
+        ],
+        "fusionTargetStableFrames": fusion_control_status[
+            "fusionTargetStableFrames"
+        ],
+        "fusionTargetReacquired": fusion_control_status[
+            "fusionTargetReacquired"
+        ],
+        "fusionSpeedScale": fusion_control_status["fusionSpeedScale"],
         # Reaproveita a direção já escolhida pelo recovery com MEDIUM/FAR
         # trusted; a câmera frontal nunca calcula LEFT ou RIGHT.
         "trustedDirection": observed_recovery_direction or "NONE",
@@ -8338,6 +8654,7 @@ def main():
         pivot_state_tracker = VirtualPivotStateTracker()
         medium_spin_tracker = VirtualMediumSpinTracker()
         line_search_tracker = VirtualLineSearchTracker()
+        fusion_target_history = None
 
         # Estado persistente das manobras sinalizadas por verde.
         direcao_verde_ativa = "NENHUMA"
@@ -8420,6 +8737,11 @@ def main():
                 line_candidate_mask,
                 camera_profile["role"],
                 LEGACY_LINE_DEBUG_ENABLED,
+                previous_fusion_line=fusion_target_history,
+            )
+            fusion_target_history = update_fusion_style_history(
+                fusion_target_history,
+                fusion_style_line,
             )
             line_timings["normalTrajectoryMs"] = normal_trajectory[
                 "processingMs"
