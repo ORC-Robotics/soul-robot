@@ -1,5 +1,14 @@
 """Componentes de visão desacoplados do entrypoint da câmera inferior."""
 
+from .green_observation import (
+    DEFAULT_GREEN_OBSERVATION_CONFIG,
+    GREEN_CLEAR_HYSTERESIS_FRAMES,
+    GREEN_CONFIRMATION_FRAMES,
+    GREEN_DIRECTION_RETENTION_SECONDS,
+    GREEN_SINGLE_OBSERVATION_FRAMES,
+    GreenObservationConfig,
+    GreenObservationTracker,
+)
 from .search import (
     DEFAULT_LINE_SEARCH_CONFIG,
     VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
@@ -49,6 +58,13 @@ from .reorient import (
 )
 
 __all__ = [
+    "DEFAULT_GREEN_OBSERVATION_CONFIG",
+    "GREEN_CLEAR_HYSTERESIS_FRAMES",
+    "GREEN_CONFIRMATION_FRAMES",
+    "GREEN_DIRECTION_RETENTION_SECONDS",
+    "GREEN_SINGLE_OBSERVATION_FRAMES",
+    "GreenObservationConfig",
+    "GreenObservationTracker",
     "DEFAULT_LINE_SEARCH_CONFIG",
     "VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES",
     "VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES",

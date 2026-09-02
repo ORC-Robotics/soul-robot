@@ -16,6 +16,13 @@ from urllib.parse import parse_qs, urlsplit
 import cv2  # type: ignore
 import numpy as np
 
+from vision.green_observation import (
+    GREEN_CLEAR_HYSTERESIS_FRAMES,
+    GREEN_CONFIRMATION_FRAMES,
+    GREEN_DIRECTION_RETENTION_SECONDS,
+    GREEN_SINGLE_OBSERVATION_FRAMES,
+    GreenObservationTracker,
+)
 from vision.search import (
     VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
     VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
@@ -258,9 +265,6 @@ GREEN_PARTIAL_DIMENSION_FACTOR = 0.50
 GREEN_PARTIAL_ASPECT_RATIO_MIN = 0.20
 GREEN_PARTIAL_EXTENT_MIN = 0.20
 GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
-GREEN_CONFIRMATION_FRAMES = 2
-GREEN_SINGLE_OBSERVATION_FRAMES = 2
-GREEN_CLEAR_HYSTERESIS_FRAMES = 2
 # Cada ROI verde possui 10% da largura da imagem em cada lado. A metade abaixo
 # reproduz width // 20 do detector de referência sem fixar a resolução.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
@@ -269,8 +273,6 @@ GREEN_ROI_HALF_SIZE_DIVISOR = 20
 GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
 # Fração mínima de pixels ativos do componente preto em cada ROI.
 GREEN_ROI_MIN_BLACK_RATIO = 0.25
-# Mantém a orientação durante meio segundo depois da última leitura válida.
-GREEN_DIRECTION_RETENTION_SECONDS = 0.3
 # Dois marcadores só representam retorno quando estão na mesma altura local.
 # A tolerância usa a maior altura observada para acompanhar a perspectiva.
 GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS = 1.5
@@ -6000,99 +6002,6 @@ def calculate_virtual_steering_error(
     )
 
     return float(steering_error)
-
-class GreenObservationTracker:
-    """Confirma observações novas e remove decisões após curta histerese."""
-
-    def __init__(self):
-        self.last_sequence = None
-        self.pending_interpretation = "SEM_DECISAO"
-        self.consecutive_samples = 0
-        self.missing_samples = 0
-        self.confirmed_interpretation = "SEM_DECISAO"
-        self.last_direction_seen_at = None
-
-    def update(self, line_sequence, interpretation, observed_at=None):
-        """Confirma quadros novos e retém orientação lateral por 0,5 segundo."""
-
-        observed_at = (
-            time.perf_counter() if observed_at is None else float(observed_at)
-        )
-        if line_sequence == self.last_sequence:
-            return (
-                self.confirmed_interpretation,
-                self.confirmed_interpretation != "SEM_DECISAO",
-                self.consecutive_samples,
-            )
-        self.last_sequence = line_sequence
-
-        if interpretation in ("ESQUERDA", "DIREITA"):
-            # O instante é renovado em todo frame detectado, inclusive durante
-            # a confirmação, para que a retenção conte da última visão real.
-            self.last_direction_seen_at = observed_at
-
-        if interpretation == "SEM_DECISAO":
-            direction_is_retained = (
-                self.confirmed_interpretation in ("ESQUERDA", "DIREITA")
-                and self.last_direction_seen_at is not None
-                and observed_at - self.last_direction_seen_at
-                < GREEN_DIRECTION_RETENTION_SECONDS
-            )
-            if direction_is_retained:
-                return (
-                    self.confirmed_interpretation,
-                    True,
-                    self.consecutive_samples,
-                )
-            if self.confirmed_interpretation in ("ESQUERDA", "DIREITA"):
-                self.pending_interpretation = "SEM_DECISAO"
-                self.confirmed_interpretation = "SEM_DECISAO"
-                self.consecutive_samples = 0
-                self.missing_samples = 0
-                return "SEM_DECISAO", False, 0
-            self.missing_samples += 1
-            if self.missing_samples >= GREEN_CLEAR_HYSTERESIS_FRAMES:
-                self.pending_interpretation = "SEM_DECISAO"
-                self.confirmed_interpretation = "SEM_DECISAO"
-                self.consecutive_samples = 0
-            return (
-                self.confirmed_interpretation,
-                self.confirmed_interpretation != "SEM_DECISAO",
-                self.consecutive_samples,
-            )
-
-        self.missing_samples = 0
-        if interpretation != self.pending_interpretation:
-            self.pending_interpretation = interpretation
-            self.consecutive_samples = 1
-            self.confirmed_interpretation = "SEM_DECISAO"
-        else:
-            self.consecutive_samples += 1
-
-        required_samples = GREEN_CONFIRMATION_FRAMES
-        if interpretation in ("ESQUERDA", "DIREITA"):
-            required_samples = max(
-                required_samples, GREEN_SINGLE_OBSERVATION_FRAMES
-            )
-        # A telemetria representa o progresso da confirmação, não há motivo
-        # para crescer sem limite depois de a decisão já estar aceita.
-        self.consecutive_samples = min(
-            self.consecutive_samples,
-            required_samples,
-        )
-        confirmable = interpretation not in ("AMBIGUO", "SEM_DECISAO")
-        if confirmable and self.consecutive_samples >= required_samples:
-            self.confirmed_interpretation = interpretation
-
-        published_interpretation = self.confirmed_interpretation
-        if interpretation == "AMBIGUO":
-            return "AMBIGUO", False, self.consecutive_samples
-        return (
-            published_interpretation,
-            self.confirmed_interpretation != "SEM_DECISAO",
-            self.consecutive_samples,
-        )
-
 
 def build_green_status(
     candidates,
