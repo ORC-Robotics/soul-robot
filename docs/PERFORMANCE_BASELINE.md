@@ -42,7 +42,7 @@ Com o serviço em execução, faça primeiro uma medição sem navegador aberto:
 
 ```bash
 cd /home/raspberry/OBR2026K
-python3 scripts/performance_baseline.py \
+python3 tools/performance_baseline.py \
   --duration 60 \
   --output /tmp/obr-baseline-sem-dashboard.csv
 ```
@@ -50,7 +50,7 @@ python3 scripts/performance_baseline.py \
 Depois abra o dashboard e mantenha a câmera visível durante uma segunda medição:
 
 ```bash
-python3 scripts/performance_baseline.py \
+python3 tools/performance_baseline.py \
   --duration 60 \
   --output /tmp/obr-baseline-com-dashboard.csv
 ```

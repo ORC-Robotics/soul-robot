@@ -9,7 +9,7 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/scripts/deploy.ps1"
+                "${workspaceFolder}/deployment/deploy.ps1"
             ],
             "group": {
                 "kind": "build",
@@ -25,7 +25,7 @@
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                "${workspaceFolder}/scripts/deploy.ps1",
+                "${workspaceFolder}/deployment/deploy.ps1",
                 "-NoRun"
             ],
             "problemMatcher": []
@@ -35,7 +35,7 @@
             "type": "shell",
             "command": "python3",
             "args": [
-                "${workspaceFolder}/scripts/deploy_panel.py"
+                "${workspaceFolder}/deployment/deploy_panel.py"
             ],
             "problemMatcher": []
         }

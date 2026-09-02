@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
@@ -9,7 +10,10 @@ from unittest import mock
 import numpy as np
 
 
-SCRIPT_DIRECTORY = os.path.dirname(__file__)
+SCRIPT_DIRECTORY = str(
+    Path(__file__).resolve().parents[2] / "scripts"
+)
+sys.path.insert(0, SCRIPT_DIRECTORY)
 CAMERA_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "camera_line_frame.py")
 FORWARD_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "forward_camera_stream.py")
 

@@ -57,7 +57,7 @@ $remoteRunScript = "$RemoteDir/scripts/run_robot.sh"
 $remoteLineCameraRunScript = "$RemoteDir/scripts/run_line_camera.sh"
 $lineCameraServiceName = "obr-line-camera"
 $setupScriptPath = Join-Path $PSScriptRoot "install-service.ps1"
-$setupCommand = "powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1 -HostName $HostName"
+$setupCommand = "powershell -ExecutionPolicy Bypass -File deployment/install-service.ps1 -HostName $HostName"
 
 # As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.

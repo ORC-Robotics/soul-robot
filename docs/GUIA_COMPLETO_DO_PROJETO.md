@@ -253,7 +253,7 @@ esp32/obr_esp32_bridge/
 scripts/camera_line_frame.py
   Captura inferior, processamento visual, IPC fresco do segue-faixa e stream MJPEG.
 
-scripts/deploy.ps1 e scripts/deploy.sh
+deployment/deploy.ps1 e deployment/deploy.sh
   Deploy atômico para a Raspberry.
 
 scripts/run_robot.sh
@@ -263,10 +263,10 @@ scripts/run_line_camera.sh
   Supervisor exclusivo da câmera inferior: remove IPC antigo, publica o estado
   do serviço e inicia uma única instância da visão.
 
-scripts/obr-robot.service
+deployment/systemd/obr-robot.service
   Unidade systemd do programa C++, dashboard e ESP32.
 
-scripts/obr-line-camera.service
+deployment/systemd/obr-line-camera.service
   Unidade systemd independente da captura e visão da câmera inferior.
 ```
 
@@ -876,13 +876,13 @@ firmware de bancada é bem maior porque inclui Wi-Fi, servidor HTTP e HTML.
 ### Windows
 
 ```powershell
-.\scripts\deploy.ps1 -HostName 192.168.0.106 -Service
+.\deployment\deploy.ps1 -HostName 192.168.0.106 -Service
 ```
 
 ### Linux/macOS
 
 ```sh
-bash scripts/deploy.sh --host raspberrypi.local --service
+bash deployment/deploy.sh --host raspberrypi.local --service
 ```
 
 ### Comportamento seguro do deploy
@@ -1183,7 +1183,7 @@ Stream pelo proxy: http://raspberrypi.local:8080/camera-stream.mjpg
 
 ```powershell
 # Deploy, build e restart seguro
-.\scripts\deploy.ps1 -HostName 192.168.0.106 -Service
+.\deployment\deploy.ps1 -HostName 192.168.0.106 -Service
 
 # Somente compilar C++ localmente
 cmake -S . -B build
@@ -1215,8 +1215,8 @@ curl http://127.0.0.1:8080/camera-status.json
 | Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
 | Captura da câmera | `scripts/camera_line_frame.py` |
-| Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh` |
-| Startup | `scripts/run_robot.sh` / `scripts/obr-robot.service` |
+| Deploy Windows/Linux | `deployment/deploy.ps1` / `deployment/deploy.sh` |
+| Startup | `scripts/run_robot.sh` / `deployment/systemd/obr-robot.service` |
 
 ## 30. Regra de manutenção deste guia
 

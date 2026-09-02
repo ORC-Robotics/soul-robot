@@ -72,7 +72,7 @@ REMOTE_FORWARD_CAMERA_PATTERN="${REMOTE_DIR}/scripts/[f]orward_camera_stream.py"
 REMOTE_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_robot.sh"
 REMOTE_LINE_CAMERA_RUN_SCRIPT="${REMOTE_DIR}/scripts/run_line_camera.sh"
 LINE_CAMERA_SERVICE_NAME="obr-line-camera"
-SETUP_COMMAND="bash scripts/install-service.sh --host $HOST_NAME"
+SETUP_COMMAND="bash deployment/install-service.sh --host $HOST_NAME"
 
 # As imagens do dashboard são lidas em tempo de execução. Validá-las antes de
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
