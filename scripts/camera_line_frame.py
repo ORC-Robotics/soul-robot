@@ -16,6 +16,12 @@ from urllib.parse import parse_qs, urlsplit
 import cv2  # type: ignore
 import numpy as np
 
+from vision.search import (
+    VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
+    VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
+    VirtualLineSearchTracker,
+)
+
 try:
     import RPi.GPIO as GPIO  # type: ignore
 except ImportError:
@@ -2555,11 +2561,6 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, sessenta frames correspondem a aproximadamente dois segundos.
 GREEN_MANEUVER_TIMEOUT_FRAMES = 12
-
-# A busca cega começa no último lado confiável por uma janela curta e depois
-# varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
-VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = 12
-VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = 30
 
 # Reaquisição geométrica após gaps.
 #
@@ -5113,62 +5114,6 @@ def gap_entry_is_required(
         and virtual_near_point is None
         and lateral_exit_target is None
     )
-
-
-class VirtualLineSearchTracker:
-    """Alterna uma busca cega curta e outra maior sem memorizar steering."""
-
-    def __init__(self):
-        self.last_direction = None
-        self.active = False
-        self.initial_direction = None
-        self.search_frames = 0
-
-    def remember(self, direction):
-        """Guarda somente uma direção lateral realmente observada."""
-
-        if direction in ("LEFT", "RIGHT"):
-            self.last_direction = direction
-
-    def stop(self):
-        """Interrompe a busca sem apagar a última direção confiável."""
-
-        self.active = False
-        self.initial_direction = None
-        self.search_frames = 0
-
-    def start(self, preferred_direction=None):
-        """Inicia a busca uma única vez com a melhor direção disponível."""
-
-        if self.active:
-            return
-        initial_direction = (
-            preferred_direction
-            if preferred_direction in ("LEFT", "RIGHT")
-            else self.last_direction
-        )
-        self.initial_direction = initial_direction or "RIGHT"
-        self.active = True
-        self.search_frames = 0
-
-    def next_direction(self):
-        """Retorna o lado da janela atual e avança um frame."""
-
-        if not self.active:
-            return None
-        cycle_frames = (
-            VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES
-            + VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES
-        )
-        cycle_index = self.search_frames % cycle_frames
-        if cycle_index < VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES:
-            direction = self.initial_direction
-        else:
-            direction = (
-                "RIGHT" if self.initial_direction == "LEFT" else "LEFT"
-            )
-        self.search_frames += 1
-        return direction
 
 
 def green_direction_to_search_direction(direction):
