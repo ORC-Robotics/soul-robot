@@ -118,6 +118,7 @@ from vision.geometry import (
 )
 from vision.line_control import (
     GREEN_MANEUVER_TIMEOUT_FRAMES,
+    LineFollowerController,
     LIMIAR_CENTRALIZACAO_VERDE,
     LIMIAR_CURVA_VERDE_INICIADA,
     NORMAL_BASE_POWER,
@@ -1925,10 +1926,7 @@ def main():
         smoothed_fps = 0.0
         line_sequence = 0
         green_tracker = GreenObservationTracker()
-        virtual_turn_tracker = VirtualTurnStateTracker()
-        pivot_state_tracker = VirtualPivotStateTracker()
-        medium_spin_tracker = VirtualMediumSpinTracker()
-        line_search_tracker = VirtualLineSearchTracker()
+        line_controller = LineFollowerController()
 
         # Estado persistente das manobras sinalizadas por verde.
         direcao_verde_ativa = "NENHUMA"
@@ -2111,7 +2109,7 @@ def main():
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
                     quadros_verde_ativo = 0
-                    line_search_tracker.stop()
+                    line_controller.stop_search()
                     verde_armado = False
                     quadros_sem_verde = 0
 
@@ -2120,7 +2118,7 @@ def main():
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
                     quadros_verde_ativo = 0
-                    line_search_tracker.stop()
+                    line_controller.stop_search()
                     verde_armado = False
                     quadros_sem_verde = 0
 
@@ -2159,7 +2157,7 @@ def main():
                 quadros_centralizado_verde = 0
                 search_direction = green_timeout_state["searchDirection"]
                 if search_direction is not None:
-                    line_search_tracker.start(search_direction)
+                    line_controller.start_search(search_direction)
                 else:
                     sensor_recovery_requested = True
                 # Remove a máscara verde já no mesmo frame do timeout.
@@ -2246,21 +2244,17 @@ def main():
                     "blindSearchRequested"
                 ]
                 if not gap_forward_active:
-                    line_search_tracker.stop()
+                    line_controller.stop_search()
 
             line_control_started = time.perf_counter()
 
             line_follower_command = (
-                calculate_line_follower_command(
+                line_controller.calculate(
                     line_candidate_mask,
                     green_status,
                     direcao_verde_ativa,
                     gap_forward_active,
-                    virtual_turn_tracker=virtual_turn_tracker,
-                    pivot_state_tracker=pivot_state_tracker,
-                    medium_spin_tracker=medium_spin_tracker,
                     virtual_sensors=virtual_sensors,
-                    line_search_tracker=line_search_tracker,
                     blind_search_requested=gap_blind_search_requested,
                     sensor_recovery_requested=sensor_recovery_requested,
                 )
@@ -2319,7 +2313,7 @@ def main():
                     ]
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
-                    line_search_tracker.stop()
+                    line_controller.stop_search()
 
             # A curva já pode ter terminado, mas um novo verde só será
             # aceito depois de X quadros consecutivos sem candidato verde.

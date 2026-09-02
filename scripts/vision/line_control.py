@@ -10,6 +10,7 @@ from .geometry import (
 from .medium_spin import (
     VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD,
     VIRTUAL_MEDIUM_SPIN_POWER,
+    VirtualMediumSpinTracker,
 )
 from .numeric import finite_virtual_position
 from .pivot import (
@@ -17,13 +18,16 @@ from .pivot import (
     PIVOT_STATE_LEFT,
     PIVOT_STATE_NONE,
     PIVOT_STATE_RIGHT,
+    VirtualPivotStateTracker,
 )
 from .reorient import (
     VIRTUAL_STATE_NORMAL,
     VIRTUAL_STATE_REORIENT_LEFT,
     VIRTUAL_STATE_REORIENT_RIGHT,
+    VirtualTurnStateTracker,
     virtual_sensor_trust_is_active,
 )
+from .search import VirtualLineSearchTracker
 from .virtual_sensors import (
     VIRTUAL_FINE_CENTER_GAIN,
     VIRTUAL_FINE_CENTER_MAX_CORRECTION,
@@ -61,6 +65,74 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 GREEN_MANEUVER_TIMEOUT_FRAMES = 12
+
+
+class LineFollowerController:
+    """Possui os trackers temporais usados pelo controle de linha."""
+
+    def __init__(
+        self,
+        virtual_turn_tracker=None,
+        pivot_state_tracker=None,
+        medium_spin_tracker=None,
+        line_search_tracker=None,
+    ):
+        self.virtual_turn_tracker = (
+            VirtualTurnStateTracker()
+            if virtual_turn_tracker is None
+            else virtual_turn_tracker
+        )
+        self.pivot_state_tracker = (
+            VirtualPivotStateTracker()
+            if pivot_state_tracker is None
+            else pivot_state_tracker
+        )
+        self.medium_spin_tracker = (
+            VirtualMediumSpinTracker()
+            if medium_spin_tracker is None
+            else medium_spin_tracker
+        )
+        self.line_search_tracker = (
+            VirtualLineSearchTracker()
+            if line_search_tracker is None
+            else line_search_tracker
+        )
+
+    def start_search(self, preferred_direction=None):
+        """Inicia a busca cega sem expor seu tracker ao processo de câmera."""
+
+        self.line_search_tracker.start(preferred_direction)
+
+    def stop_search(self):
+        """Encerra a busca cega mantendo sua última direção confiável."""
+
+        self.line_search_tracker.stop()
+
+    def calculate(
+        self,
+        processed_line_mask,
+        green_detection_result,
+        green_direction="NENHUMA",
+        gap_forward_active=False,
+        virtual_sensors=None,
+        blind_search_requested=False,
+        sensor_recovery_requested=False,
+    ):
+        """Calcula o comando usando sempre o mesmo conjunto de trackers."""
+
+        return calculate_line_follower_command(
+            processed_line_mask,
+            green_detection_result,
+            direcao_verde_ativa=green_direction,
+            gap_forward_active=gap_forward_active,
+            virtual_turn_tracker=self.virtual_turn_tracker,
+            pivot_state_tracker=self.pivot_state_tracker,
+            medium_spin_tracker=self.medium_spin_tracker,
+            virtual_sensors=virtual_sensors,
+            line_search_tracker=self.line_search_tracker,
+            blind_search_requested=blind_search_requested,
+            sensor_recovery_requested=sensor_recovery_requested,
+        )
 
 
 def virtual_medium_scan_direction(sensors):
@@ -941,4 +1013,3 @@ def calculate_line_follower_command(
         # trusted; a câmera frontal nunca calcula LEFT ou RIGHT.
         "trustedDirection": observed_recovery_direction or "NONE",
     }
-
