@@ -82,23 +82,19 @@ def calculate_command(
 
     if mask is None:
         mask = np.zeros((100, 100), dtype=np.uint8)
-    with patch.object(
-        camera_line_frame,
-        "read_virtual_line_sensors",
-        return_value=sensors,
-    ):
-        return camera_line_frame.calculate_line_follower_command(
-            mask,
-            {},
-            direcao_verde_ativa=green_direction,
-            gap_forward_active=gap_active,
-            virtual_turn_tracker=tracker,
-            pivot_state_tracker=pivot_state_tracker,
-            medium_spin_tracker=medium_spin_tracker,
-            line_search_tracker=line_search_tracker,
-            blind_search_requested=blind_search_requested,
-            sensor_recovery_requested=sensor_recovery_requested,
-        )
+    return camera_line_frame.calculate_line_follower_command(
+        mask,
+        {},
+        direcao_verde_ativa=green_direction,
+        gap_forward_active=gap_active,
+        virtual_turn_tracker=tracker,
+        pivot_state_tracker=pivot_state_tracker,
+        medium_spin_tracker=medium_spin_tracker,
+        virtual_sensors=sensors,
+        line_search_tracker=line_search_tracker,
+        blind_search_requested=blind_search_requested,
+        sensor_recovery_requested=sensor_recovery_requested,
+    )
 
 
 def expected_normal_motor_powers(steering_error, strong_enabled=False):
