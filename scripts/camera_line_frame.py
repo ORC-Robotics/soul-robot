@@ -1000,6 +1000,24 @@ def cached_structuring_element(shape, width, height):
     return cv2.getStructuringElement(shape, (width, height))
 
 
+@lru_cache(maxsize=16)
+def cached_relative_line_threshold_lut(
+    ratio_percent,
+    maximum_brightness,
+):
+    """Cria uma vez os limites equivalentes ao threshold relativo da linha."""
+
+    background_values = np.arange(256, dtype=np.uint16)
+    relative_limits = (
+        background_values * int(ratio_percent)
+    ) // 100
+    threshold_lut = np.minimum(
+        relative_limits,
+        int(maximum_brightness),
+    ).astype(np.uint8)
+    return threshold_lut.reshape(1, 256)
+
+
 def create_line_binary_mask(gray_roi, vision_profile, timings=None):
     """Separa a fita preta usando o método configurado para cada câmera."""
 
@@ -1049,14 +1067,16 @@ def create_line_binary_mask(gray_roi, vision_profile, timings=None):
     binary_compare_started = (
         time.perf_counter() if timings is not None else 0.0
     )
-    gray_16 = gray_roi.astype(np.uint16)
-    background_16 = local_background.astype(np.uint16)
-    np.multiply(gray_16, 100, out=gray_16)
-    np.multiply(background_16, ratio_percent, out=background_16)
-    relative_mask = cv2.compare(gray_16, background_16, cv2.CMP_LE)
-    absolute_mask = cv2.inRange(gray_roi, 0, maximum_brightness)
-    cv2.bitwise_and(relative_mask, absolute_mask, dst=relative_mask)
-    binary_mask = relative_mask
+    threshold_lut = cached_relative_line_threshold_lut(
+        ratio_percent,
+        maximum_brightness,
+    )
+    local_threshold = cv2.LUT(local_background, threshold_lut)
+    binary_mask = cv2.compare(
+        gray_roi,
+        local_threshold,
+        cv2.CMP_LE,
+    )
     if timings is not None:
         timings["binaryCompareMs"] = (
             time.perf_counter() - binary_compare_started
@@ -1366,6 +1386,7 @@ def component_has_min_thickness(component_mask):
 def create_line_candidate_mask(
     structural_mask,
     vision_profile,
+    return_accepted_contours=False,
 ):
     """Mantém somente componentes compatíveis com a fita preta."""
 
@@ -1472,6 +1493,8 @@ def create_line_candidate_mask(
             cv2.FILLED,
         )
 
+    if return_accepted_contours:
+        return line_candidate_mask, tuple(accepted_contours)
     return line_candidate_mask
 
 def frame_to_hsv(frame, camera_format="RGB888"):
@@ -2668,7 +2691,7 @@ QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
 # Em 30 FPS, sessenta frames correspondem a aproximadamente dois segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 12
+GREEN_MANEUVER_TIMEOUT_FRAMES = 16
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -2732,15 +2755,14 @@ GEOMETRIC_TRACE_EXIT_MARGIN_PX = 3
 GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
 GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
 
-def resolve_virtual_sensor_geometry(frame_shape):
+@lru_cache(maxsize=8)
+def cached_virtual_sensor_geometry(height, width):
     """
     Converte FAR, FAR BAND, MEDIUM e o único sensor NEAR-C para pixels.
 
     O retângulo FAR original é calculado diretamente para preservar
     exatamente a leitura usada pelo seguidor base.
     """
-
-    height, width = frame_shape[:2]
 
     far_y0 = int(round(height * VIRTUAL_FAR_Y0))
     far_y1 = int(round(height * VIRTUAL_FAR_Y1))
@@ -2894,6 +2916,13 @@ def resolve_virtual_sensor_geometry(frame_shape):
     }
 
 
+def resolve_virtual_sensor_geometry(frame_shape):
+    """Reutiliza a geometria imutável enquanto a resolução não mudar."""
+
+    height, width = frame_shape[:2]
+    return cached_virtual_sensor_geometry(int(height), int(width))
+
+
 def virtual_sensor_regions(sensor_geometry):
     """Retorna os blocos disjuntos que formam uma única leitura virtual."""
 
@@ -3044,7 +3073,13 @@ def normalized_thickness_consistency(local_thicknesses_px):
     )
 
 
-def measure_component_thickness(labels, stats, label):
+def measure_component_thickness(
+    labels,
+    stats,
+    label,
+    shared_distance_map=None,
+    shared_local_maximum_map=None,
+):
     """Mede espessura transversal e sua consistência no mesmo componente."""
 
     component_x = int(stats[label, cv2.CC_STAT_LEFT])
@@ -3065,19 +3100,40 @@ def measure_component_thickness(labels, stats, label):
         np.uint8
     )
 
-    # A borda preta garante que componentes cortados pelo limite da ROI também
-    # tenham uma distância finita até o fundo em todas as orientações.
-    padded_mask = cv2.copyMakeBorder(
-        component_mask,
-        1,
-        1,
-        1,
-        1,
-        cv2.BORDER_CONSTANT,
-        value=0,
-    )
-    distance_map = cv2.distanceTransform(padded_mask, cv2.DIST_L2, 3)
-    component_distance_map = distance_map[1:-1, 1:-1]
+    if (
+        shared_distance_map is None
+        or shared_local_maximum_map is None
+    ):
+        # A borda preta garante que componentes cortados pelo limite da ROI
+        # também tenham distância finita até o fundo em todas as orientações.
+        padded_mask = cv2.copyMakeBorder(
+            component_mask,
+            1,
+            1,
+            1,
+            1,
+            cv2.BORDER_CONSTANT,
+            value=0,
+        )
+        padded_distance_map = cv2.distanceTransform(
+            padded_mask,
+            cv2.DIST_L2,
+            3,
+        )
+        component_distance_map = padded_distance_map[1:-1, 1:-1]
+        component_local_maximum_map = cv2.dilate(
+            padded_distance_map,
+            np.ones((3, 3), dtype=np.uint8),
+        )[1:-1, 1:-1]
+    else:
+        component_distance_map = shared_distance_map[
+            component_y:component_y + component_height,
+            component_x:component_x + component_width,
+        ]
+        component_local_maximum_map = shared_local_maximum_map[
+            component_y:component_y + component_height,
+            component_x:component_x + component_width,
+        ]
     component_distances = component_distance_map[component_mask != 0]
     if component_distances.size == 0:
         return {
@@ -3101,15 +3157,14 @@ def measure_component_thickness(labels, stats, label):
     robust_radius_px = float(np.median(core_distances))
     robust_thickness_px = max(0.0, 2.0 * robust_radius_px)
 
-    local_maximum_map = cv2.dilate(
-        distance_map,
-        np.ones((3, 3), dtype=np.uint8),
-    )[1:-1, 1:-1]
     # Os máximos locais formam o núcleo interno sem executar skeleton. Assim,
     # a dispersão não inclui o gradiente inevitável entre borda e centro.
     ridge_mask = (
         (component_mask != 0)
-        & (component_distance_map >= local_maximum_map - 1e-6)
+        & (
+            component_distance_map
+            >= component_local_maximum_map - 1e-6
+        )
     )
     local_thicknesses_px = 2.0 * component_distance_map[ridge_mask]
     thickness_consistency = normalized_thickness_consistency(
@@ -3144,17 +3199,42 @@ def measure_virtual_row_line_confidence(processed_line_mask, row_geometry):
     if component_mask.size == 0 or bounds_y1 <= bounds_y0:
         return empty_virtual_row_line_measurement()
 
-    active_mask = cv2.compare(component_mask, 0, cv2.CMP_GT)
-    active_pixel_count = int(cv2.countNonZero(active_mask))
+    # A máscara candidata já chega em 0/255. O OpenCV considera qualquer
+    # valor diferente de zero como foreground, portanto a cópia criada por
+    # cv2.compare não mudava labels, área, centróides ou scores de trust.
+    active_pixel_count = int(cv2.countNonZero(component_mask))
     if active_pixel_count <= 0:
         return empty_virtual_row_line_measurement()
 
     label_count, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        active_mask,
+        component_mask,
         connectivity=8,
     )
     if label_count <= 1:
         return empty_virtual_row_line_measurement()
+
+    # Componentes desconectados compartilham o mesmo fundo zero. Portanto, o
+    # distanceTransform e a dilatação da fileira completa produzem, dentro de
+    # cada label, os mesmos valores que os antigos mapas calculados isoladamente.
+    padded_component_mask = cv2.copyMakeBorder(
+        component_mask,
+        1,
+        1,
+        1,
+        1,
+        cv2.BORDER_CONSTANT,
+        value=0,
+    )
+    padded_distance_map = cv2.distanceTransform(
+        padded_component_mask,
+        cv2.DIST_L2,
+        3,
+    )
+    shared_distance_map = padded_distance_map[1:-1, 1:-1]
+    shared_local_maximum_map = cv2.dilate(
+        padded_distance_map,
+        np.ones((3, 3), dtype=np.uint8),
+    )[1:-1, 1:-1]
 
     frame_height = processed_line_mask.shape[0]
     sample_step = max(
@@ -3198,6 +3278,8 @@ def measure_virtual_row_line_confidence(processed_line_mask, row_geometry):
             labels,
             stats,
             label,
+            shared_distance_map,
+            shared_local_maximum_map,
         )
         robust_thickness_px = component_thickness["robustThicknessPx"]
         thickness_consistency = component_thickness[
@@ -3620,14 +3702,14 @@ def empty_normal_trajectory(processing_ms=0.0):
     }
 
 
-def resolve_normal_trajectory_envelope(frame_shape):
-    """Reaproveita FAR, MEDIUM e NEAR como envelope físico do traçado."""
+@lru_cache(maxsize=8)
+def cached_normal_trajectory_envelope(height, width):
+    """Calcula uma vez o envelope Fusion e seus limites por scanline."""
 
-    height, width = frame_shape[:2]
     if height <= 0 or width <= 0:
         return None
 
-    geometry = resolve_virtual_sensor_geometry(frame_shape)
+    geometry = cached_virtual_sensor_geometry(height, width)
     far_y = max(0, min(height - 1, geometry["far"]["left"]["y0"]))
     near_start_y = max(
         far_y,
@@ -3637,17 +3719,39 @@ def resolve_normal_trajectory_envelope(frame_shape):
         near_start_y,
         min(height - 1, geometry["near"]["position"]["y1"] - 1),
     )
-    return {
+    envelope = {
         "geometry": geometry,
         "farY": far_y,
         "nearStartY": near_start_y,
         "nearY": near_y,
         "width": width,
     }
+    # Os limites dependem somente da resolução e das ROIs calibradas. Guardá-los
+    # evita reconstruir a mesma geometria em cada scanline de cada frame.
+    envelope["horizontalBounds"] = tuple(
+        normal_trajectory_horizontal_bounds(envelope, y)
+        for y in range(height)
+    )
+    return envelope
+
+
+def resolve_normal_trajectory_envelope(frame_shape):
+    """Reaproveita FAR, MEDIUM e NEAR como envelope físico do traçado."""
+
+    height, width = frame_shape[:2]
+    return cached_normal_trajectory_envelope(int(height), int(width))
 
 
 def normal_trajectory_horizontal_bounds(envelope, y):
     """Limita cada scanline à ROI calibrada que cobre sua altura."""
+
+    horizontal_bounds = envelope.get("horizontalBounds")
+    if (
+        horizontal_bounds is not None
+        and isinstance(y, (int, np.integer))
+        and 0 <= int(y) < len(horizontal_bounds)
+    ):
+        return horizontal_bounds[int(y)]
 
     geometry = envelope["geometry"]
     width = envelope["width"]
@@ -4242,14 +4346,21 @@ def create_fusion_style_physical_mask(processed_line_mask, envelope):
     return physical_mask
 
 
-def select_fusion_style_contour(physical_mask, envelope):
+def select_fusion_style_contour(
+    physical_mask,
+    envelope,
+    accepted_contours=None,
+):
     """Seleciona o componente que melhor representa a linha próxima ao robô."""
 
-    contours, _ = cv2.findContours(
-        physical_mask.copy(),
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
+    if accepted_contours is None:
+        contours, _ = cv2.findContours(
+            physical_mask.copy(),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+    else:
+        contours = list(accepted_contours)
     contours = [
         contour
         for contour in contours
@@ -4398,13 +4509,18 @@ def fusion_style_band_components(
     return components
 
 
-def calculate_fusion_style_top_contour(physical_mask, contour):
+def calculate_fusion_style_top_contour(
+    physical_mask,
+    contour,
+    selected_contour_mask=None,
+):
     """Centraliza o target no segmento preto válido da banda superior."""
 
-    selected_contour_mask = create_fusion_style_selected_contour_mask(
-        physical_mask,
-        contour,
-    )
+    if selected_contour_mask is None:
+        selected_contour_mask = create_fusion_style_selected_contour_mask(
+            physical_mask,
+            contour,
+        )
     contour_top_y = int(np.min(contour[:, 0, 1]))
     band_height = max(
         1,
@@ -4423,8 +4539,18 @@ def calculate_fusion_style_top_contour(physical_mask, contour):
         physical_mask.shape[0],
         contour_top_y + search_height,
     )
+    contour_x, _, contour_width, _ = cv2.boundingRect(contour)
+    search_x0 = max(0, int(contour_x))
+    search_x1 = min(
+        physical_mask.shape[1],
+        int(contour_x + contour_width),
+    )
     components = fusion_style_band_components(
-        selected_contour_mask[contour_top_y:search_end_y],
+        selected_contour_mask[
+            contour_top_y:search_end_y,
+            search_x0:search_x1,
+        ],
+        offset_x=search_x0,
         offset_y=contour_top_y,
         include_transverse_center=True,
     )
@@ -4475,19 +4601,25 @@ def calculate_fusion_style_edge_segment_center(
     contour,
     envelope,
     edge_name,
+    selected_contour_mask=None,
 ):
     """Centraliza uma única faixa preta que cruza a banda lateral."""
 
     if edge_name not in ("leftEdge", "rightEdge"):
         return None
 
-    selected_contour_mask = create_fusion_style_selected_contour_mask(
-        physical_mask,
-        contour,
-    )
-    edge_band_mask = np.zeros_like(selected_contour_mask, dtype=np.uint8)
+    if selected_contour_mask is None:
+        selected_contour_mask = create_fusion_style_selected_contour_mask(
+            physical_mask,
+            contour,
+        )
     edge_margin_px = max(1, int(envelope["width"]) // 16)
-    for y in range(int(envelope["farY"]), int(envelope["nearY"]) + 1):
+    far_y = int(envelope["farY"])
+    near_y = int(envelope["nearY"])
+    edge_rows = []
+    edge_x0 = physical_mask.shape[1]
+    edge_x1 = 0
+    for y in range(far_y, near_y + 1):
         left_x, right_x = normal_trajectory_horizontal_bounds(envelope, y)
         if edge_name == "leftEdge":
             band_x0 = left_x
@@ -4495,12 +4627,33 @@ def calculate_fusion_style_edge_segment_center(
         else:
             band_x0 = max(left_x, right_x - edge_margin_px - 1)
             band_x1 = right_x
-        edge_band_mask[y, band_x0:band_x1] = selected_contour_mask[
+        edge_rows.append((y, band_x0, band_x1))
+        edge_x0 = min(edge_x0, band_x0)
+        edge_x1 = max(edge_x1, band_x1)
+
+    if edge_x1 <= edge_x0 or near_y < far_y:
+        return None
+
+    # A análise usa somente a faixa lateral efetiva. Os offsets mantêm as
+    # coordenadas publicadas no mesmo sistema global da imagem completa.
+    edge_band_mask = np.zeros(
+        (near_y - far_y + 1, edge_x1 - edge_x0),
+        dtype=np.uint8,
+    )
+    for y, band_x0, band_x1 in edge_rows:
+        edge_band_mask[
+            y - far_y,
+            band_x0 - edge_x0:band_x1 - edge_x0,
+        ] = selected_contour_mask[
             y,
             band_x0:band_x1,
         ]
 
-    components = fusion_style_band_components(edge_band_mask)
+    components = fusion_style_band_components(
+        edge_band_mask,
+        offset_x=edge_x0,
+        offset_y=far_y,
+    )
     if len(components) != 1:
         return None
 
@@ -4564,6 +4717,7 @@ def select_fusion_style_reference_point(
     contour,
     top_point,
     envelope,
+    selected_contour_mask=None,
 ):
     """Usa apenas a geometria atual: topo distante ou borda em curva de 90°."""
 
@@ -4606,6 +4760,7 @@ def select_fusion_style_reference_point(
             contour,
             envelope,
             "leftEdge",
+            selected_contour_mask,
         )
         if centered_point is not None:
             return centered_point, "leftEdge"
@@ -4617,6 +4772,7 @@ def select_fusion_style_reference_point(
             contour,
             envelope,
             "rightEdge",
+            selected_contour_mask,
         )
         if centered_point is not None:
             return centered_point, "rightEdge"
@@ -4631,6 +4787,7 @@ def select_fusion_style_reference_point(
                 contour,
                 envelope,
                 "leftEdge",
+                selected_contour_mask,
             )
             if centered_point is not None:
                 return centered_point, "leftEdge"
@@ -4642,6 +4799,7 @@ def select_fusion_style_reference_point(
                 contour,
                 envelope,
                 "rightEdge",
+                selected_contour_mask,
             )
             if centered_point is not None:
                 return centered_point, "rightEdge"
@@ -4877,6 +5035,7 @@ def update_fusion_style_target_metrics(
 def extract_fusion_style_line(
     processed_line_mask,
     previous_fusion_line=None,
+    accepted_contours=None,
 ):
     """Extrai o target atual e mede confiança para recuperar velocidade."""
 
@@ -4912,9 +5071,19 @@ def extract_fusion_style_line(
         processed_line_mask,
         envelope,
     )
+    reusable_contours = None
+    if (
+        accepted_contours is not None
+        and np.array_equal(physical_mask, processed_line_mask)
+    ):
+        # Os contornos anteriores são equivalentes somente quando o envelope
+        # não recortou nenhum pixel. Se houve recorte, o fallback preserva a
+        # separação e a geometria produzidas pelo findContours original.
+        reusable_contours = accepted_contours
     contour, contour_count, selection = select_fusion_style_contour(
         physical_mask,
         envelope,
+        reusable_contours,
     )
     result["candidateContourCount"] = contour_count
     result["selection"] = selection
@@ -4925,9 +5094,14 @@ def extract_fusion_style_line(
         )
         return result
 
+    selected_contour_mask = create_fusion_style_selected_contour_mask(
+        physical_mask,
+        contour,
+    )
     top_point, top_y, band_end_y = calculate_fusion_style_top_contour(
         physical_mask,
         contour,
+        selected_contour_mask,
     )
     result["contourAreaPx"] = round(float(cv2.contourArea(contour)), 2)
     result["topBand"] = {
@@ -4944,6 +5118,7 @@ def extract_fusion_style_line(
         contour,
         top_point,
         envelope,
+        selected_contour_mask,
     )
     result["referenceSource"] = reference_source
     if far_point is not None:
@@ -4985,6 +5160,7 @@ def extract_line_diagnostics(
     camera_role,
     legacy_debug_enabled=False,
     previous_fusion_line=None,
+    accepted_contours=None,
 ):
     """Executa somente os diagnósticos habilitados para a câmera inferior."""
 
@@ -5005,6 +5181,7 @@ def extract_line_diagnostics(
     fusion_style_line = extract_fusion_style_line(
         processed_line_mask,
         previous_fusion_line,
+        accepted_contours,
     )
     return normal_trajectory, fusion_style_line
 
@@ -9067,9 +9244,12 @@ def main():
                 dead_zone_end_y,
             )
             contours_started = time.perf_counter()
-            line_candidate_mask = create_line_candidate_mask(
-                structural_mask,
-                vision_profile,
+            line_candidate_mask, accepted_line_contours = (
+                create_line_candidate_mask(
+                    structural_mask,
+                    vision_profile,
+                    return_accepted_contours=True,
+                )
             )
             line_timings["contoursMs"] = (
                 time.perf_counter() - contours_started
@@ -9079,6 +9259,7 @@ def main():
                 camera_profile["role"],
                 LEGACY_LINE_DEBUG_ENABLED,
                 previous_fusion_line=fusion_target_history,
+                accepted_contours=accepted_line_contours,
             )
             fusion_target_history = update_fusion_style_history(
                 fusion_target_history,
