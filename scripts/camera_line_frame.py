@@ -2580,10 +2580,20 @@ NORMAL_TRAJECTORY_MIN_POINTS = 8
 NORMAL_TRAJECTORY_MIN_VERTICAL_COVERAGE = 0.25
 
 # O diagnóstico inspirado no FusionZero resume o topo do contorno em poucas
-# amostras. A faixa de 1/20 da altura e o limite de 20 pontos preservam a
-# simplicidade do método publicado sem refazer a segmentação já feita no Soul.
-FUSION_STYLE_TOP_BAND_HEIGHT_RATIO = 1.0 / 20.0
-FUSION_STYLE_MAX_TOP_SAMPLES = 20
+# amostras. A âncora inferior mantém 1/20 da imagem, enquanto o target usa uma
+# faixa moderadamente menor para representar antes a extremidade futura.
+FUSION_STYLE_NEAR_BAND_HEIGHT_RATIO = 1.0 / 20.0
+FUSION_STYLE_TARGET_BAND_HEIGHT_RATIO = 1.0 / 24.0
+
+# A busca pode avançar até um quarto da imagem para sair da ponta afilada.
+# Uma variação de até 10% na largura ainda representa uma faixa estável.
+FUSION_STYLE_TARGET_SEARCH_HEIGHT_RATIO = 1.0 / 4.0
+FUSION_STYLE_TRANSVERSE_WIDTH_STABILITY_RATIO = 0.10
+
+# O guard só existe durante pivot extremo. Ele bloqueia uma inversão súbita de
+# lado causada pela rotação da imagem e libera no primeiro target frontal claro.
+FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG = 70.0
+FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG = 25.0
 
 # Estes limites classificam apenas a consistência da observação; não filtram o
 # ângulo nem participam da seleção do target. Valores menores recuperam a
@@ -4211,6 +4221,9 @@ def empty_fusion_style_line(processing_ms=0.0):
         "targetReacquired": False,
         "speedRecoveryFrames": 0,
         "fusionSpeedScale": FUSION_MIN_FORWARD_SPEED_SCALE,
+        "pivotDirectionGuard": "NONE",
+        "pivotDirectionGuardActive": False,
+        "pivotDirectionGuardRejectedOpposite": False,
         "missedFrames": 0,
         "processingMs": max(0.0, float(processing_ms)),
     }
@@ -4248,7 +4261,7 @@ def select_fusion_style_contour(physical_mask, envelope):
     height, width = physical_mask.shape[:2]
     near_band_height = max(
         1,
-        int(round(height * FUSION_STYLE_TOP_BAND_HEIGHT_RATIO)),
+        int(round(height * FUSION_STYLE_NEAR_BAND_HEIGHT_RATIO)),
     )
     near_band_start_y = max(
         envelope["farY"],
@@ -4292,35 +4305,216 @@ def select_fusion_style_contour(physical_mask, envelope):
     return selected_contour, len(contours), selection
 
 
-def calculate_fusion_style_top_contour(physical_mask, contour):
-    """Calcula o ponto distante pela faixa superior do contorno selecionado."""
+def create_fusion_style_selected_contour_mask(physical_mask, contour):
+    """Mantém somente o preto real pertencente ao contorno selecionado."""
 
     contour_mask = np.zeros_like(physical_mask, dtype=np.uint8)
     cv2.drawContours(contour_mask, [contour], -1, 255, cv2.FILLED)
-    top_y = int(np.min(contour[:, 0, 1]))
+    return cv2.bitwise_and(physical_mask, contour_mask)
+
+
+def fusion_style_band_components(
+    band_mask,
+    offset_x=0,
+    offset_y=0,
+    include_transverse_center=False,
+):
+    """Lista segmentos contínuos e, quando pedido, sua seção transversal."""
+
+    if band_mask.size == 0 or np.count_nonzero(band_mask) == 0:
+        return []
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        (band_mask > 0).astype(np.uint8),
+        connectivity=8,
+    )
+    components = []
+    for label in range(1, component_count):
+        x = int(stats[label, cv2.CC_STAT_LEFT])
+        y = int(stats[label, cv2.CC_STAT_TOP])
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if width <= 0 or height <= 0 or area <= 0:
+            continue
+        component = {
+            "center": (
+                offset_x + x + (width - 1) // 2,
+                offset_y + y + (height - 1) // 2,
+            ),
+            "width": width,
+            "height": height,
+            "area": area,
+        }
+        if include_transverse_center:
+            transverse_sections = []
+            component_center_x = x + (width - 1) / 2.0
+            for row_y in range(y, y + height):
+                row_xs = np.flatnonzero(labels[row_y] == label)
+                if row_xs.size == 0:
+                    continue
+                run_breaks = np.flatnonzero(np.diff(row_xs) > 1)
+                run_starts = np.concatenate(([0], run_breaks + 1))
+                run_ends = np.concatenate((run_breaks, [row_xs.size - 1]))
+                best_row_section = None
+                for run_start, run_end in zip(run_starts, run_ends):
+                    left_x = int(row_xs[run_start])
+                    right_x = int(row_xs[run_end])
+                    center_x = (left_x + right_x) // 2
+                    section_rank = (
+                        right_x - left_x + 1,
+                        -abs(center_x - component_center_x),
+                    )
+                    if (
+                        best_row_section is None
+                        or section_rank > best_row_section[0]
+                    ):
+                        best_row_section = (
+                            section_rank,
+                            {
+                                "center": (
+                                    offset_x + center_x,
+                                    offset_y + row_y,
+                                ),
+                                "width": right_x - left_x + 1,
+                            },
+                        )
+                if best_row_section is not None:
+                    transverse_sections.append(best_row_section[1])
+            component["transverseSections"] = transverse_sections
+            widest_section = max(
+                transverse_sections,
+                key=lambda section: (
+                    section["width"],
+                    section["center"][1],
+                ),
+                default=None,
+            )
+            component["transverseCenter"] = (
+                widest_section["center"]
+                if widest_section is not None
+                else None
+            )
+        components.append(component)
+    return components
+
+
+def calculate_fusion_style_top_contour(physical_mask, contour):
+    """Centraliza o target no segmento preto válido da banda superior."""
+
+    selected_contour_mask = create_fusion_style_selected_contour_mask(
+        physical_mask,
+        contour,
+    )
+    contour_top_y = int(np.min(contour[:, 0, 1]))
     band_height = max(
         1,
         int(round(
-            physical_mask.shape[0] * FUSION_STYLE_TOP_BAND_HEIGHT_RATIO
+            physical_mask.shape[0] * FUSION_STYLE_TARGET_BAND_HEIGHT_RATIO
         )),
     )
-    band_end_y = min(physical_mask.shape[0], top_y + band_height)
-    band_pixels = np.argwhere(contour_mask[top_y:band_end_y] > 0)
-    if band_pixels.size == 0:
-        return None, top_y, band_end_y
-
-    if len(band_pixels) > FUSION_STYLE_MAX_TOP_SAMPLES:
-        sample_indexes = np.linspace(
-            0,
-            len(band_pixels) - 1,
-            FUSION_STYLE_MAX_TOP_SAMPLES,
-            dtype=np.int32,
+    search_height = max(
+        band_height,
+        int(round(
+            physical_mask.shape[0]
+            * FUSION_STYLE_TARGET_SEARCH_HEIGHT_RATIO
+        )),
+    )
+    search_end_y = min(
+        physical_mask.shape[0],
+        contour_top_y + search_height,
+    )
+    components = fusion_style_band_components(
+        selected_contour_mask[contour_top_y:search_end_y],
+        offset_y=contour_top_y,
+        include_transverse_center=True,
+    )
+    if not components:
+        return None, contour_top_y, min(
+            physical_mask.shape[0],
+            contour_top_y + band_height,
         )
-        band_pixels = band_pixels[sample_indexes]
 
-    far_x = int(np.mean(band_pixels[:, 1]))
-    far_y = int(np.mean(band_pixels[:, 0])) + top_y
-    return (far_x, far_y), top_y, band_end_y
+    image_center_x = physical_mask.shape[1] / 2.0
+    selected_component = max(
+        components,
+        key=lambda component: (
+            component["area"],
+            -abs(component["center"][0] - image_center_x),
+        ),
+    )
+    transverse_sections = selected_component.get("transverseSections", [])
+    for start_index in range(len(transverse_sections) - band_height + 1):
+        stable_sections = transverse_sections[
+            start_index:start_index + band_height
+        ]
+        first_y = stable_sections[0]["center"][1]
+        last_y = stable_sections[-1]["center"][1]
+        if last_y - first_y != band_height - 1:
+            continue
+        widths = [section["width"] for section in stable_sections]
+        width_tolerance_px = max(
+            2.0,
+            max(widths) * FUSION_STYLE_TRANSVERSE_WIDTH_STABILITY_RATIO,
+        )
+        if max(widths) - min(widths) <= width_tolerance_px:
+            return stable_sections[-1]["center"], first_y, last_y + 1
+
+    fallback_target = selected_component.get("transverseCenter")
+    if fallback_target is None:
+        return None, contour_top_y, min(
+            physical_mask.shape[0],
+            contour_top_y + band_height,
+        )
+    fallback_end_y = fallback_target[1] + 1
+    fallback_start_y = max(contour_top_y, fallback_end_y - band_height)
+    return fallback_target, fallback_start_y, fallback_end_y
+
+
+def calculate_fusion_style_edge_segment_center(
+    physical_mask,
+    contour,
+    envelope,
+    edge_name,
+):
+    """Centraliza uma única faixa preta que cruza a banda lateral."""
+
+    if edge_name not in ("leftEdge", "rightEdge"):
+        return None
+
+    selected_contour_mask = create_fusion_style_selected_contour_mask(
+        physical_mask,
+        contour,
+    )
+    edge_band_mask = np.zeros_like(selected_contour_mask, dtype=np.uint8)
+    edge_margin_px = max(1, int(envelope["width"]) // 16)
+    for y in range(int(envelope["farY"]), int(envelope["nearY"]) + 1):
+        left_x, right_x = normal_trajectory_horizontal_bounds(envelope, y)
+        if edge_name == "leftEdge":
+            band_x0 = left_x
+            band_x1 = min(right_x, left_x + edge_margin_px + 1)
+        else:
+            band_x0 = max(left_x, right_x - edge_margin_px - 1)
+            band_x1 = right_x
+        edge_band_mask[y, band_x0:band_x1] = selected_contour_mask[
+            y,
+            band_x0:band_x1,
+        ]
+
+    components = fusion_style_band_components(edge_band_mask)
+    if len(components) != 1:
+        return None
+
+    component = components[0]
+    # Uma faixa transversal deve ocupar ao menos metade da banda lateral e não
+    # pode se prolongar verticalmente como um trecho que apenas acompanha a ROI.
+    minimum_transverse_width_px = max(2, edge_margin_px // 2)
+    maximum_longitudinal_height_px = max(3, edge_margin_px * 2)
+    if (
+        component["width"] < minimum_transverse_width_px
+        or component["height"] > maximum_longitudinal_height_px
+    ):
+        return None
+    return component["center"]
 
 
 def calculate_fusion_style_angle(near_point, far_point):
@@ -4365,7 +4559,12 @@ def fusion_style_previous_target(previous_fusion_line):
     }
 
 
-def select_fusion_style_reference_point(contour, top_point, envelope):
+def select_fusion_style_reference_point(
+    physical_mask,
+    contour,
+    top_point,
+    envelope,
+):
     """Usa apenas a geometria atual: topo distante ou borda em curva de 90°."""
 
     if top_point is None:
@@ -4402,22 +4601,154 @@ def select_fusion_style_reference_point(contour, top_point, envelope):
         else None
     )
     if left_y is not None and right_y is None:
+        centered_point = calculate_fusion_style_edge_segment_center(
+            physical_mask,
+            contour,
+            envelope,
+            "leftEdge",
+        )
+        if centered_point is not None:
+            return centered_point, "leftEdge"
         left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
         return (left_x, left_y), "leftEdge"
     if right_y is not None and left_y is None:
+        centered_point = calculate_fusion_style_edge_segment_center(
+            physical_mask,
+            contour,
+            envelope,
+            "rightEdge",
+        )
+        if centered_point is not None:
+            return centered_point, "rightEdge"
         _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
         return (right_x - 1, right_y), "rightEdge"
     if left_y is not None and right_y is not None:
         # Sem estado temporal, a diferença vertical resolve a direção local.
         # Em empate, o ponto superior continua sendo a referência geométrica.
         if left_y < right_y:
+            centered_point = calculate_fusion_style_edge_segment_center(
+                physical_mask,
+                contour,
+                envelope,
+                "leftEdge",
+            )
+            if centered_point is not None:
+                return centered_point, "leftEdge"
             left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
             return (left_x, left_y), "leftEdge"
         if right_y < left_y:
+            centered_point = calculate_fusion_style_edge_segment_center(
+                physical_mask,
+                contour,
+                envelope,
+                "rightEdge",
+            )
+            if centered_point is not None:
+                return centered_point, "rightEdge"
             _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
             return (right_x - 1, right_y), "rightEdge"
 
     return top_point, "topBand"
+
+
+def fusion_style_angle_direction(angle_deg):
+    """Converte o lado do ângulo Fusion sem alterar sua magnitude."""
+
+    if angle_deg > 90.0:
+        return "RIGHT"
+    if angle_deg < 90.0:
+        return "LEFT"
+    return "NONE"
+
+
+def fusion_style_has_forward_target(result, envelope):
+    """Confirma que o target atual voltou à região frontal distante."""
+
+    if result.get("referenceSource") != "topBand":
+        return False
+    far_point = result.get("farPoint")
+    if not isinstance(far_point, dict):
+        return False
+    try:
+        far_y = float(far_point.get("y"))
+    except (TypeError, ValueError):
+        return False
+    far_band_end_y = float(
+        envelope["geometry"]["farBand"]["center"]["y1"]
+    )
+    return math.isfinite(far_y) and far_y < far_band_end_y
+
+
+def apply_fusion_extreme_pivot_direction_guard(
+    result,
+    previous_fusion_line,
+    envelope,
+):
+    """Impede somente a inversão espúria durante um pivot Fusion extremo."""
+
+    angle_deg = finite_virtual_position(result.get("angleDeg"))
+    if angle_deg is None:
+        return
+
+    angle_error_deg = angle_deg - 90.0
+    current_direction = fusion_style_angle_direction(angle_deg)
+    previous_guard_active = (
+        isinstance(previous_fusion_line, dict)
+        and previous_fusion_line.get("valid") is True
+        and previous_fusion_line.get("missedFrames", 0) == 0
+        and previous_fusion_line.get("pivotDirectionGuardActive") is True
+    )
+    previous_direction = (
+        str(previous_fusion_line.get("pivotDirectionGuard", "NONE"))
+        if previous_guard_active
+        else "NONE"
+    )
+    if previous_direction not in ("LEFT", "RIGHT"):
+        previous_guard_active = False
+
+    if previous_guard_active:
+        forward_target_reestablished = (
+            abs(angle_error_deg)
+            <= FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG
+            and fusion_style_has_forward_target(result, envelope)
+        )
+        if forward_target_reestablished:
+            return
+
+        result["pivotDirectionGuard"] = previous_direction
+        result["pivotDirectionGuardActive"] = True
+        if current_direction == previous_direction:
+            return
+
+        previous_target = fusion_style_previous_target(
+            previous_fusion_line
+        )
+        if previous_target is None:
+            result["pivotDirectionGuard"] = "NONE"
+            result["pivotDirectionGuardActive"] = False
+            return
+
+        # Durante o pivot, uma troca direta de lado usa somente o último target
+        # extremo aceito. Ausência de target continua seguindo o fallback atual.
+        previous_far_x, previous_far_y = previous_target["farPoint"]
+        result["angleDeg"] = previous_target["angleDeg"]
+        result["farPoint"] = {
+            "x": int(round(previous_far_x)),
+            "y": int(round(previous_far_y)),
+        }
+        result["referenceSource"] = str(
+            previous_fusion_line.get("referenceSource", "none")
+        )
+        result["pivotDirectionGuardRejectedOpposite"] = True
+        return
+
+    if (
+        current_direction in ("LEFT", "RIGHT")
+        and abs(angle_error_deg)
+        >= FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG
+    ):
+        result["pivotDirectionGuard"] = current_direction
+        result["pivotDirectionGuardActive"] = True
 
 
 def update_fusion_style_target_metrics(
@@ -4609,6 +4940,7 @@ def extract_fusion_style_line(
             "y": top_point[1],
         }
     far_point, reference_source = select_fusion_style_reference_point(
+        physical_mask,
         contour,
         top_point,
         envelope,
@@ -4624,11 +4956,20 @@ def extract_fusion_style_line(
                 "angleDeg": round(float(angle_deg), 2),
                 "farPoint": {"x": far_point[0], "y": far_point[1]},
             })
+            apply_fusion_extreme_pivot_direction_guard(
+                result,
+                previous_fusion_line,
+                envelope,
+            )
+            guarded_far_point = result["farPoint"]
             update_fusion_style_target_metrics(
                 result,
                 previous_fusion_line,
                 near_point,
-                far_point,
+                (
+                    int(guarded_far_point["x"]),
+                    int(guarded_far_point["y"]),
+                ),
                 envelope,
             )
 
