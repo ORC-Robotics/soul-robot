@@ -12,6 +12,8 @@ import numpy as np
 
 SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+import vision.virtual_sensors as virtual_sensors
+
 MODULE_PATH = SCRIPTS_DIRECTORY / "camera_line_frame.py"
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "camera_line_frame_virtual_turn_test",
@@ -1395,7 +1397,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
         measured_geometries = []
         original_measurement = (
-            camera_line_frame.measure_virtual_row_line_confidence
+            virtual_sensors.measure_virtual_row_line_confidence
         )
 
         def measure_selected_branch(processed_mask, row_geometry):
@@ -1403,7 +1405,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             return original_measurement(processed_mask, row_geometry)
 
         with patch.object(
-            camera_line_frame,
+            virtual_sensors,
             "measure_virtual_row_line_confidence",
             side_effect=measure_selected_branch,
         ):
