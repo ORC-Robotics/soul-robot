@@ -21,6 +21,15 @@ from vision.search import (
     VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
     VirtualLineSearchTracker,
 )
+from vision.numeric import finite_virtual_position
+from vision.pivot import (
+    PIVOT_ENTER_THRESHOLD,
+    PIVOT_EXIT_THRESHOLD,
+    PIVOT_STATE_LEFT,
+    PIVOT_STATE_NONE,
+    PIVOT_STATE_RIGHT,
+    VirtualPivotStateTracker,
+)
 
 try:
     import RPi.GPIO as GPIO  # type: ignore
@@ -271,11 +280,6 @@ NORMAL_BASE_POWER = 0.75
 NORMAL_MAX_POWER = 0.82
 NORMAL_INNER_MIN_POWER = 0.66
 
-# A histerese impede alternância rápida entre a faixa forte e o pivot.
-# A entrada exige erro 0,45; a saída ocorre somente após cair até 0,35.
-PIVOT_ENTER_THRESHOLD = 0.45
-PIVOT_EXIT_THRESHOLD = 0.35
-
 # O MEDIUM promove a urgência da curva somente no seguimento LINE normal.
 # Em 0,45, NEAR válido autoriza PIVOT; NEAR perdido autoriza SPIN. A saída em
 # 0,30 evita alternância sem reter direção quando a leitura muda ou desaparece.
@@ -299,10 +303,6 @@ VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES = 2
 # Em 30 FPS, este limite encerra o giro após aproximadamente um segundo.
 # Ao expirar, o recovery existente volta a decidir sem iniciar outra busca.
 VIRTUAL_HARD_CORNER_MAX_FRAMES = 30
-
-PIVOT_STATE_NONE = "NONE"
-PIVOT_STATE_LEFT = "LEFT"
-PIVOT_STATE_RIGHT = "RIGHT"
 
 GREEN_OBSERVATION_STATES = {
     "SEM_VERDE",
@@ -4967,18 +4967,6 @@ def virtual_medium_scan_direction(sensors):
     return None
 
 
-def finite_virtual_position(value):
-    """Valida uma posição virtual antes de compará-la com thresholds."""
-
-    if value is None:
-        return None
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
-
-
 def map_normal_steering_error(steering_error):
     """Converte erro lateral somente no intervalo de autoridade NORMAL."""
 
@@ -5286,49 +5274,6 @@ class VirtualTurnStateTracker:
                 else VIRTUAL_STATE_REORIENT_RIGHT
             )
             self.medium_scan_frames = 0
-        return self.state
-
-
-class VirtualPivotStateTracker:
-    """Mantém o lado do pivot normal e aplica histerese sem troca direta."""
-
-    def __init__(self):
-        self.state = PIVOT_STATE_NONE
-
-    def reset(self):
-        """Encerra o pivot persistente antes de outro modo assumir."""
-
-        self.state = PIVOT_STATE_NONE
-        return self.state
-
-    def update(self, steering_error):
-        """Atualiza a entrada ou saída do pivot usando o erro do frame atual."""
-
-        steering_error = finite_virtual_position(steering_error)
-        if steering_error is None:
-            return self.reset()
-
-        steering_magnitude = abs(steering_error)
-        if self.state == PIVOT_STATE_RIGHT:
-            if (
-                steering_error <= 0.0
-                or steering_magnitude <= PIVOT_EXIT_THRESHOLD
-            ):
-                return self.reset()
-            return self.state
-
-        if self.state == PIVOT_STATE_LEFT:
-            if (
-                steering_error >= 0.0
-                or steering_magnitude <= PIVOT_EXIT_THRESHOLD
-            ):
-                return self.reset()
-            return self.state
-
-        if steering_error >= PIVOT_ENTER_THRESHOLD:
-            self.state = PIVOT_STATE_RIGHT
-        elif steering_error <= -PIVOT_ENTER_THRESHOLD:
-            self.state = PIVOT_STATE_LEFT
         return self.state
 
 
