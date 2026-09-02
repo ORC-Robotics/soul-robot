@@ -21,6 +21,19 @@ from vision.search import (
     VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
     VirtualLineSearchTracker,
 )
+from vision.medium_spin import (
+    VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES,
+    VIRTUAL_HARD_CORNER_MAX_FRAMES,
+    VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD,
+    VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD,
+    VIRTUAL_HARD_CORNER_RECOVERY_FRAMES,
+    VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES,
+    VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD,
+    VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD,
+    VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD,
+    VIRTUAL_MEDIUM_SPIN_POWER,
+    VirtualMediumSpinTracker,
+)
 from vision.numeric import finite_virtual_position
 from vision.pivot import (
     PIVOT_ENTER_THRESHOLD,
@@ -296,25 +309,6 @@ NORMAL_INNER_MIN_POWER = 0.66
 # Em 0,45, NEAR válido autoriza PIVOT; NEAR perdido autoriza SPIN. A saída em
 # 0,30 evita alternância sem reter direção quando a leitura muda ou desaparece.
 VIRTUAL_MEDIUM_STRONG_THRESHOLD = 0.25
-VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD = 0.45
-VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD = 0.30
-VIRTUAL_MEDIUM_SPIN_POWER = 0.72
-# Abaixo deste valor, o MEDIUM ainda pode estar ativo, mas não fornece uma
-# direção lateral confiável durante uma ação crítica já iniciada.
-VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD = 0.15
-# Uma ação crítica já iniciada tolera dez frames sem direção útil do MEDIUM.
-# Depois disso, nenhuma direção antiga pode impedir o normal ou o recovery.
-VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES = 10
-
-# O hard corner devolve o controle após a faixa permanecer centralizada no
-# NEAR e no MEDIUM ou após o FAR reaparecer por dois quadros consecutivos.
-VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD = 0.18
-VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD = 0.20
-VIRTUAL_HARD_CORNER_RECOVERY_FRAMES = 2
-VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES = 2
-# Em 30 FPS, este limite encerra o giro após aproximadamente um segundo.
-# Ao expirar, o recovery existente volta a decidir sem iniciar outra busca.
-VIRTUAL_HARD_CORNER_MAX_FRAMES = 30
 
 GREEN_OBSERVATION_STATES = {
     "SEM_VERDE",
@@ -5172,175 +5166,6 @@ def update_green_maneuver_state(
             else green_direction_to_search_direction(direction)
         ),
     }
-
-
-class VirtualMediumSpinTracker:
-    """Mantém os SPINs do MEDIUM e a direção persistente do hard corner."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """Cancela a ação crítica sem preservar a direção antiga."""
-
-        self.state = PIVOT_STATE_NONE
-        self.critical_state = PIVOT_STATE_NONE
-        self.invalid_frames = 0
-        self.hard_corner_state = PIVOT_STATE_NONE
-        self.hard_corner_frames = 0
-        self.hard_corner_recovery_frames = 0
-        self.hard_corner_far_recovery_frames = 0
-        self.hard_corner_entry_blocked = False
-        return self.state
-
-    def clear_hard_corner(self, block_entry=False):
-        """Limpa a manobra persistente e seus contadores internos."""
-
-        self.hard_corner_state = PIVOT_STATE_NONE
-        self.hard_corner_frames = 0
-        self.hard_corner_recovery_frames = 0
-        self.hard_corner_far_recovery_frames = 0
-        self.hard_corner_entry_blocked = bool(block_entry)
-        self.state = PIVOT_STATE_NONE
-        self.critical_state = PIVOT_STATE_NONE
-        self.invalid_frames = 0
-
-    def update(
-        self,
-        medium_position,
-        near_position_valid,
-        critical_entry_allowed=True,
-        hard_corner_entry_requested=False,
-        near_fine_position=None,
-        far_position=None,
-    ):
-        """Atualiza a ação crítica e limita a perda direcional do MEDIUM."""
-
-        medium_position = finite_virtual_position(medium_position)
-        near_fine_position = finite_virtual_position(near_fine_position)
-        far_position = finite_virtual_position(far_position)
-        if not hard_corner_entry_requested:
-            # Um timeout não pode reabrir a mesma manobra enquanto o gatilho
-            # contínuo permanecer ativo. A próxima observação distinta rearma.
-            self.hard_corner_entry_blocked = False
-
-        if (
-            self.hard_corner_state == PIVOT_STATE_NONE
-            and hard_corner_entry_requested
-            and not self.hard_corner_entry_blocked
-            and medium_position is not None
-        ):
-            # A direção observada na entrada permanece fixa durante todo o
-            # giro, mesmo que os sensores mudem de lado durante a rotação.
-            self.hard_corner_state = (
-                PIVOT_STATE_RIGHT
-                if medium_position > 0.0
-                else PIVOT_STATE_LEFT
-            )
-            self.hard_corner_frames = 0
-            self.hard_corner_recovery_frames = 0
-            self.hard_corner_far_recovery_frames = 0
-            self.critical_state = PIVOT_STATE_NONE
-            self.invalid_frames = 0
-
-        if self.hard_corner_state != PIVOT_STATE_NONE:
-            self.hard_corner_frames += 1
-            line_aligned = (
-                near_position_valid
-                and near_fine_position is not None
-                and abs(near_fine_position)
-                <= VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD
-                and medium_position is not None
-                and abs(medium_position)
-                <= VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD
-            )
-            if line_aligned:
-                self.hard_corner_recovery_frames += 1
-            else:
-                self.hard_corner_recovery_frames = 0
-
-            if far_position is not None:
-                self.hard_corner_far_recovery_frames += 1
-            else:
-                self.hard_corner_far_recovery_frames = 0
-
-            hard_corner_recovered = (
-                self.hard_corner_recovery_frames
-                >= VIRTUAL_HARD_CORNER_RECOVERY_FRAMES
-            )
-            hard_corner_far_recovered = (
-                self.hard_corner_far_recovery_frames
-                >= VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES
-            )
-            hard_corner_timed_out = (
-                self.hard_corner_frames >= VIRTUAL_HARD_CORNER_MAX_FRAMES
-            )
-            if hard_corner_recovered or hard_corner_far_recovered:
-                # O mesmo frame já volta ao fluxo normal ou ao recovery.
-                self.clear_hard_corner()
-                return self.state
-            if hard_corner_timed_out:
-                # O timeout não inicia uma busca adicional e bloqueia a
-                # reentrada até o gatilho atual desaparecer.
-                self.clear_hard_corner(block_entry=True)
-                return self.state
-            self.state = self.hard_corner_state
-            return self.state
-
-        medium_direction_lost = (
-            medium_position is None
-            or abs(medium_position)
-            < VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD
-        )
-        if medium_direction_lost:
-            self.state = PIVOT_STATE_NONE
-            if near_position_valid or self.critical_state == PIVOT_STATE_NONE:
-                return self.reset()
-            if (
-                self.invalid_frames
-                >= VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES
-            ):
-                return self.reset()
-            self.invalid_frames += 1
-            self.state = self.critical_state
-            return self.state
-
-        medium_magnitude = abs(medium_position)
-        medium_state = (
-            PIVOT_STATE_RIGHT
-            if medium_position > 0.0
-            else PIVOT_STATE_LEFT
-        )
-
-        # Qualquer leitura válida encerra imediatamente a tolerância. Se ela
-        # ainda for crítica, o lado atual substitui a observação anterior.
-        self.invalid_frames = 0
-
-        if not critical_entry_allowed:
-            return self.reset()
-
-        if near_position_valid:
-            self.state = PIVOT_STATE_NONE
-            if medium_magnitude >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD:
-                self.critical_state = medium_state
-            else:
-                self.critical_state = PIVOT_STATE_NONE
-            return self.state
-
-        if self.state != PIVOT_STATE_NONE:
-            if (
-                medium_magnitude <= VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD
-                or medium_state != self.state
-            ):
-                return self.reset()
-            return self.state
-
-        if medium_magnitude >= VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD:
-            self.state = medium_state
-            self.critical_state = medium_state
-        else:
-            self.critical_state = PIVOT_STATE_NONE
-        return self.state
 
 
 def calculate_line_follower_command(
