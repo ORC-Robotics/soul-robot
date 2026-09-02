@@ -18,6 +18,20 @@ from .pivot import (
     PivotConfig,
     VirtualPivotStateTracker,
 )
+from .reorient import (
+    DEFAULT_REORIENT_CONFIG,
+    VIRTUAL_MEDIUM_SCAN_MAX_FRAMES,
+    VIRTUAL_REORIENT_CONFIRMATION_FRAMES,
+    VIRTUAL_REORIENT_DIRECTION_THRESHOLD,
+    VIRTUAL_REORIENT_RECOVERY_FRAMES,
+    VIRTUAL_STATE_NORMAL,
+    VIRTUAL_STATE_REORIENT_LEFT,
+    VIRTUAL_STATE_REORIENT_RIGHT,
+    ReorientConfig,
+    VirtualTurnStateTracker,
+    virtual_reorient_direction,
+    virtual_sensor_trust_is_active,
+)
 
 __all__ = [
     "DEFAULT_LINE_SEARCH_CONFIG",
@@ -34,4 +48,16 @@ __all__ = [
     "PivotConfig",
     "VirtualPivotStateTracker",
     "finite_virtual_position",
+    "DEFAULT_REORIENT_CONFIG",
+    "VIRTUAL_MEDIUM_SCAN_MAX_FRAMES",
+    "VIRTUAL_REORIENT_CONFIRMATION_FRAMES",
+    "VIRTUAL_REORIENT_DIRECTION_THRESHOLD",
+    "VIRTUAL_REORIENT_RECOVERY_FRAMES",
+    "VIRTUAL_STATE_NORMAL",
+    "VIRTUAL_STATE_REORIENT_LEFT",
+    "VIRTUAL_STATE_REORIENT_RIGHT",
+    "ReorientConfig",
+    "VirtualTurnStateTracker",
+    "virtual_reorient_direction",
+    "virtual_sensor_trust_is_active",
 ]

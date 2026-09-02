@@ -30,6 +30,18 @@ from vision.pivot import (
     PIVOT_STATE_RIGHT,
     VirtualPivotStateTracker,
 )
+from vision.reorient import (
+    VIRTUAL_MEDIUM_SCAN_MAX_FRAMES,
+    VIRTUAL_REORIENT_CONFIRMATION_FRAMES,
+    VIRTUAL_REORIENT_DIRECTION_THRESHOLD,
+    VIRTUAL_REORIENT_RECOVERY_FRAMES,
+    VIRTUAL_STATE_NORMAL,
+    VIRTUAL_STATE_REORIENT_LEFT,
+    VIRTUAL_STATE_REORIENT_RIGHT,
+    VirtualTurnStateTracker,
+    virtual_reorient_direction,
+    virtual_sensor_trust_is_active,
+)
 
 try:
     import RPi.GPIO as GPIO  # type: ignore
@@ -2520,21 +2532,8 @@ MEDIUM_TRUST_MIN_THICKNESS_PX = 22.0
 # uma calibração futura. Componentes tão finos não podem dirigir o robô.
 LINE_TRUST_ABSOLUTE_THIN_VETO_PX = 10.0
 
-# O scan usa somente uma direção clara do MEDIUM e termina após três frames.
+# O scan exige uma direção clara do MEDIUM.
 VIRTUAL_MEDIUM_SCAN_POSITION_THRESHOLD = 0.20
-VIRTUAL_MEDIUM_SCAN_MAX_FRAMES = 3
-
-# MEDIUM e FAR BAND precisam concordar claramente antes do pivot de recovery.
-VIRTUAL_REORIENT_DIRECTION_THRESHOLD = 0.20
-VIRTUAL_REORIENT_CONFIRMATION_FRAMES = 4
-
-# O steering normal precisa reaparecer em dois frames antes de encerrar o
-# estado persistente, mas recebe autoridade já no primeiro frame válido.
-VIRTUAL_REORIENT_RECOVERY_FRAMES = 2
-
-VIRTUAL_STATE_NORMAL = "NORMAL"
-VIRTUAL_STATE_REORIENT_LEFT = "REORIENT_LEFT"
-VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 
 # Controle da prioridade de direção após um verde confirmado.
 #
@@ -3160,12 +3159,6 @@ def line_measurement_is_trusted(
         line_confidence >= minimum_confidence
         and thickness_px >= minimum_thickness_px
     )
-
-
-def virtual_sensor_trust_is_active(sensors, trust_name):
-    """Aceita somente o booleano verdadeiro produzido pelo gate visual."""
-
-    return sensors.get(trust_name) is True
 
 
 def draw_virtual_sensor_geometry(
@@ -4925,27 +4918,6 @@ def read_virtual_line_sensors(
         "steeringError": steering_error,
     }
 
-def virtual_reorient_direction(sensors):
-    """Detecta concordância lateral entre MEDIUM e FAR BAND."""
-
-    if not (
-        virtual_sensor_trust_is_active(sensors, "mediumTrusted")
-        and virtual_sensor_trust_is_active(sensors, "farTrusted")
-    ):
-        return None
-    medium_position = sensors.get("mediumPosition")
-    far_band_position = sensors.get("farBandPosition")
-    if medium_position is None or far_band_position is None:
-        return None
-
-    threshold = VIRTUAL_REORIENT_DIRECTION_THRESHOLD
-    if medium_position >= threshold and far_band_position >= threshold:
-        return "RIGHT"
-    if medium_position <= -threshold and far_band_position <= -threshold:
-        return "LEFT"
-    return None
-
-
 def virtual_medium_scan_direction(sensors):
     """Retorna o lado confiável observado somente pelo MEDIUM."""
 
@@ -5200,81 +5172,6 @@ def update_green_maneuver_state(
             else green_direction_to_search_direction(direction)
         ),
     }
-
-
-class VirtualTurnStateTracker:
-    """Mantém somente o pivot temporário usado para recuperar a linha."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        """Retorna ao seguidor normal e limpa todas as confirmações."""
-
-        self.state = VIRTUAL_STATE_NORMAL
-        self.reorient_candidate = None
-        self.reorient_frames = 0
-        self.normal_recovery_frames = 0
-        self.medium_scan_frames = 0
-        return self.state
-
-    def allow_medium_scan(self, direction):
-        """Consome no máximo três frames de scan enquanto permanece NORMAL."""
-
-        if direction is None or self.state != VIRTUAL_STATE_NORMAL:
-            return False
-        if self.medium_scan_frames >= VIRTUAL_MEDIUM_SCAN_MAX_FRAMES:
-            return False
-        self.medium_scan_frames += 1
-        return True
-
-    def update(self, sensors, steering_valid):
-        """Confirma o recovery e devolve autoridade ao steering normal."""
-
-        if steering_valid:
-            self.reorient_candidate = None
-            self.reorient_frames = 0
-            self.medium_scan_frames = 0
-            if self.state in (
-                VIRTUAL_STATE_REORIENT_LEFT,
-                VIRTUAL_STATE_REORIENT_RIGHT,
-            ):
-                self.normal_recovery_frames += 1
-                if (
-                    self.normal_recovery_frames
-                    >= VIRTUAL_REORIENT_RECOVERY_FRAMES
-                ):
-                    return self.reset()
-                return self.state
-            return self.reset()
-
-        self.normal_recovery_frames = 0
-        if self.state in (
-            VIRTUAL_STATE_REORIENT_LEFT,
-            VIRTUAL_STATE_REORIENT_RIGHT,
-        ):
-            return self.state
-
-        direction = virtual_reorient_direction(sensors)
-        if direction is None:
-            self.reorient_candidate = None
-            self.reorient_frames = 0
-            return self.state
-
-        if direction == self.reorient_candidate:
-            self.reorient_frames += 1
-        else:
-            self.reorient_candidate = direction
-            self.reorient_frames = 1
-
-        if self.reorient_frames >= VIRTUAL_REORIENT_CONFIRMATION_FRAMES:
-            self.state = (
-                VIRTUAL_STATE_REORIENT_LEFT
-                if direction == "LEFT"
-                else VIRTUAL_STATE_REORIENT_RIGHT
-            )
-            self.medium_scan_frames = 0
-        return self.state
 
 
 class VirtualMediumSpinTracker:
