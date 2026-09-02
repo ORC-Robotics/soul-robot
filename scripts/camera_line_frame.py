@@ -139,6 +139,7 @@ from vision.line_control import (
     virtual_raw_line_is_visible,
     virtual_recovery_sensor_direction,
 )
+from vision.maneuvers import LineManeuverState
 from vision.search import (
     VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
     VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
@@ -1927,23 +1928,7 @@ def main():
         line_sequence = 0
         green_tracker = GreenObservationTracker()
         line_controller = LineFollowerController()
-
-        # Estado persistente das manobras sinalizadas por verde.
-        direcao_verde_ativa = "NENHUMA"
-        curva_verde_iniciada = False
-        quadros_centralizado_verde = 0
-        quadros_verde_ativo = 0
-
-         # Estado persistente da travessia de gap.
-        gap_forward_active = False
-        gap_forward_frames = 0
-        gap_reacquire_frames = 0
-        gap_line_lost_seen = False
-        gap_recent_near_frames = 0
-
-        # Impede que o mesmo marcador verde seja aceito novamente.
-        verde_armado = True
-        quadros_sem_verde = 0
+        maneuver_state = LineManeuverState()
 
         green_processing_enabled = bool(
             vision_profile.get("green_detection_enabled", False)
@@ -2095,84 +2080,40 @@ def main():
                 else "idle"
             )
 
-                        # Um verde confirmado é aceito apenas quando o sistema está armado
-            # e nenhuma outra direção verde está sendo executada.
-            if (
-                verde_armado
-                and direcao_verde_ativa == "NENHUMA"
-                and green_status["greenConfirmed"]
-            ):
-                interpretacao_verde = green_status["greenInterpretation"]
-
-                if interpretacao_verde == "ESQUERDA":
-                    direcao_verde_ativa = "ESQUERDA"
-                    curva_verde_iniciada = False
-                    quadros_centralizado_verde = 0
-                    quadros_verde_ativo = 0
-                    line_controller.stop_search()
-                    verde_armado = False
-                    quadros_sem_verde = 0
-
-                elif interpretacao_verde == "DIREITA":
-                    direcao_verde_ativa = "DIREITA"
-                    curva_verde_iniciada = False
-                    quadros_centralizado_verde = 0
-                    quadros_verde_ativo = 0
-                    line_controller.stop_search()
-                    verde_armado = False
-                    quadros_sem_verde = 0
-
-            # Depois que um verde foi aceito, o sistema só poderá ser armado
-            # novamente após vários quadros consecutivos sem nenhum candidato verde. % isaque hulk verde
-            if not verde_armado:
-                if green_status["greenCandidateCount"] == 0:
-                    quadros_sem_verde += 1
-                else:
-                    quadros_sem_verde = 0
+            maneuver_state.accept_green(green_status, line_controller)
+            maneuver_state.observe_green_candidates(
+                green_status["greenCandidateCount"]
+            )
 
             virtual_sensors = read_virtual_line_sensors(
                 line_candidate_mask,
-                direcao_verde_ativa,
+                maneuver_state.green_direction,
             )
             near_center_visible = virtual_sensor_is_active(
                 virtual_sensors["nearCenter"]
             )
-            gap_recent_near_frames = update_gap_recent_near_frames(
-                gap_recent_near_frames,
-                near_center_visible,
-            )
+            maneuver_state.update_near_history(near_center_visible)
             raw_line_visible = virtual_raw_line_is_visible(
                 virtual_sensors
             )
-            green_timeout_state = update_green_maneuver_state(
-                direcao_verde_ativa,
-                quadros_verde_ativo,
+            green_timeout_state = maneuver_state.apply_green_timeout(
                 raw_line_visible,
+                line_controller,
             )
-            sensor_recovery_requested = False
+            sensor_recovery_requested = green_timeout_state[
+                "sensorRecoveryRequested"
+            ]
             if green_timeout_state["timedOut"]:
-                direcao_verde_ativa = green_timeout_state["direction"]
-                quadros_verde_ativo = green_timeout_state["activeFrames"]
-                curva_verde_iniciada = False
-                quadros_centralizado_verde = 0
-                search_direction = green_timeout_state["searchDirection"]
-                if search_direction is not None:
-                    line_controller.start_search(search_direction)
-                else:
-                    sensor_recovery_requested = True
                 # Remove a máscara verde já no mesmo frame do timeout.
                 virtual_sensors = read_virtual_line_sensors(
                     line_candidate_mask,
-                    direcao_verde_ativa,
+                    maneuver_state.green_direction,
                 )
-            else:
-                direcao_verde_ativa = green_timeout_state["direction"]
-                quadros_verde_ativo = green_timeout_state["activeFrames"]
 
             geometric_guidance = extract_gap_geometric_guidance(
                 line_candidate_mask,
-                gap_forward_active,
-                direcao_verde_ativa,
+                maneuver_state.gap_forward_active,
+                maneuver_state.green_direction,
                 near_center_visible,
                 forward_control_trusted=(
                     virtual_sensor_trust_is_active(
@@ -2202,23 +2143,15 @@ def main():
                 and abs(float(geometric_heading)) > 90.0
             )
 
-            if gap_entry_is_required(
-                gap_forward_active,
-                direcao_verde_ativa,
-                gap_recent_near_frames,
+            maneuver_state.enter_gap_if_required(
                 near_center_visible,
                 real_near_point,
                 virtual_near_point,
                 lateral_exit_target,
-            ):
-                gap_forward_active = True
-                gap_forward_frames = 0
-                gap_reacquire_frames = 0
-                gap_line_lost_seen = True
-                
+            )
 
             gap_blind_search_requested = False
-            if gap_forward_active:
+            if maneuver_state.gap_forward_active:
                 near_center_reacquired = virtual_sensor_is_active(
                     virtual_sensors["nearCenter"]
                 )
@@ -2229,22 +2162,12 @@ def main():
                         and not trace_folded_back
                     )
                 )
-                gap_state = update_gap_forward_recovery(
-                    gap_forward_active,
-                    gap_forward_frames,
-                    gap_reacquire_frames,
-                    gap_line_lost_seen,
-                    near_reacquired,
+                gap_blind_search_requested = (
+                    maneuver_state.update_gap_recovery(
+                        near_reacquired,
+                        line_controller,
+                    )
                 )
-                gap_forward_active = gap_state["active"]
-                gap_forward_frames = gap_state["forwardFrames"]
-                gap_reacquire_frames = gap_state["reacquireFrames"]
-                gap_line_lost_seen = gap_state["lineLostSeen"]
-                gap_blind_search_requested = gap_state[
-                    "blindSearchRequested"
-                ]
-                if not gap_forward_active:
-                    line_controller.stop_search()
 
             line_control_started = time.perf_counter()
 
@@ -2252,8 +2175,8 @@ def main():
                 line_controller.calculate(
                     line_candidate_mask,
                     green_status,
-                    direcao_verde_ativa,
-                    gap_forward_active,
+                    maneuver_state.green_direction,
+                    maneuver_state.gap_forward_active,
                     virtual_sensors=virtual_sensors,
                     blind_search_requested=gap_blind_search_requested,
                     sensor_recovery_requested=sensor_recovery_requested,
@@ -2261,69 +2184,11 @@ def main():
             )
 
             near_fine_position = line_follower_command["nearFinePosition"]
-
-            # Confirma que o robô realmente começou a entrar no ramo
-            # indicado pelo marcador verde.
-            if not curva_verde_iniciada:
-                if (
-                    direcao_verde_ativa == "ESQUERDA"
-                    and near_fine_position is not None
-                    and near_fine_position <= -LIMIAR_CURVA_VERDE_INICIADA
-                ):
-                    curva_verde_iniciada = True
-                    quadros_centralizado_verde = 0
-
-                elif (
-                    direcao_verde_ativa == "DIREITA"
-                    and near_fine_position is not None
-                    and near_fine_position >= LIMIAR_CURVA_VERDE_INICIADA
-                ):
-                    curva_verde_iniciada = True
-                    quadros_centralizado_verde = 0
-
-            # Depois que a curva começou, espera a posição fina local voltar
-            # ao centro por vários quadros consecutivos. Isso indica que o
-            # robô já entrou e se alinhou com a nova faixa.
-            if (
-                direcao_verde_ativa != "NENHUMA"
-                and curva_verde_iniciada
-            ):
-                if (
-                    near_fine_position is not None
-                    and abs(near_fine_position)
-                    <= LIMIAR_CENTRALIZACAO_VERDE
-                ):
-                    quadros_centralizado_verde += 1
-                else:
-                    quadros_centralizado_verde = 0
-
-                if (
-                    quadros_centralizado_verde
-                    >= QUADROS_CENTRALIZADO_PARA_CONCLUIR
-                ):
-                    completed_green_state = update_green_maneuver_state(
-                        direcao_verde_ativa,
-                        quadros_verde_ativo,
-                        raw_line_visible,
-                        completed=True,
-                    )
-                    direcao_verde_ativa = completed_green_state["direction"]
-                    quadros_verde_ativo = completed_green_state[
-                        "activeFrames"
-                    ]
-                    curva_verde_iniciada = False
-                    quadros_centralizado_verde = 0
-                    line_controller.stop_search()
-
-            # A curva já pode ter terminado, mas um novo verde só será
-            # aceito depois de X quadros consecutivos sem candidato verde.
-            if (
-                not verde_armado
-                and direcao_verde_ativa == "NENHUMA"
-                and quadros_sem_verde >= QUADROS_PARA_REARMAR_VERDE
-            ):
-                verde_armado = True
-                quadros_sem_verde = 0
+            maneuver_state.update_green_alignment(
+                near_fine_position,
+                raw_line_visible,
+                line_controller,
+            )
 
             line_control_ms = (
                 time.perf_counter() - line_control_started
