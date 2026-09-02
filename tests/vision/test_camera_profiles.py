@@ -12,6 +12,7 @@ SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import camera_line_frame
+from vision.line_status import LineStatusPublisher
 
 
 def rectangle_contour(x1, y1, x2, y2):
@@ -841,49 +842,41 @@ class CameraProfilesTest(unittest.TestCase):
             "greenCandidateCount": 1,
         })
         with tempfile.TemporaryDirectory() as directory:
-            original_status_path = camera_line_frame.LINE_STATUS_PATH
-            original_temp_path = camera_line_frame.TEMP_LINE_STATUS_PATH
-            camera_line_frame.LINE_STATUS_PATH = os.path.join(
+            status_path = os.path.join(
                 directory,
                 "line.json",
             )
-            camera_line_frame.TEMP_LINE_STATUS_PATH = os.path.join(
+            temp_status_path = os.path.join(
                 directory,
                 "line.tmp.json",
             )
-            try:
-                camera_line_frame.save_line_status(
-                    {
-                        "left_power": 0.0,
-                        "right_power": 0.0,
-                        "controlSource": "virtual",
-                        "nearCenter": 0.20,
-                        "nearFinePosition": 0.12,
-                        "mediumPosition": 0.08,
-                        "mediumLineConfidence": 0.64,
-                        "mediumThicknessConsistency": 0.58,
-                        "mediumTrusted": False,
-                        "farLineConfidence": 0.72,
-                        "farThicknessConsistency": 0.81,
-                        "farTrusted": True,
-                        "farBandPosition": -0.04,
-                        "headingAngle": 5.5,
-                        "finalSteering": 0.18,
-                        "virtualState": "NORMAL",
-                        "lineState": "LINE",
-                    },
-                    123.0,
-                    7,
-                    status,
-                )
-                with open(
-                    camera_line_frame.LINE_STATUS_PATH,
-                    encoding="utf-8",
-                ) as status_file:
-                    published = json.load(status_file)
-            finally:
-                camera_line_frame.LINE_STATUS_PATH = original_status_path
-                camera_line_frame.TEMP_LINE_STATUS_PATH = original_temp_path
+            publisher = LineStatusPublisher(status_path, temp_status_path)
+            publisher.publish(
+                {
+                    "left_power": 0.0,
+                    "right_power": 0.0,
+                    "controlSource": "virtual",
+                    "nearCenter": 0.20,
+                    "nearFinePosition": 0.12,
+                    "mediumPosition": 0.08,
+                    "mediumLineConfidence": 0.64,
+                    "mediumThicknessConsistency": 0.58,
+                    "mediumTrusted": False,
+                    "farLineConfidence": 0.72,
+                    "farThicknessConsistency": 0.81,
+                    "farTrusted": True,
+                    "farBandPosition": -0.04,
+                    "headingAngle": 5.5,
+                    "finalSteering": 0.18,
+                    "virtualState": "NORMAL",
+                    "lineState": "LINE",
+                },
+                123.0,
+                7,
+                status,
+            )
+            with open(status_path, encoding="utf-8") as status_file:
+                published = json.load(status_file)
 
         self.assertEqual(published["lineFollowerLeftPower"], 0.0)
         self.assertEqual(published["lineFollowerRightPower"], 0.0)

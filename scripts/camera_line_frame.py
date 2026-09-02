@@ -140,6 +140,12 @@ from vision.line_control import (
     virtual_recovery_sensor_direction,
 )
 from vision.maneuvers import LineManeuverState
+from vision.line_status import (
+    LINE_STATUS_PATH,
+    TEMP_LINE_STATUS_PATH,
+    LineStatusPublisher,
+    save_line_status,
+)
 from vision.search import (
     VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
     VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
@@ -281,8 +287,6 @@ FRAME_PATH = "/tmp/obr_camera_frame.jpg"
 TEMP_FRAME_PATH = "/tmp/obr_camera_frame.tmp.jpg"
 STATUS_PATH = "/tmp/obr_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_camera_status.tmp.json"
-LINE_STATUS_PATH = "/dev/shm/obr_line_status.json"
-TEMP_LINE_STATUS_PATH = "/dev/shm/obr_line_status.tmp.json"
 GREEN_CAPTURE_REQUEST_PATH = "/dev/shm/obr_green_capture_request"
 
 LIGHT_PIN_BOARD = 40
@@ -1597,117 +1601,6 @@ def save_frame(jpeg):
     os.replace(TEMP_FRAME_PATH, FRAME_PATH)
 
 
-def save_line_status(
-    line_follower_command,
-    line_timestamp,
-    line_sequence,
-    green_status,
-    specular_repair_status=None,
-):
-    """Publica controle visual e telemetria leve no IPC rápido da linha."""
-
-    try:
-        line_timestamp = float(line_timestamp)
-        if not math.isfinite(line_timestamp):
-            raise ValueError("lineTimestamp inválido")
-        if (
-            not isinstance(line_sequence, int)
-            or isinstance(line_sequence, bool)
-            or line_sequence < 0
-        ):
-            raise ValueError("lineSequence inválido")
-
-        normal_left = float(line_follower_command["left_power"])
-        normal_right = float(line_follower_command["right_power"])
-        if not all(
-            math.isfinite(value) and -1.0 <= value <= 1.0
-            for value in (normal_left, normal_right)
-        ):
-            raise ValueError("Comando visual fora da faixa normalizada")
-
-        repair_status = specular_repair_status or {}
-        far_trusted = virtual_sensor_trust_is_active(
-            line_follower_command,
-            "farTrusted",
-        )
-        medium_trusted = virtual_sensor_trust_is_active(
-            line_follower_command,
-            "mediumTrusted",
-        )
-        line_status = {
-            "lineFollowerLeftPower": normal_left,
-            "lineFollowerRightPower": normal_right,
-            "lineNearDetected": virtual_sensor_is_active(
-                line_follower_command["nearCenter"]
-            ),
-            "lineControlSource": str(
-                line_follower_command.get("controlSource", "unknown")
-            ),
-            "nearFinePosition": finite_virtual_position(
-                line_follower_command["nearFinePosition"]
-            ),
-            "farLineConfidence": normalized_line_confidence(
-                line_follower_command.get("farLineConfidence")
-            ),
-            "farThicknessConsistency": normalized_line_confidence(
-                line_follower_command.get("farThicknessConsistency")
-            ),
-            "farTrusted": far_trusted,
-            "mediumPosition": (
-                finite_virtual_position(
-                    line_follower_command.get("mediumPosition")
-                )
-                if medium_trusted
-                else None
-            ),
-            "mediumLineConfidence": normalized_line_confidence(
-                line_follower_command.get("mediumLineConfidence")
-            ),
-            "mediumThicknessConsistency": normalized_line_confidence(
-                line_follower_command.get("mediumThicknessConsistency")
-            ),
-            "mediumTrusted": medium_trusted,
-            "farBandPosition": (
-                finite_virtual_position(
-                    line_follower_command.get("farBandPosition")
-                )
-                if far_trusted
-                else None
-            ),
-            "headingAngleDeg": finite_virtual_position(
-                line_follower_command.get("headingAngle")
-            ),
-            "finalSteering": finite_virtual_position(
-                line_follower_command.get("finalSteering")
-            ),
-            "vstate": str(
-                line_follower_command.get("virtualState", "INVALID")
-            ),
-            "lineState": str(
-                line_follower_command.get("lineState", "INVALID")
-            ),
-            "trustedDirection": str(
-                line_follower_command.get("trustedDirection", "NONE")
-            ),
-            "lineTimestamp": line_timestamp,
-            "lineSequence": line_sequence,
-            "specularRepairPixels": max(
-                0, int(repair_status.get("specularRepairPixels", 0))
-            ),
-            "specularRepairComponents": max(
-                0, int(repair_status.get("specularRepairComponents", 0))
-            ),
-        }
-        line_status.update(green_status)
-        with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
-            json.dump(line_status, status_file, allow_nan=False)
-        os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
-    except (KeyError, OSError, TypeError, ValueError) as error:
-        print(
-            f"Falha ao publicar telemetria rápida da linha: {error}",
-            flush=True,
-        )
-
 
 def save_status(
     fps,
@@ -1929,6 +1822,7 @@ def main():
         green_tracker = GreenObservationTracker()
         line_controller = LineFollowerController()
         maneuver_state = LineManeuverState()
+        line_status_publisher = LineStatusPublisher()
 
         green_processing_enabled = bool(
             vision_profile.get("green_detection_enabled", False)
@@ -2206,7 +2100,7 @@ def main():
 
             if line_ipc_enabled:
                 # Somente a CAM0/inferior publica o ponto de extensão 0/0.
-                save_line_status(
+                line_status_publisher.publish(
                     line_follower_command,
                     line_timestamp,
                     line_sequence,
