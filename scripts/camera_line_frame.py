@@ -189,6 +189,14 @@ def log_camera_inventory(camera_infos, assignments):
 # Esta chave permite desativar apenas o diagnóstico verde sem alterar a câmera.
 GREEN_PROCESSING_ENABLED = environment_flag("GREEN_PROCESSING_ENABLED", True)
 
+# O diagnóstico legado é opt-in porque o extractor por scanlines e seus
+# desenhos aumentam o custo e escondem o vetor Fusion-style no uso normal.
+# Ativar esta flag não muda o controle; apenas restaura cálculo e overlay antigos.
+LEGACY_LINE_DEBUG_ENABLED = environment_flag(
+    "LEGACY_LINE_DEBUG_ENABLED",
+    False,
+)
+
 # A câmera da pista mostrou que o branco sob iluminação esverdeada chega a
 # saturação 136. Exigir 140 preserva o cartão verde saturado e bloqueia esse
 # falso positivo antes de qualquer geometria ou decisão autônoma.
@@ -264,6 +272,51 @@ NORMAL_FULL_STEERING_ERROR = 0.36
 NORMAL_BASE_POWER = 0.75
 NORMAL_MAX_POWER = 0.82
 NORMAL_INNER_MIN_POWER = 0.66
+
+# Endpoint compartilhado pelos pivots existentes e pela curva contínua Fusion.
+# A leve componente de avanço favorece a reacquisição sem liberar potência
+# fora do intervalo normalizado aceito pelos motores.
+PIVOT_OUTER_POWER = 0.78
+PIVOT_INNER_POWER = -0.72
+
+# O Fusion-style ignora desvios de até dois graus e alcança toda a autoridade
+# NORMAL em dez graus. A curva cúbica mantém suavidade perto do centro e cresce
+# depois sem criar memória entre frames.
+FUSION_STEERING_DEADBAND_DEG = 2.0
+FUSION_FULL_NORMAL_STEERING_DEG = 10.0
+
+# A curva Fusion mantém ambas as rodas positivas até vinte e cinco graus, chega
+# perto de zero aos quarenta, aplica ré leve aos cinquenta e cinco e só alcança
+# o pivot máximo aos setenta graus. Cada trecho usa smoothstep e não cria estado.
+FUSION_STRONG_POSITIVE_END_DEG = 25.0
+FUSION_NEAR_ZERO_END_DEG = 40.0
+FUSION_LIGHT_REVERSE_END_DEG = 55.0
+FUSION_FULL_PIVOT_STEERING_DEG = 70.0
+
+# Pontos da curva: erro angular, potência externa e potência interna. Estes
+# valores são os pontos de calibração do Soul; a interpolação entre eles é
+# contínua e os comandos finais permanecem limitados ao intervalo normalizado.
+FUSION_POWER_CURVE = (
+    (0.0, NORMAL_BASE_POWER, NORMAL_BASE_POWER),
+    (
+        FUSION_STEERING_DEADBAND_DEG,
+        NORMAL_BASE_POWER,
+        NORMAL_BASE_POWER,
+    ),
+    (
+        FUSION_FULL_NORMAL_STEERING_DEG,
+        NORMAL_MAX_POWER,
+        NORMAL_INNER_MIN_POWER,
+    ),
+    (FUSION_STRONG_POSITIVE_END_DEG, 0.85, 0.30),
+    (FUSION_NEAR_ZERO_END_DEG, 0.83, 0.02),
+    (FUSION_LIGHT_REVERSE_END_DEG, 0.81, -0.20),
+    (
+        FUSION_FULL_PIVOT_STEERING_DEG,
+        PIVOT_OUTER_POWER,
+        PIVOT_INNER_POWER,
+    ),
+)
 
 # A histerese impede alternância rápida entre a faixa forte e o pivot.
 # A entrada exige erro 0,45; a saída ocorre somente após cair até 0,35.
@@ -2503,6 +2556,35 @@ VIRTUAL_LINE_CONFIDENCE_REFERENCE_WIDTH_PX = 480.0
 VIRTUAL_LINE_CONFIDENCE_REFERENCE_HEIGHT_PX = 360.0
 VIRTUAL_LINE_CONFIDENCE_SAMPLE_STEP_PX = 4.0
 
+# A trajetória NORMAL experimental usa várias scanlines entre NEAR e FAR.
+# O passo acompanha a altura do frame para manter densidade e custo previsíveis.
+NORMAL_TRAJECTORY_REFERENCE_HEIGHT_PX = 360.0
+NORMAL_TRAJECTORY_SCAN_STEP_PX = 6.0
+NORMAL_TRAJECTORY_BAND_HALF_HEIGHT_PX = 1.0
+
+# Cada segmento deve ter largura compatível com a fita esperada naquela altura.
+# A margem superior aceita inclinação e perspectiva, mas rejeita regiões largas
+# demais, como sombras, cruzamentos inteiros ou partes do chassi.
+NORMAL_TRAJECTORY_MIN_WIDTH_FACTOR = 0.35
+NORMAL_TRAJECTORY_MAX_WIDTH_FACTOR = 4.0
+
+# A continuação pode deslocar-se lateralmente até três pixels por pixel de
+# avanço vertical. Esse limite aceita curvas fortes sem saltar para outro ramo.
+NORMAL_TRAJECTORY_MAX_SLOPE_X_PER_Y = 3.0
+NORMAL_TRAJECTORY_MAX_SHIFT_WIDTH_RATIO = 0.18
+NORMAL_TRAJECTORY_MAX_MISSING_SCANLINES = 2
+
+# Um caminho curto permanece visível no diagnóstico, mas não recebe o estado
+# válido. Isso evita apresentar um pequeno fragmento como trajetória completa.
+NORMAL_TRAJECTORY_MIN_POINTS = 8
+NORMAL_TRAJECTORY_MIN_VERTICAL_COVERAGE = 0.25
+
+# O diagnóstico inspirado no FusionZero resume o topo do contorno em poucas
+# amostras. A faixa de 1/20 da altura e o limite de 20 pontos preservam a
+# simplicidade do método publicado sem refazer a segmentação já feita no Soul.
+FUSION_STYLE_TOP_BAND_HEIGHT_RATIO = 1.0 / 20.0
+FUSION_STYLE_MAX_TOP_SAMPLES = 20
+
 # Os limiares de trust bloqueiam candidatos fracos antes que FAR ou MEDIUM
 # participem do controle. Cada fileira permanece calibrável separadamente.
 FAR_TRUST_MIN_CONFIDENCE = 0.75
@@ -2561,6 +2643,9 @@ GREEN_MANEUVER_TIMEOUT_FRAMES = 12
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
 VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = 12
 VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = 30
+# Dois frames sem orientação evitam entrar em busca por uma perda isolada.
+# GREEN e GAP continuam usando start() diretamente e não recebem este atraso.
+VIRTUAL_BLIND_SEARCH_CONFIRMATION_FRAMES = 2
 
 # Reaquisição geométrica após gaps.
 #
@@ -3476,6 +3561,1053 @@ def find_active_band_segments(processed_line_mask, y):
         })
 
     return segments
+
+
+def empty_normal_trajectory(processing_ms=0.0):
+    """Cria a telemetria vazia da trajetória NORMAL experimental."""
+
+    return {
+        "enabled": False,
+        "valid": False,
+        "coordinateFrame": "processedLineMaskPixels",
+        "pointOrder": "nearToFar",
+        # No Soul, o eixo traseiro é a referência principal do movimento. Sua
+        # projeção ainda precisa de calibração extrínseca; até lá, os pontos
+        # permanecem originais para não confundir centro da imagem com erro
+        # lateral ou heading físico do robô.
+        "rearAxleProjectionCalibrated": False,
+        "points": [],
+        "scanlines": [],
+        "pointCount": 0,
+        "sampledScanlineCount": 0,
+        "evaluatedScanlineCount": 0,
+        "observedScanlineCount": 0,
+        "ambiguousScanlineCount": 0,
+        "rejectedSegmentCount": 0,
+        "verticalCoverage": 0.0,
+        "processingMs": max(0.0, float(processing_ms)),
+    }
+
+
+def resolve_normal_trajectory_envelope(frame_shape):
+    """Reaproveita FAR, MEDIUM e NEAR como envelope físico do traçado."""
+
+    height, width = frame_shape[:2]
+    if height <= 0 or width <= 0:
+        return None
+
+    geometry = resolve_virtual_sensor_geometry(frame_shape)
+    far_y = max(0, min(height - 1, geometry["far"]["left"]["y0"]))
+    near_start_y = max(
+        far_y,
+        min(height - 1, geometry["near"]["position"]["y0"]),
+    )
+    near_y = max(
+        near_start_y,
+        min(height - 1, geometry["near"]["position"]["y1"] - 1),
+    )
+    return {
+        "geometry": geometry,
+        "farY": far_y,
+        "nearStartY": near_start_y,
+        "nearY": near_y,
+        "width": width,
+    }
+
+
+def normal_trajectory_horizontal_bounds(envelope, y):
+    """Limita cada scanline à ROI calibrada que cobre sua altura."""
+
+    geometry = envelope["geometry"]
+    width = envelope["width"]
+    if y < geometry["medium"]["left"]["y0"]:
+        left_x = geometry["far"]["left"]["x0"]
+        right_x = geometry["far"]["right"]["x1"]
+    elif y < geometry["near"]["position"]["y0"]:
+        left_x = geometry["medium"]["left"]["x0"]
+        right_x = geometry["medium"]["right"]["x1"]
+    else:
+        left_x = geometry["near"]["position"]["x0"]
+        right_x = geometry["near"]["position"]["x1"]
+
+    left_x = max(0, min(width, int(left_x)))
+    right_x = max(left_x, min(width, int(right_x)))
+    return left_x, right_x
+
+
+def normal_trajectory_scanline_ys(envelope, frame_height):
+    """Gera alturas do NEAR ao FAR e inclui exatamente os limites das ROIs."""
+
+    scan_step = max(
+        1,
+        int(round(
+            NORMAL_TRAJECTORY_SCAN_STEP_PX
+            * float(frame_height)
+            / NORMAL_TRAJECTORY_REFERENCE_HEIGHT_PX
+        )),
+    )
+    scanline_ys = list(range(
+        envelope["nearY"],
+        envelope["farY"] - 1,
+        -scan_step,
+    ))
+    for boundary_y in (envelope["nearStartY"], envelope["farY"]):
+        if boundary_y not in scanline_ys:
+            scanline_ys.append(boundary_y)
+    return sorted(set(scanline_ys), reverse=True)
+
+
+def find_normal_trajectory_segments(processed_line_mask, envelope, y):
+    """Encontra segmentos com largura plausível em uma scanline horizontal."""
+
+    height, _width = processed_line_mask.shape[:2]
+    band_half_height = max(
+        0,
+        int(round(
+            NORMAL_TRAJECTORY_BAND_HALF_HEIGHT_PX
+            * float(height)
+            / NORMAL_TRAJECTORY_REFERENCE_HEIGHT_PX
+        )),
+    )
+    left_x, right_x = normal_trajectory_horizontal_bounds(envelope, y)
+    y0 = max(0, int(y) - band_half_height)
+    y1 = min(height, int(y) + band_half_height + 1)
+    band = processed_line_mask[y0:y1, left_x:right_x]
+    if band.size == 0:
+        return [], []
+
+    active_columns = np.any(band > 0, axis=0)
+    active_x = np.flatnonzero(active_columns)
+    if active_x.size == 0:
+        return [], []
+
+    groups = np.split(active_x, np.where(np.diff(active_x) > 1)[0] + 1)
+    expected_width_px = expected_virtual_line_thickness_px(
+        processed_line_mask.shape,
+        y,
+    )
+    minimum_width_px = max(
+        2.0,
+        expected_width_px * NORMAL_TRAJECTORY_MIN_WIDTH_FACTOR,
+    )
+    maximum_width_px = max(
+        minimum_width_px,
+        expected_width_px * NORMAL_TRAJECTORY_MAX_WIDTH_FACTOR,
+    )
+    segments = []
+    rejected_segments = []
+    for group in groups:
+        if group.size == 0:
+            continue
+        local_x0 = int(group[0])
+        local_x1 = int(group[-1])
+        segment_width_px = float(local_x1 - local_x0 + 1)
+        if not minimum_width_px <= segment_width_px <= maximum_width_px:
+            rejected_segments.append({
+                "x0": left_x + local_x0,
+                "x1": left_x + local_x1,
+                "centerX": float(
+                    2 * left_x + local_x0 + local_x1
+                ) / 2.0,
+                "widthPx": segment_width_px,
+                "expectedWidthPx": float(expected_width_px),
+                "rejectionReason": "width",
+            })
+            continue
+
+        column_weights = np.count_nonzero(
+            band[:, local_x0:local_x1 + 1],
+            axis=0,
+        ).astype(np.float32)
+        total_weight = float(column_weights.sum())
+        if total_weight <= 0.0:
+            rejected_segments.append({
+                "x0": left_x + local_x0,
+                "x1": left_x + local_x1,
+                "centerX": float(
+                    2 * left_x + local_x0 + local_x1
+                ) / 2.0,
+                "widthPx": segment_width_px,
+                "expectedWidthPx": float(expected_width_px),
+                "rejectionReason": "empty",
+            })
+            continue
+        absolute_columns = np.arange(
+            left_x + local_x0,
+            left_x + local_x1 + 1,
+            dtype=np.float32,
+        )
+        center_x = float(
+            np.sum(absolute_columns * column_weights) / total_weight
+        )
+        segments.append({
+            "x0": left_x + local_x0,
+            "x1": left_x + local_x1,
+            "centerX": center_x,
+            "widthPx": segment_width_px,
+            "expectedWidthPx": float(expected_width_px),
+        })
+    return segments, rejected_segments
+
+
+def select_normal_trajectory_continuation(segments, path_points, y, frame_width):
+    """Escolhe o segmento que melhor prolonga posição, largura e direção."""
+
+    if not segments or not path_points:
+        return None
+
+    previous = path_points[-1]
+    forward_delta_y = max(1.0, float(previous["y"] - y))
+    previous_slope = None
+    predicted_x = float(previous["x"])
+    if len(path_points) >= 2:
+        before_previous = path_points[-2]
+        previous_delta_y = max(
+            1.0,
+            float(before_previous["y"] - previous["y"]),
+        )
+        previous_slope = (
+            float(previous["x"]) - float(before_previous["x"])
+        ) / previous_delta_y
+        predicted_x += previous_slope * forward_delta_y
+
+    maximum_shift_px = max(
+        float(previous["expectedWidthPx"]) * 1.5,
+        forward_delta_y * NORMAL_TRAJECTORY_MAX_SLOPE_X_PER_Y,
+    )
+    maximum_shift_px = min(
+        maximum_shift_px,
+        float(frame_width) * NORMAL_TRAJECTORY_MAX_SHIFT_WIDTH_RATIO,
+    )
+
+    compatible = []
+    for segment in segments:
+        center_distance_px = abs(float(segment["centerX"]) - predicted_x)
+        if center_distance_px > maximum_shift_px:
+            continue
+
+        width_change = abs(math.log(
+            max(1.0, float(segment["widthPx"]))
+            / max(1.0, float(previous["widthPx"]))
+        ))
+        direction_change = 0.0
+        if previous_slope is not None:
+            candidate_slope = (
+                float(segment["centerX"]) - float(previous["x"])
+            ) / forward_delta_y
+            direction_change = abs(candidate_slope - previous_slope)
+        score = (
+            center_distance_px / max(1.0, maximum_shift_px)
+            + 0.20 * min(2.0, width_change)
+            + 0.25 * min(2.0, direction_change)
+        )
+        compatible.append((score, center_distance_px, segment))
+
+    if not compatible:
+        return None
+    return min(compatible, key=lambda item: (item[0], item[1]))[2]
+
+
+def normal_trajectory_segment_telemetry(segment, rejection_reason=None):
+    """Converte um segmento interno em dados simples para overlay e status."""
+
+    telemetry = {
+        "x0": int(segment["x0"]),
+        "x1": int(segment["x1"]),
+        "centerX": round(float(segment["centerX"]), 2),
+        "widthPx": round(float(segment["widthPx"]), 2),
+        "expectedWidthPx": round(float(segment["expectedWidthPx"]), 2),
+    }
+    if rejection_reason is not None:
+        telemetry["rejectionReason"] = str(rejection_reason)
+    return telemetry
+
+
+def extract_normal_line_trajectory(processed_line_mask):
+    """Extrai pontos contínuos para diagnóstico do futuro steering NORMAL."""
+
+    extraction_started = time.perf_counter()
+    if (
+        not isinstance(processed_line_mask, np.ndarray)
+        or processed_line_mask.ndim != 2
+        or processed_line_mask.size == 0
+    ):
+        return empty_normal_trajectory(
+            (time.perf_counter() - extraction_started) * 1000.0
+        )
+
+    envelope = resolve_normal_trajectory_envelope(processed_line_mask.shape)
+    if envelope is None:
+        return empty_normal_trajectory(
+            (time.perf_counter() - extraction_started) * 1000.0
+        )
+
+    scanline_ys = normal_trajectory_scanline_ys(
+        envelope,
+        processed_line_mask.shape[0],
+    )
+    near_position = envelope["geometry"]["near"]["position"]
+    seed_reference_x = (
+        float(near_position["x0"] + near_position["x1"] - 1) / 2.0
+    )
+    path_points = []
+    scanline_diagnostics = []
+    missing_scanlines = 0
+    observed_scanline_count = 0
+    ambiguous_scanline_count = 0
+    rejected_segment_count = 0
+
+    for y in scanline_ys:
+        segments, width_rejected_segments = find_normal_trajectory_segments(
+            processed_line_mask,
+            envelope,
+            y,
+        )
+        if segments:
+            observed_scanline_count += 1
+        if len(segments) > 1:
+            ambiguous_scanline_count += 1
+
+        selected_segment = None
+        near_anchor_missing = False
+        if not path_points:
+            # O início precisa existir no NEAR. Sem essa âncora, escolher um
+            # ramo distante confundiria antecipação com reaquisição de GAP.
+            if y < envelope["nearStartY"]:
+                near_anchor_missing = True
+            elif segments:
+                selected_segment = min(
+                    segments,
+                    key=lambda segment: (
+                        abs(float(segment["centerX"]) - seed_reference_x),
+                        abs(
+                            float(segment["widthPx"])
+                            - float(segment["expectedWidthPx"])
+                        ),
+                    ),
+                )
+        else:
+            selected_segment = select_normal_trajectory_continuation(
+                segments,
+                path_points,
+                y,
+                processed_line_mask.shape[1],
+            )
+
+        accepted_point = None
+        if selected_segment is not None:
+            accepted_point = {
+                "x": float(selected_segment["centerX"]),
+                "y": int(y),
+                "widthPx": float(selected_segment["widthPx"]),
+                "expectedWidthPx": float(selected_segment["expectedWidthPx"]),
+            }
+
+        rejected_segments = [
+            normal_trajectory_segment_telemetry(
+                segment,
+                segment.get("rejectionReason", "width"),
+            )
+            for segment in width_rejected_segments
+        ]
+        for segment in segments:
+            if segment is selected_segment:
+                continue
+            if near_anchor_missing:
+                rejection_reason = "nearAnchorRequired"
+            elif selected_segment is None and path_points:
+                rejection_reason = "continuity"
+            else:
+                rejection_reason = "alternative"
+            rejected_segments.append(
+                normal_trajectory_segment_telemetry(
+                    segment,
+                    rejection_reason,
+                )
+            )
+
+        left_x, right_x = normal_trajectory_horizontal_bounds(envelope, y)
+        scanline_diagnostics.append({
+            "y": int(y),
+            "x0": int(left_x),
+            "x1": int(right_x),
+            "status": "accepted" if accepted_point is not None else "noPoint",
+            "acceptedPoint": (
+                {
+                    "x": round(float(accepted_point["x"]), 2),
+                    "y": int(accepted_point["y"]),
+                }
+                if accepted_point is not None
+                else None
+            ),
+            "selectedSegment": (
+                normal_trajectory_segment_telemetry(selected_segment)
+                if selected_segment is not None
+                else None
+            ),
+            "rejectedSegments": rejected_segments,
+        })
+        rejected_segment_count += len(rejected_segments)
+
+        if near_anchor_missing:
+            break
+
+        if selected_segment is None:
+            if path_points:
+                missing_scanlines += 1
+                if missing_scanlines > NORMAL_TRAJECTORY_MAX_MISSING_SCANLINES:
+                    break
+            continue
+
+        missing_scanlines = 0
+        path_points.append(accepted_point)
+
+    available_span_px = max(1.0, float(envelope["nearY"] - envelope["farY"]))
+    traced_span_px = (
+        float(path_points[0]["y"] - path_points[-1]["y"])
+        if len(path_points) >= 2
+        else 0.0
+    )
+    vertical_coverage = max(0.0, min(1.0, traced_span_px / available_span_px))
+    valid = bool(
+        len(path_points) >= NORMAL_TRAJECTORY_MIN_POINTS
+        and vertical_coverage >= NORMAL_TRAJECTORY_MIN_VERTICAL_COVERAGE
+    )
+    processing_ms = (time.perf_counter() - extraction_started) * 1000.0
+    return {
+        "enabled": True,
+        "valid": valid,
+        "coordinateFrame": "processedLineMaskPixels",
+        "pointOrder": "nearToFar",
+        "rearAxleProjectionCalibrated": False,
+        "points": [
+            {
+                "x": round(float(point["x"]), 2),
+                "y": int(point["y"]),
+                "widthPx": round(float(point["widthPx"]), 2),
+                "expectedWidthPx": round(float(point["expectedWidthPx"]), 2),
+            }
+            for point in path_points
+        ],
+        "scanlines": scanline_diagnostics,
+        "pointCount": len(path_points),
+        "sampledScanlineCount": len(scanline_ys),
+        "evaluatedScanlineCount": len(scanline_diagnostics),
+        "observedScanlineCount": observed_scanline_count,
+        "ambiguousScanlineCount": ambiguous_scanline_count,
+        "rejectedSegmentCount": rejected_segment_count,
+        "verticalCoverage": round(vertical_coverage, 4),
+        "processingMs": max(0.0, float(processing_ms)),
+    }
+
+
+def draw_normal_trajectory_overlay(frame, normal_trajectory):
+    """Desenha a trajetória experimental sem alterar nenhuma decisão de controle."""
+
+    if not isinstance(normal_trajectory, dict):
+        return
+
+    # As cores permanecem fixas para facilitar a comparação entre capturas:
+    # cinza = scanline, vermelho = rejeitado/sem ponto, amarelo = segmento
+    # escolhido, verde = ponto aceito e ciano = trajetória final válida.
+    scanline_color = (96, 96, 96)
+    rejected_color = (0, 0, 255)
+    selected_color = (0, 255, 255)
+    accepted_color = (0, 255, 0)
+    path_color = (
+        (255, 255, 0)
+        if normal_trajectory.get("valid") is True
+        else (0, 180, 255)
+    )
+
+    scanlines = normal_trajectory.get("scanlines", [])
+    if isinstance(scanlines, list):
+        for scanline in scanlines:
+            try:
+                scanline_y = int(scanline["y"])
+                scanline_x0 = int(scanline["x0"])
+                scanline_x1 = int(scanline["x1"]) - 1
+            except (KeyError, TypeError, ValueError):
+                continue
+            cv2.line(
+                frame,
+                (scanline_x0, scanline_y),
+                (scanline_x1, scanline_y),
+                scanline_color,
+                1,
+                cv2.LINE_AA,
+            )
+
+            rejected_segments = scanline.get("rejectedSegments", [])
+            if isinstance(rejected_segments, list):
+                for segment in rejected_segments:
+                    try:
+                        rejected_x0 = int(segment["x0"])
+                        rejected_x1 = int(segment["x1"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    cv2.line(
+                        frame,
+                        (rejected_x0, scanline_y),
+                        (rejected_x1, scanline_y),
+                        rejected_color,
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+            selected_segment = scanline.get("selectedSegment")
+            if isinstance(selected_segment, dict):
+                try:
+                    selected_x0 = int(selected_segment["x0"])
+                    selected_x1 = int(selected_segment["x1"])
+                except (KeyError, TypeError, ValueError):
+                    selected_segment = None
+                if selected_segment is not None:
+                    cv2.line(
+                        frame,
+                        (selected_x0, scanline_y),
+                        (selected_x1, scanline_y),
+                        selected_color,
+                        3,
+                        cv2.LINE_AA,
+                    )
+
+            accepted_point = scanline.get("acceptedPoint")
+            if isinstance(accepted_point, dict):
+                try:
+                    point = (
+                        int(round(float(accepted_point["x"]))),
+                        int(round(float(accepted_point["y"]))),
+                    )
+                except (KeyError, TypeError, ValueError):
+                    continue
+                cv2.circle(frame, point, 4, (0, 0, 0), -1, cv2.LINE_AA)
+                cv2.circle(frame, point, 2, accepted_color, -1, cv2.LINE_AA)
+            else:
+                # Um X no começo da linha deixa explícito que aquela altura foi
+                # avaliada, mas não produziu um ponto para a trajetória.
+                marker_x = min(scanline_x1 - 4, scanline_x0 + 7)
+                cv2.line(
+                    frame,
+                    (marker_x - 4, scanline_y - 4),
+                    (marker_x + 4, scanline_y + 4),
+                    rejected_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.line(
+                    frame,
+                    (marker_x - 4, scanline_y + 4),
+                    (marker_x + 4, scanline_y - 4),
+                    rejected_color,
+                    2,
+                    cv2.LINE_AA,
+                )
+
+    points = normal_trajectory.get("points", [])
+    overlay_points = []
+    if isinstance(points, list):
+        for point in points:
+            try:
+                point_x = int(round(float(point["x"])))
+                point_y = int(round(float(point["y"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            overlay_points.append((point_x, point_y))
+    if len(overlay_points) >= 2:
+        cv2.polylines(
+            frame,
+            [np.asarray(overlay_points, dtype=np.int32)],
+            False,
+            path_color,
+            2,
+            cv2.LINE_AA,
+        )
+    for point in overlay_points:
+        cv2.circle(frame, point, 2, accepted_color, -1, cv2.LINE_AA)
+
+    def safe_overlay_number(field_name, default=0.0):
+        """Impede que um valor diagnóstico inválido interrompa o stream."""
+
+        try:
+            value = float(normal_trajectory.get(field_name, default))
+        except (TypeError, ValueError):
+            return float(default)
+        return value if math.isfinite(value) else float(default)
+
+    metric_texts = (
+        f"trajectoryPoints {int(safe_overlay_number('pointCount'))}",
+        f"coverage {safe_overlay_number('verticalCoverage'):.3f}",
+        f"ambiguities {int(safe_overlay_number('ambiguousScanlineCount'))}",
+        f"trajectoryMs {safe_overlay_number('processingMs'):.2f}",
+    )
+    metrics_x = max(8, frame.shape[1] - 190)
+    for line_index, metric_text in enumerate(metric_texts):
+        text_origin = (metrics_x, 18 + line_index * 18)
+        # O contorno preto mantém os números legíveis sobre piso claro ou fita.
+        cv2.putText(
+            frame,
+            metric_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            metric_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            path_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+
+def empty_fusion_style_line(processing_ms=0.0):
+    """Cria a telemetria vazia do diagnóstico inspirado no FusionZero."""
+
+    return {
+        "enabled": False,
+        "valid": False,
+        "coordinateFrame": "processedLineMaskPixels",
+        "angleConvention": "90StraightBelow90LeftAbove90Right",
+        "angleDeg": None,
+        "nearPoint": None,
+        "farPoint": None,
+        "topBandPoint": None,
+        "topBand": None,
+        "referenceSource": "none",
+        "candidateContourCount": 0,
+        "contourAreaPx": 0.0,
+        "selection": "none",
+        "processingMs": max(0.0, float(processing_ms)),
+    }
+
+
+def create_fusion_style_physical_mask(processed_line_mask, envelope):
+    """Recorta a máscara usando o mesmo envelope físico das ROIs do Soul."""
+
+    physical_mask = np.zeros_like(processed_line_mask, dtype=np.uint8)
+    for y in range(envelope["farY"], envelope["nearY"] + 1):
+        left_x, right_x = normal_trajectory_horizontal_bounds(envelope, y)
+        physical_mask[y, left_x:right_x] = processed_line_mask[
+            y,
+            left_x:right_x,
+        ]
+    return physical_mask
+
+
+def select_fusion_style_contour(physical_mask, envelope):
+    """Seleciona o componente que melhor representa a linha próxima ao robô."""
+
+    contours, _ = cv2.findContours(
+        physical_mask.copy(),
+        cv2.RETR_EXTERNAL,
+        cv2.CHAIN_APPROX_SIMPLE,
+    )
+    contours = [
+        contour
+        for contour in contours
+        if contour.size > 0 and cv2.contourArea(contour) > 0.0
+    ]
+    if not contours:
+        return None, 0, "none"
+
+    height, width = physical_mask.shape[:2]
+    near_band_height = max(
+        1,
+        int(round(height * FUSION_STYLE_TOP_BAND_HEIGHT_RATIO)),
+    )
+    near_band_start_y = max(
+        envelope["farY"],
+        envelope["nearY"] - near_band_height + 1,
+    )
+
+    # O FusionZero dá preferência aos contornos que chegam à região inferior
+    # central. Aqui a mesma regra usa o limite inferior calibrado do Soul.
+    center_margin_px = min(
+        max(0, int(round(3.0 * height / 20.0))),
+        max(0, (width - 1) // 2),
+    )
+    center_x0 = center_margin_px
+    center_x1 = max(center_x0 + 1, width - center_margin_px)
+    near_contours = []
+    for contour in contours:
+        contour_points = contour.reshape(-1, 2)
+        touches_near_center = np.any(
+            (contour_points[:, 1] >= near_band_start_y)
+            & (contour_points[:, 0] >= center_x0)
+            & (contour_points[:, 0] < center_x1)
+        )
+        if touches_near_center:
+            near_contours.append(contour)
+
+    if near_contours:
+        selected_contour = max(near_contours, key=cv2.contourArea)
+        selection = "nearCenter"
+    else:
+        # Sem âncora inferior, o diagnóstico ainda mostra o fragmento que mais
+        # se aproxima do robô. Isso não inicia recovery nem comanda os motores.
+        selected_contour = max(
+            contours,
+            key=lambda contour: (
+                int(np.max(contour[:, 0, 1])),
+                float(cv2.contourArea(contour)),
+            ),
+        )
+        selection = "deepestFallback"
+
+    return selected_contour, len(contours), selection
+
+
+def calculate_fusion_style_top_contour(physical_mask, contour):
+    """Calcula o ponto distante pela faixa superior do contorno selecionado."""
+
+    contour_mask = np.zeros_like(physical_mask, dtype=np.uint8)
+    cv2.drawContours(contour_mask, [contour], -1, 255, cv2.FILLED)
+    top_y = int(np.min(contour[:, 0, 1]))
+    band_height = max(
+        1,
+        int(round(
+            physical_mask.shape[0] * FUSION_STYLE_TOP_BAND_HEIGHT_RATIO
+        )),
+    )
+    band_end_y = min(physical_mask.shape[0], top_y + band_height)
+    band_pixels = np.argwhere(contour_mask[top_y:band_end_y] > 0)
+    if band_pixels.size == 0:
+        return None, top_y, band_end_y
+
+    if len(band_pixels) > FUSION_STYLE_MAX_TOP_SAMPLES:
+        sample_indexes = np.linspace(
+            0,
+            len(band_pixels) - 1,
+            FUSION_STYLE_MAX_TOP_SAMPLES,
+            dtype=np.int32,
+        )
+        band_pixels = band_pixels[sample_indexes]
+
+    far_x = int(np.mean(band_pixels[:, 1]))
+    far_y = int(np.mean(band_pixels[:, 0])) + top_y
+    return (far_x, far_y), top_y, band_end_y
+
+
+def select_fusion_style_reference_point(contour, top_point, envelope):
+    """Usa o topo distante ou a borda lateral nas curvas de 90°."""
+
+    if top_point is None:
+        return None, "none"
+
+    geometry = envelope["geometry"]
+    far_band_end_y = int(geometry["farBand"]["center"]["y1"])
+    if top_point[1] < far_band_end_y:
+        return top_point, "topBand"
+
+    width = int(envelope["width"])
+    edge_margin_px = max(1, width // 16)
+    contour_points = contour.reshape(-1, 2)
+    left_edge_points = []
+    right_edge_points = []
+    for point_x, point_y in contour_points:
+        left_x, right_x = normal_trajectory_horizontal_bounds(
+            envelope,
+            int(point_y),
+        )
+        if int(point_x) <= left_x + edge_margin_px:
+            left_edge_points.append((int(point_x), int(point_y)))
+        if int(point_x) >= right_x - 1 - edge_margin_px:
+            right_edge_points.append((int(point_x), int(point_y)))
+    left_y = (
+        int(np.mean([point[1] for point in left_edge_points]))
+        if len(left_edge_points) > 0
+        else None
+    )
+    right_y = (
+        int(np.mean([point[1] for point in right_edge_points]))
+        if len(right_edge_points) > 0
+        else None
+    )
+
+    if left_y is not None and right_y is None:
+        left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
+        return (left_x, left_y), "leftEdge"
+    if right_y is not None and left_y is None:
+        _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
+        return (right_x - 1, right_y), "rightEdge"
+    if left_y is not None and right_y is not None:
+        # Sem o estado temporal prev_side, uma diferença vertical ainda permite
+        # repetir a decisão local publicada. Empate mantém o ponto superior.
+        if left_y < right_y:
+            left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
+            return (left_x, left_y), "leftEdge"
+        if right_y < left_y:
+            _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
+            return (right_x - 1, right_y), "rightEdge"
+
+    return top_point, "topBand"
+
+
+def extract_fusion_style_line(processed_line_mask):
+    """Extrai contorno, ponto distante e ângulo sem participar do controle."""
+
+    extraction_started = time.perf_counter()
+    if (
+        not isinstance(processed_line_mask, np.ndarray)
+        or processed_line_mask.ndim != 2
+        or processed_line_mask.size == 0
+    ):
+        return empty_fusion_style_line(
+            (time.perf_counter() - extraction_started) * 1000.0
+        )
+
+    envelope = resolve_normal_trajectory_envelope(processed_line_mask.shape)
+    if envelope is None:
+        return empty_fusion_style_line(
+            (time.perf_counter() - extraction_started) * 1000.0
+        )
+
+    near_position = envelope["geometry"]["near"]["position"]
+    near_x = max(
+        int(near_position["x0"]),
+        min(int(near_position["x1"]) - 1, processed_line_mask.shape[1] // 2),
+    )
+    near_point = (near_x, int(envelope["nearY"]))
+    result = empty_fusion_style_line()
+    result.update({
+        "enabled": True,
+        "nearPoint": {"x": near_point[0], "y": near_point[1]},
+    })
+
+    physical_mask = create_fusion_style_physical_mask(
+        processed_line_mask,
+        envelope,
+    )
+    contour, contour_count, selection = select_fusion_style_contour(
+        physical_mask,
+        envelope,
+    )
+    result["candidateContourCount"] = contour_count
+    result["selection"] = selection
+    if contour is None:
+        result["processingMs"] = max(
+            0.0,
+            (time.perf_counter() - extraction_started) * 1000.0,
+        )
+        return result
+
+    top_point, top_y, band_end_y = calculate_fusion_style_top_contour(
+        physical_mask,
+        contour,
+    )
+    result["contourAreaPx"] = round(float(cv2.contourArea(contour)), 2)
+    result["topBand"] = {
+        "y0": top_y,
+        "y1": band_end_y,
+    }
+    if top_point is not None:
+        result["topBandPoint"] = {
+            "x": top_point[0],
+            "y": top_point[1],
+        }
+    far_point, reference_source = select_fusion_style_reference_point(
+        contour,
+        top_point,
+        envelope,
+    )
+    result["referenceSource"] = reference_source
+    if far_point is not None:
+        delta_x = float(near_point[0] - far_point[0])
+        delta_y = float(near_point[1] - far_point[1])
+        if delta_x != 0.0 or delta_y != 0.0:
+            # A convenção publicada deixa 90° como reto, valores menores para
+            # a esquerda e valores maiores para a direita.
+            angle_deg = math.degrees(math.atan2(delta_y, delta_x))
+            result.update({
+                "valid": True,
+                "angleDeg": round(float(angle_deg), 2),
+                "farPoint": {"x": far_point[0], "y": far_point[1]},
+            })
+
+    result["processingMs"] = max(
+        0.0,
+        (time.perf_counter() - extraction_started) * 1000.0,
+    )
+    return result
+
+
+def extract_line_diagnostics(
+    processed_line_mask,
+    camera_role,
+    legacy_debug_enabled=False,
+):
+    """Executa somente os diagnósticos habilitados para a câmera inferior."""
+
+    normal_trajectory = empty_normal_trajectory()
+    fusion_style_line = empty_fusion_style_line()
+    if camera_role != "down":
+        return normal_trajectory, fusion_style_line
+
+    if legacy_debug_enabled:
+        # O extractor por scanlines continua disponível para comparação, mas
+        # fica totalmente fora do hot path quando o debug legado está inativo.
+        normal_trajectory = extract_normal_line_trajectory(
+            processed_line_mask
+        )
+
+    # O Fusion-style ainda é somente diagnóstico e não participa do steering.
+    fusion_style_line = extract_fusion_style_line(processed_line_mask)
+    return normal_trajectory, fusion_style_line
+
+
+def draw_fusion_style_line_overlay(
+    frame,
+    fusion_style_line,
+    line_follower_command=None,
+):
+    """Desenha somente as informações necessárias para validar o Fusion-style."""
+
+    if not isinstance(fusion_style_line, dict):
+        return
+
+    angle_color = (255, 0, 255)
+    reference_color = (230, 230, 230)
+    near_point_data = fusion_style_line.get("nearPoint")
+    far_point_data = fusion_style_line.get("farPoint")
+    near_point = None
+    far_point = None
+    try:
+        if isinstance(near_point_data, dict):
+            near_point = (
+                int(near_point_data["x"]),
+                int(near_point_data["y"]),
+            )
+        if isinstance(far_point_data, dict):
+            far_point = (
+                int(far_point_data["x"]),
+                int(far_point_data["y"]),
+            )
+    except (KeyError, TypeError, ValueError):
+        near_point = None
+        far_point = None
+
+    if near_point is not None:
+        reference_end_y = max(0, near_point[1] - 42)
+        cv2.line(
+            frame,
+            near_point,
+            (near_point[0], reference_end_y),
+            reference_color,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.circle(frame, near_point, 5, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(frame, near_point, 3, reference_color, -1, cv2.LINE_AA)
+
+    if near_point is not None and far_point is not None:
+        # O magenta mantém alvo e vetor reconhecíveis sobre a máscara ou o piso.
+        cv2.line(frame, near_point, far_point, (0, 0, 0), 5, cv2.LINE_AA)
+        cv2.line(frame, near_point, far_point, angle_color, 3, cv2.LINE_AA)
+        cv2.circle(frame, far_point, 7, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(frame, far_point, 5, angle_color, -1, cv2.LINE_AA)
+        target_text_origin = (
+            min(frame.shape[1] - 76, max(4, far_point[0] + 9)),
+            max(14, far_point[1] - 9),
+        )
+        cv2.putText(
+            frame,
+            "F TARGET",
+            target_text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            "F TARGET",
+            target_text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            angle_color,
+            1,
+            cv2.LINE_AA,
+        )
+
+    angle_value = fusion_style_line.get("angleDeg")
+    try:
+        safe_angle = float(angle_value)
+    except (TypeError, ValueError):
+        safe_angle = float("nan")
+    angle_text = (
+        f"FusionAngle {safe_angle:.1f} deg"
+        if math.isfinite(safe_angle)
+        else "FusionAngle --"
+    )
+    try:
+        processing_ms = float(fusion_style_line.get("processingMs", 0.0))
+    except (TypeError, ValueError):
+        processing_ms = 0.0
+    if not math.isfinite(processing_ms) or processing_ms < 0.0:
+        processing_ms = 0.0
+    validity_text = (
+        "Fusion VALID"
+        if fusion_style_line.get("valid") is True
+        else "Fusion INVALID"
+    )
+    validity_text = f"{validity_text} {processing_ms:.2f} ms"
+
+    command = (
+        line_follower_command
+        if isinstance(line_follower_command, dict)
+        else {}
+    )
+    control_source = str(command.get("controlSource", "--")).strip() or "--"
+    source_text = f"Source {control_source}"
+    try:
+        left_power = float(command.get("left_power"))
+        right_power = float(command.get("right_power"))
+    except (TypeError, ValueError):
+        left_power = float("nan")
+        right_power = float("nan")
+    powers_text = (
+        f"Powers L {left_power:+.2f} R {right_power:+.2f}"
+        if math.isfinite(left_power) and math.isfinite(right_power)
+        else "Powers L -- R --"
+    )
+
+    overlay_texts = (
+        angle_text,
+        validity_text,
+        source_text,
+        powers_text,
+    )
+    for line_index, overlay_text in enumerate(overlay_texts):
+        text_origin = (8, 20 + line_index * 18)
+        cv2.putText(
+            frame,
+            overlay_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            overlay_text,
+            text_origin,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            angle_color,
+            1,
+            cv2.LINE_AA,
+        )
+
 
 def find_geometric_lateral_exit(
     processed_line_mask,
@@ -4979,6 +6111,109 @@ def finite_virtual_position(value):
     return value if math.isfinite(value) else None
 
 
+def fusion_target_is_valid(point):
+    """Confirma que o target Fusion existe e contém coordenadas finitas."""
+
+    if not isinstance(point, dict):
+        return False
+    point_x = finite_virtual_position(point.get("x"))
+    point_y = finite_virtual_position(point.get("y"))
+    return point_x is not None and point_y is not None
+
+
+def map_fusion_angle_to_steering_error(fusion_angle):
+    """Converte o ângulo Fusion em steering contínuo sem memória temporal."""
+
+    fusion_angle = finite_virtual_position(fusion_angle)
+    if fusion_angle is None or not 0.0 <= fusion_angle <= 180.0:
+        return None
+
+    angle_error_deg = fusion_angle - 90.0
+    if abs(angle_error_deg) <= FUSION_STEERING_DEADBAND_DEG:
+        return 0.0
+
+    angle_error_magnitude_deg = abs(angle_error_deg)
+    if angle_error_magnitude_deg < FUSION_FULL_NORMAL_STEERING_DEG:
+        normal_angle_span_deg = max(
+            1.0,
+            FUSION_FULL_NORMAL_STEERING_DEG
+            - FUSION_STEERING_DEADBAND_DEG,
+        )
+        steering_progress = (
+            angle_error_magnitude_deg - FUSION_STEERING_DEADBAND_DEG
+        ) / normal_angle_span_deg
+        # O smoothstep mantém inclinação zero junto à deadband e ao limite
+        # NORMAL, evitando um degrau quando começa a faixa de pivot.
+        steering_strength = (
+            steering_progress
+            * steering_progress
+            * (3.0 - 2.0 * steering_progress)
+        )
+        steering_magnitude = (
+            steering_strength * NORMAL_FULL_STEERING_ERROR
+        )
+    else:
+        pivot_angle_span_deg = max(
+            1.0,
+            FUSION_FULL_PIVOT_STEERING_DEG
+            - FUSION_FULL_NORMAL_STEERING_DEG,
+        )
+        pivot_progress = min(
+            1.0,
+            (
+                angle_error_magnitude_deg
+                - FUSION_FULL_NORMAL_STEERING_DEG
+            ) / pivot_angle_span_deg,
+        )
+        pivot_strength = (
+            pivot_progress
+            * pivot_progress
+            * (3.0 - 2.0 * pivot_progress)
+        )
+        steering_magnitude = (
+            NORMAL_FULL_STEERING_ERROR
+            + pivot_strength * (1.0 - NORMAL_FULL_STEERING_ERROR)
+        )
+
+    steering_error = math.copysign(steering_magnitude, angle_error_deg)
+    return max(-1.0, min(1.0, steering_error))
+
+
+def calculate_fusion_control_status(fusion_style_line):
+    """Valida a geometria Fusion e prepara sua telemetria de controle."""
+
+    result = {
+        "fusionAngle": None,
+        "filteredFusionAngle": None,
+        "fusionSteeringError": None,
+        "fusionControlActive": False,
+    }
+    if not isinstance(fusion_style_line, dict):
+        return result
+
+    fusion_angle = finite_virtual_position(fusion_style_line.get("angleDeg"))
+    result["fusionAngle"] = fusion_angle
+    if fusion_angle is None or not 0.0 <= fusion_angle <= 180.0:
+        return result
+
+    # Nesta primeira etapa não há filtro temporal: o valor filtrado é uma cópia
+    # direta do ângulo validado para deixar explícita essa decisão na telemetria.
+    result["filteredFusionAngle"] = fusion_angle
+    fusion_geometry_valid = (
+        fusion_style_line.get("valid") is True
+        and fusion_style_line.get("selection") == "nearCenter"
+        and fusion_target_is_valid(fusion_style_line.get("nearPoint"))
+        and fusion_target_is_valid(fusion_style_line.get("farPoint"))
+    )
+    if not fusion_geometry_valid:
+        return result
+
+    result["fusionSteeringError"] = map_fusion_angle_to_steering_error(
+        fusion_angle
+    )
+    return result
+
+
 def map_normal_steering_error(steering_error):
     """Converte erro lateral somente no intervalo de autoridade NORMAL."""
 
@@ -5009,6 +6244,75 @@ def map_normal_steering_error(steering_error):
             "right_power": inner_power,
         }
     if limited_error < 0.0:
+        return {
+            "left_power": inner_power,
+            "right_power": outer_power,
+        }
+    return {
+        "left_power": NORMAL_BASE_POWER,
+        "right_power": NORMAL_BASE_POWER,
+    }
+
+
+def map_fusion_angle_to_motor_powers(fusion_angle):
+    """Converte o ângulo Fusion na curva contínua de potência do Soul."""
+
+    fusion_angle = finite_virtual_position(fusion_angle)
+    if fusion_angle is None or not 0.0 <= fusion_angle <= 180.0:
+        return None
+
+    angle_error_deg = fusion_angle - 90.0
+    angle_error_magnitude_deg = abs(angle_error_deg)
+    lower_error_deg, lower_outer_power, lower_inner_power = (
+        FUSION_POWER_CURVE[0]
+    )
+    outer_power = lower_outer_power
+    inner_power = lower_inner_power
+
+    for upper_point in FUSION_POWER_CURVE[1:]:
+        upper_error_deg, upper_outer_power, upper_inner_power = upper_point
+        if angle_error_magnitude_deg <= upper_error_deg:
+            angle_span_deg = max(1.0, upper_error_deg - lower_error_deg)
+            transition_progress = (
+                angle_error_magnitude_deg - lower_error_deg
+            ) / angle_span_deg
+            transition_progress = max(
+                0.0,
+                min(1.0, transition_progress),
+            )
+            # Inclinação zero nas duas pontas evita degraus entre as faixas.
+            transition_strength = (
+                transition_progress
+                * transition_progress
+                * (3.0 - 2.0 * transition_progress)
+            )
+            outer_power = (
+                lower_outer_power
+                + transition_strength
+                * (upper_outer_power - lower_outer_power)
+            )
+            inner_power = (
+                lower_inner_power
+                + transition_strength
+                * (upper_inner_power - lower_inner_power)
+            )
+            break
+
+        lower_error_deg = upper_error_deg
+        lower_outer_power = upper_outer_power
+        lower_inner_power = upper_inner_power
+        outer_power = upper_outer_power
+        inner_power = upper_inner_power
+
+    outer_power = max(-1.0, min(1.0, outer_power))
+    inner_power = max(-1.0, min(1.0, inner_power))
+
+    if angle_error_deg > 0.0:
+        return {
+            "left_power": outer_power,
+            "right_power": inner_power,
+        }
+    if angle_error_deg < 0.0:
         return {
             "left_power": inner_power,
             "right_power": outer_power,
@@ -5124,12 +6428,14 @@ class VirtualLineSearchTracker:
         self.active = False
         self.initial_direction = None
         self.search_frames = 0
+        self.entry_confirmation_frames = 0
 
     def remember(self, direction):
         """Guarda somente uma direção lateral realmente observada."""
 
         if direction in ("LEFT", "RIGHT"):
             self.last_direction = direction
+            self.entry_confirmation_frames = 0
 
     def stop(self):
         """Interrompe a busca sem apagar a última direção confiável."""
@@ -5137,6 +6443,7 @@ class VirtualLineSearchTracker:
         self.active = False
         self.initial_direction = None
         self.search_frames = 0
+        self.entry_confirmation_frames = 0
 
     def start(self, preferred_direction=None):
         """Inicia a busca uma única vez com a melhor direção disponível."""
@@ -5151,6 +6458,21 @@ class VirtualLineSearchTracker:
         self.initial_direction = initial_direction or "RIGHT"
         self.active = True
         self.search_frames = 0
+        self.entry_confirmation_frames = 0
+
+    def request_automatic_start(self):
+        """Confirma a perda antes de iniciar uma busca automática de LINE."""
+
+        if self.active:
+            return True
+        self.entry_confirmation_frames += 1
+        if (
+            self.entry_confirmation_frames
+            < VIRTUAL_BLIND_SEARCH_CONFIRMATION_FRAMES
+        ):
+            return False
+        self.start()
+        return True
 
     def next_direction(self):
         """Retorna o lado da janela atual e avança um frame."""
@@ -5569,15 +6891,21 @@ def calculate_line_follower_command(
     line_search_tracker=None,
     blind_search_requested=False,
     sensor_recovery_requested=False,
+    fusion_style_line=None,
 ):
     """
     Aplica o seguidor virtual validado pela câmera inferior.
 
-    Verde e GAP mantêm prioridade. No modo normal, o heading dos sensores à
-    frente e a centralização local do NEAR-C chegam ao mapper.
+    Verde e GAP mantêm prioridade. No modo normal, o ângulo Fusion chega ao
+    mapper primeiro e o steering virtual permanece como fallback imediato.
     """
 
     _ = green_detection_result
+
+    fusion_control_status = calculate_fusion_control_status(
+        fusion_style_line
+    )
+    fusion_steering_error = fusion_control_status["fusionSteeringError"]
 
     sensors = (
         virtual_sensors
@@ -5722,51 +7050,67 @@ def calculate_line_follower_command(
                 control_source = "gap-forward"
 
     else:
-        normal_steering_valid = protected_virtual_steering is not None
+        virtual_normal_steering_valid = protected_virtual_steering is not None
         if virtual_turn_tracker is not None:
             virtual_state = virtual_turn_tracker.update(
                 sensors,
-                normal_steering_valid,
+                virtual_normal_steering_valid,
             )
 
-        if normal_steering_valid:
-            # O seguidor normal recupera autoridade no primeiro frame válido,
-            # mesmo enquanto o tracker confirma a saída do REORIENT.
-            steering_error = protected_virtual_steering
-            near_fine_position = finite_virtual_position(
-                sensors["nearFinePosition"]
+        fusion_can_hold_normal = (
+            fusion_steering_error is not None
+            and virtual_state == VIRTUAL_STATE_NORMAL
+            and not sensor_recovery_requested
+            and (
+                line_search_tracker is None
+                or not line_search_tracker.active
             )
-            protected_steering_for_fine = finite_virtual_position(
-                protected_virtual_steering
-            )
-            if (
-                virtual_sensor_is_active(sensors["nearCenter"])
-                and near_fine_position is not None
-                and protected_steering_for_fine is not None
-                and abs(protected_steering_for_fine)
-                <= NORMAL_FULL_STEERING_ERROR
-            ):
-                fine = apply_virtual_fine_center_deadband(
-                    near_fine_position
+        )
+        if virtual_normal_steering_valid or fusion_can_hold_normal:
+            if fusion_steering_error is not None:
+                # Um target atual pode sustentar NORMAL durante uma perda curta
+                # dos sensores virtuais, mas nunca cancela recovery ou search.
+                steering_error = fusion_steering_error
+                fusion_control_status["fusionControlActive"] = True
+                control_source = "fusion"
+            else:
+                # O seguidor normal recupera autoridade no primeiro frame válido,
+                # mesmo enquanto o tracker confirma a saída do REORIENT.
+                steering_error = protected_virtual_steering
+                near_fine_position = finite_virtual_position(
+                    sensors["nearFinePosition"]
                 )
-                fine_correction = max(
-                    -VIRTUAL_FINE_CENTER_MAX_CORRECTION,
-                    min(
-                        VIRTUAL_FINE_CENTER_MAX_CORRECTION,
-                        fine * VIRTUAL_FINE_CENTER_GAIN,
-                    ),
+                protected_steering_for_fine = finite_virtual_position(
+                    protected_virtual_steering
                 )
-                steering_error = max(
-                    -NORMAL_FULL_STEERING_ERROR,
-                    min(
-                        NORMAL_FULL_STEERING_ERROR,
-                        protected_steering_for_fine + fine_correction,
-                    ),
-                )
+                if (
+                    virtual_sensor_is_active(sensors["nearCenter"])
+                    and near_fine_position is not None
+                    and protected_steering_for_fine is not None
+                    and abs(protected_steering_for_fine)
+                    <= NORMAL_FULL_STEERING_ERROR
+                ):
+                    fine = apply_virtual_fine_center_deadband(
+                        near_fine_position
+                    )
+                    fine_correction = max(
+                        -VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+                        min(
+                            VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+                            fine * VIRTUAL_FINE_CENTER_GAIN,
+                        ),
+                    )
+                    steering_error = max(
+                        -NORMAL_FULL_STEERING_ERROR,
+                        min(
+                            NORMAL_FULL_STEERING_ERROR,
+                            protected_steering_for_fine + fine_correction,
+                        ),
+                    )
+                control_source = "virtual"
             normal_steering_mapper = True
             if line_search_tracker is not None:
                 line_search_tracker.stop()
-            control_source = "virtual"
         else:
             if virtual_state == VIRTUAL_STATE_REORIENT_LEFT:
                 steering_error = -1.0
@@ -5815,12 +7159,16 @@ def calculate_line_follower_command(
                         and not raw_line_visible
                         and line_search_tracker is not None
                     ):
-                        line_search_tracker.start()
-                        blind_direction = line_search_tracker.next_direction()
-                        steering_error = (
-                            -1.0 if blind_direction == "LEFT" else 1.0
-                        )
-                        control_source = "virtual-blind-search"
+                        if line_search_tracker.request_automatic_start():
+                            blind_direction = (
+                                line_search_tracker.next_direction()
+                            )
+                            steering_error = (
+                                -1.0 if blind_direction == "LEFT" else 1.0
+                            )
+                            control_source = "virtual-blind-search"
+                        else:
+                            control_source = "virtual-search-wait"
                     else:
                         control_source = "virtual-no-line"
 
@@ -5866,6 +7214,15 @@ def calculate_line_follower_command(
             if medium_position > 0.0
             else PIVOT_STATE_LEFT
         )
+
+    if (
+        fusion_control_status["fusionControlActive"]
+        and medium_spin_state != PIVOT_STATE_NONE
+    ):
+        # Uma manobra crítica já iniciada pelo controle legado mantém prioridade
+        # até seu critério original de saída. O Fusion continua só na telemetria.
+        fusion_control_status["fusionControlActive"] = False
+        control_source = "virtual"
 
     if normal_steering_mapper and control_source == "virtual":
         medium_strong_requested = (
@@ -5939,10 +7296,6 @@ def calculate_line_follower_command(
     # Verde, GAP e recoveries preservam o limite usado antes da histerese.
     NON_NORMAL_PIVOT_THRESHOLD = 0.40
 
-    # Potência durante pivot.
-    PIVOT_OUTER_POWER = 0.78
-    PIVOT_INNER_POWER = -0.72
-
     pivot_state = PIVOT_STATE_NONE
     if medium_spin_state != PIVOT_STATE_NONE:
         if pivot_state_tracker is not None:
@@ -5985,6 +7338,19 @@ def calculate_line_follower_command(
         # a esquerda recua, preservando uma pequena componente de avanço.
         left_power = PIVOT_INNER_POWER
         right_power = PIVOT_OUTER_POWER
+
+    elif fusion_control_status["fusionControlActive"]:
+        # O Fusion permanece no seguimento LINE e varia continuamente a potência
+        # até o pivot; não cria estado, latch ou novo gatilho de hard corner.
+        fusion_command = map_fusion_angle_to_motor_powers(
+            fusion_control_status["fusionAngle"]
+        )
+        if fusion_command is None:
+            left_power = 0.0
+            right_power = 0.0
+        else:
+            left_power = fusion_command["left_power"]
+            right_power = fusion_command["right_power"]
 
     elif normal_steering_mapper and not medium_strong_requested:
         # O caminho normal e a câmera frontal chamam exatamente o mesmo mapper.
@@ -6192,6 +7558,16 @@ def calculate_line_follower_command(
         "lineState": line_state,
         "greenDirection": direcao_verde_ativa,
         "controlSource": control_source,
+        "fusionAngle": fusion_control_status["fusionAngle"],
+        "filteredFusionAngle": fusion_control_status[
+            "filteredFusionAngle"
+        ],
+        "fusionSteeringError": fusion_control_status[
+            "fusionSteeringError"
+        ],
+        "fusionControlActive": fusion_control_status[
+            "fusionControlActive"
+        ],
         # Reaproveita a direção já escolhida pelo recovery com MEDIUM/FAR
         # trusted; a câmera frontal nunca calcula LEFT ou RIGHT.
         "trustedDirection": observed_recovery_direction or "NONE",
@@ -6624,6 +8000,18 @@ def save_line_status(
             "lineControlSource": str(
                 line_follower_command.get("controlSource", "unknown")
             ),
+            "fusionAngle": finite_virtual_position(
+                line_follower_command.get("fusionAngle")
+            ),
+            "filteredFusionAngle": finite_virtual_position(
+                line_follower_command.get("filteredFusionAngle")
+            ),
+            "fusionSteeringError": finite_virtual_position(
+                line_follower_command.get("fusionSteeringError")
+            ),
+            "fusionControlActive": (
+                line_follower_command.get("fusionControlActive") is True
+            ),
             "nearFinePosition": finite_virtual_position(
                 line_follower_command["nearFinePosition"]
             ),
@@ -6706,6 +8094,9 @@ def save_status(
     medium_line_confidence=0.0,
     far_thickness_consistency=0.0,
     medium_thickness_consistency=0.0,
+    normal_trajectory=None,
+    fusion_style_line=None,
+    line_follower_command=None,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -6743,6 +8134,11 @@ def save_status(
         0, int(repair_status.get("specularRepairComponents", 0))
     )
     timing_status = line_timings if isinstance(line_timings, dict) else {}
+    control_status = (
+        line_follower_command
+        if isinstance(line_follower_command, dict)
+        else {}
+    )
     safe_line_timings = {}
     for timing_name in (
         "lineProcessingMs",
@@ -6755,6 +8151,8 @@ def save_status(
         "morphOpenMs",
         "morphCloseMs",
         "contoursMs",
+        "normalTrajectoryMs",
+        "fusionStyleMs",
     ):
         try:
             timing_value = float(timing_status.get(timing_name, 0.0))
@@ -6827,6 +8225,34 @@ def save_status(
         "morphOpenMs": safe_line_timings["morphOpenMs"],
         "morphCloseMs": safe_line_timings["morphCloseMs"],
         "contoursMs": safe_line_timings["contoursMs"],
+        "normalTrajectoryMs": safe_line_timings["normalTrajectoryMs"],
+        "fusionStyleMs": safe_line_timings["fusionStyleMs"],
+        "normalTrajectory": (
+            normal_trajectory
+            if isinstance(normal_trajectory, dict)
+            else empty_normal_trajectory()
+        ),
+        "fusionStyleLine": (
+            fusion_style_line
+            if isinstance(fusion_style_line, dict)
+            else empty_fusion_style_line()
+        ),
+        "legacyLineDebugEnabled": bool(LEGACY_LINE_DEBUG_ENABLED),
+        "fusionAngle": finite_virtual_position(
+            control_status.get("fusionAngle")
+        ),
+        "filteredFusionAngle": finite_virtual_position(
+            control_status.get("filteredFusionAngle")
+        ),
+        "fusionSteeringError": finite_virtual_position(
+            control_status.get("fusionSteeringError")
+        ),
+        "fusionControlActive": (
+            control_status.get("fusionControlActive") is True
+        ),
+        "lineControlSource": str(
+            control_status.get("controlSource", "unknown")
+        ),
     }
     status.update(green_status or empty_green_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
@@ -6990,6 +8416,17 @@ def main():
             line_timings["contoursMs"] = (
                 time.perf_counter() - contours_started
             ) * 1000.0
+            normal_trajectory, fusion_style_line = extract_line_diagnostics(
+                line_candidate_mask,
+                camera_profile["role"],
+                LEGACY_LINE_DEBUG_ENABLED,
+            )
+            line_timings["normalTrajectoryMs"] = normal_trajectory[
+                "processingMs"
+            ]
+            line_timings["fusionStyleMs"] = fusion_style_line[
+                "processingMs"
+            ]
             line_vision_ms = (
                 time.perf_counter() - line_vision_started
             ) * 1000.0
@@ -7246,6 +8683,7 @@ def main():
                     line_search_tracker=line_search_tracker,
                     blind_search_requested=gap_blind_search_requested,
                     sensor_recovery_requested=sensor_recovery_requested,
+                    fusion_style_line=fusion_style_line,
                 )
             )
 
@@ -7381,17 +8819,17 @@ def main():
             )
 
             if camera_profile["role"] == "down":
-                draw_line_control_overlay(frame, line_follower_command)
-                draw_virtual_sensor_geometry(
-                    frame,
-                    line_follower_command,
-                    show_debug_details=(
-                        display_mode in (
-                            DISPLAY_MODE_LINE,
-                            DISPLAY_MODE_REAL,
-                        )
-                    ),
-                )
+                if LEGACY_LINE_DEBUG_ENABLED:
+                    draw_line_control_overlay(frame, line_follower_command)
+                    draw_virtual_sensor_geometry(
+                        frame,
+                        line_follower_command,
+                        show_debug_details=True,
+                    )
+                    draw_normal_trajectory_overlay(
+                        frame,
+                        normal_trajectory,
+                    )
 
             # A câmera inferior mantém o controle e os nove sensores virtuais.
             # As linhas estruturais antigas permanecem nas outras câmeras.
@@ -7463,6 +8901,15 @@ def main():
                     green_overlay_roi_interpretation,
                 )
 
+            if camera_profile["role"] == "down":
+                # O overlay Fusion é desenhado por último para permanecer legível
+                # mesmo quando a validação de verde também está visível.
+                draw_fusion_style_line_overlay(
+                    frame,
+                    fusion_style_line,
+                    line_follower_command,
+                )
+
             now = time.monotonic()
             elapsed = now - previous_time
             previous_time = now
@@ -7513,6 +8960,9 @@ def main():
                         "mediumThicknessConsistency",
                         0.0,
                     ),
+                    normal_trajectory=normal_trajectory,
+                    fusion_style_line=fusion_style_line,
+                    line_follower_command=line_follower_command,
                 )
                 last_status_time = now
     except Exception as error:

@@ -71,6 +71,7 @@ def calculate_command(
     blind_search_requested=False,
     sensor_recovery_requested=False,
     mask=None,
+    fusion_style_line=None,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
@@ -92,6 +93,7 @@ def calculate_command(
             line_search_tracker=line_search_tracker,
             blind_search_requested=blind_search_requested,
             sensor_recovery_requested=sensor_recovery_requested,
+            fusion_style_line=fusion_style_line,
         )
 
 
@@ -174,6 +176,670 @@ class CameraStreamRegressionTests(unittest.TestCase):
             interval,
             0.0,
         ))
+
+
+class NormalTrajectoryExtractionTests(unittest.TestCase):
+    def test_continuity_keeps_right_path_despite_left_distractor(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        right_path = np.asarray(
+            [(240, 359), (260, 290), (300, 220), (350, 150), (390, 47)],
+            dtype=np.int32,
+        )
+        camera_line_frame.cv2.polylines(
+            mask,
+            [right_path],
+            False,
+            255,
+            22,
+        )
+        # O ramo isolado à esquerda ocupa FAR/MEDIUM, mas não continua o NEAR.
+        camera_line_frame.cv2.line(mask, (80, 280), (80, 47), 255, 40)
+
+        virtual_sensors = camera_line_frame.read_virtual_line_sensors(mask)
+        trajectory = camera_line_frame.extract_normal_line_trajectory(mask)
+        points = trajectory["points"]
+
+        self.assertLess(virtual_sensors["rawFarPosition"], 0.0)
+        self.assertLess(virtual_sensors["rawMediumPosition"], 0.0)
+        self.assertTrue(trajectory["valid"])
+        self.assertGreater(trajectory["ambiguousScanlineCount"], 0)
+        self.assertGreater(points[-1]["x"], points[0]["x"] + 100.0)
+        self.assertTrue(all(point["x"] > 200.0 for point in points))
+        self.assertTrue(all(
+            scanline["selectedSegment"] is not None
+            and scanline["acceptedPoint"] is not None
+            for scanline in trajectory["scanlines"]
+        ))
+        self.assertTrue(any(
+            scanline["rejectedSegments"]
+            for scanline in trajectory["scanlines"]
+        ))
+        self.assertTrue(all(
+            first["y"] > second["y"]
+            for first, second in zip(points, points[1:])
+        ))
+
+    def test_path_without_near_anchor_is_not_claimed_as_normal(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (330, 260), (390, 47), 255, 22)
+
+        trajectory = camera_line_frame.extract_normal_line_trajectory(mask)
+
+        self.assertFalse(trajectory["valid"])
+        self.assertEqual(trajectory["pointCount"], 0)
+        self.assertGreater(trajectory["evaluatedScanlineCount"], 0)
+        self.assertTrue(all(
+            scanline["status"] == "noPoint"
+            for scanline in trajectory["scanlines"]
+        ))
+
+    def test_scanline_rejects_thin_segment_and_keeps_tape_width(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        envelope = camera_line_frame.resolve_normal_trajectory_envelope(
+            mask.shape
+        )
+        y = 180
+        mask[y - 1:y + 2, 100:102] = 255
+        mask[y - 1:y + 2, 300:324] = 255
+
+        segments, rejected_segments = (
+            camera_line_frame.find_normal_trajectory_segments(
+                mask,
+                envelope,
+                y,
+            )
+        )
+
+        self.assertEqual(len(rejected_segments), 1)
+        self.assertEqual(rejected_segments[0]["rejectionReason"], "width")
+        self.assertEqual(len(segments), 1)
+        self.assertAlmostEqual(segments[0]["centerX"], 311.5)
+
+    def test_overlay_draws_extracted_polyline_without_changing_result(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (330, 47), 255, 22)
+        trajectory = camera_line_frame.extract_normal_line_trajectory(mask)
+        original_trajectory = {
+            key: value[:] if isinstance(value, list) else value
+            for key, value in trajectory.items()
+        }
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+
+        with patch.object(
+            camera_line_frame.cv2,
+            "putText",
+            wraps=camera_line_frame.cv2.putText,
+        ) as put_text:
+            camera_line_frame.draw_normal_trajectory_overlay(frame, trajectory)
+
+        self.assertGreater(np.count_nonzero(frame), 0)
+        self.assertEqual(trajectory, original_trajectory)
+        metric_texts = {call.args[1] for call in put_text.call_args_list}
+        self.assertIn(
+            f"trajectoryPoints {trajectory['pointCount']}",
+            metric_texts,
+        )
+        self.assertIn(
+            f"coverage {trajectory['verticalCoverage']:.3f}",
+            metric_texts,
+        )
+        self.assertIn(
+            f"ambiguities {trajectory['ambiguousScanlineCount']}",
+            metric_texts,
+        )
+        self.assertIn(
+            f"trajectoryMs {trajectory['processingMs']:.2f}",
+            metric_texts,
+        )
+
+    def test_overlay_marks_tolerated_scanline_without_point(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (300, 47), 255, 22)
+        envelope = camera_line_frame.resolve_normal_trajectory_envelope(
+            mask.shape
+        )
+        scanline_ys = camera_line_frame.normal_trajectory_scanline_ys(
+            envelope,
+            mask.shape[0],
+        )
+        missing_y = scanline_ys[12]
+        mask[missing_y - 2:missing_y + 3, :] = 0
+
+        trajectory = camera_line_frame.extract_normal_line_trajectory(mask)
+        missing_scanline = next(
+            scanline
+            for scanline in trajectory["scanlines"]
+            if scanline["y"] == missing_y
+        )
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+        camera_line_frame.draw_normal_trajectory_overlay(frame, trajectory)
+
+        self.assertTrue(trajectory["valid"])
+        self.assertEqual(missing_scanline["status"], "noPoint")
+        self.assertIsNone(missing_scanline["acceptedPoint"])
+        marker_x = missing_scanline["x0"] + 7
+        red_region = frame[
+            missing_y - 5:missing_y + 6,
+            marker_x - 5:marker_x + 6,
+            2,
+        ]
+        self.assertGreater(int(red_region.max()), 200)
+
+
+class FusionStyleLineExtractionTests(unittest.TestCase):
+    def test_straight_contour_produces_ninety_degree_angle(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
+
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+
+        self.assertTrue(fusion_line["valid"])
+        self.assertEqual(fusion_line["selection"], "nearCenter")
+        self.assertAlmostEqual(fusion_line["angleDeg"], 90.0, delta=1.0)
+        self.assertEqual(fusion_line["nearPoint"], {"x": 240, "y": 359})
+        self.assertLess(fusion_line["farPoint"]["y"], 70)
+
+    def test_angle_convention_distinguishes_left_and_right(self):
+        left_mask = np.zeros((360, 480), dtype=np.uint8)
+        right_mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(
+            left_mask,
+            (240, 359),
+            (100, 47),
+            255,
+            22,
+        )
+        camera_line_frame.cv2.line(
+            right_mask,
+            (240, 359),
+            (380, 47),
+            255,
+            22,
+        )
+
+        left_line = camera_line_frame.extract_fusion_style_line(left_mask)
+        right_line = camera_line_frame.extract_fusion_style_line(right_mask)
+
+        self.assertLess(left_line["angleDeg"], 90.0)
+        self.assertGreater(right_line["angleDeg"], 90.0)
+
+    def test_near_component_wins_over_larger_disconnected_distractor(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (300, 100), 255, 22)
+        camera_line_frame.cv2.rectangle(mask, (30, 60), (190, 250), 255, -1)
+
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+
+        self.assertTrue(fusion_line["valid"])
+        self.assertEqual(fusion_line["candidateContourCount"], 2)
+        self.assertEqual(fusion_line["selection"], "nearCenter")
+        self.assertGreater(fusion_line["farPoint"]["x"], 250)
+
+    def test_connected_ninety_degree_curve_uses_top_contour_band(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        curve = np.asarray(
+            [(240, 359), (240, 180), (479, 180)],
+            dtype=np.int32,
+        )
+        camera_line_frame.cv2.polylines(mask, [curve], False, 255, 22)
+
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+        envelope = camera_line_frame.resolve_normal_trajectory_envelope(
+            mask.shape
+        )
+        _, right_x = camera_line_frame.normal_trajectory_horizontal_bounds(
+            envelope,
+            fusion_line["farPoint"]["y"],
+        )
+
+        self.assertTrue(fusion_line["valid"])
+        self.assertEqual(fusion_line["referenceSource"], "rightEdge")
+        self.assertEqual(fusion_line["farPoint"]["x"], right_x - 1)
+        self.assertGreater(fusion_line["topBandPoint"]["x"], 300)
+        self.assertGreater(fusion_line["angleDeg"], 90.0)
+        self.assertEqual(
+            fusion_line["topBand"]["y1"] - fusion_line["topBand"]["y0"],
+            18,
+        )
+
+    def test_connected_left_ninety_degree_curve_uses_physical_edge(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        curve = np.asarray(
+            [(240, 359), (240, 180), (0, 180)],
+            dtype=np.int32,
+        )
+        camera_line_frame.cv2.polylines(mask, [curve], False, 255, 22)
+
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+        envelope = camera_line_frame.resolve_normal_trajectory_envelope(
+            mask.shape
+        )
+        left_x, _ = camera_line_frame.normal_trajectory_horizontal_bounds(
+            envelope,
+            fusion_line["farPoint"]["y"],
+        )
+
+        self.assertTrue(fusion_line["valid"])
+        self.assertEqual(fusion_line["referenceSource"], "leftEdge")
+        self.assertEqual(fusion_line["farPoint"]["x"], left_x)
+        self.assertLess(fusion_line["angleDeg"], 90.0)
+
+    def test_empty_mask_keeps_experimental_result_invalid(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+
+        self.assertTrue(fusion_line["enabled"])
+        self.assertFalse(fusion_line["valid"])
+        self.assertIsNone(fusion_line["angleDeg"])
+        self.assertIsNone(fusion_line["farPoint"])
+
+
+    def test_hot_path_skips_scanline_extractor_without_legacy_flag(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (360, 47), 255, 22)
+
+        with patch.object(
+            camera_line_frame,
+            "extract_normal_line_trajectory",
+        ) as scanline_extractor:
+            normal_trajectory, fusion_line = (
+                camera_line_frame.extract_line_diagnostics(
+                    mask,
+                    "down",
+                    legacy_debug_enabled=False,
+                )
+            )
+
+        scanline_extractor.assert_not_called()
+        self.assertFalse(normal_trajectory["enabled"])
+        self.assertEqual(normal_trajectory["processingMs"], 0.0)
+        self.assertTrue(fusion_line["valid"])
+
+    def test_legacy_flag_restores_scanline_extractor(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (330, 47), 255, 22)
+
+        with patch.object(
+            camera_line_frame,
+            "extract_normal_line_trajectory",
+            wraps=camera_line_frame.extract_normal_line_trajectory,
+        ) as scanline_extractor:
+            normal_trajectory, fusion_line = (
+                camera_line_frame.extract_line_diagnostics(
+                    mask,
+                    "down",
+                    legacy_debug_enabled=True,
+                )
+            )
+
+        scanline_extractor.assert_called_once_with(mask)
+        self.assertTrue(normal_trajectory["enabled"])
+        self.assertTrue(fusion_line["valid"])
+
+    def test_overlay_draws_magenta_ray_and_angle_text(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (360, 47), 255, 22)
+        fusion_line = camera_line_frame.extract_fusion_style_line(mask)
+        frame = np.zeros((360, 480, 3), dtype=np.uint8)
+
+        with patch.object(
+            camera_line_frame.cv2,
+            "putText",
+            wraps=camera_line_frame.cv2.putText,
+        ) as put_text:
+            camera_line_frame.draw_fusion_style_line_overlay(
+                frame,
+                fusion_line,
+                {
+                    "controlSource": "legacy_normal",
+                    "left_power": 0.42,
+                    "right_power": 0.31,
+                },
+            )
+
+        self.assertGreater(np.count_nonzero(frame), 0)
+        texts = {call.args[1] for call in put_text.call_args_list}
+        self.assertIn(
+            f"FusionAngle {fusion_line['angleDeg']:.1f} deg",
+            texts,
+        )
+        self.assertIn("F TARGET", texts)
+        self.assertIn(
+            f"Fusion VALID {fusion_line['processingMs']:.2f} ms",
+            texts,
+        )
+        self.assertIn("Source legacy_normal", texts)
+        self.assertIn("Powers L +0.42 R +0.31", texts)
+
+
+class FusionNormalSteeringControlTests(unittest.TestCase):
+    @staticmethod
+    def valid_fusion_line(angle_deg):
+        return {
+            "valid": True,
+            "angleDeg": angle_deg,
+            "selection": "nearCenter",
+            "nearPoint": {"x": 240, "y": 359},
+            "farPoint": {"x": 360, "y": 47},
+        }
+
+    def test_angle_mapping_uses_small_deadband_and_safe_clamp(self):
+        expected_magnitudes = (
+            (2.0, 0.0),
+            (5.0, 0.11390625),
+            (10.0, camera_line_frame.NORMAL_FULL_STEERING_ERROR),
+            (15.0, 0.3725925925925926),
+            (20.0, 0.4074074074074074),
+            (25.0, 0.46),
+            (40.0, 0.68),
+            (55.0, 0.9),
+            (70.0, 1.0),
+        )
+        for angle_error_deg, expected_magnitude in expected_magnitudes:
+            with self.subTest(angle_error_deg=angle_error_deg):
+                right = (
+                    camera_line_frame.map_fusion_angle_to_steering_error(
+                        90.0 + angle_error_deg
+                    )
+                )
+                left = (
+                    camera_line_frame.map_fusion_angle_to_steering_error(
+                        90.0 - angle_error_deg
+                    )
+                )
+                self.assertTrue(math.isclose(right, expected_magnitude))
+                self.assertTrue(math.isclose(left, -expected_magnitude))
+
+        self.assertLess(
+            camera_line_frame.map_fusion_angle_to_steering_error(93.0),
+            0.02,
+        )
+        self.assertEqual(
+            camera_line_frame.map_fusion_angle_to_steering_error(0.0),
+            -1.0,
+        )
+        self.assertEqual(
+            camera_line_frame.map_fusion_angle_to_steering_error(180.0),
+            1.0,
+        )
+        for invalid_angle in (None, float("nan"), -0.1, 180.1):
+            with self.subTest(invalid_angle=invalid_angle):
+                self.assertIsNone(
+                    camera_line_frame.map_fusion_angle_to_steering_error(
+                        invalid_angle
+                    )
+                )
+
+    def test_fusion_power_curve_separates_strong_normal_from_pivot(self):
+        expected_right_turn_powers = (
+            (10.0, 0.82, 0.66),
+            (15.0, 0.8277777777777777, 0.5666666666666667),
+            (20.0, 0.8422222222222222, 0.39333333333333337),
+            (25.0, 0.85, 0.30),
+            (40.0, 0.83, 0.02),
+            (45.0, 0.8248148148148148, -0.037037037037037035),
+            (55.0, 0.81, -0.20),
+            (70.0, 0.78, -0.72),
+        )
+        for angle_error_deg, expected_outer, expected_inner in (
+            expected_right_turn_powers
+        ):
+            with self.subTest(angle_error_deg=angle_error_deg):
+                right_command = (
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        90.0 + angle_error_deg
+                    )
+                )
+                left_command = (
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        90.0 - angle_error_deg
+                    )
+                )
+
+                self.assertTrue(
+                    math.isclose(
+                        right_command["left_power"],
+                        expected_outer,
+                    )
+                )
+                self.assertTrue(
+                    math.isclose(
+                        right_command["right_power"],
+                        expected_inner,
+                    )
+                )
+                self.assertTrue(
+                    math.isclose(
+                        left_command["left_power"],
+                        expected_inner,
+                    )
+                )
+                self.assertTrue(
+                    math.isclose(
+                        left_command["right_power"],
+                        expected_outer,
+                    )
+                )
+
+        for invalid_angle in (None, float("nan"), -0.1, 180.1):
+            with self.subTest(invalid_power_angle=invalid_angle):
+                self.assertIsNone(
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        invalid_angle
+                    )
+                )
+
+    def test_fusion_power_curve_is_continuous_at_calibration_points(self):
+        boundary_errors_deg = (2.0, 10.0, 25.0, 40.0, 55.0, 70.0)
+        for boundary_error_deg in boundary_errors_deg:
+            with self.subTest(boundary_error_deg=boundary_error_deg):
+                before = (
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        90.0 + boundary_error_deg - 0.000001
+                    )
+                )
+                after = (
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        90.0 + boundary_error_deg + 0.000001
+                    )
+                )
+                self.assertLess(
+                    abs(before["left_power"] - after["left_power"]),
+                    0.000001,
+                )
+                self.assertLess(
+                    abs(before["right_power"] - after["right_power"]),
+                    0.000001,
+                )
+
+    def test_fusion_is_primary_only_in_normal_following(self):
+        sensors = sensor_values(steering_error=-0.20)
+        fusion_line = self.valid_fusion_line(110.0)
+
+        result = calculate_command(
+            sensors,
+            fusion_style_line=fusion_line,
+        )
+
+        self.assertEqual(result["controlSource"], "fusion")
+        self.assertTrue(result["fusionControlActive"])
+        self.assertEqual(result["fusionAngle"], 110.0)
+        self.assertEqual(result["filteredFusionAngle"], 110.0)
+        self.assertEqual(
+            result["fusionSteeringError"],
+            0.4074074074074074,
+        )
+        self.assertTrue(math.isclose(
+            result["left_power"],
+            0.8422222222222222,
+        ))
+        self.assertTrue(math.isclose(
+            result["right_power"],
+            0.39333333333333337,
+        ))
+        self.assertGreater(result["left_power"], 0.0)
+        self.assertGreater(result["right_power"], 0.0)
+
+    def test_current_fusion_target_prevents_new_blind_search(self):
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.last_direction = "LEFT"
+
+        result = calculate_command(
+            sensor_values(steering_error=None),
+            line_search_tracker=search_tracker,
+            fusion_style_line=self.valid_fusion_line(18.0),
+        )
+
+        self.assertEqual(result["controlSource"], "fusion")
+        self.assertTrue(result["fusionControlActive"])
+        self.assertFalse(search_tracker.active)
+        self.assertTrue(math.isclose(result["left_power"], -0.72))
+        self.assertTrue(math.isclose(result["right_power"], 0.78))
+
+    def test_active_blind_search_keeps_priority_over_fusion(self):
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.start("LEFT")
+        sensors = sensor_values(None, None, None)
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        sensors["farPosition"] = None
+
+        result = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            fusion_style_line=self.valid_fusion_line(130.0),
+        )
+
+        self.assertEqual(result["controlSource"], "virtual-blind-search")
+        self.assertFalse(result["fusionControlActive"])
+        self.assertTrue(search_tracker.active)
+
+    def test_automatic_search_requires_two_lost_frames(self):
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.last_direction = "LEFT"
+        sensors = sensor_values(None, None, None)
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        sensors["farPosition"] = None
+
+        first = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+        )
+        second = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+        )
+
+        self.assertEqual(first["controlSource"], "virtual-search-wait")
+        self.assertEqual((first["left_power"], first["right_power"]), (0.0, 0.0))
+        self.assertEqual(second["controlSource"], "virtual-blind-search")
+        self.assertTrue(search_tracker.active)
+        self.assertLess(second["left_power"], second["right_power"])
+
+    def test_missing_target_uses_virtual_fallback(self):
+        sensors = sensor_values(steering_error=-0.20)
+        fusion_line = self.valid_fusion_line(110.0)
+        fusion_line["farPoint"] = None
+
+        result = calculate_command(
+            sensors,
+            fusion_style_line=fusion_line,
+        )
+
+        self.assertEqual(result["controlSource"], "virtual")
+        self.assertFalse(result["fusionControlActive"])
+        self.assertEqual(result["steeringError"], -0.20)
+        self.assertIsNone(result["fusionSteeringError"])
+
+    def test_unanchored_component_uses_virtual_fallback(self):
+        sensors = sensor_values(steering_error=0.14)
+        fusion_line = self.valid_fusion_line(70.0)
+        fusion_line["selection"] = "deepestFallback"
+
+        result = calculate_command(
+            sensors,
+            fusion_style_line=fusion_line,
+        )
+
+        self.assertEqual(result["controlSource"], "virtual")
+        self.assertFalse(result["fusionControlActive"])
+        self.assertEqual(result["steeringError"], 0.14)
+
+    def test_fusion_target_does_not_replace_existing_recovery(self):
+        sensors = sensor_values(steering_error=None)
+        tracker = camera_line_frame.VirtualTurnStateTracker()
+        tracker.state = camera_line_frame.VIRTUAL_STATE_REORIENT_LEFT
+
+        result = calculate_command(
+            sensors,
+            tracker=tracker,
+            fusion_style_line=self.valid_fusion_line(130.0),
+        )
+
+        self.assertEqual(
+            result["virtualState"],
+            camera_line_frame.VIRTUAL_STATE_REORIENT_LEFT,
+        )
+        self.assertEqual(result["controlSource"], "virtual-reorient")
+        self.assertFalse(result["fusionControlActive"])
+        self.assertEqual(result["steeringError"], -1.0)
+
+    def test_green_and_gap_ignore_valid_fusion_control(self):
+        sensors = sensor_values(steering_error=0.12)
+        fusion_line = self.valid_fusion_line(130.0)
+
+        for mode_name, mode_arguments in (
+            ("GREEN", {"green_direction": "DIREITA"}),
+            ("GAP", {"gap_active": True}),
+        ):
+            with self.subTest(mode=mode_name):
+                baseline = calculate_command(sensors, **mode_arguments)
+                result = calculate_command(
+                    sensors,
+                    fusion_style_line=fusion_line,
+                    **mode_arguments,
+                )
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    (baseline["left_power"], baseline["right_power"]),
+                )
+                self.assertEqual(
+                    result["controlSource"],
+                    baseline["controlSource"],
+                )
+                self.assertFalse(result["fusionControlActive"])
+
+    def test_existing_hard_corner_keeps_priority_over_fusion(self):
+        tracker = camera_line_frame.VirtualMediumSpinTracker()
+        entry_sensors = sensor_values(
+            0.0,
+            -0.72,
+            None,
+            near_fine_position=-0.38,
+        )
+        entry_sensors["farPosition"] = None
+        calculate_command(entry_sensors, medium_spin_tracker=tracker)
+
+        fusion_line = self.valid_fusion_line(130.0)
+        held = calculate_command(
+            entry_sensors,
+            medium_spin_tracker=tracker,
+            fusion_style_line=fusion_line,
+        )
+
+        self.assertEqual(
+            tracker.hard_corner_state,
+            camera_line_frame.PIVOT_STATE_LEFT,
+        )
+        self.assertEqual(
+            (held["left_power"], held["right_power"]),
+            (-0.72, 0.72),
+        )
+        self.assertEqual(held["controlSource"], "virtual")
+        self.assertFalse(held["fusionControlActive"])
+
 
 class VirtualSensorRegressionTests(unittest.TestCase):
     def test_near_fine_position_is_centered(self):

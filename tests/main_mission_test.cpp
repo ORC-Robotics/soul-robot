@@ -131,6 +131,16 @@ CameraLineSnapshot gapVision(std::uint64_t sequence)
     return snapshot;
 }
 
+CameraLineSnapshot pendingLineLoss(std::uint64_t sequence)
+{
+    CameraLineSnapshot snapshot = bottomVision(
+        sequence, false, false, "NONE");
+    snapshot.lineControlSource = "virtual-search-wait";
+    snapshot.lineFollowerLeftPower = 0.0;
+    snapshot.lineFollowerRightPower = 0.0;
+    return snapshot;
+}
+
 ForwardLineSnapshot forwardVision(
     std::uint64_t sequence,
     double position,
@@ -651,7 +661,8 @@ RobotSnapshot startForwardSearch(
     const std::string& direction)
 {
     fixture.update(bottomVision(1, true, true, direction));
-    return fixture.update(bottomVision(2, false, false, "NONE"));
+    fixture.update(pendingLineLoss(2));
+    return fixture.update(bottomVision(3, false, false, "NONE"));
 }
 
 void testForwardAssistStaysOnBottomWhileTrusted()
@@ -665,10 +676,20 @@ void testForwardAssistStaysOnBottomWhileTrusted()
         "FAR/MEDIUM trusted devem manter autoridade integral da bottom.");
 }
 
-void testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection()
+void testForwardAssistSearchConfirmsLossWithRecentTrustedDirection()
 {
     MissionFixture fixture;
-    const RobotSnapshot snapshot = startForwardSearch(fixture, "LEFT");
+    fixture.update(bottomVision(1, true, true, "LEFT"));
+    const RobotSnapshot waiting = fixture.update(pendingLineLoss(2));
+    require(
+        waiting.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            waiting.autonomousStatus.forwardAssistEntryBlocker ==
+                "WAITING_LOSS_CONFIRMATION" &&
+            closeTo(waiting.left, 0.0) && closeTo(waiting.right, 0.0),
+        "Uma perda isolada deve aguardar confirmação antes de SEARCH_SPIN.");
+
+    const RobotSnapshot snapshot = fixture.update(
+        bottomVision(3, false, false, "NONE"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
@@ -683,7 +704,7 @@ void testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection()
     MissionFixture noDirectionFixture;
     noDirectionFixture.update(bottomVision(1, true, true, "NONE"));
     const RobotSnapshot noDirection = noDirectionFixture.update(
-        bottomVision(2, false, false, "NONE"));
+        pendingLineLoss(2));
     require(
         noDirection.autonomousStatus.forwardAssistState == "BOTTOM" &&
             !noDirection.autonomousStatus.forwardAssistEntryAllowed &&
@@ -712,7 +733,14 @@ void testForwardAssistNonePreservesRightLatchUntilLoss()
         snapshot.autonomousStatus.forwardAssistLatchedDirection == "RIGHT",
         "Vários frames NONE devem preservar o último lado RIGHT confiável.");
 
-    snapshot = fixture.update(bottomVision(4, false, false, "NONE"));
+    snapshot = fixture.update(pendingLineLoss(4));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "WAITING_LOSS_CONFIRMATION",
+        "O primeiro frame perdido deve preservar BOTTOM e o latch RIGHT.");
+
+    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.forwardAssistDirection == "RIGHT" &&
@@ -753,7 +781,14 @@ void testForwardAssistValidDirectionReplacesLatchAndNonePreservesIt()
         snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
         "Vários frames NONE devem preservar o último lado LEFT confiável.");
 
-    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
+    snapshot = fixture.update(pendingLineLoss(5));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "WAITING_LOSS_CONFIRMATION",
+        "O primeiro frame perdido deve preservar BOTTOM e o latch LEFT.");
+
+    snapshot = fixture.update(bottomVision(6, false, false, "NONE"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
@@ -872,7 +907,14 @@ void testForwardAssistNoneBreaksMediumFlipButPreservesLatch()
         snapshot.autonomousStatus.forwardAssistLatchedDirection == "LEFT",
         "Após NONE, a confirmação MEDIUM deve recomeçar em 1/2.");
 
-    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
+    snapshot = fixture.update(pendingLineLoss(5));
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "WAITING_LOSS_CONFIRMATION",
+        "O primeiro frame perdido não pode iniciar busca após um flip incompleto.");
+
+    snapshot = fixture.update(bottomVision(6, false, false, "NONE"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
@@ -889,7 +931,7 @@ void testForwardAssistNoneBreaksMediumFlipButPreservesLatch()
         "A perda completa deve usar o latch LEFT preservado.");
 }
 
-void testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering()
+void testForwardAssistKeepsValidNormalSteeringAcrossSequenceGap()
 {
     MissionFixture fixture;
     CameraLineSnapshot trusted = bottomVision(
@@ -916,22 +958,40 @@ void testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering()
 
     const RobotSnapshot snapshot = fixture.update(lost);
     require(
-        snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
-            snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
             snapshot.autonomousStatus.forwardAssistLatchedDirection ==
                 "LEFT" &&
             !snapshot.autonomousStatus.forwardAssistFarTrusted &&
             !snapshot.autonomousStatus.forwardAssistMediumTrusted &&
-            snapshot.autonomousStatus.forwardAssistEntryAllowed &&
-            snapshot.autonomousStatus.forwardAssistEntryBlocker == "NONE" &&
-            closeTo(
-                snapshot.left,
-                -config::kForwardAssistSearchSpinPower) &&
-            closeTo(
-                snapshot.right,
-                config::kForwardAssistSearchSpinPower),
-        "A perda de FAR/MEDIUM deve entrar em SEARCH_SPIN com a direção "
-        "latched, mesmo com salto de sequence e NEAR produzindo steering zero.");
+            !snapshot.autonomousStatus.forwardAssistEntryAllowed &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "NORMAL_STEERING_VALID" &&
+            closeTo(snapshot.left, lost.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, lost.lineFollowerRightPower),
+        "Steering NORMAL válido deve manter BOTTOM mesmo com salto de sequence.");
+}
+
+void testForwardAssistKeepsValidFusionPivotBeforeSearch()
+{
+    MissionFixture fixture;
+    fixture.update(bottomVision(1, false, true, "LEFT"));
+
+    CameraLineSnapshot fusionPivot = bottomVision(
+        2, false, false, "NONE");
+    fusionPivot.lineControlSource = "fusion";
+    fusionPivot.normalSteeringValid = true;
+    fusionPivot.curveDiagnostics.finalSteering = -1.0;
+    fusionPivot.lineFollowerLeftPower = -0.72;
+    fusionPivot.lineFollowerRightPower = 0.78;
+
+    const RobotSnapshot snapshot = fixture.update(fusionPivot);
+    require(
+        snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
+            snapshot.autonomousStatus.forwardAssistEntryBlocker ==
+                "NORMAL_STEERING_VALID" &&
+            closeTo(snapshot.left, fusionPivot.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, fusionPivot.lineFollowerRightPower),
+        "Pivot contínuo Fusion válido deve manter BOTTOM antes de SEARCH_SPIN.");
 }
 
 void testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees()
@@ -981,7 +1041,7 @@ void testBottomRecoveryRequiresTwoStableFramesDuringSearch()
     MissionFixture fixture;
     startForwardSearch(fixture, "RIGHT");
     const CameraLineSnapshot firstRecovered = bottomVision(
-        3, false, true, "RIGHT");
+        4, false, true, "RIGHT");
     RobotSnapshot snapshot = fixture.update(firstRecovered);
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
@@ -995,7 +1055,7 @@ void testBottomRecoveryRequiresTwoStableFramesDuringSearch()
         "Um frame MEDIUM trusted não pode cancelar SEARCH_SPIN.");
 
     const CameraLineSnapshot secondRecovered = bottomVision(
-        4, false, true, "RIGHT");
+        5, false, true, "RIGHT");
     snapshot = fixture.update(secondRecovered);
     require(
         snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
@@ -1010,13 +1070,13 @@ void testBottomRecoveryFlickerResetsCounterDuringSearch()
     startForwardSearch(fixture, "LEFT");
 
     RobotSnapshot snapshot = fixture.update(
-        bottomVision(3, false, true, "LEFT"));
+        bottomVision(4, false, true, "LEFT"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.bottomStableFrames == 1,
         "O primeiro frame trusted deve registrar BOTTOM_STABLE 1/2.");
 
-    snapshot = fixture.update(bottomVision(4, false, false, "NONE"));
+    snapshot = fixture.update(bottomVision(5, false, false, "NONE"));
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.bottomStableFrames == 0 &&
@@ -1081,7 +1141,7 @@ void testForwardFollowUsesOnlyNormalForwardPowerAndTwoStableFrames()
     startForwardSearch(fixture, "RIGHT");
     ForwardLineSnapshot forward = forwardVision(1, 1.0);
     RobotSnapshot snapshot = fixture.update(
-        bottomVision(2, false, false, "NONE"), true, forward);
+        bottomVision(4, false, false, "NONE"), true, forward);
     require(
         snapshot.autonomousStatus.forwardAssistState == "FORWARD_FOLLOW" &&
             snapshot.left >= config::kForwardAssistNormalMinimumPower &&
@@ -1091,14 +1151,14 @@ void testForwardFollowUsesOnlyNormalForwardPowerAndTwoStableFrames()
         "FORWARD_FOLLOW deve permanecer à frente e dentro do NORMAL.");
 
     snapshot = fixture.update(
-        bottomVision(3, true, false, "RIGHT"), true, forward);
+        bottomVision(5, true, false, "RIGHT"), true, forward);
     require(
         snapshot.autonomousStatus.forwardAssistState == "FORWARD_FOLLOW" &&
             snapshot.autonomousStatus.bottomStableFrames == 1,
         "Um frame inferior estável ainda não deve retirar a frontal.");
 
     const CameraLineSnapshot secondStable = bottomVision(
-        4, true, false, "RIGHT");
+        6, true, false, "RIGHT");
     snapshot = fixture.update(secondStable, true, forward);
     require(
         snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
@@ -1113,18 +1173,18 @@ void testBottomStableFramesMustHaveConsecutiveSequences()
     startForwardSearch(fixture, "RIGHT");
     const ForwardLineSnapshot forward = forwardVision(1, 0.15);
     fixture.update(
-        bottomVision(2, false, false, "NONE"), true, forward);
+        bottomVision(4, false, false, "NONE"), true, forward);
 
-    fixture.update(bottomVision(3, true, false, "RIGHT"), true, forward);
+    fixture.update(bottomVision(5, true, false, "RIGHT"), true, forward);
     RobotSnapshot snapshot = fixture.update(
-        bottomVision(5, true, false, "RIGHT"), true, forward);
+        bottomVision(7, true, false, "RIGHT"), true, forward);
     require(
         snapshot.autonomousStatus.forwardAssistState == "FORWARD_FOLLOW" &&
             snapshot.autonomousStatus.bottomStableFrames == 1,
         "Uma lacuna de sequence deve reiniciar a confirmação da bottom.");
 
     const CameraLineSnapshot consecutive = bottomVision(
-        6, true, false, "RIGHT");
+        8, true, false, "RIGHT");
     snapshot = fixture.update(consecutive, true, forward);
     require(
         snapshot.autonomousStatus.forwardAssistState == "BOTTOM" &&
@@ -1140,14 +1200,14 @@ void testForwardLossResumesSameSearchAttempt()
     startForwardSearch(fixture, "LEFT");
     fixture.telemetry.yawZDeg = 22.0;
     fixture.update(
-        bottomVision(2, false, false, "NONE"),
+        bottomVision(4, false, false, "NONE"),
         true,
         forwardVision(1, 0.20));
 
     fixture.telemetry.yawZDeg = 25.0;
     ForwardLineSnapshot stale = forwardVision(1, 0.20, false);
     const RobotSnapshot snapshot = fixture.update(
-        bottomVision(2, false, false, "NONE"), true, stale);
+        bottomVision(4, false, false, "NONE"), true, stale);
     require(
         snapshot.autonomousStatus.forwardAssistState == "SEARCH_SPIN" &&
             snapshot.autonomousStatus.forwardAssistDirection == "LEFT" &&
@@ -1163,7 +1223,7 @@ void testStaleForwardReadingNeverStopsSearch()
     MissionFixture fixture;
     startForwardSearch(fixture, "RIGHT");
     const RobotSnapshot snapshot = fixture.update(
-        bottomVision(2, false, false, "NONE"),
+        bottomVision(4, false, false, "NONE"),
         true,
         forwardVision(9, -0.40, false));
     require(
@@ -1256,14 +1316,15 @@ int main()
         testReturnCenteringTimeoutReleasesConfiguredSequence();
         testVisualSearchStopsAtAngularLimit();
         testForwardAssistStaysOnBottomWhileTrusted();
-        testForwardAssistSearchUsesImmediatelyPreviousTrustedDirection();
+        testForwardAssistSearchConfirmsLossWithRecentTrustedDirection();
         testForwardAssistNonePreservesRightLatchUntilLoss();
         testForwardAssistValidDirectionReplacesLatchAndNonePreservesIt();
         testForwardAssistFarDirectionWinsWithoutExistingLatch();
         testForwardAssistConflictPreservesExistingLatch();
         testForwardAssistMediumFlipRequiresTwoConsecutiveFrames();
         testForwardAssistNoneBreaksMediumFlipButPreservesLatch();
-        testForwardAssistIgnoresSequenceGapAndNearOnlyStraightSteering();
+        testForwardAssistKeepsValidNormalSteeringAcrossSequenceGap();
+        testForwardAssistKeepsValidFusionPivotBeforeSearch();
         testForwardLineStopsSpinImmediatelyAtEightAndThirtyDegrees();
         testForwardSearchStopsAtWrappedSixtyFiveDegreeLimit();
         testBottomRecoveryRequiresTwoStableFramesDuringSearch();

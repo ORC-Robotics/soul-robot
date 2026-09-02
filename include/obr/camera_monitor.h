@@ -52,6 +52,8 @@ struct CameraLineSnapshot
     double ageMs = 0.0;
     bool farTrusted = false;
     bool mediumTrusted = false;
+    // Confirma um comando de seguimento LINE aceito pela Raspberry. No Fusion,
+    // a roda interna pode ficar negativa sem transformar o comando em search.
     bool normalSteeringValid = false;
     // Direção lateral calculada pelo recovery inferior exclusivamente com
     // posições trusted. A Raspberry apenas memoriza esta decisão entre frames.

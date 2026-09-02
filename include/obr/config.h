@@ -100,11 +100,21 @@ constexpr int kForwardAssistMediumFlipConfirmationFrames = 2;
 // a autoridade depois que a câmera frontal começou a carregar o robô.
 constexpr int kForwardAssistBottomStableFrames = 2;
 
-// Limites do mapper NORMAL existente na câmera inferior. A leitura frontal
-// publica o resultado desse mesmo mapper e a Raspberry rejeita qualquer comando
-// auxiliar fora desta faixa, impedindo PIVOT, SPIN e ré no FORWARD_FOLLOW.
+// Quantidade de frames inferiores novos sem trust nem steering NORMAL exigidos
+// antes de iniciar SEARCH_SPIN. Dois frames rejeitam uma perda isolada sem
+// prolongar excessivamente a transição quando a linha realmente desaparece.
+constexpr int kForwardAssistBottomLossFrames = 2;
+
+// Limites do mapper virtual NORMAL existente na câmera inferior. A leitura
+// frontal publica o resultado desse mesmo mapper e a Raspberry rejeita qualquer
+// comando auxiliar fora desta faixa no FORWARD_FOLLOW.
 constexpr double kForwardAssistNormalMinimumPower = 0.66;
 constexpr double kForwardAssistNormalMaximumPower = 0.82;
+
+// O Fusion pode reduzir a roda interna até a potência de pivot enquanto mantém
+// um target geométrico válido. Estes limites não liberam GREEN, GAP ou recovery.
+constexpr double kForwardAssistFusionMinimumPower = -0.72;
+constexpr double kForwardAssistFusionMaximumPower = 0.85;
 
 static_assert(kForwardAssistSearchSpinPower > 0.0 &&
                   kForwardAssistSearchSpinPower <= 1.0,
@@ -114,13 +124,20 @@ static_assert(kForwardAssistMaximumSearchDegrees > 0.0 &&
                   kForwardAssistDirectionPositionThreshold > 0.0 &&
                   kForwardAssistDirectionPositionThreshold <= 1.0 &&
                   kForwardAssistMediumFlipConfirmationFrames > 0 &&
-                  kForwardAssistBottomStableFrames > 0,
+                  kForwardAssistBottomStableFrames > 0 &&
+                  kForwardAssistBottomLossFrames > 0,
               "Os limites da assistência frontal devem ser positivos.");
 static_assert(kForwardAssistNormalMinimumPower > 0.0 &&
                   kForwardAssistNormalMinimumPower <=
                       kForwardAssistNormalMaximumPower &&
                   kForwardAssistNormalMaximumPower <= 1.0,
               "O mapper frontal deve permanecer no intervalo NORMAL.");
+static_assert(kForwardAssistFusionMinimumPower >= -1.0 &&
+                  kForwardAssistFusionMinimumPower < 0.0 &&
+                  kForwardAssistFusionMinimumPower <=
+                      kForwardAssistFusionMaximumPower &&
+                  kForwardAssistFusionMaximumPower <= 1.0,
+              "O mapper Fusion deve permanecer no intervalo normalizado.");
 
 // Pino físico BOARD 40 usado pelo script da câmera para ligar a iluminação.
 // Na Raspberry Pi, esse pino corresponde ao GPIO21; alterar exige revisar a fiação.

@@ -444,9 +444,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             }
             candidate.trustedDirection = trustedDirection;
         }
-        candidate.normalSteeringValid =
+        // O virtual permanece limitado à faixa positiva NORMAL. O Fusion pode
+        // comandar a roda interna em ré enquanto seu target atual continua
+        // válido; GREEN, GAP, recovery e fontes críticas continuam vetados.
+        const bool virtualNormalCommand =
             candidate.lineControlSource == "virtual" &&
-            isNormalizedValue(diagnostics.finalSteering) &&
             candidate.lineFollowerLeftPower >=
                 config::kForwardAssistNormalMinimumPower &&
             candidate.lineFollowerLeftPower <=
@@ -455,6 +457,19 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 config::kForwardAssistNormalMinimumPower &&
             candidate.lineFollowerRightPower <=
                 config::kForwardAssistNormalMaximumPower;
+        const bool fusionNormalCommand =
+            candidate.lineControlSource == "fusion" &&
+            candidate.lineFollowerLeftPower >=
+                config::kForwardAssistFusionMinimumPower &&
+            candidate.lineFollowerLeftPower <=
+                config::kForwardAssistFusionMaximumPower &&
+            candidate.lineFollowerRightPower >=
+                config::kForwardAssistFusionMinimumPower &&
+            candidate.lineFollowerRightPower <=
+                config::kForwardAssistFusionMaximumPower;
+        candidate.normalSteeringValid =
+            (virtualNormalCommand || fusionNormalCommand) &&
+            isNormalizedValue(diagnostics.finalSteering);
 
         const bool valuesValid =
             isNormalizedValue(candidate.lineFollowerLeftPower) &&

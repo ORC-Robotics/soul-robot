@@ -62,6 +62,7 @@ private:
     double forwardAssistYawOriginDegrees_ = 0.0;
     double forwardAssistYawDeltaDegrees_ = 0.0;
     int bottomStableFrames_ = 0;
+    int bottomLostFrames_ = 0;
     bool hasPreviousBottomFrame_ = false;
     std::uint64_t previousBottomSequence_ = 0;
     bool previousBottomTrusted_ = false;

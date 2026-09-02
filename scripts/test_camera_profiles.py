@@ -852,6 +852,10 @@ class CameraProfilesTest(unittest.TestCase):
                         "left_power": 0.0,
                         "right_power": 0.0,
                         "controlSource": "virtual",
+                        "fusionAngle": 108.0,
+                        "filteredFusionAngle": 108.0,
+                        "fusionSteeringError": 0.18,
+                        "fusionControlActive": True,
                         "nearCenter": 0.20,
                         "nearFinePosition": 0.12,
                         "mediumPosition": 0.08,
@@ -884,6 +888,10 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
         self.assertTrue(published["lineNearDetected"])
         self.assertEqual(published["lineControlSource"], "virtual")
+        self.assertEqual(published["fusionAngle"], 108.0)
+        self.assertEqual(published["filteredFusionAngle"], 108.0)
+        self.assertEqual(published["fusionSteeringError"], 0.18)
+        self.assertTrue(published["fusionControlActive"])
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
         self.assertEqual(published["nearFinePosition"], 0.12)
         self.assertIsNone(published["mediumPosition"])
@@ -904,6 +912,10 @@ class CameraProfilesTest(unittest.TestCase):
             "lineFollowerRightPower",
             "lineNearDetected",
             "lineControlSource",
+            "fusionAngle",
+            "filteredFusionAngle",
+            "fusionSteeringError",
+            "fusionControlActive",
             "nearFinePosition",
             "mediumPosition",
             "mediumLineConfidence",
@@ -926,6 +938,12 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(set(published), expected_keys)
 
     def test_camera_status_exposes_far_and_medium_line_confidence(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        cv2.line(mask, (240, 359), (330, 47), 255, 22)
+        normal_trajectory = (
+            camera_line_frame.extract_normal_line_trajectory(mask)
+        )
+        fusion_style_line = camera_line_frame.extract_fusion_style_line(mask)
         with tempfile.TemporaryDirectory() as directory:
             original_status_path = camera_line_frame.STATUS_PATH
             original_temp_path = camera_line_frame.TEMP_STATUS_PATH
@@ -946,6 +964,19 @@ class CameraProfilesTest(unittest.TestCase):
                     medium_line_confidence=0.62,
                     far_thickness_consistency=0.73,
                     medium_thickness_consistency=0.54,
+                    line_timings={
+                        "normalTrajectoryMs": normal_trajectory["processingMs"],
+                        "fusionStyleMs": fusion_style_line["processingMs"],
+                    },
+                    normal_trajectory=normal_trajectory,
+                    fusion_style_line=fusion_style_line,
+                    line_follower_command={
+                        "fusionAngle": fusion_style_line["angleDeg"],
+                        "filteredFusionAngle": fusion_style_line["angleDeg"],
+                        "fusionSteeringError": 0.21,
+                        "fusionControlActive": True,
+                        "controlSource": "fusion",
+                    },
                 )
                 with open(
                     camera_line_frame.STATUS_PATH,
@@ -960,6 +991,45 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["mediumLineConfidence"], 0.62)
         self.assertEqual(published["farThicknessConsistency"], 0.73)
         self.assertEqual(published["mediumThicknessConsistency"], 0.54)
+        self.assertTrue(published["normalTrajectory"]["valid"])
+        self.assertEqual(
+            published["normalTrajectory"]["pointCount"],
+            len(published["normalTrajectory"]["points"]),
+        )
+        self.assertEqual(
+            published["normalTrajectory"]["evaluatedScanlineCount"],
+            len(published["normalTrajectory"]["scanlines"]),
+        )
+        self.assertEqual(
+            published["normalTrajectory"]["coordinateFrame"],
+            "processedLineMaskPixels",
+        )
+        self.assertFalse(
+            published["normalTrajectory"]["rearAxleProjectionCalibrated"]
+        )
+        self.assertGreaterEqual(published["normalTrajectoryMs"], 0.0)
+        self.assertTrue(published["fusionStyleLine"]["valid"])
+        self.assertGreater(published["fusionStyleLine"]["angleDeg"], 90.0)
+        self.assertEqual(
+            published["fusionStyleLine"]["angleConvention"],
+            "90StraightBelow90LeftAbove90Right",
+        )
+        self.assertGreaterEqual(published["fusionStyleMs"], 0.0)
+        self.assertEqual(
+            published["fusionAngle"],
+            fusion_style_line["angleDeg"],
+        )
+        self.assertEqual(
+            published["filteredFusionAngle"],
+            fusion_style_line["angleDeg"],
+        )
+        self.assertEqual(published["fusionSteeringError"], 0.21)
+        self.assertTrue(published["fusionControlActive"])
+        self.assertEqual(published["lineControlSource"], "fusion")
+        self.assertEqual(
+            published["legacyLineDebugEnabled"],
+            camera_line_frame.LEGACY_LINE_DEBUG_ENABLED,
+        )
 
 
 if __name__ == "__main__":

@@ -98,6 +98,7 @@ void MainMission::resetForwardAssist()
     forwardAssistYawOriginDegrees_ = 0.0;
     forwardAssistYawDeltaDegrees_ = 0.0;
     bottomStableFrames_ = 0;
+    bottomLostFrames_ = 0;
     hasPreviousBottomFrame_ = false;
     previousBottomSequence_ = 0;
     previousBottomTrusted_ = false;
@@ -342,6 +343,19 @@ bool MainMission::updateForwardAssist(
         cameraLineSnapshot.lineControlSource != "virtual-blind-search";
     if (forwardAssistState_ == ForwardAssistState::Bottom && newBottomFrame)
     {
+        if (!bottomLostTrustedRows || cameraLineSnapshot.normalSteeringValid)
+        {
+            bottomLostFrames_ = 0;
+        }
+        else if (bottomLostFrames_ > 0)
+        {
+            ++bottomLostFrames_;
+        }
+        else if (previousBottomTrusted && previousBottomLineNormal)
+        {
+            bottomLostFrames_ = 1;
+        }
+
         forwardAssistEntryAllowed_ = false;
         if (!bottomLostTrustedRows)
         {
@@ -349,7 +363,13 @@ bool MainMission::updateForwardAssist(
                                              ? "FAR_TRUSTED"
                                              : "MEDIUM_TRUSTED";
         }
-        else if (!previousBottomTrusted || !previousBottomLineNormal)
+        else if (cameraLineSnapshot.normalSteeringValid)
+        {
+            // O Fusion ainda possui target e comando LINE válidos, ou o virtual
+            // permanece NORMAL; perder FAR/MEDIUM não autoriza SEARCH_SPIN.
+            forwardAssistEntryBlocker_ = "NORMAL_STEERING_VALID";
+        }
+        else if (bottomLostFrames_ == 0)
         {
             forwardAssistEntryBlocker_ = "NO_PREVIOUS_TRUST";
         }
@@ -359,16 +379,22 @@ bool MainMission::updateForwardAssist(
         }
         else if (bottomRequestsExistingCriticalTurn)
         {
+            bottomLostFrames_ = 0;
             forwardAssistEntryBlocker_ = "BOTTOM_CRITICAL_TURN";
         }
         else if (!ImuTurnController::imuReady(esp32Telemetry))
         {
+            bottomLostFrames_ = 0;
             forwardAssistEntryBlocker_ = "IMU_NOT_READY";
+        }
+        else if (bottomLostFrames_ < config::kForwardAssistBottomLossFrames)
+        {
+            forwardAssistEntryBlocker_ = "WAITING_LOSS_CONFIRMATION";
         }
         else
         {
-            // O gate usa os dois últimos estados realmente observados. Saltos
-            // no sequence do IPC não invalidam uma direção trusted já latched.
+            // A direção trusted permanece latched, mas a busca só começa após
+            // dois frames de perda. Saltos no sequence não apagam esse lado.
             forwardAssistEntryAllowed_ = true;
             forwardAssistEntryBlocker_ = "NONE";
             forwardAssistState_ = ForwardAssistState::SearchSpin;
@@ -376,6 +402,7 @@ bool MainMission::updateForwardAssist(
             forwardAssistYawOriginDegrees_ = esp32Telemetry.yawZDeg;
             forwardAssistYawDeltaDegrees_ = 0.0;
             bottomStableFrames_ = 0;
+            bottomLostFrames_ = 0;
         }
     }
 
