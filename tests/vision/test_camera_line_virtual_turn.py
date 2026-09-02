@@ -12,6 +12,7 @@ import numpy as np
 
 SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+import vision.geometry as line_geometry
 import vision.virtual_sensors as virtual_sensors
 
 MODULE_PATH = SCRIPTS_DIRECTORY / "camera_line_frame.py"
@@ -1466,7 +1467,7 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_active_near_center_skips_gap_geometry(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         with patch.object(
-            camera_line_frame,
+            line_geometry,
             "extract_geometric_line_path",
         ) as extract_path:
             guidance = camera_line_frame.extract_gap_geometric_guidance(
@@ -1488,7 +1489,7 @@ class VirtualRecoveryTests(unittest.TestCase):
     def test_active_green_without_gap_skips_gap_geometry(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         with patch.object(
-            camera_line_frame,
+            line_geometry,
             "extract_geometric_line_path",
         ) as extract_path:
             guidance = camera_line_frame.extract_gap_geometric_guidance(
@@ -1520,7 +1521,7 @@ class VirtualRecoveryTests(unittest.TestCase):
                 near_center_visible=near_center_visible,
             ):
                 with patch.object(
-                    camera_line_frame,
+                    line_geometry,
                     "extract_geometric_line_path",
                     return_value=expected_guidance.copy(),
                 ) as extract_path:
