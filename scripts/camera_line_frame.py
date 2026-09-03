@@ -214,7 +214,7 @@ GREEN_CLOSE_ITERATIONS = 2
 LINE_MIN_COMPONENT_AREA_PX = 120
 LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
-GREEN_MIN_AREA_RATIO = 2600.0 / (320.0 * 200.0)
+GREEN_MIN_AREA_RATIO = 1900.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
@@ -2249,6 +2249,10 @@ def empty_green_status():
         "greenConfirmed": False,
         "greenRawInterpretation": "SEM_DECISAO",
         "greenDecisionState": "idle",
+        "greenControlActive": False,
+        "greenControlDirection": "NENHUMA",
+        "greenArmed": True,
+        "greenRearmClearFrames": 0,
         "greenPathBlackValid": False,
         "greenCandidateCount": 0,
         "greenRejectedCount": 0,
@@ -2673,10 +2677,10 @@ VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
 # ESQUERDA e DIREITA usam os sensores virtuais para selecionar
 # somente o ramo permitido da interseção.
 #
-# Após terminar a curva, novos verdes continuam bloqueados até
-# que nenhum candidato verde seja visto por esta quantidade
-# de quadros consecutivos.
-QUADROS_PARA_REARMAR_VERDE = 60
+# Após terminar a curva, novos verdes continuam bloqueados até que nenhum
+# candidato verde seja visto por esta quantidade de quadros consecutivos.
+# Durante a manobra ativa, estes quadros não podem ser acumulados.
+QUADROS_PARA_REARMAR_VERDE = 5
 
 # A curva é considerada iniciada quando a posição fina local se desloca
 # suficientemente para o lado escolhido, com presença confirmada no NEAR-C.
@@ -2687,11 +2691,16 @@ LIMIAR_CURVA_VERDE_INICIADA = 0.20
 LIMIAR_CENTRALIZACAO_VERDE = 0.18
 
 # Evita encerrar a prioridade por uma leitura central isolada.
-QUADROS_CENTRALIZADO_PARA_CONCLUIR = 6
+QUADROS_CENTRALIZADO_PARA_CONCLUIR = 3
+
+# Limite lateral aceito em uma fileira trusted para confirmar que o ramo
+# escolhido pelo verde já migrou para a região central.
+GREEN_TRUSTED_POSITION_CENTER_LIMIT = 0.30
 
 # A manobra verde não pode manter a máscara de controle indefinidamente.
-# Em 30 FPS, sessenta frames correspondem a aproximadamente dois segundos.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 16
+# Em 30 FPS, 45 frames correspondem a aproximadamente 1,5 segundo. Este
+# timeout é apenas uma proteção; a conclusão normal depende da geometria.
+GREEN_MANEUVER_TIMEOUT_FRAMES = 45
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
@@ -2969,7 +2978,7 @@ def create_virtual_row_component_mask(processed_line_mask, row_geometry):
                 clipped_regions.append((x0, y0, x1, y1))
 
     if not clipped_regions:
-        return np.zeros((0, 0), dtype=np.uint8), 0, 0
+        return np.zeros((0, 0), dtype=np.uint8), 0, 0, 0
 
     bounds_x0 = min(region[0] for region in clipped_regions)
     bounds_y0 = min(region[1] for region in clipped_regions)
@@ -2987,7 +2996,7 @@ def create_virtual_row_component_mask(processed_line_mask, row_geometry):
         source = processed_line_mask[y0:y1, x0:x1]
         np.maximum(target, source, out=target)
 
-    return component_mask, bounds_y0, bounds_y1
+    return component_mask, bounds_x0, bounds_y0, bounds_y1
 
 
 def empty_virtual_row_line_measurement():
@@ -3000,6 +3009,7 @@ def empty_virtual_row_line_measurement():
         "continuityScore": 0.0,
         "areaScore": 0.0,
         "robustThicknessPx": 0.0,
+        "componentCenterX": None,
     }
 
 
@@ -3192,7 +3202,12 @@ def measure_virtual_row_line_confidence(processed_line_mask, row_geometry):
     if processed_line_mask.ndim != 2 or processed_line_mask.size == 0:
         return empty_virtual_row_line_measurement()
 
-    component_mask, bounds_y0, bounds_y1 = create_virtual_row_component_mask(
+    (
+        component_mask,
+        bounds_x0,
+        bounds_y0,
+        bounds_y1,
+    ) = create_virtual_row_component_mask(
         processed_line_mask,
         row_geometry,
     )
@@ -3322,6 +3337,9 @@ def measure_virtual_row_line_confidence(processed_line_mask, row_geometry):
             "continuityScore": continuity_score,
             "areaScore": area_score,
             "robustThicknessPx": robust_thickness_px,
+            "componentCenterX": (
+                float(bounds_x0) + float(centroids[label][0])
+            ),
         }
         if line_confidence > best_measurement["lineConfidence"]:
             best_measurement = candidate_measurement
@@ -4316,6 +4334,7 @@ def empty_fusion_style_line(processing_ms=0.0):
         "topBandPoint": None,
         "topBand": None,
         "referenceSource": "none",
+        "preferredDirection": "NONE",
         "candidateContourCount": 0,
         "contourAreaPx": 0.0,
         "selection": "none",
@@ -4718,15 +4737,22 @@ def select_fusion_style_reference_point(
     top_point,
     envelope,
     selected_contour_mask=None,
+    preferred_direction=None,
 ):
     """Usa apenas a geometria atual: topo distante ou borda em curva de 90°."""
 
     if top_point is None:
         return None, "none"
 
+    preferred_direction = (
+        preferred_direction
+        if preferred_direction in ("LEFT", "RIGHT")
+        else None
+    )
     geometry = envelope["geometry"]
     far_band_end_y = int(geometry["farBand"]["center"]["y1"])
-    if top_point[1] < far_band_end_y:
+    top_band_available = top_point[1] < far_band_end_y
+    if preferred_direction is None and top_band_available:
         return top_point, "topBand"
 
     width = int(envelope["width"])
@@ -4754,6 +4780,33 @@ def select_fusion_style_reference_point(
         if right_edge_points
         else None
     )
+    if preferred_direction == "LEFT" and left_y is not None:
+        centered_point = calculate_fusion_style_edge_segment_center(
+            physical_mask,
+            contour,
+            envelope,
+            "leftEdge",
+            selected_contour_mask,
+        )
+        if centered_point is not None:
+            return centered_point, "leftEdge"
+        left_x, _ = normal_trajectory_horizontal_bounds(envelope, left_y)
+        return (left_x, left_y), "leftEdge"
+    if preferred_direction == "RIGHT" and right_y is not None:
+        centered_point = calculate_fusion_style_edge_segment_center(
+            physical_mask,
+            contour,
+            envelope,
+            "rightEdge",
+            selected_contour_mask,
+        )
+        if centered_point is not None:
+            return centered_point, "rightEdge"
+        _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
+        return (right_x - 1, right_y), "rightEdge"
+    if top_band_available:
+        return top_point, "topBand"
+
     if left_y is not None and right_y is None:
         centered_point = calculate_fusion_style_edge_segment_center(
             physical_mask,
@@ -5034,6 +5087,7 @@ def extract_fusion_style_line(
     processed_line_mask,
     previous_fusion_line=None,
     accepted_contours=None,
+    preferred_direction=None,
 ):
     """Extrai o target atual e mede confiança para recuperar velocidade."""
 
@@ -5060,9 +5114,15 @@ def extract_fusion_style_line(
     )
     near_point = (near_x, int(envelope["nearY"]))
     result = empty_fusion_style_line()
+    fusion_preferred_direction = (
+        preferred_direction
+        if preferred_direction in ("LEFT", "RIGHT")
+        else "NONE"
+    )
     result.update({
         "enabled": True,
         "nearPoint": {"x": near_point[0], "y": near_point[1]},
+        "preferredDirection": fusion_preferred_direction,
     })
 
     physical_mask = create_fusion_style_physical_mask(
@@ -5117,6 +5177,7 @@ def extract_fusion_style_line(
         top_point,
         envelope,
         selected_contour_mask,
+        fusion_preferred_direction,
     )
     result["referenceSource"] = reference_source
     if far_point is not None:
@@ -5159,6 +5220,7 @@ def extract_line_diagnostics(
     legacy_debug_enabled=False,
     previous_fusion_line=None,
     accepted_contours=None,
+    preferred_direction=None,
 ):
     """Executa somente os diagnósticos habilitados para a câmera inferior."""
 
@@ -5180,6 +5242,7 @@ def extract_line_diagnostics(
         processed_line_mask,
         previous_fusion_line,
         accepted_contours,
+        preferred_direction,
     )
     return normal_trajectory, fusion_style_line
 
@@ -6484,20 +6547,36 @@ def read_virtual_sensor(processed_line_mask, sensor_geometry):
     return float(active_pixels) / float(sensor_area)
 
 
-def select_virtual_trust_row_geometry(row_geometry, green_direction):
-    """Isola o lado escolhido pelo verde antes de calcular o trust da fileira."""
+def select_virtual_trust_row_geometry(
+    row_geometry,
+    green_direction,
+    curva_verde_iniciada=False,
+):
+    """Limita o trust ao ramo permitido durante a manobra verde."""
 
-    selected_side = {
-        "ESQUERDA": "left",
-        "DIREITA": "right",
+    selected_sides = {
+        "ESQUERDA": (
+            ("left", "center")
+            if curva_verde_iniciada
+            else ("left",)
+        ),
+        "DIREITA": (
+            ("center", "right")
+            if curva_verde_iniciada
+            else ("right",)
+        ),
     }.get(green_direction)
-    if selected_side is None:
+    if selected_sides is None:
         return row_geometry
 
-    selected_geometry = row_geometry.get(selected_side)
-    if selected_geometry is None:
+    selected_geometry = {
+        side: row_geometry[side]
+        for side in selected_sides
+        if side in row_geometry
+    }
+    if not selected_geometry:
         return row_geometry
-    return {selected_side: selected_geometry}
+    return selected_geometry
 
 
 def calculate_virtual_row_position(
@@ -6553,9 +6632,76 @@ def calculate_virtual_near_fine_position(
     return float(max(-1.0, min(1.0, normalized_position)))
 
 
+def create_green_row_point(row_measurement, row_geometry, trusted):
+    """Cria um ponto físico usando o centro do componente trusted da fileira."""
+
+    if not trusted:
+        return None
+
+    center_x = finite_virtual_position(
+        row_measurement.get("componentCenterX")
+    )
+    if center_x is None:
+        return None
+
+    center_geometry = row_geometry["center"]
+    center_y = (
+        float(center_geometry["y0"])
+        + float(center_geometry["y1"])
+    ) / 2.0
+    return float(center_x), float(center_y)
+
+
+def green_point_to_normalized_position(point, frame_width):
+    """Normaliza o campo position sem reconstruir o ponto usado no heading."""
+
+    if point is None or frame_width <= 1:
+        return None
+    normalized_position = 2.0 * float(point[0]) / float(frame_width - 1) - 1.0
+    return float(max(-1.0, min(1.0, normalized_position)))
+
+
+def calculate_green_heading_angle(
+    near_point,
+    green_medium_point,
+    green_far_point,
+):
+    """Calcula o heading GREEN diretamente entre pontos físicos do frame."""
+
+    reference_point = near_point
+    lookahead_point = green_far_point
+    if reference_point is not None:
+        if lookahead_point is None:
+            lookahead_point = green_medium_point
+    else:
+        if green_medium_point is None or green_far_point is None:
+            return None
+        reference_point = green_medium_point
+
+    if reference_point is None or lookahead_point is None:
+        return None
+
+    reference_x = finite_virtual_position(reference_point[0])
+    reference_y = finite_virtual_position(reference_point[1])
+    lookahead_x = finite_virtual_position(lookahead_point[0])
+    lookahead_y = finite_virtual_position(lookahead_point[1])
+    if None in (reference_x, reference_y, lookahead_x, lookahead_y):
+        return None
+
+    delta_y = reference_y - lookahead_y
+    if delta_y <= 0.0:
+        return None
+
+    return float(math.degrees(math.atan2(
+        lookahead_x - reference_x,
+        delta_y,
+    )))
+
+
 def read_virtual_line_sensors(
     processed_line_mask,
     direcao_verde_ativa="NENHUMA",
+    curva_verde_iniciada=False,
 ):
     """
     Lê FAR, FAR BAND, MEDIUM e o sensor local NEAR-C separadamente.
@@ -6571,10 +6717,12 @@ def read_virtual_line_sensors(
     far_trust_geometry = select_virtual_trust_row_geometry(
         geometry["far"],
         direcao_verde_ativa,
+        curva_verde_iniciada,
     )
     medium_trust_geometry = select_virtual_trust_row_geometry(
         geometry["medium"],
         direcao_verde_ativa,
+        curva_verde_iniciada,
     )
     far_line_measurement = measure_virtual_row_line_confidence(
         processed_line_mask,
@@ -6674,19 +6822,22 @@ def read_virtual_line_sensors(
     control_medium_center = raw_medium_center
     control_medium_right = raw_medium_right
 
-    # Durante uma interseção sinalizada por verde, FAR e MEDIUM enxergam
-    # somente o ramo permitido pela direção confirmada.
+    # Antes de iniciar a curva, FAR e MEDIUM enxergam somente o lado escolhido.
+    # Durante o giro, CENTER é liberado para o mesmo ramo migrar ao centro,
+    # enquanto o lado oposto permanece bloqueado.
     if direcao_verde_ativa == "ESQUERDA":
-        control_far_center = 0.0
         control_far_right = 0.0
-        control_medium_center = 0.0
         control_medium_right = 0.0
+        if not curva_verde_iniciada:
+            control_far_center = 0.0
+            control_medium_center = 0.0
 
     elif direcao_verde_ativa == "DIREITA":
         control_far_left = 0.0
-        control_far_center = 0.0
         control_medium_left = 0.0
-        control_medium_center = 0.0
+        if not curva_verde_iniciada:
+            control_far_center = 0.0
+            control_medium_center = 0.0
 
     # A conversão RAW -> controle ocorre aqui, antes de heading, trackers ou
     # steering. Uma fileira sem trust equivale integralmente a linha ausente.
@@ -6707,47 +6858,79 @@ def read_virtual_line_sensors(
         control_medium_center = 0.0
         control_medium_right = 0.0
 
-    far_position = calculate_virtual_row_position(
-        control_far_left,
-        control_far_center,
-        control_far_right,
-    )
-
     far_band_position = calculate_virtual_row_position(
         control_far_band_left,
         control_far_band_center,
         control_far_band_right,
     )
 
-    medium_position = calculate_virtual_row_position(
-        control_medium_left,
-        control_medium_center,
-        control_medium_right,
-    )
-
-    heading_angle = calculate_virtual_heading_angle(
-        far_position,
-        near_fine_position,
-        geometry,
-        medium_position=medium_position,
-    )
-    steering_error = calculate_virtual_steering_error(
-        near_fine_position is not None,
-        heading_angle,
-        fallback_medium_position=(
-            medium_position
-            if near_fine_position is None
-            else None
-        ),
-        fallback_far_position=(
-            far_position
-            if (
-                near_fine_position is None
-                and direcao_verde_ativa == "NENHUMA"
-            )
-            else None
-        ),
-    )
+    green_active = direcao_verde_ativa in ("ESQUERDA", "DIREITA")
+    green_far_point = None
+    green_medium_point = None
+    if green_active:
+        # O GREEN usa o centro físico do componente que venceu o trust. As
+        # ocupações LEFT/CENTER/RIGHT continuam apenas como telemetria.
+        green_far_point = create_green_row_point(
+            far_line_measurement,
+            geometry["far"],
+            far_trusted,
+        )
+        green_medium_point = create_green_row_point(
+            medium_line_measurement,
+            geometry["medium"],
+            medium_trusted,
+        )
+        far_position = green_point_to_normalized_position(
+            green_far_point,
+            processed_line_mask.shape[1],
+        )
+        medium_position = green_point_to_normalized_position(
+            green_medium_point,
+            processed_line_mask.shape[1],
+        )
+        near_point = virtual_fine_position_to_point(
+            near_fine_position,
+            geometry["near"]["position"],
+        )
+        heading_angle = calculate_green_heading_angle(
+            near_point,
+            green_medium_point,
+            green_far_point,
+        )
+        # O heading GREEN permanece apenas como diagnóstico. Durante a manobra,
+        # somente o Fusion selecionado pelo marcador possui autoridade de steering.
+        steering_error = None
+    else:
+        far_position = calculate_virtual_row_position(
+            control_far_left,
+            control_far_center,
+            control_far_right,
+        )
+        medium_position = calculate_virtual_row_position(
+            control_medium_left,
+            control_medium_center,
+            control_medium_right,
+        )
+        heading_angle = calculate_virtual_heading_angle(
+            far_position,
+            near_fine_position,
+            geometry,
+            medium_position=medium_position,
+        )
+        steering_error = calculate_virtual_steering_error(
+            near_fine_position is not None,
+            heading_angle,
+            fallback_medium_position=(
+                medium_position
+                if near_fine_position is None
+                else None
+            ),
+            fallback_far_position=(
+                far_position
+                if near_fine_position is None
+                else None
+            ),
+        )
 
     return {
         "farLeft": raw_far_left,
@@ -6797,6 +6980,8 @@ def read_virtual_line_sensors(
 
         "nearCenter": near_center,
         "nearFinePosition": near_fine_position,
+        "greenFarPoint": green_far_point,
+        "greenMediumPoint": green_medium_point,
         "headingAngle": heading_angle,
         "steeringError": steering_error,
     }
@@ -7409,6 +7594,107 @@ def update_green_maneuver_state(
     }
 
 
+def select_confirmed_green_direction(
+    armed,
+    active_direction,
+    green_status,
+):
+    """Seleciona um GREEN confirmado somente quando o controle está armado."""
+
+    if (
+        not armed
+        or active_direction != "NENHUMA"
+        or not green_status.get("greenConfirmed", False)
+    ):
+        return None
+
+    interpretation = green_status.get("greenInterpretation")
+    if interpretation in ("ESQUERDA", "DIREITA"):
+        return interpretation
+    return None
+
+
+def update_green_rearm_state(
+    armed,
+    clear_frames,
+    active_direction,
+    candidate_count,
+):
+    """Rearma o GREEN após cinco quadros limpos fora da manobra ativa."""
+
+    if armed:
+        return True, 0
+    if active_direction != "NENHUMA":
+        return False, 0
+    if candidate_count > 0:
+        return False, 0
+
+    clear_frames += 1
+    if clear_frames >= QUADROS_PARA_REARMAR_VERDE:
+        return True, 0
+    return False, clear_frames
+
+
+def update_green_control_telemetry(
+    green_status,
+    active_direction,
+    armed,
+    rearm_clear_frames,
+):
+    """Distingue a detecção visual da ativação efetiva no controle."""
+
+    control_active = active_direction != "NENHUMA"
+    green_status["greenControlActive"] = control_active
+    green_status["greenControlDirection"] = active_direction
+    green_status["greenArmed"] = bool(armed)
+    green_status["greenRearmClearFrames"] = int(rearm_clear_frames)
+
+    if control_active:
+        green_status["greenDecisionState"] = "active"
+    elif green_status.get("greenConfirmed", False):
+        green_status["greenDecisionState"] = "detected"
+    elif green_status.get("greenRawInterpretation") != "SEM_DECISAO":
+        green_status["greenDecisionState"] = "candidate"
+    else:
+        green_status["greenDecisionState"] = "idle"
+
+
+def green_maneuver_is_geometrically_complete(
+    curva_verde_iniciada,
+    near_fine_position,
+    medium_trusted,
+    medium_position,
+    far_trusted,
+    far_position,
+):
+    """Confirma o alinhamento local e frontal ao final da manobra verde."""
+
+    if not curva_verde_iniciada:
+        return False
+
+    near_position = finite_virtual_position(near_fine_position)
+    if (
+        near_position is None
+        or abs(near_position) > LIMIAR_CENTRALIZACAO_VERDE
+    ):
+        return False
+
+    # MEDIUM é a referência frontal mais próxima. FAR assume somente quando
+    # MEDIUM não possui uma leitura trusted válida neste frame.
+    trusted_position = (
+        finite_virtual_position(medium_position)
+        if medium_trusted
+        else None
+    )
+    if trusted_position is None and far_trusted:
+        trusted_position = finite_virtual_position(far_position)
+
+    return (
+        trusted_position is not None
+        and abs(trusted_position) <= GREEN_TRUSTED_POSITION_CENTER_LIMIT
+    )
+
+
 class VirtualTurnStateTracker:
     """Mantém somente o pivot temporário usado para recuperar a linha."""
 
@@ -7709,6 +7995,7 @@ def calculate_line_follower_command(
     blind_search_requested=False,
     sensor_recovery_requested=False,
     fusion_style_line=None,
+    curva_verde_iniciada=False,
 ):
     """
     Aplica o seguidor virtual validado pela câmera inferior.
@@ -7730,6 +8017,7 @@ def calculate_line_follower_command(
         else read_virtual_line_sensors(
             processed_line_mask,
             direcao_verde_ativa,
+            curva_verde_iniciada,
         )
     )
     far_trusted = virtual_sensor_trust_is_active(sensors, "farTrusted")
@@ -7759,7 +8047,11 @@ def calculate_line_follower_command(
 
     protected_virtual_steering = sensors["steeringError"]
     protected_heading_angle = sensors.get("headingAngle")
-    if not (far_trusted and medium_trusted):
+    directional_green_active = direcao_verde_ativa in (
+        "ESQUERDA",
+        "DIREITA",
+    )
+    if not directional_green_active and not (far_trusted and medium_trusted):
         # Recalcula o caminho de controle quando uma fileira perde trust. Isso
         # impede que um heading previamente calculado carregue o candidato vetado.
         trusted_near_fine_position = (
@@ -7804,32 +8096,21 @@ def calculate_line_follower_command(
     fine_correction = 0.0
     line_state = "LINE"
 
-    if direcao_verde_ativa != "NENHUMA":
+    if directional_green_active:
         line_state = "GREEN"
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
-        green_branch_visible = (
-            trusted_far_position is not None
-            or trusted_medium_position is not None
-        )
-        if green_branch_visible and protected_virtual_steering is not None:
-            steering_error = protected_virtual_steering
+        if fusion_steering_error is not None:
+            steering_error = fusion_steering_error
+            fusion_control_status["fusionControlActive"] = True
+            control_source = "fusion-green"
         else:
-            # O verde pode ser reconhecido antes de o novo ramo alcançar FAR e
-            # MEDIUM, ou apenas uma fileira pode vê-lo sem formar heading. Nesse
-            # intervalo, parar abandona a interseção; mantém o pivot confirmado.
-            green_search_direction = green_direction_to_search_direction(
-                direcao_verde_ativa
-            )
-            if green_search_direction == "LEFT":
-                steering_error = -1.0
-            elif green_search_direction == "RIGHT":
-                steering_error = 1.0
-            else:
-                steering_error = None
-        control_source = "virtual-green"
+            # Sem target Fusion atual, o GREEN mantém sua decisão ativa, mas
+            # não cria um segundo controlador geométrico para mover o robô.
+            steering_error = None
+            control_source = "fusion-green-no-target"
 
     elif gap_forward_active:
         line_state = "GAP"
@@ -8389,6 +8670,11 @@ def calculate_line_follower_command(
         "fusionControlActive": fusion_control_status[
             "fusionControlActive"
         ],
+        "fusionPreferredDirection": (
+            str(fusion_style_line.get("preferredDirection", "NONE"))
+            if isinstance(fusion_style_line, dict)
+            else "NONE"
+        ),
         "fusionTargetLengthRatio": fusion_control_status[
             "fusionTargetLengthRatio"
         ],
@@ -8846,6 +9132,12 @@ def save_line_status(
             "fusionControlActive": (
                 line_follower_command.get("fusionControlActive") is True
             ),
+            "fusionPreferredDirection": str(
+                line_follower_command.get(
+                    "fusionPreferredDirection",
+                    "NONE",
+                )
+            ),
             "nearFinePosition": finite_virtual_position(
                 line_follower_command["nearFinePosition"]
             ),
@@ -9084,6 +9376,9 @@ def save_status(
         "fusionControlActive": (
             control_status.get("fusionControlActive") is True
         ),
+        "fusionPreferredDirection": str(
+            control_status.get("fusionPreferredDirection", "NONE")
+        ),
         "lineControlSource": str(
             control_status.get("controlSource", "unknown")
         ),
@@ -9254,24 +9549,7 @@ def main():
             line_timings["contoursMs"] = (
                 time.perf_counter() - contours_started
             ) * 1000.0
-            normal_trajectory, fusion_style_line = extract_line_diagnostics(
-                line_candidate_mask,
-                camera_profile["role"],
-                LEGACY_LINE_DEBUG_ENABLED,
-                previous_fusion_line=fusion_target_history,
-                accepted_contours=accepted_line_contours,
-            )
-            fusion_target_history = update_fusion_style_history(
-                fusion_target_history,
-                fusion_style_line,
-            )
-            line_timings["normalTrajectoryMs"] = normal_trajectory[
-                "processingMs"
-            ]
-            line_timings["fusionStyleMs"] = fusion_style_line[
-                "processingMs"
-            ]
-            line_vision_ms = (
+            line_vision_before_green_ms = (
                 time.perf_counter() - line_vision_started
             ) * 1000.0
 
@@ -9353,24 +9631,17 @@ def main():
             green_status["greenPathBlackValid"] = bool(
                 green_interpretation["path_black_valid"]
             )
-            green_status["greenDecisionState"] = (
-                "accepted"
-                if green_status["greenConfirmed"]
-                else "candidate"
-                if green_raw_interpretation != "SEM_DECISAO"
-                else "idle"
-            )
 
-                        # Um verde confirmado é aceito apenas quando o sistema está armado
+            # Um verde confirmado é aceito apenas quando o sistema está armado
             # e nenhuma outra direção verde está sendo executada.
-            if (
-                verde_armado
-                and direcao_verde_ativa == "NENHUMA"
-                and green_status["greenConfirmed"]
-            ):
-                interpretacao_verde = green_status["greenInterpretation"]
-
-                if interpretacao_verde == "ESQUERDA":
+            confirmed_green_direction = select_confirmed_green_direction(
+                verde_armado,
+                direcao_verde_ativa,
+                green_status,
+            )
+            green_accepted_this_frame = confirmed_green_direction is not None
+            if confirmed_green_direction is not None:
+                if confirmed_green_direction == "ESQUERDA":
                     direcao_verde_ativa = "ESQUERDA"
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
@@ -9379,7 +9650,7 @@ def main():
                     verde_armado = False
                     quadros_sem_verde = 0
 
-                elif interpretacao_verde == "DIREITA":
+                elif confirmed_green_direction == "DIREITA":
                     direcao_verde_ativa = "DIREITA"
                     curva_verde_iniciada = False
                     quadros_centralizado_verde = 0
@@ -9388,17 +9659,10 @@ def main():
                     verde_armado = False
                     quadros_sem_verde = 0
 
-            # Depois que um verde foi aceito, o sistema só poderá ser armado
-            # novamente após vários quadros consecutivos sem nenhum candidato verde. % isaque hulk verde
-            if not verde_armado:
-                if green_status["greenCandidateCount"] == 0:
-                    quadros_sem_verde += 1
-                else:
-                    quadros_sem_verde = 0
-
             virtual_sensors = read_virtual_line_sensors(
                 line_candidate_mask,
                 direcao_verde_ativa,
+                curva_verde_iniciada,
             )
             near_center_visible = virtual_sensor_is_active(
                 virtual_sensors["nearCenter"]
@@ -9430,10 +9694,52 @@ def main():
                 virtual_sensors = read_virtual_line_sensors(
                     line_candidate_mask,
                     direcao_verde_ativa,
+                    curva_verde_iniciada,
                 )
             else:
                 direcao_verde_ativa = green_timeout_state["direction"]
                 quadros_verde_ativo = green_timeout_state["activeFrames"]
+
+            fusion_preferred_direction = {
+                "ESQUERDA": "LEFT",
+                "DIREITA": "RIGHT",
+            }.get(direcao_verde_ativa)
+            fusion_history_for_frame = fusion_target_history
+            if (
+                green_accepted_this_frame
+                and isinstance(fusion_target_history, dict)
+            ):
+                # Um novo GREEN representa uma troca intencional de ramo.
+                # Somente o guard antigo é neutralizado; as demais métricas
+                # do histórico Fusion continuam disponíveis neste frame.
+                fusion_history_for_frame = dict(fusion_target_history)
+                fusion_history_for_frame["pivotDirectionGuard"] = "NONE"
+                fusion_history_for_frame["pivotDirectionGuardActive"] = False
+                fusion_history_for_frame[
+                    "pivotDirectionGuardRejectedOpposite"
+                ] = False
+            line_vision_after_green_started = time.perf_counter()
+            normal_trajectory, fusion_style_line = extract_line_diagnostics(
+                line_candidate_mask,
+                camera_profile["role"],
+                LEGACY_LINE_DEBUG_ENABLED,
+                previous_fusion_line=fusion_history_for_frame,
+                accepted_contours=accepted_line_contours,
+                preferred_direction=fusion_preferred_direction,
+            )
+            fusion_target_history = update_fusion_style_history(
+                fusion_history_for_frame,
+                fusion_style_line,
+            )
+            line_timings["normalTrajectoryMs"] = normal_trajectory[
+                "processingMs"
+            ]
+            line_timings["fusionStyleMs"] = fusion_style_line[
+                "processingMs"
+            ]
+            line_vision_ms = line_vision_before_green_ms + (
+                time.perf_counter() - line_vision_after_green_started
+            ) * 1000.0
 
             geometric_guidance = extract_gap_geometric_guidance(
                 line_candidate_mask,
@@ -9533,9 +9839,9 @@ def main():
                     blind_search_requested=gap_blind_search_requested,
                     sensor_recovery_requested=sensor_recovery_requested,
                     fusion_style_line=fusion_style_line,
+                    curva_verde_iniciada=curva_verde_iniciada,
                 )
             )
-
             near_fine_position = line_follower_command["nearFinePosition"]
 
             # Confirma que o robô realmente começou a entrar no ramo
@@ -9557,17 +9863,19 @@ def main():
                     curva_verde_iniciada = True
                     quadros_centralizado_verde = 0
 
-            # Depois que a curva começou, espera a posição fina local voltar
-            # ao centro por vários quadros consecutivos. Isso indica que o
-            # robô já entrou e se alinhou com a nova faixa.
+            # Depois que a curva começou, exige alinhamento simultâneo no NEAR
+            # e em uma fileira frontal trusted antes de liberar a prioridade.
             if (
                 direcao_verde_ativa != "NENHUMA"
                 and curva_verde_iniciada
             ):
-                if (
-                    near_fine_position is not None
-                    and abs(near_fine_position)
-                    <= LIMIAR_CENTRALIZACAO_VERDE
+                if green_maneuver_is_geometrically_complete(
+                    curva_verde_iniciada,
+                    near_fine_position,
+                    line_follower_command["mediumTrusted"],
+                    line_follower_command["mediumPosition"],
+                    line_follower_command["farTrusted"],
+                    line_follower_command["farPosition"],
                 ):
                     quadros_centralizado_verde += 1
                 else:
@@ -9591,15 +9899,19 @@ def main():
                     quadros_centralizado_verde = 0
                     line_search_tracker.stop()
 
-            # A curva já pode ter terminado, mas um novo verde só será
-            # aceito depois de X quadros consecutivos sem candidato verde.
-            if (
-                not verde_armado
-                and direcao_verde_ativa == "NENHUMA"
-                and quadros_sem_verde >= QUADROS_PARA_REARMAR_VERDE
-            ):
-                verde_armado = True
-                quadros_sem_verde = 0
+            # O rearme começa somente depois que a manobra deixa de estar ativa.
+            verde_armado, quadros_sem_verde = update_green_rearm_state(
+                verde_armado,
+                quadros_sem_verde,
+                direcao_verde_ativa,
+                green_status["greenCandidateCount"],
+            )
+            update_green_control_telemetry(
+                green_status,
+                direcao_verde_ativa,
+                verde_armado,
+                quadros_sem_verde,
+            )
 
             line_control_ms = (
                 time.perf_counter() - line_control_started
