@@ -656,6 +656,80 @@ void testVisualSearchStopsAtAngularLimit()
         "A busca visual deve parar antes de completar outra volta.");
 }
 
+void testVisualSearchAcceptsValidatedFusionWithoutNear()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg =
+        turnSign * config::kGreenTurnAroundImuDegrees;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kTurn90SettleMs + 20));
+    fixture.update(returnVision);
+
+    CameraLineSnapshot fusionVision = freshVision(
+        GreenInterpretation::None,
+        false);
+    fusionVision.lineControlSource = "fusion";
+    fusionVision.normalSteeringValid = true;
+    fusionVision.lineFollowerLeftPower = 0.72;
+    fusionVision.lineFollowerRightPower = 0.72;
+
+    RobotSnapshot snapshot = fixture.update(fusionVision);
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_searching_line",
+        "Uma confirmação Fusion isolada não deve encerrar o pivot.");
+
+    snapshot = fixture.update(fusionVision);
+    require(
+        snapshot.mode == "autonomous" &&
+            snapshot.autonomousStatus.phase == "line_following" &&
+            closeTo(snapshot.left, fusionVision.lineFollowerLeftPower) &&
+            closeTo(snapshot.right, fusionVision.lineFollowerRightPower),
+        "Duas confirmações Fusion válidas devem devolver o controle ao seguidor.");
+}
+
+void testVisualSearchRejectsUnvalidatedFusionWithoutNear()
+{
+    MissionFixture fixture;
+    const CameraLineSnapshot returnVision = freshVision(
+        GreenInterpretation::TurnAround180,
+        false);
+    startReturnImu(fixture, returnVision);
+
+    const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+    fixture.telemetry.yawZDeg =
+        turnSign * config::kGreenTurnAroundImuDegrees;
+    fixture.update(returnVision);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kTurn90SettleMs + 20));
+    fixture.update(returnVision);
+
+    CameraLineSnapshot invalidFusion = freshVision(
+        GreenInterpretation::None,
+        false);
+    invalidFusion.lineControlSource = "fusion";
+    invalidFusion.normalSteeringValid = false;
+
+    RobotSnapshot snapshot = fixture.update(invalidFusion);
+    snapshot = fixture.update(invalidFusion);
+    require(
+        snapshot.mode == "autonomous" &&
+            snapshot.autonomousStatus.phase == "turnaround_searching_line" &&
+            closeTo(
+                snapshot.left,
+                turnSign * config::kGreenTurnAroundLineSearchPower) &&
+            closeTo(
+                snapshot.right,
+                -turnSign * config::kGreenTurnAroundLineSearchPower),
+        "Fusion sem validação não pode encerrar a busca visual.");
+}
+
 RobotSnapshot startForwardSearch(
     MissionFixture& fixture,
     const std::string& direction)
@@ -1315,6 +1389,8 @@ int main()
         testReturnCenteringRequiresBothNearAndMedium();
         testReturnCenteringTimeoutReleasesConfiguredSequence();
         testVisualSearchStopsAtAngularLimit();
+        testVisualSearchAcceptsValidatedFusionWithoutNear();
+        testVisualSearchRejectsUnvalidatedFusionWithoutNear();
         testForwardAssistStaysOnBottomWhileTrusted();
         testForwardAssistSearchConfirmsLossWithRecentTrustedDirection();
         testForwardAssistNonePreservesRightLatchUntilLoss();

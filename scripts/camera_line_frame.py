@@ -229,9 +229,15 @@ GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
 GREEN_CONFIRMATION_FRAMES = 2
 GREEN_SINGLE_OBSERVATION_FRAMES = 2
 GREEN_CLEAR_HYSTERESIS_FRAMES = 2
-# Cada ROI verde possui 10% da largura da imagem em cada lado. A metade abaixo
-# reproduz width // 20 do detector de referência sem fixar a resolução.
+# Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
+# um candidato verde aguarda confirmação. O limite evita um hold indefinido.
+GREEN_CANDIDATE_HOLD_MAX_FRAMES = 2
+# Esta medida-base equivale a 5% da largura do frame e dimensiona as duas ROIs
+# sem prender o detector a uma resolução específica.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
+# A ROI superior recebe 25% a mais de largura para encontrar a faixa em curvas
+# ou pequenos desalinhamentos. A altura e a ROI horizontal não são alteradas.
+GREEN_UPPER_ROI_HALF_WIDTH_SCALE = 1.25
 # Pelo menos metade da ROI nominal deve existir dentro da imagem. Uma amostra
 # menor poderia aceitar ruído de borda como se fosse a faixa preta.
 GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
@@ -282,7 +288,7 @@ PIVOT_INNER_POWER = -0.72
 # O Fusion-style ignora desvios de até dois graus e alcança toda a autoridade
 # NORMAL em dez graus. A curva cúbica mantém suavidade perto do centro e cresce
 # depois sem criar memória entre frames.
-FUSION_STEERING_DEADBAND_DEG = 2.0
+FUSION_STEERING_DEADBAND_DEG = 3.5
 FUSION_FULL_NORMAL_STEERING_DEG = 10.0
 
 # A curva Fusion mantém ambas as rodas positivas até vinte e cinco graus, chega
@@ -2251,6 +2257,8 @@ def empty_green_status():
         "greenDecisionState": "idle",
         "greenControlActive": False,
         "greenControlDirection": "NENHUMA",
+        "greenCandidateHoldActive": False,
+        "greenCandidateHoldFrames": 0,
         "greenArmed": True,
         "greenRearmClearFrames": 0,
         "greenPathBlackValid": False,
@@ -2292,6 +2300,10 @@ def green_marker_roi_geometry(contour, frame_width):
     center_x = int(round((minimum_x + maximum_x) / 2.0))
     center_y = int(round((minimum_y + maximum_y) / 2.0))
     half_size = max(1, int(frame_width) // GREEN_ROI_HALF_SIZE_DIVISOR)
+    upper_half_width = max(
+        half_size,
+        int(round(half_size * GREEN_UPPER_ROI_HALF_WIDTH_SCALE)),
+    )
 
     # A ROI horizontal cruza o marcador e mede separadamente somente as partes
     # externas à esquerda e à direita. Assim existe uma única ROI lateral.
@@ -2304,9 +2316,9 @@ def green_marker_roi_geometry(contour, frame_width):
     # A ROI superior é perpendicular à horizontal. Ela deve ter amostra
     # visível antes que o marcador possa ser chamado de verdadeiro ou falso.
     upper_roi = (
-        center_x - half_size,
+        center_x - upper_half_width,
         int(round(minimum_y)) - 3 * half_size,
-        center_x + half_size,
+        center_x + upper_half_width,
         int(round(minimum_y)),
     )
     return {
@@ -2619,7 +2631,7 @@ FUSION_STYLE_TRANSVERSE_WIDTH_STABILITY_RATIO = 0.10
 
 # O guard só existe durante pivot extremo. Ele bloqueia uma inversão súbita de
 # lado causada pela rotação da imagem e libera no primeiro target frontal claro.
-FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG = 70.0
+FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG = 60.0
 FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG = 25.0
 
 # Estes limites classificam apenas a consistência da observação; não filtram o
@@ -7614,6 +7626,110 @@ def select_confirmed_green_direction(
     return None
 
 
+def capture_valid_fusion_command(command):
+    """Copia somente a decisão Fusion válida que pode alimentar o hold curto."""
+
+    if not isinstance(command, dict):
+        return None
+    if (
+        command.get("controlSource") != "fusion"
+        or command.get("fusionControlActive") is not True
+    ):
+        return None
+
+    try:
+        left_power = float(command["left_power"])
+        right_power = float(command["right_power"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(
+        math.isfinite(power) and -1.0 <= power <= 1.0
+        for power in (left_power, right_power)
+    ):
+        return None
+
+    snapshot = {
+        "left_power": left_power,
+        "right_power": right_power,
+        "controlSource": "fusion",
+        "fusionControlActive": True,
+    }
+    for field_name in (
+        "steeringError",
+        "finalSteering",
+        "fusionAngle",
+        "filteredFusionAngle",
+        "fusionSteeringError",
+        "fusionSpeedScale",
+    ):
+        if field_name in command:
+            snapshot[field_name] = command[field_name]
+    return snapshot
+
+
+def apply_green_candidate_fusion_hold(
+    current_command,
+    previous_fusion_command,
+    armed,
+    active_direction,
+    green_status,
+    hold_frames,
+    hold_blocked,
+):
+    """Preserva brevemente o último Fusion enquanto um GREEN aguarda decisão."""
+
+    status = green_status if isinstance(green_status, dict) else {}
+    try:
+        candidate_count = int(status.get("greenCandidateCount", 0))
+    except (TypeError, ValueError):
+        candidate_count = 0
+    candidate_pending = (
+        bool(armed)
+        and active_direction == "NENHUMA"
+        and candidate_count > 0
+        and status.get("greenConfirmed") is not True
+        and status.get("greenRawInterpretation") != "VERDE_FALSO"
+    )
+    if not candidate_pending:
+        return {
+            "command": current_command,
+            "active": False,
+            "frames": 0,
+            "blocked": False,
+        }
+
+    safe_hold_frames = max(0, int(hold_frames))
+    if hold_blocked or previous_fusion_command is None:
+        return {
+            "command": current_command,
+            "active": False,
+            "frames": min(
+                safe_hold_frames,
+                GREEN_CANDIDATE_HOLD_MAX_FRAMES,
+            ),
+            "blocked": True,
+        }
+    if safe_hold_frames >= GREEN_CANDIDATE_HOLD_MAX_FRAMES:
+        return {
+            "command": current_command,
+            "active": False,
+            "frames": GREEN_CANDIDATE_HOLD_MAX_FRAMES,
+            "blocked": True,
+        }
+
+    held_command = dict(current_command)
+    held_command.update(previous_fusion_command)
+    next_hold_frames = safe_hold_frames + 1
+    return {
+        "command": held_command,
+        "active": True,
+        "frames": next_hold_frames,
+        "blocked": (
+            next_hold_frames >= GREEN_CANDIDATE_HOLD_MAX_FRAMES
+        ),
+    }
+
+
 def update_green_rearm_state(
     armed,
     clear_frames,
@@ -9486,6 +9602,13 @@ def main():
         verde_armado = True
         quadros_sem_verde = 0
 
+        # O hold conserva somente o último comando Fusion realmente publicado.
+        # Após dois frames, o mesmo candidato precisa desaparecer antes de abrir
+        # uma nova janela.
+        last_applied_fusion_command = None
+        green_candidate_hold_frames = 0
+        green_candidate_hold_blocked = False
+
         green_processing_enabled = bool(
             vision_profile.get("green_detection_enabled", False)
             and GREEN_PROCESSING_ENABLED
@@ -9842,6 +9965,19 @@ def main():
                     curva_verde_iniciada=curva_verde_iniciada,
                 )
             )
+            green_candidate_hold = apply_green_candidate_fusion_hold(
+                line_follower_command,
+                last_applied_fusion_command,
+                verde_armado,
+                direcao_verde_ativa,
+                green_status,
+                green_candidate_hold_frames,
+                green_candidate_hold_blocked,
+            )
+            line_follower_command = green_candidate_hold["command"]
+            green_candidate_hold_active = green_candidate_hold["active"]
+            green_candidate_hold_frames = green_candidate_hold["frames"]
+            green_candidate_hold_blocked = green_candidate_hold["blocked"]
             near_fine_position = line_follower_command["nearFinePosition"]
 
             # Confirma que o robô realmente começou a entrar no ramo
@@ -9912,6 +10048,16 @@ def main():
                 verde_armado,
                 quadros_sem_verde,
             )
+            green_status["greenCandidateHoldActive"] = bool(
+                green_candidate_hold_active
+            )
+            green_status["greenCandidateHoldFrames"] = int(
+                green_candidate_hold_frames
+            )
+            if not green_candidate_hold_active:
+                last_applied_fusion_command = capture_valid_fusion_command(
+                    line_follower_command
+                )
 
             line_control_ms = (
                 time.perf_counter() - line_control_started

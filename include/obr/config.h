@@ -367,11 +367,11 @@ constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
 // Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
 constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
-constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
+constexpr double kGreenTurnAroundForwardDistanceCm = 16.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
 // retorno de 180°.
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
-constexpr double kGreenTurnAroundForwardPower = 0.69;
+constexpr double kGreenTurnAroundForwardPower = 0.73;
 // Tempo parado, em milissegundos, entre o avanço e o início do giro.
 constexpr int kGreenTurnAroundForwardSettleMs = 250;
 // Idade máxima, em milissegundos, aceita para os dados dos encoders.
@@ -392,9 +392,10 @@ constexpr bool kGreenTurnAroundTurnsRight = true;
 constexpr double kGreenTurnAroundLineSearchPower = kTurn90CommandPower;
 // Giro adicional máximo, em graus, permitido durante a busca visual da linha.
 // Com o alvo atual, ele limita o retorno a aproximadamente 195° se a câmera
-// não reconhecer o NEAR, em vez de permitir uma volta quase completa.
+// não recuperar a linha pelo NEAR ou Fusion, evitando uma volta quase completa.
 constexpr double kGreenTurnAroundLineSearchMaximumDegrees = 45.0;
-// Quantidade de frames consecutivos com NEAR válido para retomar o seguidor.
+// Quantidade de confirmações consecutivas com NEAR ou Fusion válido para
+// retomar o seguidor depois do giro.
 constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;

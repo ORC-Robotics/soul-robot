@@ -673,6 +673,27 @@ class CameraProfilesTest(unittest.TestCase):
         )
         self.assertGreater(upper[3] - upper[1], upper[2] - upper[0])
 
+    def test_green_upper_roi_is_wider_without_changing_horizontal_roi(self):
+        contour = rectangle_contour(200, 180, 250, 230)
+        geometry = camera_line_frame.green_marker_roi_geometry(contour, 480)
+
+        self.assertEqual(geometry["horizontal_roi"], (152, 181, 298, 229))
+        self.assertEqual(geometry["upper_roi"], (195, 108, 255, 180))
+
+        mask = np.zeros((319, 480), dtype=np.uint8)
+        mask[108:180, 190:210] = 255
+        expanded = camera_line_frame.measure_black_roi(
+            mask,
+            geometry["upper_roi"],
+        )
+        previous = camera_line_frame.measure_black_roi(
+            mask,
+            (201, 108, 249, 180),
+        )
+
+        self.assertTrue(expanded["valid"])
+        self.assertFalse(previous["valid"])
+
     def test_green_without_local_black_is_false(self):
         contour = rectangle_contour(200, 180, 250, 230)
         result = camera_line_frame.analyze_green_marker_contours(
@@ -832,8 +853,12 @@ class CameraProfilesTest(unittest.TestCase):
         status.update({
             "greenInterpretation": "ESQUERDA",
             "greenConfirmed": True,
+            "greenRawInterpretation": "ESQUERDA",
+            "greenObservationState": "UM_CANDIDATO",
             "greenPathBlackValid": True,
             "greenCandidateCount": 1,
+            "greenCandidateHoldActive": True,
+            "greenCandidateHoldFrames": 1,
         })
         with tempfile.TemporaryDirectory() as directory:
             original_status_path = camera_line_frame.LINE_STATUS_PATH
@@ -893,6 +918,12 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["fusionSteeringError"], 0.18)
         self.assertTrue(published["fusionControlActive"])
         self.assertEqual(published["greenInterpretation"], "ESQUERDA")
+        self.assertEqual(published["greenCandidateCount"], 1)
+        self.assertEqual(published["greenRawInterpretation"], "ESQUERDA")
+        self.assertEqual(published["greenObservationState"], "UM_CANDIDATO")
+        self.assertTrue(published["greenPathBlackValid"])
+        self.assertTrue(published["greenCandidateHoldActive"])
+        self.assertEqual(published["greenCandidateHoldFrames"], 1)
         self.assertEqual(published["nearFinePosition"], 0.12)
         self.assertIsNone(published["mediumPosition"])
         self.assertEqual(published["mediumLineConfidence"], 0.64)
@@ -916,6 +947,7 @@ class CameraProfilesTest(unittest.TestCase):
             "filteredFusionAngle",
             "fusionSteeringError",
             "fusionControlActive",
+            "fusionPreferredDirection",
             "nearFinePosition",
             "mediumPosition",
             "mediumLineConfidence",

@@ -4543,6 +4543,220 @@ class GreenRearmTests(unittest.TestCase):
         self.assertEqual(green_status["greenControlDirection"], "ESQUERDA")
 
 
+class GreenCandidateHoldTests(unittest.TestCase):
+    @staticmethod
+    def fusion_command(left_power, right_power, angle):
+        steering_error = (
+            camera_line_frame.map_fusion_angle_to_steering_error(angle)
+        )
+        return {
+            "left_power": left_power,
+            "right_power": right_power,
+            "controlSource": "fusion",
+            "fusionControlActive": True,
+            "fusionAngle": angle,
+            "filteredFusionAngle": angle,
+            "fusionSteeringError": steering_error,
+            "steeringError": steering_error,
+            "finalSteering": steering_error,
+            "fusionSpeedScale": 1.0,
+        }
+
+    @staticmethod
+    def pending_status():
+        status = camera_line_frame.empty_green_status()
+        status["greenCandidateCount"] = 1
+        status["greenRawInterpretation"] = "ESQUERDA"
+        status["greenObservationState"] = "UM_CANDIDATO"
+        status["greenPathBlackValid"] = True
+        return status
+
+    def test_candidate_first_frame_holds_previous_fusion_command(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        current = self.fusion_command(0.85, -0.40, 145.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            current,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+
+        self.assertTrue(result["active"])
+        self.assertEqual(result["frames"], 1)
+        self.assertEqual(
+            (result["command"]["left_power"], result["command"]["right_power"]),
+            (0.72, 0.78),
+        )
+        self.assertEqual(result["command"]["fusionAngle"], 86.0)
+
+    def test_confirmation_on_second_frame_bypasses_hold_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        confirmed_status = self.pending_status()
+        confirmed_status["greenConfirmed"] = True
+        green_command = self.fusion_command(-0.30, 0.85, 155.0)
+        green_command["controlSource"] = "fusion-green"
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            green_command,
+            previous,
+            armed=False,
+            active_direction="ESQUERDA",
+            green_status=confirmed_status,
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], green_command)
+        self.assertEqual(result["command"]["controlSource"], "fusion-green")
+
+    def test_candidate_disappearance_restores_current_fusion_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        resumed_command = self.fusion_command(0.82, 0.66, 105.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            resumed_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=camera_line_frame.empty_green_status(),
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], resumed_command)
+
+    def test_explicitly_rejected_candidate_exits_hold_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        rejected_status = self.pending_status()
+        rejected_status["greenRawInterpretation"] = "VERDE_FALSO"
+        resumed_command = self.fusion_command(0.82, 0.66, 105.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            resumed_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=rejected_status,
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], resumed_command)
+
+    def test_persistent_candidate_expires_after_two_frames_without_restart(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        hold_frames = 0
+        hold_blocked = False
+        activity = []
+
+        for frame_index in range(1, 5):
+            current = self.fusion_command(
+                0.80 + frame_index * 0.01,
+                0.70 - frame_index * 0.01,
+                90.0 + frame_index,
+            )
+            result = camera_line_frame.apply_green_candidate_fusion_hold(
+                current,
+                previous,
+                armed=True,
+                active_direction="NENHUMA",
+                green_status=self.pending_status(),
+                hold_frames=hold_frames,
+                hold_blocked=hold_blocked,
+            )
+            activity.append(result["active"])
+            hold_frames = result["frames"]
+            hold_blocked = result["blocked"]
+            if frame_index >= 3:
+                self.assertEqual(result["command"], current)
+
+        self.assertEqual(activity, [True, True, False, False])
+        self.assertEqual(hold_frames, 2)
+        self.assertTrue(hold_blocked)
+
+    def test_without_candidate_or_with_active_green_command_is_unchanged(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        normal_command = self.fusion_command(0.82, 0.66, 105.0)
+        without_candidate = camera_line_frame.apply_green_candidate_fusion_hold(
+            normal_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=camera_line_frame.empty_green_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        confirmed_status = self.pending_status()
+        confirmed_status["greenConfirmed"] = True
+        green_command = self.fusion_command(-0.30, 0.85, 155.0)
+        green_command["controlSource"] = "fusion-green"
+        active_green = camera_line_frame.apply_green_candidate_fusion_hold(
+            green_command,
+            previous,
+            armed=False,
+            active_direction="ESQUERDA",
+            green_status=confirmed_status,
+            hold_frames=0,
+            hold_blocked=False,
+        )
+
+        self.assertEqual(without_candidate["command"], normal_command)
+        self.assertFalse(without_candidate["active"])
+        self.assertEqual(active_green["command"], green_command)
+        self.assertFalse(active_green["active"])
+
+
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
     def test_green_geometric_completion_requires_three_consecutive_frames(self):
         completion_frames = 0

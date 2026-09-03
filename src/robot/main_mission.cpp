@@ -931,7 +931,12 @@ void MainMission::update(
             return;
         }
 
-        if (cameraLineSnapshot.lineNearDetected)
+        const bool fusionLineRecovered =
+            cameraLineSnapshot.lineControlSource == "fusion" &&
+            cameraLineSnapshot.normalSteeringValid;
+        const bool lineRecovered =
+            cameraLineSnapshot.lineNearDetected || fusionLineRecovered;
+        if (lineRecovered)
         {
             ++lineReacquireFrames_;
         }
@@ -950,7 +955,10 @@ void MainMission::update(
                 cameraLineSnapshot.lineFollowerRightPower);
             robotState.updateAutonomousStatus(makeMainMissionStatus(
                 "line_following",
-                "Retorno 180° concluído: linha próxima recuperada",
+                fusionLineRecovered &&
+                        !cameraLineSnapshot.lineNearDetected
+                    ? "Retorno 180° concluído: linha recuperada pelo Fusion"
+                    : "Retorno 180° concluído: linha próxima recuperada",
                 100.0));
             return;
         }
