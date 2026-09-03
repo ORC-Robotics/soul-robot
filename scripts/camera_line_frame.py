@@ -2631,7 +2631,7 @@ FUSION_STYLE_TRANSVERSE_WIDTH_STABILITY_RATIO = 0.10
 
 # O guard só existe durante pivot extremo. Ele bloqueia uma inversão súbita de
 # lado causada pela rotação da imagem e libera no primeiro target frontal claro.
-FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG = 60.0
+FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG = 55.0
 FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG = 25.0
 
 # Estes limites classificam apenas a consistência da observação; não filtram o

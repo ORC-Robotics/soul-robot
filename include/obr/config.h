@@ -367,7 +367,7 @@ constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
 // Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
 constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
-constexpr double kGreenTurnAroundForwardDistanceCm = 16.0;
+constexpr double kGreenTurnAroundForwardDistanceCm = 15.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
 // retorno de 180°.
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
