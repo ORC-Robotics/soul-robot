@@ -50,6 +50,9 @@ struct RobotSnapshot
     double left = 0.0;
     double right = 0.0;
     bool rawMotorCommand = false;
+    // Mantém o sincronismo disponível por padrão. O segue-faixa NORMAL
+    // desativa apenas essa etapa, sem contornar os pisos START/RUN.
+    bool encoderSynchronizationAllowed = true;
     long long commandAgeMs = 0;
     bool commandTimedOut = false;
     unsigned long long autonomousRunSequence = 0;
@@ -73,7 +76,10 @@ public:
     void emergencyStop();
     void drive(double left, double right);
     void driveRawDiagnostic(double left, double right);
-    void driveAutonomous(double left, double right);
+    void driveAutonomous(
+        double left,
+        double right,
+        bool encoderSynchronizationAllowed = true);
     void updateAutonomousStatus(const AutonomousStatus& status);
     void enforceCommandTimeout(std::chrono::milliseconds timeout);
 

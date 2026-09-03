@@ -159,6 +159,20 @@ constexpr int kMainLoopPeriodMs = 20;
 constexpr double kMinMotorOutput = -1.0;
 constexpr double kMaxMotorOutput = 1.0;
 
+// Compensa somente o seguimento NORMAL quando a inclinação recente da IMU
+// indica subida ou descida. Pela convenção operacional atual, valores positivos
+// representam a frente do robô levantada; a faixa intermediária não altera a potência.
+constexpr double kLineFollowingUphillThresholdDeg = 9.0;
+constexpr double kLineFollowingDownhillThresholdDeg = -6.0;
+constexpr double kLineFollowingUphillPowerOffset = 0.15;
+constexpr double kLineFollowingDownhillPowerOffset = -0.05;
+
+static_assert(kLineFollowingUphillThresholdDeg > 0.0 &&
+                  kLineFollowingDownhillThresholdDeg < 0.0 &&
+                  kLineFollowingUphillPowerOffset > 0.0 &&
+                  kLineFollowingDownhillPowerOffset < 0.0,
+              "A compensação de rampa deve respeitar os sentidos de subida e descida.");
+
 // Potência mínima para iniciar uma roda que estava parada.
 // Este valor foi validado fisicamente; reduzi-lo pode impedir a partida do motor.
 constexpr double kMotorStartMinimumPower = 0.67;

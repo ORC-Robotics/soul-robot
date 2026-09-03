@@ -663,9 +663,49 @@ void MainMission::update(
         {
             return;
         }
+
+        double leftPower = cameraLineSnapshot.lineFollowerLeftPower;
+        double rightPower = cameraLineSnapshot.lineFollowerRightPower;
+        const bool normalLineFollowing =
+            cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+            cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL";
+        const bool rampTelemetryReady =
+            esp32Telemetry.sensorFresh && esp32Telemetry.mpuOk &&
+            esp32Telemetry.lastSensorAgeMs >= 0 &&
+            esp32Telemetry.lastSensorAgeMs <= config::kTurn90ImuFreshnessMs &&
+            std::isfinite(esp32Telemetry.rampAngleDeg);
+        if (normalLineFollowing && rampTelemetryReady &&
+            leftPower > 0.0 && rightPower > 0.0)
+        {
+            double rampPowerOffset = 0.0;
+            if (esp32Telemetry.rampAngleDeg >=
+                config::kLineFollowingUphillThresholdDeg)
+            {
+                rampPowerOffset = config::kLineFollowingUphillPowerOffset;
+            }
+            else if (esp32Telemetry.rampAngleDeg <=
+                     config::kLineFollowingDownhillThresholdDeg)
+            {
+                rampPowerOffset = config::kLineFollowingDownhillPowerOffset;
+            }
+
+            // O mesmo offset preserva o diferencial do Fusion. O clamp final
+            // impede que a compensação ultrapasse o protocolo dos motores.
+            leftPower = std::clamp(
+                leftPower + rampPowerOffset,
+                config::kMinMotorOutput,
+                config::kMaxMotorOutput);
+            rightPower = std::clamp(
+                rightPower + rampPowerOffset,
+                config::kMinMotorOutput,
+                config::kMaxMotorOutput);
+        }
         robotState.driveAutonomous(
-            cameraLineSnapshot.lineFollowerLeftPower,
-            cameraLineSnapshot.lineFollowerRightPower);
+            leftPower,
+            rightPower,
+            !(
+                normalLineFollowing &&
+                cameraLineSnapshot.normalSteeringValid));
         robotState.updateAutonomousStatus(forwardAssistStatus(
             "line_following",
             "Seguindo a linha pela câmera inferior",
@@ -952,7 +992,11 @@ void MainMission::update(
             turnAroundController_.reset();
             robotState.driveAutonomous(
                 cameraLineSnapshot.lineFollowerLeftPower,
-                cameraLineSnapshot.lineFollowerRightPower);
+                cameraLineSnapshot.lineFollowerRightPower,
+                !(
+                    cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+                    cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL" &&
+                    cameraLineSnapshot.normalSteeringValid));
             robotState.updateAutonomousStatus(makeMainMissionStatus(
                 "line_following",
                 fusionLineRecovered &&

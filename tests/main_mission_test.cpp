@@ -281,6 +281,110 @@ void testNormalLineFollowerCommandsMotors()
         "Sem marcador verde");
 }
 
+CameraLineSnapshot normalLineVision(double leftPower, double rightPower)
+{
+    CameraLineSnapshot snapshot = freshVision(GreenInterpretation::None);
+    snapshot.lineFollowerLeftPower = leftPower;
+    snapshot.lineFollowerRightPower = rightPower;
+    snapshot.lineControlSource = "fusion";
+    snapshot.normalSteeringValid = true;
+    snapshot.farTrusted = true;
+    snapshot.curveDiagnostics.lineState = "LINE";
+    snapshot.curveDiagnostics.virtualState = "NORMAL";
+    return snapshot;
+}
+
+void testNormalLineFollowerCompensatesRampPower()
+{
+    MissionFixture uphillFixture;
+    uphillFixture.telemetry.rampAngleDeg =
+        config::kLineFollowingUphillThresholdDeg;
+    RobotSnapshot snapshot = uphillFixture.update(normalLineVision(0.70, 0.76));
+    require(
+        closeTo(snapshot.left, 0.85) && closeTo(snapshot.right, 0.91) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Subida deve somar o mesmo offset aos dois lados do segue-linha NORMAL.");
+
+    MissionFixture downhillFixture;
+    downhillFixture.telemetry.rampAngleDeg =
+        config::kLineFollowingDownhillThresholdDeg;
+    snapshot = downhillFixture.update(normalLineVision(0.70, 0.76));
+    require(
+        closeTo(snapshot.left, 0.65) && closeTo(snapshot.right, 0.71) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Descida deve reduzir igualmente os dois lados do segue-linha NORMAL.");
+
+    MissionFixture levelFixture;
+    levelFixture.telemetry.rampAngleDeg = 2.0;
+    snapshot = levelFixture.update(normalLineVision(0.70, 0.76));
+    require(
+        closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Inclinação entre os limiares não deve alterar o segue-linha.");
+}
+
+void testRampCompensationRequiresFreshValidImu()
+{
+    MissionFixture invalidFixture;
+    invalidFixture.telemetry.rampAngleDeg = 12.0;
+    invalidFixture.telemetry.mpuOk = false;
+    RobotSnapshot snapshot = invalidFixture.update(normalLineVision(0.70, 0.76));
+    require(
+        closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "IMU inválida não pode alterar a potência do segue-linha.");
+
+    MissionFixture staleFixture;
+    staleFixture.telemetry.rampAngleDeg = 12.0;
+    staleFixture.telemetry.lastSensorAgeMs = config::kTurn90ImuFreshnessMs + 1;
+    snapshot = staleFixture.update(normalLineVision(0.70, 0.76));
+    require(
+        closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Inclinação stale não pode alterar a potência do segue-linha.");
+}
+
+void testRampCompensationPreservesSpecialLineCommands()
+{
+    MissionFixture pivotFixture;
+    pivotFixture.telemetry.rampAngleDeg = 12.0;
+    RobotSnapshot snapshot = pivotFixture.update(normalLineVision(-0.30, 0.85));
+    require(
+        closeTo(snapshot.left, -0.30) && closeTo(snapshot.right, 0.85) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Pivot Fusion não pode receber compensação de rampa.");
+
+    MissionFixture greenFixture;
+    greenFixture.telemetry.rampAngleDeg = 12.0;
+    CameraLineSnapshot green = normalLineVision(0.70, 0.76);
+    green.curveDiagnostics.lineState = "GREEN";
+    snapshot = greenFixture.update(green);
+    require(
+        closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
+            snapshot.encoderSynchronizationAllowed,
+        "GREEN não pode receber compensação de rampa.");
+
+    MissionFixture recoveryFixture;
+    recoveryFixture.telemetry.rampAngleDeg = 12.0;
+    CameraLineSnapshot recovery = normalLineVision(0.70, 0.76);
+    recovery.curveDiagnostics.virtualState = "REORIENT_LEFT";
+    snapshot = recoveryFixture.update(recovery);
+    require(
+        closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
+            snapshot.encoderSynchronizationAllowed,
+        "Recovery não pode receber compensação de rampa.");
+}
+
+void testRampCompensationClampsFinalMotorCommands()
+{
+    MissionFixture fixture;
+    fixture.telemetry.rampAngleDeg = 12.0;
+    const RobotSnapshot snapshot = fixture.update(normalLineVision(0.90, 0.98));
+    require(
+        closeTo(snapshot.left, 1.0) && closeTo(snapshot.right, 1.0),
+        "Compensação de subida deve respeitar o clamp final dos motores.");
+}
+
 void testNonReturnGreenDoesNotStartSequence()
 {
     const GreenInterpretation interpretations[] = {
@@ -368,7 +472,8 @@ void testUnequalEncoderDistancesDoNotInterruptForwardStage()
         snapshot.mode == "autonomous" &&
             snapshot.autonomousStatus.phase == "turnaround_forward" &&
             closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
-            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
+            closeTo(snapshot.right, config::kGreenTurnAroundForwardPower) &&
+            snapshot.encoderSynchronizationAllowed,
         "Diferença entre encoders não deve mais interromper o avanço.");
 }
 
@@ -1356,7 +1461,8 @@ void testGapWithoutSearchPreservesExistingBehavior()
             snapshot.autonomousStatus.forwardAssistEntryBlocker ==
                 "LINE_NOT_NORMAL" &&
             closeTo(snapshot.left, gapCommand.lineFollowerLeftPower) &&
-            closeTo(snapshot.right, gapCommand.lineFollowerRightPower),
+            closeTo(snapshot.right, gapCommand.lineFollowerRightPower) &&
+            snapshot.encoderSynchronizationAllowed,
         "GAP sem SEARCH ativo deve manter sua autoridade e seus motores atuais.");
 }
 
@@ -1378,6 +1484,10 @@ int main()
     try
     {
         testNormalLineFollowerCommandsMotors();
+        testNormalLineFollowerCompensatesRampPower();
+        testRampCompensationRequiresFreshValidImu();
+        testRampCompensationPreservesSpecialLineCommands();
+        testRampCompensationClampsFinalMotorCommands();
         testNonReturnGreenDoesNotStartSequence();
         testLateralGreenUsesCameraCommandWithoutImuGate();
         testReturnWaitsForRequiredSensors();

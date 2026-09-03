@@ -54,6 +54,7 @@ void RobotState::start()
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     state_.autonomousStatus = {"manual", "Controle manual ativo"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -66,6 +67,7 @@ void RobotState::startAutonomous()
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -86,6 +88,7 @@ bool RobotState::tryStartAutonomous()
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -102,6 +105,7 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     state_.autonomousMission = mission;
     state_.autonomousStatus = {"ready", "Missão selecionada e pronta"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -128,6 +132,7 @@ void RobotState::stop()
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     state_.autonomousStatus = {"stopped", "Missão parada"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -140,6 +145,7 @@ void RobotState::emergencyStop()
     state_.left = 0.0;
     state_.right = 0.0;
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
     state_.autonomousStatus = {"emergency", "Parada de emergência ativa"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -156,12 +162,14 @@ void RobotState::drive(double left, double right)
         state_.left = 0.0;
         state_.right = 0.0;
         state_.rawMotorCommand = false;
+        state_.encoderSynchronizationAllowed = true;
         return;
     }
 
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
 }
 
 void RobotState::driveRawDiagnostic(double left, double right)
@@ -176,15 +184,20 @@ void RobotState::driveRawDiagnostic(double left, double right)
         state_.left = 0.0;
         state_.right = 0.0;
         state_.rawMotorCommand = false;
+        state_.encoderSynchronizationAllowed = true;
         return;
     }
 
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
     state_.rawMotorCommand = true;
+    state_.encoderSynchronizationAllowed = true;
 }
 
-void RobotState::driveAutonomous(double left, double right)
+void RobotState::driveAutonomous(
+    double left,
+    double right,
+    bool encoderSynchronizationAllowed)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     lastCommand_ = std::chrono::steady_clock::now();
@@ -199,6 +212,7 @@ void RobotState::driveAutonomous(double left, double right)
     state_.left = clampMotorCommand(left);
     state_.right = clampMotorCommand(right);
     state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = encoderSynchronizationAllowed;
 }
 
 void RobotState::updateAutonomousStatus(const AutonomousStatus& status)

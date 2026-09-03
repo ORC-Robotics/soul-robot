@@ -94,7 +94,9 @@ void MotorController::apply(const RobotSnapshot& state)
     const bool straightForwardCommand =
         leftPower > 0.0 && rightPower > 0.0 &&
         std::abs(leftPower - rightPower) <= kStraightCommandTolerance;
-    if (straightForwardCommand)
+    // O segue-faixa NORMAL preserva o diferencial vindo da câmera e desativa
+    // somente o sincronismo; os pisos START/RUN já foram aplicados acima.
+    if (straightForwardCommand && state.encoderSynchronizationAllowed)
     {
         applyEncoderSynchronization(
             leftPower, rightPower, telemetry);
