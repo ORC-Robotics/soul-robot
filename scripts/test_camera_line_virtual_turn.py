@@ -413,6 +413,46 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
             (int(row_xs[0]) + int(row_xs[-1])) // 2,
         )
 
+    def test_top_band_first_stable_target_is_centered_and_farther(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (220, 359), (350, 100), 255, 34)
+        contours, _ = camera_line_frame.cv2.findContours(
+            mask,
+            camera_line_frame.cv2.RETR_EXTERNAL,
+            camera_line_frame.cv2.CHAIN_APPROX_SIMPLE,
+        )
+
+        top_point, band_start_y, band_end_y = (
+            camera_line_frame.calculate_fusion_style_top_contour(
+                mask,
+                max(contours, key=camera_line_frame.cv2.contourArea),
+            )
+        )
+        target_row_xs = np.flatnonzero(mask[top_point[1]] > 0)
+        previous_target_y = band_end_y - 1
+        previous_row_xs = np.flatnonzero(mask[previous_target_y] > 0)
+        previous_target = (
+            (int(previous_row_xs[0]) + int(previous_row_xs[-1])) // 2,
+            previous_target_y,
+        )
+        robot_reference = (mask.shape[1] / 2.0, mask.shape[0] - 1.0)
+        target_distance = math.hypot(
+            top_point[0] - robot_reference[0],
+            top_point[1] - robot_reference[1],
+        )
+        previous_target_distance = math.hypot(
+            previous_target[0] - robot_reference[0],
+            previous_target[1] - robot_reference[1],
+        )
+
+        self.assertEqual(top_point[1], band_start_y)
+        self.assertEqual(
+            top_point[0],
+            (int(target_row_xs[0]) + int(target_row_xs[-1])) // 2,
+        )
+        self.assertLess(top_point[1], previous_target[1])
+        self.assertGreater(target_distance, previous_target_distance)
+
     def test_near_component_wins_over_larger_disconnected_distractor(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
         camera_line_frame.cv2.line(mask, (240, 359), (300, 100), 255, 22)
@@ -457,7 +497,7 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
             15,
         )
 
-    def test_narrower_top_band_anticipates_gradual_curve(self):
+    def test_first_stable_top_target_preserves_anticipation(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
         curve = np.asarray(
             [
@@ -480,7 +520,8 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         ):
             previous_band = camera_line_frame.extract_fusion_style_line(mask)
 
-        self.assertGreater(anticipated["angleDeg"], previous_band["angleDeg"])
+        self.assertEqual(anticipated["farPoint"], previous_band["farPoint"])
+        self.assertEqual(anticipated["angleDeg"], previous_band["angleDeg"])
 
     def test_connected_left_ninety_degree_curve_uses_physical_edge(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
@@ -649,6 +690,64 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertFalse(forward_again["pivotDirectionGuardActive"])
         self.assertEqual(forward_again["pivotDirectionGuard"], "NONE")
         self.assertEqual(forward_again["angleDeg"], 90.0)
+
+    def test_extreme_pivot_guard_releases_without_top_band(self):
+        envelope = camera_line_frame.resolve_normal_trajectory_envelope(
+            (360, 480)
+        )
+        extreme_right = camera_line_frame.empty_fusion_style_line()
+        extreme_right.update({
+            "valid": True,
+            "angleDeg": 166.4,
+            "farPoint": {"x": 450, "y": 300},
+            "referenceSource": "rightEdge",
+        })
+        camera_line_frame.apply_fusion_extreme_pivot_direction_guard(
+            extreme_right,
+            None,
+            envelope,
+        )
+
+        near_forward = camera_line_frame.empty_fusion_style_line()
+        near_forward.update({
+            "valid": True,
+            "angleDeg": 96.6,
+            "farPoint": {"x": 265, "y": 143},
+            "referenceSource": "rightEdge",
+        })
+        camera_line_frame.apply_fusion_extreme_pivot_direction_guard(
+            near_forward,
+            extreme_right,
+            envelope,
+        )
+
+        self.assertFalse(near_forward["pivotDirectionGuardActive"])
+        self.assertEqual(near_forward["pivotDirectionGuard"], "NONE")
+        self.assertFalse(
+            near_forward["pivotDirectionGuardRejectedOpposite"]
+        )
+        self.assertEqual(near_forward["angleDeg"], 96.6)
+        self.assertEqual(near_forward["farPoint"], {"x": 265, "y": 143})
+
+        valid_left = camera_line_frame.empty_fusion_style_line()
+        valid_left.update({
+            "valid": True,
+            "angleDeg": 21.3,
+            "farPoint": {"x": 30, "y": 300},
+            "referenceSource": "leftEdge",
+        })
+        camera_line_frame.apply_fusion_extreme_pivot_direction_guard(
+            valid_left,
+            near_forward,
+            envelope,
+        )
+
+        self.assertFalse(valid_left["pivotDirectionGuardActive"])
+        self.assertFalse(
+            valid_left["pivotDirectionGuardRejectedOpposite"]
+        )
+        self.assertEqual(valid_left["angleDeg"], 21.3)
+        self.assertEqual(valid_left["farPoint"], {"x": 30, "y": 300})
 
     def test_empty_mask_keeps_experimental_result_invalid(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
@@ -2628,6 +2727,63 @@ class VirtualRecoveryTests(unittest.TestCase):
             real_near_point=None,
             virtual_near_point=None,
             lateral_exit_target=None,
+        ))
+
+    def test_near_connected_fusion_contour_blocks_false_gap_entry(self):
+        connected_curve = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(
+            connected_curve,
+            (240, 359),
+            (40, 170),
+            255,
+            22,
+        )
+        connected_fusion = camera_line_frame.extract_fusion_style_line(
+            connected_curve
+        )
+        fusion_near_connected = (
+            connected_fusion["valid"]
+            and connected_fusion["selection"] == "nearCenter"
+        )
+
+        self.assertTrue(fusion_near_connected)
+        self.assertFalse(camera_line_frame.gap_entry_is_required(
+            gap_forward_active=False,
+            green_direction="NENHUMA",
+            recent_near_frames=1,
+            near_center_visible=False,
+            real_near_point=None,
+            virtual_near_point=None,
+            lateral_exit_target=None,
+            fusion_near_connected=fusion_near_connected,
+        ))
+
+        distant_segment = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(
+            distant_segment,
+            (220, 220),
+            (120, 120),
+            255,
+            22,
+        )
+        distant_fusion = camera_line_frame.extract_fusion_style_line(
+            distant_segment
+        )
+        distant_fusion_near_connected = (
+            distant_fusion["valid"]
+            and distant_fusion["selection"] == "nearCenter"
+        )
+
+        self.assertFalse(distant_fusion_near_connected)
+        self.assertTrue(camera_line_frame.gap_entry_is_required(
+            gap_forward_active=False,
+            green_direction="NENHUMA",
+            recent_near_frames=1,
+            near_center_visible=False,
+            real_near_point=None,
+            virtual_near_point=None,
+            lateral_exit_target=None,
+            fusion_near_connected=distant_fusion_near_connected,
         ))
 
     def test_recent_near_loss_uses_far_left_gap_recovery(self):

@@ -4583,7 +4583,7 @@ def calculate_fusion_style_top_contour(
             max(widths) * FUSION_STYLE_TRANSVERSE_WIDTH_STABILITY_RATIO,
         )
         if max(widths) - min(widths) <= width_tolerance_px:
-            return stable_sections[-1]["center"], first_y, last_y + 1
+            return stable_sections[0]["center"], first_y, last_y + 1
 
     fallback_target = selected_component.get("transverseCenter")
     if fallback_target is None:
@@ -4865,12 +4865,10 @@ def apply_fusion_extreme_pivot_direction_guard(
         previous_guard_active = False
 
     if previous_guard_active:
-        forward_target_reestablished = (
+        if (
             abs(angle_error_deg)
             <= FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG
-            and fusion_style_has_forward_target(result, envelope)
-        )
-        if forward_target_reestablished:
+        ):
             return
 
         result["pivotDirectionGuard"] = previous_direction
@@ -7223,12 +7221,14 @@ def gap_entry_is_required(
     real_near_point,
     virtual_near_point,
     lateral_exit_target,
+    fusion_near_connected=False,
 ):
     """Reconhece a perda recente do NEAR sem disputar prioridade com verde."""
 
     return (
         not gap_forward_active
         and green_direction == "NENHUMA"
+        and not fusion_near_connected
         and recent_near_frames > 0
         and not near_center_visible
         and real_near_point is None
@@ -9476,6 +9476,11 @@ def main():
                 real_near_point,
                 virtual_near_point,
                 lateral_exit_target,
+                fusion_near_connected=(
+                    isinstance(fusion_style_line, dict)
+                    and fusion_style_line.get("valid") is True
+                    and fusion_style_line.get("selection") == "nearCenter"
+                ),
             ):
                 gap_forward_active = True
                 gap_forward_frames = 0
