@@ -10,3 +10,4 @@ camera_fov_test/**/*.png
 camera_fov_test/**/*.jpg
 camera_fov_test/**/*.json
 camera_fov_test/**/*.log
+.venv*/
