@@ -828,6 +828,11 @@ std::string DashboardServer::dashboardHtml()
     .camera-view-button:hover { background: var(--bg-card-hover); }
     .camera-view-button.active { color: var(--text-primary); border-color: var(--border-primary); background: var(--interactive-active); box-shadow: none; }
     .camera-view-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+    .dataset-capture-strip { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-2); min-height: 30px; margin: 0 0 var(--space-2); padding: 6px var(--space-2); border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg-primary); color: var(--muted); }
+    .dataset-capture-strip strong { color: var(--text-muted); font-size: .59rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+    .dataset-capture-strip span { min-width: 0; font-size: .62rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+    .dataset-capture-strip[data-state="active"] strong { color: var(--green); }
+    .dataset-capture-strip[data-state="stale"] strong { color: var(--yellow); }
     .camera-feed-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
     .camera-feed-grid[data-view="dual"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
     .camera-feed-card { min-width: 0; padding: var(--space-2); border: 1px solid var(--line-soft); border-radius: 13px; background: var(--bg-primary); }
@@ -1213,6 +1218,10 @@ std::string DashboardServer::dashboardHtml()
             <summary>Detalhes da câmera</summary>
             <div id="cameraTechnicalMetadata" class="camera-technical-metadata"></div>
           </details>
+          <div id="datasetCaptureStatus" class="dataset-capture-strip" data-state="paused" aria-live="polite">
+            <strong id="datasetCaptureState">Dataset pausado</strong>
+            <span id="datasetCaptureDetails">Nenhuma coleta configurada.</span>
+          </div>
           <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
           <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
             <div class="camera-hud-header">
@@ -1512,6 +1521,9 @@ std::string DashboardServer::dashboardHtml()
     const cameraTechnicalMetadata = element("cameraTechnicalMetadata");
     const operationCameraName = element("operationCameraName");
     const operationCameraFps = element("operationCameraFps");
+    const datasetCaptureStatus = element("datasetCaptureStatus");
+    const datasetCaptureState = element("datasetCaptureState");
+    const datasetCaptureDetails = element("datasetCaptureDetails");
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
     const forwardAssistDiagnostic = element("forwardAssistDiagnostic");
@@ -2204,6 +2216,58 @@ std::string DashboardServer::dashboardHtml()
       return "unconfigured";
     }
 
+    function updateDatasetCaptureStatus(data) {
+      const counts = data.datasetCaptureCounts && typeof data.datasetCaptureCounts === "object"
+        ? data.datasetCaptureCounts : {};
+      const safeCount = value => {
+        const number = Number(value);
+        return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+      };
+      const camera = typeof data.datasetCaptureCamera === "string" ? data.datasetCaptureCamera : "";
+      const session = typeof data.datasetCaptureSession === "string" ? data.datasetCaptureSession : "";
+      const label = typeof data.datasetCaptureLabel === "string" ? data.datasetCaptureLabel : "";
+      const fps = Number(data.datasetCaptureFps);
+      const dropped = safeCount(data.datasetCaptureDropped);
+      const lastSavedAt = Number(data.datasetCaptureLastSavedAt);
+      const updatedAt = Number(data.datasetCaptureUpdatedAt);
+      const active = data.datasetCaptureActive === true;
+      const updateAgeSeconds = Date.now() / 1000 - updatedAt;
+      const stale = data.datasetCaptureStale === true || (active && (
+        !Number.isFinite(updatedAt) || updatedAt <= 0 || updateAgeSeconds < 0 || updateAgeSeconds > 4.0
+      ));
+      const configured = Boolean(camera || session || label);
+
+      datasetCaptureStatus.dataset.state = stale ? "stale" : (active ? "active" : "paused");
+      datasetCaptureState.textContent = stale
+        ? "Dataset sem atualização"
+        : (active ? "Dataset capturando" : "Dataset pausado");
+
+      if (!configured) {
+        datasetCaptureDetails.textContent = "Nenhuma coleta configurada.";
+        datasetCaptureStatus.removeAttribute("title");
+        return;
+      }
+
+      const details = [
+        (camera || "--").toUpperCase(),
+        (label || "--").toUpperCase(),
+      ];
+      if (!stale) {
+        details.push(Number.isFinite(fps) && fps > 0 ? `${fps.toFixed(1)} FPS` : "-- FPS");
+      }
+      details.push(`B ${safeCount(counts.black)}`);
+      details.push(`O ${safeCount(counts.other)}`);
+      details.push(`S ${safeCount(counts.silver)}`);
+      if (!stale) details.push(`${dropped} perdidas`);
+      details.push(session || "--");
+      datasetCaptureDetails.textContent = details.join(" · ");
+      if (Number.isFinite(lastSavedAt) && lastSavedAt > 0) {
+        datasetCaptureStatus.title = `Último JPEG salvo: ${new Date(lastSavedAt * 1000).toLocaleString("pt-BR")}`;
+      } else {
+        datasetCaptureStatus.removeAttribute("title");
+      }
+    }
+
     function setCameraStatus(cameraId, status) {
       const camera = cameras[cameraId];
       camera.status = status;
@@ -2699,6 +2763,7 @@ std::string DashboardServer::dashboardHtml()
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("camera status unavailable");
         const data = await response.json();
+        updateDatasetCaptureStatus(data);
         let visualState = String(data.state || "FALHA").toUpperCase();
         const statusTimestamp = Number(data.timestamp);
         const nowMs = performance.now();
@@ -2777,6 +2842,7 @@ std::string DashboardServer::dashboardHtml()
         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
         if (!response.ok) throw new Error("forward camera status unavailable");
         const data = await response.json();
+        updateDatasetCaptureStatus(data);
         const backendEnabled = data.enabled === true;
         const backendActive = data.active === true;
         const backendFailed = data.state === "error";

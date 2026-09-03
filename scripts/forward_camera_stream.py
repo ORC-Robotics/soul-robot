@@ -13,6 +13,18 @@ import camera_line_frame
 import cv2  # type: ignore
 import numpy as np
 
+try:
+    from silver_dataset_recorder import SilverDatasetRecorder, read_dataset_status
+except ModuleNotFoundError as error:
+    if error.name != "silver_dataset_recorder":
+        raise
+
+    # A coleta é opcional e não pode impedir a inicialização da câmera frontal.
+    SilverDatasetRecorder = None
+
+    def read_dataset_status():
+        return {}
+
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
 TEMP_CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled.tmp"
@@ -132,6 +144,7 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "error": error_message,
         "timestamp": time.time(),
     }
+    status.update(read_dataset_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -584,6 +597,13 @@ def main():
     next_retry_time = 0.0
     line_sequence = 0
 
+    silver_dataset_recorder = None
+    if SilverDatasetRecorder is not None:
+        try:
+            silver_dataset_recorder = SilverDatasetRecorder("forward")
+        except Exception as error:
+            print(f"Coleta do dataset frontal indisponível: {error}", flush=True)
+
     try:
         while running:
             enabled = requested_enabled()
@@ -635,6 +655,14 @@ def main():
             try:
                 frame = camera.capture_array("main")
                 frame = orient_forward_frame(frame)
+
+                if silver_dataset_recorder is not None:
+                    try:
+                        silver_dataset_recorder.submit(frame)
+                    except Exception as error:
+                        print(f"Coleta do dataset frontal desativada após erro inesperado: {error}", flush=True)
+                        silver_dataset_recorder = None
+
                 reading = process_forward_frame(frame, camera_format)
                 line_timestamp = time.time()
                 line_sequence += 1

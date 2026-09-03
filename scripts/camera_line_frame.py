@@ -17,6 +17,18 @@ import cv2  # type: ignore
 import numpy as np
 
 try:
+    from silver_dataset_recorder import SilverDatasetRecorder, read_dataset_status
+except ModuleNotFoundError as error:
+    if error.name != "silver_dataset_recorder":
+        raise
+
+    # A coleta é opcional e não pode impedir a inicialização da visão.
+    SilverDatasetRecorder = None
+
+    def read_dataset_status():
+        return {}
+
+try:
     import RPi.GPIO as GPIO  # type: ignore
 except ImportError:
     GPIO = None
@@ -9089,6 +9101,8 @@ def save_status(
         ),
     }
     status.update(green_status or empty_green_status())
+    status.update(read_dataset_status())
+
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -9167,6 +9181,12 @@ def main():
         last_status_time = 0.0
         smoothed_fps = 0.0
         line_sequence = 0
+        silver_dataset_recorder = None
+        if SilverDatasetRecorder is not None:
+            try:
+                silver_dataset_recorder = SilverDatasetRecorder("down")
+            except Exception as error:
+                print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
         green_tracker = GreenObservationTracker()
         virtual_turn_tracker = VirtualTurnStateTracker()
         pivot_state_tracker = VirtualPivotStateTracker()
@@ -9214,6 +9234,13 @@ def main():
                     camera_request.release()
             else:
                 raw_frame = picam2.capture_array()
+
+            if silver_dataset_recorder is not None:
+                try:
+                    silver_dataset_recorder.submit(raw_frame)
+                except Exception as error:
+                    print(f"Coleta do dataset inferior desativada após erro inesperado: {error}", flush=True)
+                    silver_dataset_recorder = None
 
             frame_height = raw_frame.shape[0]
             vision_geometry = resolve_vision_geometry(
