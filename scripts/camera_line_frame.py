@@ -232,6 +232,9 @@ GREEN_CLEAR_HYSTERESIS_FRAMES = 2
 # Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
 # um candidato verde aguarda confirmação. O limite evita um hold indefinido.
 GREEN_CANDIDATE_HOLD_MAX_FRAMES = 2
+# Mantém por no máximo dois frames o último target Fusion GREEN válido.
+# Depois disso, a recuperação existente assume no lado indicado pelo marcador.
+GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 2
 # Esta medida-base equivale a 5% da largura do frame e dimensiona as duas ROIs
 # sem prender o detector a uma resolução específica.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
@@ -2716,8 +2719,12 @@ GREEN_MANEUVER_TIMEOUT_FRAMES = 45
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.
-VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = 12
-VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = 30
+VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = 35
+VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = 50
+# Antes da busca automática em LINE, uma ré curta afasta o robô do ponto em
+# que perdeu a faixa. A potência usa o menor valor confiável para mover o Soul.
+VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES = 5
+VIRTUAL_BLIND_SEARCH_BACKUP_POWER = -0.69
 # Dois frames sem orientação evitam entrar em busca por uma perda isolada.
 # GREEN e GAP continuam usando start() diretamente e não recebem este atraso.
 VIRTUAL_BLIND_SEARCH_CONFIRMATION_FRAMES = 2
@@ -4819,6 +4826,11 @@ def select_fusion_style_reference_point(
     if top_band_available:
         return top_point, "topBand"
 
+    # A preferência GREEN pode usar a continuação frontal como fallback, mas
+    # nunca deve atravessar para o edge oposto ao ramo escolhido pelo marcador.
+    if preferred_direction is not None:
+        return None, "none"
+
     if left_y is not None and right_y is None:
         centered_point = calculate_fusion_style_edge_segment_center(
             physical_mask,
@@ -4882,6 +4894,22 @@ def fusion_style_angle_direction(angle_deg):
     if angle_deg < 90.0:
         return "LEFT"
     return "NONE"
+
+
+def fusion_style_blind_search_direction(fusion_history):
+    """Obtém o último lado Fusion recente para iniciar a busca cega."""
+
+    previous_target = fusion_style_previous_target(fusion_history)
+    if previous_target is None:
+        return None
+
+    angle_deg = previous_target["angleDeg"]
+    if (
+        not 0.0 <= angle_deg <= 180.0
+        or abs(angle_deg - 90.0) <= FUSION_STEERING_DEADBAND_DEG
+    ):
+        return None
+    return fusion_style_angle_direction(angle_deg)
 
 
 def fusion_style_has_forward_target(result, envelope):
@@ -7442,6 +7470,7 @@ class VirtualLineSearchTracker:
         self.active = False
         self.initial_direction = None
         self.search_frames = 0
+        self.backup_frames_remaining = 0
         self.entry_confirmation_frames = 0
 
     def remember(self, direction):
@@ -7457,9 +7486,10 @@ class VirtualLineSearchTracker:
         self.active = False
         self.initial_direction = None
         self.search_frames = 0
+        self.backup_frames_remaining = 0
         self.entry_confirmation_frames = 0
 
-    def start(self, preferred_direction=None):
+    def start(self, preferred_direction=None, backup_frames=0):
         """Inicia a busca uma única vez com a melhor direção disponível."""
 
         if self.active:
@@ -7472,9 +7502,10 @@ class VirtualLineSearchTracker:
         self.initial_direction = initial_direction or "RIGHT"
         self.active = True
         self.search_frames = 0
+        self.backup_frames_remaining = max(0, int(backup_frames))
         self.entry_confirmation_frames = 0
 
-    def request_automatic_start(self):
+    def request_automatic_start(self, preferred_direction=None):
         """Confirma a perda antes de iniciar uma busca automática de LINE."""
 
         if self.active:
@@ -7485,14 +7516,20 @@ class VirtualLineSearchTracker:
             < VIRTUAL_BLIND_SEARCH_CONFIRMATION_FRAMES
         ):
             return False
-        self.start()
+        self.start(
+            preferred_direction,
+            backup_frames=VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES,
+        )
         return True
 
     def next_direction(self):
-        """Retorna o lado da janela atual e avança um frame."""
+        """Retorna a ação da janela atual e avança um frame."""
 
         if not self.active:
             return None
+        if self.backup_frames_remaining > 0:
+            self.backup_frames_remaining -= 1
+            return "BACKWARD"
         cycle_frames = (
             VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES
             + VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES
@@ -7726,6 +7763,76 @@ def apply_green_candidate_fusion_hold(
         "frames": next_hold_frames,
         "blocked": (
             next_hold_frames >= GREEN_CANDIDATE_HOLD_MAX_FRAMES
+        ),
+    }
+
+
+def update_green_fusion_target_hold(
+    active_direction,
+    fusion_style_line,
+    previous_valid_fusion_line,
+    missing_frames,
+):
+    """Tolera uma perda curta do target e depois solicita recovery direcional."""
+
+    current_line = (
+        fusion_style_line
+        if isinstance(fusion_style_line, dict)
+        else empty_fusion_style_line()
+    )
+    if active_direction not in ("ESQUERDA", "DIREITA"):
+        return {
+            "fusionLine": current_line,
+            "previousValidFusionLine": None,
+            "missingFrames": 0,
+            "holdActive": False,
+            "recoveryDirection": None,
+        }
+
+    if current_line.get("valid") is True:
+        return {
+            "fusionLine": current_line,
+            "previousValidFusionLine": dict(current_line),
+            "missingFrames": 0,
+            "holdActive": False,
+            "recoveryDirection": None,
+        }
+
+    next_missing_frames = max(0, int(missing_frames)) + 1
+    if (
+        isinstance(previous_valid_fusion_line, dict)
+        and previous_valid_fusion_line.get("valid") is True
+        and next_missing_frames <= GREEN_FUSION_TARGET_HOLD_MAX_FRAMES
+    ):
+        held_line = dict(previous_valid_fusion_line)
+        held_line["processingMs"] = current_line.get(
+            "processingMs",
+            held_line.get("processingMs", 0.0),
+        )
+        return {
+            "fusionLine": held_line,
+            "previousValidFusionLine": previous_valid_fusion_line,
+            "missingFrames": next_missing_frames,
+            "holdActive": True,
+            "recoveryDirection": None,
+        }
+
+    if next_missing_frames <= GREEN_FUSION_TARGET_HOLD_MAX_FRAMES:
+        return {
+            "fusionLine": current_line,
+            "previousValidFusionLine": previous_valid_fusion_line,
+            "missingFrames": next_missing_frames,
+            "holdActive": False,
+            "recoveryDirection": None,
+        }
+
+    return {
+        "fusionLine": current_line,
+        "previousValidFusionLine": None,
+        "missingFrames": 0,
+        "holdActive": False,
+        "recoveryDirection": green_direction_to_search_direction(
+            active_direction
         ),
     }
 
@@ -8112,6 +8219,7 @@ def calculate_line_follower_command(
     sensor_recovery_requested=False,
     fusion_style_line=None,
     curva_verde_iniciada=False,
+    blind_search_preferred_direction=None,
 ):
     """
     Aplica o seguidor virtual validado pela câmera inferior.
@@ -8209,6 +8317,7 @@ def calculate_line_follower_command(
     medium_strong_requested = False
     medium_pivot_requested = False
     medium_hard_corner_spin_requested = False
+    blind_search_backup_requested = False
     fine_correction = 0.0
     line_state = "LINE"
 
@@ -8253,7 +8362,11 @@ def calculate_line_follower_command(
                 if line_search_tracker is not None
                 else None
             )
-            if blind_direction == "LEFT":
+            if blind_direction == "BACKWARD":
+                steering_error = None
+                blind_search_backup_requested = True
+                control_source = "gap-blind-search-backup"
+            elif blind_direction == "LEFT":
                 steering_error = -1.0
                 control_source = "gap-blind-search"
             elif blind_direction == "RIGHT":
@@ -8352,8 +8465,15 @@ def calculate_line_follower_command(
                 and line_search_tracker.active
             ):
                 blind_direction = line_search_tracker.next_direction()
-                steering_error = -1.0 if blind_direction == "LEFT" else 1.0
-                control_source = "virtual-blind-search"
+                if blind_direction == "BACKWARD":
+                    steering_error = None
+                    blind_search_backup_requested = True
+                    control_source = "virtual-blind-search-backup"
+                else:
+                    steering_error = (
+                        -1.0 if blind_direction == "LEFT" else 1.0
+                    )
+                    control_source = "virtual-blind-search"
             else:
                 steering_error = None
                 observed_medium_direction = virtual_medium_scan_direction(
@@ -8373,14 +8493,25 @@ def calculate_line_follower_command(
                         and not raw_line_visible
                         and line_search_tracker is not None
                     ):
-                        if line_search_tracker.request_automatic_start():
+                        if line_search_tracker.request_automatic_start(
+                            blind_search_preferred_direction
+                        ):
                             blind_direction = (
                                 line_search_tracker.next_direction()
                             )
-                            steering_error = (
-                                -1.0 if blind_direction == "LEFT" else 1.0
-                            )
-                            control_source = "virtual-blind-search"
+                            if blind_direction == "BACKWARD":
+                                steering_error = None
+                                blind_search_backup_requested = True
+                                control_source = (
+                                    "virtual-blind-search-backup"
+                                )
+                            else:
+                                steering_error = (
+                                    -1.0
+                                    if blind_direction == "LEFT"
+                                    else 1.0
+                                )
+                                control_source = "virtual-blind-search"
                         else:
                             control_source = "virtual-search-wait"
                     else:
@@ -8668,6 +8799,12 @@ def calculate_line_follower_command(
     elif medium_spin_state == PIVOT_STATE_RIGHT:
         left_power = VIRTUAL_MEDIUM_SPIN_POWER
         right_power = -VIRTUAL_MEDIUM_SPIN_POWER
+
+    if blind_search_backup_requested:
+        # A ré antecede apenas a busca automática e nunca altera o sentido da
+        # varredura que começará no frame seguinte ao término desta janela.
+        left_power = VIRTUAL_BLIND_SEARCH_BACKUP_POWER
+        right_power = VIRTUAL_BLIND_SEARCH_BACKUP_POWER
 
     return {
         "left_power": left_power,
@@ -9609,6 +9746,11 @@ def main():
         green_candidate_hold_frames = 0
         green_candidate_hold_blocked = False
 
+        # Conserva apenas o último target do GREEN durante uma interrupção de
+        # até dois frames; uma perda maior libera a recuperação direcional.
+        last_green_fusion_line = None
+        green_fusion_target_missing_frames = 0
+
         green_processing_enabled = bool(
             vision_profile.get("green_detection_enabled", False)
             and GREEN_PROCESSING_ENABLED
@@ -9854,12 +9996,54 @@ def main():
                 fusion_history_for_frame,
                 fusion_style_line,
             )
+            fusion_blind_search_direction = (
+                fusion_style_blind_search_direction(
+                    fusion_target_history
+                )
+            )
             line_timings["normalTrajectoryMs"] = normal_trajectory[
                 "processingMs"
             ]
             line_timings["fusionStyleMs"] = fusion_style_line[
                 "processingMs"
             ]
+            green_fusion_target_state = update_green_fusion_target_hold(
+                direcao_verde_ativa,
+                fusion_style_line,
+                last_green_fusion_line,
+                green_fusion_target_missing_frames,
+            )
+            fusion_style_line = green_fusion_target_state["fusionLine"]
+            last_green_fusion_line = green_fusion_target_state[
+                "previousValidFusionLine"
+            ]
+            green_fusion_target_missing_frames = green_fusion_target_state[
+                "missingFrames"
+            ]
+            green_fusion_recovery_direction = green_fusion_target_state[
+                "recoveryDirection"
+            ]
+            if green_fusion_recovery_direction is not None:
+                # O target preferido não voltou na janela curta. A manobra
+                # GREEN termina e a busca existente começa no mesmo lado.
+                direcao_verde_ativa = "NENHUMA"
+                curva_verde_iniciada = False
+                quadros_centralizado_verde = 0
+                quadros_verde_ativo = 0
+                line_search_tracker.start(
+                    green_fusion_recovery_direction
+                )
+                virtual_sensors = read_virtual_line_sensors(
+                    line_candidate_mask,
+                    direcao_verde_ativa,
+                    curva_verde_iniciada,
+                )
+                near_center_visible = virtual_sensor_is_active(
+                    virtual_sensors["nearCenter"]
+                )
+                raw_line_visible = virtual_raw_line_is_visible(
+                    virtual_sensors
+                )
             line_vision_ms = line_vision_before_green_ms + (
                 time.perf_counter() - line_vision_after_green_started
             ) * 1000.0
@@ -9963,6 +10147,9 @@ def main():
                     sensor_recovery_requested=sensor_recovery_requested,
                     fusion_style_line=fusion_style_line,
                     curva_verde_iniciada=curva_verde_iniciada,
+                    blind_search_preferred_direction=(
+                        fusion_blind_search_direction
+                    ),
                 )
             )
             green_candidate_hold = apply_green_candidate_fusion_hold(

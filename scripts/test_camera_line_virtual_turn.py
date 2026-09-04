@@ -72,6 +72,7 @@ def calculate_command(
     sensor_recovery_requested=False,
     mask=None,
     fusion_style_line=None,
+    blind_search_preferred_direction=None,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
@@ -94,6 +95,9 @@ def calculate_command(
             blind_search_requested=blind_search_requested,
             sensor_recovery_requested=sensor_recovery_requested,
             fusion_style_line=fusion_style_line,
+            blind_search_preferred_direction=(
+                blind_search_preferred_direction
+            ),
         )
 
 
@@ -337,6 +341,16 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         camera_line_frame.cv2.line(mask, (240, 180), (edge_x, 180), 255, 22)
         return mask
 
+    @staticmethod
+    def lateral_only_mask(direction):
+        """Cria um ramo lateral sem trecho que alcance a topBand."""
+
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 180), 255, 22)
+        edge_x = 0 if direction == "LEFT" else mask.shape[1] - 1
+        camera_line_frame.cv2.line(mask, (240, 180), (edge_x, 180), 255, 22)
+        return mask
+
     def test_straight_contour_produces_ninety_degree_angle(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
         camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
@@ -390,6 +404,34 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertEqual(preferred["referenceSource"], normal["referenceSource"])
         self.assertEqual(preferred["farPoint"], normal["farPoint"])
         self.assertEqual(preferred["angleDeg"], normal["angleDeg"])
+
+    def test_green_right_never_falls_back_to_left_edge(self):
+        mask = self.lateral_only_mask("LEFT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="RIGHT",
+        )
+
+        self.assertTrue(normal["valid"])
+        self.assertEqual(normal["referenceSource"], "leftEdge")
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
+
+    def test_green_left_never_falls_back_to_right_edge(self):
+        mask = self.lateral_only_mask("RIGHT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="LEFT",
+        )
+
+        self.assertTrue(normal["valid"])
+        self.assertEqual(normal["referenceSource"], "rightEdge")
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
 
     def test_none_preference_preserves_current_fusion_selection(self):
         mask = self.directional_intersection_mask("LEFT")
@@ -1388,9 +1430,146 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
 
         self.assertEqual(first["controlSource"], "virtual-search-wait")
         self.assertEqual((first["left_power"], first["right_power"]), (0.0, 0.0))
-        self.assertEqual(second["controlSource"], "virtual-blind-search")
+        self.assertEqual(
+            second["controlSource"],
+            "virtual-blind-search-backup",
+        )
         self.assertTrue(search_tracker.active)
-        self.assertLess(second["left_power"], second["right_power"])
+        self.assertEqual(
+            (second["left_power"], second["right_power"]),
+            (
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_POWER,
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_POWER,
+            ),
+        )
+
+        backup_results = [second]
+        for _ in range(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES - 1
+        ):
+            backup_results.append(
+                calculate_command(
+                    sensors,
+                    line_search_tracker=search_tracker,
+                )
+            )
+        self.assertTrue(
+            all(
+                result["controlSource"]
+                == "virtual-blind-search-backup"
+                for result in backup_results
+            )
+        )
+
+        search = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+        )
+        self.assertEqual(search["controlSource"], "virtual-blind-search")
+        self.assertLess(search["left_power"], search["right_power"])
+
+    def test_recent_fusion_direction_overrides_stale_virtual_search_side(self):
+        fusion_history = self.valid_fusion_line(150.0)
+        fusion_history["missedFrames"] = 2
+        preferred_direction = (
+            camera_line_frame.fusion_style_blind_search_direction(
+                fusion_history
+            )
+        )
+        self.assertEqual(preferred_direction, "RIGHT")
+
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.last_direction = "LEFT"
+        sensors = sensor_values(None, None, None)
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        sensors["farPosition"] = None
+
+        first = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+        second = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+
+        self.assertEqual(first["controlSource"], "virtual-search-wait")
+        self.assertEqual(
+            second["controlSource"],
+            "virtual-blind-search-backup",
+        )
+        self.assertEqual(search_tracker.initial_direction, "RIGHT")
+
+        for _ in range(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES - 1
+        ):
+            calculate_command(
+                sensors,
+                line_search_tracker=search_tracker,
+                blind_search_preferred_direction=preferred_direction,
+            )
+        search = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+
+        self.assertEqual(search["controlSource"], "virtual-blind-search")
+        self.assertGreater(search["left_power"], search["right_power"])
+
+    def test_straight_or_stale_fusion_does_not_override_virtual_side(self):
+        straight_history = self.valid_fusion_line(
+            90.0 + camera_line_frame.FUSION_STEERING_DEADBAND_DEG
+        )
+        stale_history = self.valid_fusion_line(150.0)
+        stale_history["missedFrames"] = (
+            camera_line_frame.FUSION_TARGET_HISTORY_MAX_MISSED_FRAMES + 1
+        )
+
+        self.assertIsNone(
+            camera_line_frame.fusion_style_blind_search_direction(
+                straight_history
+            )
+        )
+        self.assertIsNone(
+            camera_line_frame.fusion_style_blind_search_direction(
+                stale_history
+            )
+        )
+
+    def test_line_reacquisition_interrupts_automatic_search_backup(self):
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        missing_sensors = sensor_values(None, None, None)
+        missing_sensors["farTrusted"] = False
+        missing_sensors["mediumTrusted"] = False
+
+        calculate_command(
+            missing_sensors,
+            line_search_tracker=search_tracker,
+        )
+        backup = calculate_command(
+            missing_sensors,
+            line_search_tracker=search_tracker,
+        )
+        self.assertEqual(
+            backup["controlSource"],
+            "virtual-blind-search-backup",
+        )
+
+        recovered = calculate_command(
+            sensor_values(None, 0.0, None),
+            line_search_tracker=search_tracker,
+        )
+        self.assertFalse(search_tracker.active)
+        self.assertNotEqual(
+            recovered["controlSource"],
+            "virtual-blind-search-backup",
+        )
+        self.assertGreaterEqual(recovered["left_power"], 0.0)
+        self.assertGreaterEqual(recovered["right_power"], 0.0)
 
     def test_missing_target_uses_virtual_fallback(self):
         sensors = sensor_values(steering_error=-0.20)
@@ -4757,6 +4936,112 @@ class GreenCandidateHoldTests(unittest.TestCase):
         self.assertFalse(active_green["active"])
 
 
+class GreenFusionTargetHoldTests(unittest.TestCase):
+    @staticmethod
+    def valid_fusion_line(direction):
+        line = camera_line_frame.empty_fusion_style_line()
+        line.update({
+            "valid": True,
+            "selection": "nearCenter",
+            "referenceSource": (
+                "leftEdge" if direction == "ESQUERDA" else "rightEdge"
+            ),
+            "preferredDirection": (
+                "LEFT" if direction == "ESQUERDA" else "RIGHT"
+            ),
+            "angleDeg": 30.0 if direction == "ESQUERDA" else 150.0,
+            "nearPoint": {"x": 240, "y": 359},
+            "farPoint": {
+                "x": 0 if direction == "ESQUERDA" else 479,
+                "y": 180,
+            },
+            "fusionSpeedScale": 1.0,
+        })
+        return line
+
+    def test_last_green_target_is_held_for_only_two_missing_frames(self):
+        valid_line = self.valid_fusion_line("DIREITA")
+        state = camera_line_frame.update_green_fusion_target_hold(
+            "DIREITA",
+            valid_line,
+            previous_valid_fusion_line=None,
+            missing_frames=0,
+        )
+        self.assertFalse(state["holdActive"])
+
+        expected_command = calculate_command(
+            sensor_values(),
+            green_direction="DIREITA",
+            fusion_style_line=valid_line,
+        )
+        for expected_missing_frames in (1, 2):
+            state = camera_line_frame.update_green_fusion_target_hold(
+                "DIREITA",
+                camera_line_frame.empty_fusion_style_line(),
+                state["previousValidFusionLine"],
+                state["missingFrames"],
+            )
+            self.assertTrue(state["holdActive"])
+            self.assertEqual(
+                state["missingFrames"],
+                expected_missing_frames,
+            )
+            held_command = calculate_command(
+                sensor_values(),
+                green_direction="DIREITA",
+                fusion_style_line=state["fusionLine"],
+            )
+            self.assertEqual(
+                (held_command["left_power"], held_command["right_power"]),
+                (
+                    expected_command["left_power"],
+                    expected_command["right_power"],
+                ),
+            )
+
+        state = camera_line_frame.update_green_fusion_target_hold(
+            "DIREITA",
+            camera_line_frame.empty_fusion_style_line(),
+            state["previousValidFusionLine"],
+            state["missingFrames"],
+        )
+        self.assertFalse(state["holdActive"])
+        self.assertEqual(state["recoveryDirection"], "RIGHT")
+        self.assertIsNone(state["previousValidFusionLine"])
+        self.assertEqual(state["missingFrames"], 0)
+
+    def test_target_recovery_resets_short_loss_window(self):
+        previous = self.valid_fusion_line("ESQUERDA")
+        missing = camera_line_frame.update_green_fusion_target_hold(
+            "ESQUERDA",
+            camera_line_frame.empty_fusion_style_line(),
+            previous,
+            missing_frames=0,
+        )
+        recovered = camera_line_frame.update_green_fusion_target_hold(
+            "ESQUERDA",
+            previous,
+            missing["previousValidFusionLine"],
+            missing["missingFrames"],
+        )
+
+        self.assertFalse(recovered["holdActive"])
+        self.assertEqual(recovered["missingFrames"], 0)
+        self.assertIsNone(recovered["recoveryDirection"])
+
+    def test_inactive_green_clears_held_target(self):
+        result = camera_line_frame.update_green_fusion_target_hold(
+            "NENHUMA",
+            camera_line_frame.empty_fusion_style_line(),
+            self.valid_fusion_line("DIREITA"),
+            missing_frames=2,
+        )
+
+        self.assertIsNone(result["previousValidFusionLine"])
+        self.assertEqual(result["missingFrames"], 0)
+        self.assertIsNone(result["recoveryDirection"])
+
+
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
     def test_green_geometric_completion_requires_three_consecutive_frames(self):
         completion_frames = 0
@@ -4914,6 +5199,14 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
                 )
 
     def test_blind_search_reverses_after_short_initial_window(self):
+        self.assertEqual(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
+            35,
+        )
+        self.assertEqual(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
+            50,
+        )
         search_tracker = camera_line_frame.VirtualLineSearchTracker()
         search_tracker.start("LEFT")
         initial_directions = [
@@ -4924,7 +5217,18 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
             initial_directions,
             ["LEFT"] * camera_line_frame.VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
         )
-        self.assertEqual(search_tracker.next_direction(), "RIGHT")
+        reverse_directions = [
+            search_tracker.next_direction()
+            for _ in range(
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES
+            )
+        ]
+        self.assertEqual(
+            reverse_directions,
+            ["RIGHT"]
+            * camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
+        )
+        self.assertEqual(search_tracker.next_direction(), "LEFT")
 
     def test_any_sensor_interrupts_blind_search(self):
         cases = []

@@ -334,6 +334,81 @@ bool MainMission::updateForwardAssist(
         }
     }
 
+    const bool bottomRequestsVirtualBlindSearch =
+        cameraLineSnapshot.lineControlSource == "virtual-blind-search" ||
+        cameraLineSnapshot.lineControlSource ==
+            "virtual-blind-search-backup";
+    const bool forwardLineCommandValid =
+        forwardLineSnapshot.normalCommandValid();
+    const double directionThreshold =
+        config::kForwardAssistDirectionPositionThreshold;
+    const bool forwardLineCoherent =
+        forwardLineCommandValid &&
+        ((latchedBottomDirection == ForwardAssistDirection::None &&
+          std::abs(forwardLineSnapshot.position) <= directionThreshold) ||
+         (latchedBottomDirection == ForwardAssistDirection::Left &&
+          forwardLineSnapshot.position <= directionThreshold) ||
+         (latchedBottomDirection == ForwardAssistDirection::Right &&
+          forwardLineSnapshot.position >= -directionThreshold));
+
+    if (bottomRequestsVirtualBlindSearch)
+    {
+        // A região frontal já corresponde à parte mais próxima da CAM1. Uma
+        // continuação coerente assume o avanço; sem ela, a busca inferior pode
+        // executar sua ré e varredura. Leitura stale nunca autoriza movimento.
+        forwardAssistYawOriginDegrees_ = 0.0;
+        forwardAssistYawDeltaDegrees_ = 0.0;
+        bottomStableFrames_ = 0;
+        bottomLostFrames_ = 0;
+
+        if (!forwardLineSnapshot.sourceFresh)
+        {
+            forwardAssistState_ = ForwardAssistState::Bottom;
+            forwardAssistDirection_ = ForwardAssistDirection::None;
+            forwardAssistEntryAllowed_ = false;
+            forwardAssistEntryBlocker_ = "FORWARD_STALE";
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(forwardAssistStatus(
+                "forward_assist_wait",
+                "FWD: aguardando leitura frontal fresh",
+                forwardLineSnapshot));
+            return true;
+        }
+
+        if (forwardLineCoherent)
+        {
+            forwardAssistState_ = ForwardAssistState::ForwardFollow;
+            forwardAssistDirection_ = latchedBottomDirection;
+            forwardAssistEntryAllowed_ = true;
+            forwardAssistEntryBlocker_ = "NONE";
+            robotState.driveAutonomous(
+                forwardLineSnapshot.normalLeftPower,
+                forwardLineSnapshot.normalRightPower);
+            robotState.updateAutonomousStatus(forwardAssistStatus(
+                "forward_assist_follow",
+                "FWD: continuação coerente antes do blind search",
+                forwardLineSnapshot));
+            return true;
+        }
+
+        forwardAssistState_ = ForwardAssistState::Bottom;
+        forwardAssistDirection_ = ForwardAssistDirection::None;
+        forwardAssistEntryAllowed_ = false;
+        if (!forwardLineSnapshot.lineObservationValid())
+        {
+            forwardAssistEntryBlocker_ = "FORWARD_LINE_NOT_VISIBLE";
+        }
+        else if (!forwardLineCommandValid)
+        {
+            forwardAssistEntryBlocker_ = "FORWARD_COMMAND_INVALID";
+        }
+        else
+        {
+            forwardAssistEntryBlocker_ = "FORWARD_LINE_INCOHERENT";
+        }
+        return false;
+    }
+
     const bool bottomLostTrustedRows =
         !cameraLineSnapshot.farTrusted &&
         !cameraLineSnapshot.mediumTrusted;
