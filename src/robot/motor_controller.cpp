@@ -43,6 +43,17 @@ void MotorController::apply(const RobotSnapshot& state)
         return;
     }
 
+    if (state.servoCalibrationActive)
+    {
+        // Durante a calibração, MOTOR com potência zero renova o watchdog sem
+        // usar o STOP global. O STOP continua reservado ao botão Parar, que
+        // também encerra a calibração e desliga os pulsos dos servos.
+        resetMotorMotion();
+        suspendEncoderSynchronization(0.0, 0.0);
+        esp32_.sendMotorCommand(0.0, 0.0, false);
+        return;
+    }
+
     if (state.mode == "stopped")
     {
         stop();

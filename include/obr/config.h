@@ -151,6 +151,11 @@ constexpr int kTelemetryLogEverySamples = 20;
 // Isso impede que o robô continue andando com um comando antigo.
 constexpr int kCommandTimeoutMs = 2000;
 
+// Tempo máximo, em milissegundos, sem renovação do painel antes de remover os
+// sinais dos servos no modo Manual. Este watchdog é separado dos motores para
+// que ajustar braço, pulso ou garra nunca mantenha um comando de tração antigo.
+constexpr int kManualServoCommandTimeoutMs = 2000;
+
 // Intervalo, em milissegundos, do loop principal que aplica os comandos aos motores.
 constexpr int kMainLoopPeriodMs = 20;
 
@@ -454,6 +459,26 @@ constexpr const char* kEsp32SerialPort = "/dev/serial0";
 // O sketch da ESP32 deve usar o mesmo valor para evitar comandos corrompidos.
 constexpr int kEsp32SerialBaudRate = 115200;
 
+// Faixa angular aceita para braço, pulso e garra.
+// A ESP32 repete esta validação antes de converter o ângulo em pulso do PCA9685.
+constexpr double kServoMinimumAngleDegrees = 0.0;
+constexpr double kServoMaximumAngleDegrees = 180.0;
+
+// Pose aplicada aos três servos quando o robô entra em Manual ou Autônomo.
+// No modo Parado, os pulsos continuam desligados e esta pose não é aplicada.
+constexpr double kServoInitialAngleDegrees = 0.0;
+
+// Faixa absoluta, em microssegundos, permitida somente na calibração de
+// bancada. Ela é mais ampla que a faixa operacional e nunca é ultrapassada,
+// mesmo que o dashboard envie um valor inválido.
+constexpr int kServoCalibrationAbsoluteMinimumPulseUs = 500;
+constexpr int kServoCalibrationAbsoluteMaximumPulseUs = 2500;
+
+// Diferença mínima, em microssegundos, entre os pulsos associados a 0° e 180°.
+// Uma faixa menor provavelmente representa captura acidental de dois pontos
+// quase iguais e tornaria o controle angular excessivamente sensível.
+constexpr int kServoCalibrationMinimumSpanUs = 200;
+
 // Tempo máximo, em milissegundos, para considerar recente a telemetria da ESP32.
 // Se esse tempo estourar, o dashboard mostra os sensores como desatualizados.
 constexpr int kEsp32TelemetryTimeoutMs = 1000;
@@ -464,6 +489,10 @@ constexpr int kRemoteOledTitleMaxLength = 12;
 constexpr int kRemoteOledLineMaxLength = 20;
 constexpr int kRemoteOledMinimumDurationMs = 500;
 constexpr int kRemoteOledMaximumDurationMs = 30000;
+
+// Tempo, em milissegundos, que alertas confirmados de navegação permanecem na
+// OLED. A mensagem é temporária e não bloqueia o laço de controle do robô.
+constexpr int kOledNavigationAlertDurationMs = 2500;
 
 // Intervalo do heartbeat que mantém a OLED fora da animação de inicialização.
 // A ESP32 tolera três períodos antes de considerar a Raspberry indisponível.

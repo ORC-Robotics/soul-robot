@@ -3,6 +3,7 @@
 #include "obr/esp32_bridge.h"
 #include "obr/motor_controller.h"
 #include "obr/robot_state.h"
+#include "obr/servo_controller.h"
 #include "obr/status_led.h"
 #include "obr/telemetry.h"
 
@@ -107,7 +108,8 @@ class DashboardServer
 {
 public:
     DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
-                    MotorController& motors, StatusLed& readyLed);
+                    MotorController& motors, ServoController& servos,
+                    StatusLed& readyLed);
     ~DashboardServer();
 
     bool start();
@@ -118,6 +120,7 @@ private:
     Telemetry& telemetry_;
     Esp32Bridge& esp32_;
     MotorController& motors_;
+    ServoController& servos_;
     StatusLed& readyLed_;
     std::atomic<bool> running_{false};
     SocketHandle server_{};
@@ -143,6 +146,7 @@ private:
     void removeWebSocketClient(SocketHandle client);
     void broadcast(const std::string& message);
     void handleCommand(const std::string& message);
+    void endServoCalibrationIfActive();
 
     std::string buildTelemetryJson(
         const TelemetrySample& sample,

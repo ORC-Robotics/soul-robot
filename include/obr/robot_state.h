@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/config.h"
+#include "obr/servo_types.h"
 
 #include <chrono>
 #include <mutex>
@@ -57,6 +58,12 @@ struct RobotSnapshot
     bool commandTimedOut = false;
     unsigned long long autonomousRunSequence = 0;
     double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
+    ServoPose servoPose;
+    bool armServoRequested = false;
+    bool wristServoRequested = false;
+    bool gripperServoRequested = false;
+    unsigned long long servoCommandSequence = 0;
+    bool servoCalibrationActive = false;
     AutonomousStatus autonomousStatus;
 };
 
@@ -80,11 +87,22 @@ public:
         double left,
         double right,
         bool encoderSynchronizationAllowed = true);
+    bool setManualServoAngle(ServoId servo, double angleDegrees);
+    bool setAutonomousServoPose(const ServoPose& pose);
+    void disableServos();
+    bool beginServoCalibration();
+    void endServoCalibration();
     void updateAutonomousStatus(const AutonomousStatus& status);
     void enforceCommandTimeout(std::chrono::milliseconds timeout);
+    void enforceManualServoTimeout(std::chrono::milliseconds timeout);
 
 private:
     mutable std::mutex mutex_;
     RobotSnapshot state_;
     std::chrono::steady_clock::time_point lastCommand_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastManualServoCommand_ =
+        std::chrono::steady_clock::now();
+
+    void requestInitialServoPoseLocked();
+    void disableServosLocked();
 };

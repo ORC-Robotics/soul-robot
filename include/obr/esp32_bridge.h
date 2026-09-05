@@ -6,6 +6,8 @@
 #include <string>
 #include <thread>
 
+#include "obr/servo_types.h"
+
 // Cópia das leituras enviadas pela ESP32 pela UART.
 // O dashboard usa esta estrutura para mostrar se os sensores estão recentes.
 struct Esp32TelemetrySnapshot
@@ -47,13 +49,35 @@ struct Esp32TelemetrySnapshot
     bool calibrationStatusKnown = false;
     bool lastCalibrationSucceeded = false;
     long long esp32UptimeMs = 0;
+    double armServoAngleDegrees = 0.0;
+    double wristServoAngleDegrees = 0.0;
+    double gripperServoAngleDegrees = 0.0;
+    long long armServoPulseUs = 0;
+    long long wristServoPulseUs = 0;
+    long long gripperServoPulseUs = 0;
+    bool armServoEnabled = false;
+    bool wristServoEnabled = false;
+    bool gripperServoEnabled = false;
+    bool servoCalibrationSupported = false;
+    bool servoCalibrationActive = false;
+    int servoCalibrationSelectedIndex = -1;
+    int armServoMinimumPulseUs = 0;
+    int armServoMaximumPulseUs = 0;
+    bool armServoInverted = false;
+    int wristServoMinimumPulseUs = 0;
+    int wristServoMaximumPulseUs = 0;
+    bool wristServoInverted = false;
+    int gripperServoMinimumPulseUs = 0;
+    int gripperServoMaximumPulseUs = 0;
+    bool gripperServoInverted = false;
 
     // Indica se a ESP32 está comunicando e se o driver pode operar com segurança.
     // Falta de telemetria, nSLEEP baixo ou E-Stop local impedem o estado pronto.
     bool readyForOperation() const
     {
         return serialOpen && sensorFresh && motorSleepPinHigh &&
-               !emergencyStopActive && !calibrationActive;
+               !emergencyStopActive && !calibrationActive &&
+               !servoCalibrationActive;
     }
 };
 
@@ -76,8 +100,20 @@ public:
     bool sendCalibrateSensors();
     bool sendSystemStarting();
     bool sendSystemReady();
+    bool sendServoAngle(ServoId servo, double angleDegrees);
+    bool sendServoPose(const ServoPose& pose);
+    bool sendDisableAllServos();
+    bool sendServoCalibrationBegin();
+    bool sendServoCalibrationEnd();
+    bool sendServoCalibrationDisableOutput();
+    bool sendServoCalibrationPulse(ServoId servo, int pulseUs);
+    bool sendServoCalibrationSave(ServoId servo, int pulseAtZeroUs,
+                                  int pulseAt180Us);
     bool sendOledMessage(const std::string& title, const std::string& firstLine,
                          const std::string& secondLine, int durationMs);
+    bool sendOledLargeMessage(const std::string& primaryText,
+                              const std::string& secondaryText,
+                              int durationMs);
     bool clearOledMessage();
 
     Esp32TelemetrySnapshot telemetrySnapshot() const;
@@ -101,4 +137,5 @@ private:
     bool parseSensorLine(const std::string& line);
 
     static double safeMotorPower(double command);
+    static const char* servoProtocolName(ServoId servo);
 };

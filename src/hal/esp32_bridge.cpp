@@ -193,6 +193,105 @@ bool Esp32Bridge::sendSystemReady()
     return writeLine("SYSTEM_READY\n");
 }
 
+bool Esp32Bridge::sendServoAngle(ServoId servo, double angleDegrees)
+{
+    if (!std::isfinite(angleDegrees) ||
+        angleDegrees < config::kServoMinimumAngleDegrees ||
+        angleDegrees > config::kServoMaximumAngleDegrees)
+    {
+        return false;
+    }
+
+    std::ostringstream command;
+    command << std::fixed << std::setprecision(1)
+            << "SERVO," << servoProtocolName(servo) << ','
+            << angleDegrees << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::sendServoPose(const ServoPose& pose)
+{
+    const auto validAngle = [](double angleDegrees)
+    {
+        return std::isfinite(angleDegrees) &&
+               angleDegrees >= config::kServoMinimumAngleDegrees &&
+               angleDegrees <= config::kServoMaximumAngleDegrees;
+    };
+    if (!validAngle(pose.armDegrees) ||
+        !validAngle(pose.wristDegrees) ||
+        !validAngle(pose.gripperDegrees))
+    {
+        return false;
+    }
+
+    // Uma única mensagem permite que a ESP32 valide a pose inteira antes de
+    // atualizar braço, pulso e garra em uma programação predefinida.
+    std::ostringstream command;
+    command << std::fixed << std::setprecision(1)
+            << "SERVO_POSE," << pose.armDegrees << ','
+            << pose.wristDegrees << ',' << pose.gripperDegrees << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::sendDisableAllServos()
+{
+    return writeLine("SERVO_DISABLE_ALL\n");
+}
+
+bool Esp32Bridge::sendServoCalibrationBegin()
+{
+    return writeLine("SERVO_CAL_BEGIN\n");
+}
+
+bool Esp32Bridge::sendServoCalibrationEnd()
+{
+    return writeLine("SERVO_CAL_END\n");
+}
+
+bool Esp32Bridge::sendServoCalibrationDisableOutput()
+{
+    return writeLine("SERVO_CAL_DISABLE\n");
+}
+
+bool Esp32Bridge::sendServoCalibrationPulse(ServoId servo, int pulseUs)
+{
+    if (pulseUs < config::kServoCalibrationAbsoluteMinimumPulseUs ||
+        pulseUs > config::kServoCalibrationAbsoluteMaximumPulseUs)
+    {
+        return false;
+    }
+
+    std::ostringstream command;
+    command << "SERVO_CAL_PULSE," << servoProtocolName(servo) << ','
+            << pulseUs << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::sendServoCalibrationSave(ServoId servo, int pulseAtZeroUs,
+                                           int pulseAt180Us)
+{
+    if (pulseAtZeroUs < config::kServoCalibrationAbsoluteMinimumPulseUs ||
+        pulseAtZeroUs > config::kServoCalibrationAbsoluteMaximumPulseUs ||
+        pulseAt180Us < config::kServoCalibrationAbsoluteMinimumPulseUs ||
+        pulseAt180Us > config::kServoCalibrationAbsoluteMaximumPulseUs)
+    {
+        return false;
+    }
+
+    const int spanUs = std::abs(pulseAt180Us - pulseAtZeroUs);
+    if (spanUs < config::kServoCalibrationMinimumSpanUs)
+    {
+        return false;
+    }
+
+    // Os dois pulsos representam diretamente as posições lógicas. A ESP32
+    // deduz o sentido e persiste a faixa sem exigir cálculos no dashboard.
+    std::ostringstream command;
+    command << "SERVO_CAL_SAVE," << servoProtocolName(servo) << ','
+            << pulseAtZeroUs << ',' << pulseAt180Us << "\n";
+    return writeLine(command.str());
+}
+
 bool Esp32Bridge::sendOledMessage(const std::string& title,
                                   const std::string& firstLine,
                                   const std::string& secondLine,
@@ -220,6 +319,32 @@ bool Esp32Bridge::sendOledMessage(const std::string& title,
             << hexEncodeOledField(safeTitle) << ','
             << hexEncodeOledField(safeFirstLine) << ','
             << hexEncodeOledField(safeSecondLine) << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::sendOledLargeMessage(const std::string& primaryText,
+                                       const std::string& secondaryText,
+                                       int durationMs)
+{
+    // O texto principal será ampliado pela ESP32 dentro da região azul do OLED.
+    // ASCII evita caracteres que a fonte nativa do SSD1306 não consegue exibir.
+    const std::string safePrimaryText = sanitizeOledText(
+        primaryText, static_cast<size_t>(config::kRemoteOledLineMaxLength));
+    const std::string safeSecondaryText = sanitizeOledText(
+        secondaryText, static_cast<size_t>(config::kRemoteOledLineMaxLength));
+    if (safePrimaryText.empty())
+    {
+        std::cerr << "Large OLED message ignored: primary text is empty\n";
+        return false;
+    }
+
+    const int safeDurationMs = std::clamp(
+        durationMs, config::kRemoteOledMinimumDurationMs,
+        config::kRemoteOledMaximumDurationMs);
+    std::ostringstream command;
+    command << "OLED_BIG," << safeDurationMs << ','
+            << hexEncodeOledField(safePrimaryText) << ','
+            << hexEncodeOledField(safeSecondaryText) << "\n";
     return writeLine(command.str());
 }
 
@@ -455,6 +580,12 @@ void Esp32Bridge::handleLine(const std::string& line)
         return;
     }
 
+    if (startsWith(line, "SERVO_CAL,"))
+    {
+        std::cout << "ESP32 servo calibration: " << line.substr(10) << "\n";
+        return;
+    }
+
     if (startsWith(line, "SENSOR,"))
     {
         if (!parseSensorLine(line))
@@ -546,6 +677,35 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
             }
         }
 
+        if (values.size() >= 41)
+        {
+            next.armServoAngleDegrees = std::stod(values[32]);
+            next.armServoPulseUs = std::stoll(values[33]);
+            next.armServoEnabled = std::stoi(values[34]) != 0;
+            next.wristServoAngleDegrees = std::stod(values[35]);
+            next.wristServoPulseUs = std::stoll(values[36]);
+            next.wristServoEnabled = std::stoi(values[37]) != 0;
+            next.gripperServoAngleDegrees = std::stod(values[38]);
+            next.gripperServoPulseUs = std::stoll(values[39]);
+            next.gripperServoEnabled = std::stoi(values[40]) != 0;
+        }
+
+        if (values.size() >= 52)
+        {
+            next.servoCalibrationSupported = true;
+            next.servoCalibrationActive = std::stoi(values[41]) != 0;
+            next.servoCalibrationSelectedIndex = std::stoi(values[42]);
+            next.armServoMinimumPulseUs = std::stoi(values[43]);
+            next.armServoMaximumPulseUs = std::stoi(values[44]);
+            next.armServoInverted = std::stoi(values[45]) != 0;
+            next.wristServoMinimumPulseUs = std::stoi(values[46]);
+            next.wristServoMaximumPulseUs = std::stoi(values[47]);
+            next.wristServoInverted = std::stoi(values[48]) != 0;
+            next.gripperServoMinimumPulseUs = std::stoi(values[49]);
+            next.gripperServoMaximumPulseUs = std::stoi(values[50]);
+            next.gripperServoInverted = std::stoi(values[51]) != 0;
+        }
+
         std::lock_guard<std::mutex> lock(telemetryMutex_);
         next.startButtonPressSequence = telemetry_.startButtonPressSequence;
         next.calibrationStatusKnown = telemetry_.calibrationStatusKnown;
@@ -581,4 +741,18 @@ double Esp32Bridge::safeMotorPower(double command)
     }
 
     return std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
+}
+
+const char* Esp32Bridge::servoProtocolName(ServoId servo)
+{
+    switch (servo)
+    {
+    case ServoId::Arm:
+        return "ARM";
+    case ServoId::Wrist:
+        return "WRIST";
+    case ServoId::Gripper:
+        return "GRIPPER";
+    }
+    return "UNKNOWN";
 }

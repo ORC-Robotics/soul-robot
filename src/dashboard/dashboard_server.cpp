@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -27,12 +29,33 @@ std::string lowerCopy(std::string text)
     });
     return text;
 }
+
+bool parseServoName(const std::string& name, ServoId& servo)
+{
+    if (name == "arm")
+    {
+        servo = ServoId::Arm;
+        return true;
+    }
+    if (name == "wrist")
+    {
+        servo = ServoId::Wrist;
+        return true;
+    }
+    if (name == "gripper")
+    {
+        servo = ServoId::Gripper;
+        return true;
+    }
+    return false;
+}
 }
 
 DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
-                                 MotorController& motors, StatusLed& readyLed)
+                                 MotorController& motors, ServoController& servos,
+                                 StatusLed& readyLed)
     : robotState_(robotState), telemetry_(telemetry), esp32_(esp32),
-      motors_(motors), readyLed_(readyLed)
+      motors_(motors), servos_(servos), readyLed_(readyLed)
 {
 }
 
@@ -411,27 +434,47 @@ void DashboardServer::broadcast(const std::string& message)
     }
 }
 
+void DashboardServer::endServoCalibrationIfActive()
+{
+    const RobotSnapshot state = robotState_.snapshot();
+    const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+    if (state.servoCalibrationActive || esp32.servoCalibrationActive)
+    {
+        // O encerramento é enviado antes da próxima troca de modo para remover
+        // o pulso imediatamente. O STOP subsequente permanece como segunda trava.
+        if (!servos_.endCalibration())
+        {
+            std::cerr << "Servo calibration end command was not sent to ESP32\n";
+        }
+    }
+    robotState_.endServoCalibration();
+}
+
 void DashboardServer::handleCommand(const std::string& message)
 {
     if (message.find("\"command\":\"estop\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         robotState_.emergencyStop();
         std::cout << "Emergency stop received\n";
     }
     else if (message.find("\"command\":\"start\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         esp32_.sendClearEmergencyStop();
         robotState_.start();
         std::cout << "Start received\n";
     }
     else if (message.find("\"command\":\"auto\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         esp32_.sendClearEmergencyStop();
         robotState_.startAutonomous();
         std::cout << "Autonomous start received\n";
     }
     else if (message.find("\"command\":\"set_autonomous_mission\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         if (message.find("\"mission\":\"main_mission\"") != std::string::npos)
         {
             robotState_.setAutonomousMission(AutonomousMission::MainMission);
@@ -467,13 +510,16 @@ void DashboardServer::handleCommand(const std::string& message)
     }
     else if (message.find("\"command\":\"stop\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         robotState_.stop();
+        motors_.stop();
         std::cout << "Stop received\n";
     }
     else if (message.find("\"command\":\"calibrate\"") != std::string::npos)
     {
         // A calibração nunca preserva um comando de movimento anterior.
-        // A ESP32 também trava os motores até uma nova partida explícita.
+        // A ESP32 também trava motores e servos até uma nova partida explícita.
+        endServoCalibrationIfActive();
         robotState_.stop();
         if (!esp32_.sendCalibrateSensors())
         {
@@ -505,6 +551,154 @@ void DashboardServer::handleCommand(const std::string& message)
         if (!esp32_.clearOledMessage())
         {
             std::cerr << "OLED clear command was not sent to ESP32\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_disable_all\"") != std::string::npos)
+    {
+        robotState_.disableServos();
+    }
+    else if (message.find("\"command\":\"servo_calibration_begin\"") != std::string::npos)
+    {
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationAllowed =
+            (state.mode == "stopped" || state.mode == "manual") &&
+            !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady &&
+            esp32.servoCalibrationSupported &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive &&
+            !esp32.servoCalibrationActive;
+        if (!calibrationAllowed)
+        {
+            std::cerr << "Servo calibration begin ignored: system is not in a safe state\n";
+        }
+        else
+        {
+            // A transição local ocorre primeiro para que o laço principal passe
+            // a renovar somente MOTOR 0,0 antes de qualquer pulso de bancada.
+            robotState_.stop();
+            if (!robotState_.beginServoCalibration() ||
+                !servos_.beginCalibration())
+            {
+                robotState_.endServoCalibration();
+                motors_.stop();
+                std::cerr << "Servo calibration could not be started\n";
+            }
+            else
+            {
+                std::cout << "Servo calibration started\n";
+            }
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_end\"") != std::string::npos)
+    {
+        endServoCalibrationIfActive();
+        robotState_.stop();
+        motors_.stop();
+        std::cout << "Servo calibration stopped\n";
+    }
+    else if (message.find("\"command\":\"servo_calibration_disable\"") != std::string::npos)
+    {
+        const RobotSnapshot state = robotState_.snapshot();
+        if (state.servoCalibrationActive &&
+            !servos_.disableCalibrationOutput())
+        {
+            std::cerr << "Servo calibration output could not be disabled\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_pulse\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double requestedPulseUs = getJsonNumber(
+            message, "pulseUs", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool pulseIsInteger = std::isfinite(requestedPulseUs) &&
+                                    std::floor(requestedPulseUs) == requestedPulseUs;
+        const bool valueFitsInt = pulseIsInteger &&
+                                  requestedPulseUs >= std::numeric_limits<int>::min() &&
+                                  requestedPulseUs <= std::numeric_limits<int>::max();
+        const int pulseUs = valueFitsInt ? static_cast<int>(requestedPulseUs) : 0;
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationControlAllowed =
+            state.servoCalibrationActive && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && esp32.servoCalibrationActive &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive;
+        if (!parseServoName(servoName, servo) || !valueFitsInt ||
+            !ServoController::isValidCalibrationPulse(pulseUs) ||
+            !calibrationControlAllowed ||
+            !servos_.setCalibrationPulse(servo, pulseUs))
+        {
+            std::cerr << "Servo calibration pulse ignored\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_save\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double requestedZeroUs = getJsonNumber(
+            message, "pulseAtZeroUs", std::numeric_limits<double>::quiet_NaN());
+        const double requested180Us = getJsonNumber(
+            message, "pulseAt180Us", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool valuesAreIntegers =
+            std::isfinite(requestedZeroUs) && std::isfinite(requested180Us) &&
+            std::floor(requestedZeroUs) == requestedZeroUs &&
+            std::floor(requested180Us) == requested180Us;
+        const bool valuesFitInt =
+            valuesAreIntegers &&
+            requestedZeroUs >= std::numeric_limits<int>::min() &&
+            requestedZeroUs <= std::numeric_limits<int>::max() &&
+            requested180Us >= std::numeric_limits<int>::min() &&
+            requested180Us <= std::numeric_limits<int>::max();
+        const int pulseAtZeroUs = valuesFitInt ? static_cast<int>(requestedZeroUs) : 0;
+        const int pulseAt180Us = valuesFitInt ? static_cast<int>(requested180Us) : 0;
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationControlAllowed =
+            state.servoCalibrationActive && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && esp32.servoCalibrationActive &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive;
+        if (!parseServoName(servoName, servo) || !valuesFitInt ||
+            !ServoController::isValidCalibrationEndpoints(
+                pulseAtZeroUs, pulseAt180Us) ||
+            !calibrationControlAllowed ||
+            !servos_.saveCalibration(servo, pulseAtZeroUs, pulseAt180Us))
+        {
+            std::cerr << "Servo calibration save ignored\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_angle\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double angleDegrees = getJsonNumber(
+            message, "angleDegrees", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool knownServo = parseServoName(servoName, servo);
+
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool manualControlAllowed =
+            state.mode == "manual" && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && !esp32.emergencyStopActive &&
+            !esp32.calibrationActive && !esp32.servoCalibrationActive &&
+            !state.servoCalibrationActive;
+        if (!knownServo)
+        {
+            std::cerr << "Servo command ignored: invalid name\n";
+        }
+        else if (!manualControlAllowed)
+        {
+            // O painel só movimenta mecanismos no modo Manual. As rotinas
+            // autônomas publicam poses validadas no RobotState.
+            std::cerr << "Servo command ignored: manual control is not available\n";
+        }
+        else if (!robotState_.setManualServoAngle(servo, angleDegrees))
+        {
+            std::cerr << "Servo command ignored: invalid angle or state\n";
         }
     }
     else if (message.find("\"command\":\"set_forward_camera\"") != std::string::npos)
@@ -666,6 +860,38 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"motorSyncCorrectedRightPower\":" << motorSync.correctedRightPower
          << ",\"startButtonPressed\":" << (esp32.startButtonPressed ? "true" : "false")
          << ",\"pca9685Ok\":" << (esp32.pca9685Ok ? "true" : "false")
+         << ",\"armServoAngleDegrees\":" << esp32.armServoAngleDegrees
+         << ",\"armServoPulseUs\":" << esp32.armServoPulseUs
+         << ",\"armServoEnabled\":" << (esp32.armServoEnabled ? "true" : "false")
+         << ",\"wristServoAngleDegrees\":" << esp32.wristServoAngleDegrees
+         << ",\"wristServoPulseUs\":" << esp32.wristServoPulseUs
+         << ",\"wristServoEnabled\":" << (esp32.wristServoEnabled ? "true" : "false")
+         << ",\"gripperServoAngleDegrees\":" << esp32.gripperServoAngleDegrees
+         << ",\"gripperServoPulseUs\":" << esp32.gripperServoPulseUs
+         << ",\"gripperServoEnabled\":" << (esp32.gripperServoEnabled ? "true" : "false")
+         << ",\"servoCalibrationRequested\":"
+         << (state.servoCalibrationActive ? "true" : "false")
+         << ",\"servoCalibrationSupported\":"
+         << (esp32.servoCalibrationSupported ? "true" : "false")
+         << ",\"servoCalibrationActive\":"
+         << (esp32.servoCalibrationActive ? "true" : "false")
+         << ",\"servoCalibrationSelectedIndex\":"
+         << esp32.servoCalibrationSelectedIndex
+         << ",\"armServoMinimumPulseUs\":" << esp32.armServoMinimumPulseUs
+         << ",\"armServoMaximumPulseUs\":" << esp32.armServoMaximumPulseUs
+         << ",\"armServoInverted\":" << (esp32.armServoInverted ? "true" : "false")
+         << ",\"wristServoMinimumPulseUs\":" << esp32.wristServoMinimumPulseUs
+         << ",\"wristServoMaximumPulseUs\":" << esp32.wristServoMaximumPulseUs
+         << ",\"wristServoInverted\":" << (esp32.wristServoInverted ? "true" : "false")
+         << ",\"gripperServoMinimumPulseUs\":" << esp32.gripperServoMinimumPulseUs
+         << ",\"gripperServoMaximumPulseUs\":" << esp32.gripperServoMaximumPulseUs
+         << ",\"gripperServoInverted\":" << (esp32.gripperServoInverted ? "true" : "false")
+         << ",\"servoCalibrationAbsoluteMinimumPulseUs\":"
+         << config::kServoCalibrationAbsoluteMinimumPulseUs
+         << ",\"servoCalibrationAbsoluteMaximumPulseUs\":"
+         << config::kServoCalibrationAbsoluteMaximumPulseUs
+         << ",\"servoCalibrationMinimumSpanUs\":"
+         << config::kServoCalibrationMinimumSpanUs
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
          << ",\"esp32RemoteOledActive\":" << (esp32.remoteOledActive ? "true" : "false")
          << ",\"esp32RaspberrySystemReady\":" << (esp32.raspberrySystemReady ? "true" : "false")
@@ -1054,6 +1280,39 @@ std::string DashboardServer::dashboardHtml()
     .manual-speed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .manual-speed-grid .drive-control { border-color: var(--border-primary); background: var(--bg-primary); }
     .manual-test-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+    .servo-control-card { display: grid; gap: var(--space-3); }
+    .servo-control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+    .servo-control { min-width: 0; padding: var(--space-3); border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-primary); }
+    .servo-control label { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); color: var(--text-secondary); font-size: .72rem; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+    .servo-control label output { color: var(--text); font-size: .9rem; font-variant-numeric: tabular-nums; }
+    .servo-control input[type="range"] { margin: var(--space-3) 0; }
+    .servo-angle-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+    .servo-angle-entry input { width: 100%; min-width: 0; min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; outline: none; color: var(--text); background: var(--bg-control); font: inherit; font-variant-numeric: tabular-nums; }
+    .servo-angle-entry input:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--focus-ring); }
+    .servo-angle-entry span { color: var(--muted); font-size: .8rem; font-weight: 800; }
+    .servo-output-state { display: block; min-height: 1.2em; margin-top: var(--space-2); color: var(--muted); font-size: .66rem; line-height: 1.35; }
+    .servo-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+    .servo-actions p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+    .servo-actions button { flex: 0 0 auto; min-height: var(--control-height); }
+    .servo-calibration { border-top: 1px solid var(--line-soft); }
+    .servo-calibration summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-3); color: var(--text-secondary); cursor: pointer; font-size: .72rem; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+    .servo-calibration-body { display: grid; gap: var(--space-3); padding-top: var(--space-3); }
+    .servo-calibration-warning { margin: 0; padding: var(--space-3); border: 1px solid var(--yellow); border-radius: 10px; color: var(--text-secondary); background: var(--bg-primary); font-size: .7rem; line-height: 1.45; }
+    .servo-calibration-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2); }
+    .servo-calibration-toolbar label, .servo-calibration-endpoint label { display: grid; gap: var(--space-1); color: var(--muted); font-size: .66rem; font-weight: 800; }
+    .servo-calibration-toolbar select, .servo-calibration-endpoint input { min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; color: var(--text); background: var(--bg-control); }
+    .servo-calibration-workspace { display: grid; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-primary); }
+    .servo-calibration-workspace[hidden] { display: none; }
+    .servo-calibration-readout { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+    .servo-calibration-readout strong { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+    .servo-calibration-adjustments { display: grid; grid-template-columns: repeat(4, auto) minmax(90px, 1fr) auto; gap: var(--space-1); }
+    .servo-calibration-adjustments input { width: 100%; min-width: 0; min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; color: var(--text); background: var(--bg-control); text-align: center; font-variant-numeric: tabular-nums; }
+    .servo-calibration-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .servo-calibration-endpoint { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-1); }
+    .servo-calibration-endpoint label { min-width: 0; }
+    .servo-calibration-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+    .servo-calibration-actions button { min-height: var(--control-height); }
+    .servo-calibration-note { margin: 0; color: var(--muted); font-size: .67rem; line-height: 1.4; }
     .requested-drive { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .request-value { padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
     .request-value span { display: block; color: var(--muted); font-size: .67rem; text-transform: uppercase; }
@@ -1141,6 +1400,11 @@ std::string DashboardServer::dashboardHtml()
       .camera-message, .safety-note { overflow-wrap: anywhere; }
       .keyboard-copy span { max-width: none; }
       .manual-speed-grid { grid-template-columns: 1fr; }
+      .servo-control-grid { grid-template-columns: 1fr; }
+      .servo-actions { align-items: stretch; flex-direction: column; }
+      .servo-calibration-adjustments { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .servo-calibration-adjustments input { grid-column: 1 / 4; }
+      .servo-calibration-endpoints { grid-template-columns: 1fr; }
       .telemetry-row { align-items: flex-start; flex-wrap: wrap; padding: var(--space-2) 0; }
       footer { flex-direction: column; }
     }
@@ -1437,6 +1701,82 @@ std::string DashboardServer::dashboardHtml()
           <div class="safety-note">Ative o modo Manual antes do teste e mantenha as rodas suspensas. Cada lado usa PWM direto; clamp, E-Stop e timeouts continuam ativos.</div>
         </article>
 
+        <article id="servoControl" class="card section-card servo-control-card">
+          <div class="section-header"><h3 class="section-title">Braço, pulso e garra</h3><span id="servoControlStatus" class="subsystem-status">bloqueado</span></div>
+          <div class="servo-control-grid">
+            <div class="servo-control">
+              <label for="armServoSlider"><span>Braço · canal 0</span><output id="armServoValue">0°</output></label>
+              <input id="armServoSlider" data-servo-slider="arm" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="armServoInput" data-servo-input="arm" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato do braço" disabled><span>graus</span></div>
+              <small id="armServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+            <div class="servo-control">
+              <label for="wristServoSlider"><span>Pulso · canal 1</span><output id="wristServoValue">0°</output></label>
+              <input id="wristServoSlider" data-servo-slider="wrist" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="wristServoInput" data-servo-input="wrist" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato do pulso" disabled><span>graus</span></div>
+              <small id="wristServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+            <div class="servo-control">
+              <label for="gripperServoSlider"><span>Garra · canal 2</span><output id="gripperServoValue">0°</output></label>
+              <input id="gripperServoSlider" data-servo-slider="gripper" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="gripperServoInput" data-servo-input="gripper" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato da garra" disabled><span>graus</span></div>
+              <small id="gripperServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+          </div>
+          <div class="servo-actions">
+            <p>Ative o modo Manual. O botão Parar e a perda da Raspberry removem os três sinais; a trava de emergência do software permanece como redundância.</p>
+            <button id="disableServosButton" type="button" class="warning" onclick="disableAllServos()" disabled>Desligar sinais</button>
+          </div>
+          <details id="servoCalibrationPanel" class="servo-calibration">
+            <summary><span>Calibrar pulsos sem regravar</span><span id="servoCalibrationStatus" class="subsystem-status">aguardando firmware</span></summary>
+            <div class="servo-calibration-body">
+              <p class="servo-calibration-warning">O botão Parar sempre encerra este modo e desliga todos os pulsos. Comece em 1500 µs, avance em passos pequenos e pare antes de ruído, vibração, aquecimento ou batente mecânico.</p>
+              <div class="servo-calibration-toolbar">
+                <label for="servoCalibrationTarget">Servo em teste
+                  <select id="servoCalibrationTarget" disabled>
+                    <option value="arm">Braço · MG995 · canal 0</option>
+                    <option value="wrist">Pulso · MG90S · canal 1</option>
+                    <option value="gripper">Garra · MG90S · canal 2</option>
+                  </select>
+                </label>
+                <button id="servoCalibrationBeginButton" type="button" class="warning" disabled>Entrar na calibração</button>
+                <button id="servoCalibrationEndButton" type="button" class="danger" disabled>Parar calibração</button>
+              </div>
+              <div id="servoCalibrationWorkspace" class="servo-calibration-workspace" hidden>
+                <div class="servo-calibration-readout"><span>Pulso bruto solicitado</span><strong id="servoCalibrationPulseValue">1500 µs</strong></div>
+                <input id="servoCalibrationPulseSlider" type="range" min="500" max="2500" step="10" value="1500" disabled>
+                <div class="servo-calibration-adjustments">
+                  <button type="button" data-servo-pulse-delta="-100" disabled>−100</button>
+                  <button type="button" data-servo-pulse-delta="-10" disabled>−10</button>
+                  <button type="button" data-servo-pulse-delta="10" disabled>+10</button>
+                  <button type="button" data-servo-pulse-delta="100" disabled>+100</button>
+                  <input id="servoCalibrationPulseInput" type="number" min="500" max="2500" step="10" value="1500" inputmode="numeric" aria-label="Pulso bruto do servo em microssegundos" disabled>
+                  <button id="servoCalibrationApplyButton" type="button" disabled>Aplicar pulso</button>
+                </div>
+                <div class="servo-calibration-endpoints">
+                  <div class="servo-calibration-endpoint">
+                    <label for="servoPulseAtZeroInput">Posição lógica 0°
+                      <input id="servoPulseAtZeroInput" type="number" min="500" max="2500" step="10" value="500" inputmode="numeric" disabled>
+                    </label>
+                    <button id="captureServoZeroButton" type="button" disabled>Usar atual</button>
+                  </div>
+                  <div class="servo-calibration-endpoint">
+                    <label for="servoPulseAt180Input">Posição lógica 180°
+                      <input id="servoPulseAt180Input" type="number" min="500" max="2500" step="10" value="2500" inputmode="numeric" disabled>
+                    </label>
+                    <button id="captureServo180Button" type="button" disabled>Usar atual</button>
+                  </div>
+                </div>
+                <div class="servo-calibration-actions">
+                  <button id="servoCalibrationDisableButton" type="button" class="warning" disabled>Desligar pulso</button>
+                  <button id="servoCalibrationSaveButton" type="button" disabled>Salvar neste servo</button>
+                </div>
+                <p id="servoCalibrationMessage" class="servo-calibration-note">Entrar na calibração não movimenta o servo. O primeiro pulso só sai ao usar Aplicar.</p>
+              </div>
+            </div>
+          </details>
+        </article>
+
         <article class="card section-card diagnostic-oled-card">
           <details class="oled-editor">
             <summary>Personalizar OLED pela Raspberry</summary>
@@ -1532,6 +1872,48 @@ std::string DashboardServer::dashboardHtml()
     const oledFirstLine = element("oledFirstLine");
     const oledSecondLine = element("oledSecondLine");
     const oledDurationSeconds = element("oledDurationSeconds");
+    const servoControls = {
+      arm: {
+        slider: element("armServoSlider"), input: element("armServoInput"),
+        value: element("armServoValue"), state: element("armServoState"),
+        angleField: "armServoAngleDegrees", pulseField: "armServoPulseUs",
+        enabledField: "armServoEnabled", minimumField: "armServoMinimumPulseUs",
+        maximumField: "armServoMaximumPulseUs", invertedField: "armServoInverted",
+        index: 0
+      },
+      wrist: {
+        slider: element("wristServoSlider"), input: element("wristServoInput"),
+        value: element("wristServoValue"), state: element("wristServoState"),
+        angleField: "wristServoAngleDegrees", pulseField: "wristServoPulseUs",
+        enabledField: "wristServoEnabled", minimumField: "wristServoMinimumPulseUs",
+        maximumField: "wristServoMaximumPulseUs", invertedField: "wristServoInverted",
+        index: 1
+      },
+      gripper: {
+        slider: element("gripperServoSlider"), input: element("gripperServoInput"),
+        value: element("gripperServoValue"), state: element("gripperServoState"),
+        angleField: "gripperServoAngleDegrees", pulseField: "gripperServoPulseUs",
+        enabledField: "gripperServoEnabled", minimumField: "gripperServoMinimumPulseUs",
+        maximumField: "gripperServoMaximumPulseUs", invertedField: "gripperServoInverted",
+        index: 2
+      }
+    };
+    const servoCalibrationTarget = element("servoCalibrationTarget");
+    const servoCalibrationWorkspace = element("servoCalibrationWorkspace");
+    const servoCalibrationPulseSlider = element("servoCalibrationPulseSlider");
+    const servoCalibrationPulseInput = element("servoCalibrationPulseInput");
+    const servoPulseAtZeroInput = element("servoPulseAtZeroInput");
+    const servoPulseAt180Input = element("servoPulseAt180Input");
+    const servoCalibrationAdjustmentButtons = Array.from(
+      document.querySelectorAll("[data-servo-pulse-delta]"));
+    const servoKeepAlivePeriodMs = 500;
+    const servoSendTimers = new Map();
+    let servoControlAllowed = false;
+    let servoCalibrationControlAllowed = false;
+    let servoCalibrationOutputEnabled = false;
+    let servoCalibrationPulseTimer = null;
+    let latestServoTelemetry = null;
+    let loadedServoCalibrationProfile = "";
     let requestedLeft = 0;
     let requestedRight = 0;
     let rawDiagnosticDrive = false;
@@ -1624,7 +2006,7 @@ std::string DashboardServer::dashboardHtml()
 
     function updateMode(data) {
       const mode = String(data.mode || "stopped");
-      const labels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
+      const labels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA", servo_calibration: "CALIBRAÇÃO DE SERVO" };
       const modeDisplay = element("mode");
       modeDisplay.textContent = labels[mode] || mode.toUpperCase();
       modeDisplay.dataset.mode = mode;
@@ -1634,7 +2016,7 @@ std::string DashboardServer::dashboardHtml()
         : selectedMission === "drive_distance"
           ? "Percorrendo a distância selecionada pelos encoders"
           : "Missão principal em execução";
-      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
+      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "servo_calibration" ? "Motores zerados · Parar desliga os pulsos" : mode === "emergency" ? "Movimento bloqueado pela trava de segurança" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
       if (mode === "manual") element("manualButton").classList.add("active");
       if (mode === "autonomous") element("autoButton").classList.add("active");
@@ -1669,6 +2051,7 @@ std::string DashboardServer::dashboardHtml()
         starting: ["INICIALIZANDO", "warn", "machineStepPerception"],
         emergency: ["EMERGÊNCIA", "danger", "machineStepFeedback"],
         calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
+        servo_calibration: ["CALIBRANDO SERVO", "warn", "machineStepFeedback"],
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
@@ -1710,6 +2093,9 @@ std::string DashboardServer::dashboardHtml()
       } else if (data.esp32CalibrationActive === true) {
         phase = "calibrating";
         action = "Calibrando sensores: mantenha o robô parado";
+      } else if (data.servoCalibrationRequested === true || data.servoCalibrationActive === true) {
+        phase = "servo_calibration";
+        action = "Ajustando pulsos de servo: motores parados; Parar desliga a saída";
       } else if (data.mode === "autonomous" && data.esp32SerialOpen !== true) {
         phase = "waiting_esp32";
         action = "Missão sem comunicação com a ESP32: motores protegidos";
@@ -1755,7 +2141,7 @@ std::string DashboardServer::dashboardHtml()
         : "-- / -- cm";
       element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
       element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
-      const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
+      const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA", servo_calibration: "CALIBRAÇÃO DE SERVO" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
 
@@ -1831,6 +2217,8 @@ std::string DashboardServer::dashboardHtml()
       const fresh = data.esp32SensorFresh === true;
       const serialOpen = data.esp32SerialOpen === true;
       const calibrating = data.esp32CalibrationActive === true;
+      const servoCalibrating = data.servoCalibrationRequested === true ||
+        data.servoCalibrationActive === true;
       const mpuOk = fresh && !calibrating && data.mpuOk === true;
       const localEmergency = data.esp32EmergencyStop === true;
       const systemEmergency = data.emergency === true || localEmergency;
@@ -1840,11 +2228,11 @@ std::string DashboardServer::dashboardHtml()
 
       updateDiagnosticCommunicationState(data, fresh, serialOpen, calibrating, mpuOk, localEmergency, age);
 
-      setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE"), calibrating ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
-      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO")), systemEmergency ? "danger" : ((calibrating || data.mode === "stopped") ? "warn" : "ok"));
+      setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO SENSORES" : (servoCalibrating ? "ESP32 CALIBRANDO SERVO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE")), (calibrating || servoCalibrating) ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
+      setPill(element("safetyStatus"), systemEmergency ? "TRAVA DE SEGURANÇA ATIVA" : ((calibrating || servoCalibrating) ? "CALIBRAÇÃO · MOTORES PARADOS" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO")), systemEmergency ? "danger" : ((calibrating || servoCalibrating || data.mode === "stopped") ? "warn" : "ok"));
       const esp32Status = element("esp32Status");
-      esp32Status.textContent = calibrating ? "CALIBRANDO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE"));
-      esp32Status.className = calibrating ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"));
+      esp32Status.textContent = calibrating ? "CALIBRANDO SENSORES" : (servoCalibrating ? "CALIBRANDO SERVO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE")));
+      esp32Status.className = (calibrating || servoCalibrating) ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"));
       element("telemetryAge").textContent = age >= 0 ? `${formatNumber(age, 0)} ms` : "-- ms";
       element("serialState").textContent = serialOpen ? "aberta" : "fechada";
       element("serialState").className = serialOpen ? "state-good" : "state-bad";
@@ -1925,7 +2313,7 @@ std::string DashboardServer::dashboardHtml()
         setNeutralState("startButtonState");
       }
       const calibrationButton = element("calibrationButton");
-      calibrationButton.disabled = !fresh || calibrating;
+      calibrationButton.disabled = !fresh || calibrating || servoCalibrating;
       calibrationButton.textContent = calibrating ? "Calibrando…" : "Calibrar";
       if (calibrating) {
         element("calibrationState").textContent = "em andamento";
@@ -1952,6 +2340,8 @@ std::string DashboardServer::dashboardHtml()
         setNeutralState("pcaState");
         setNeutralState("oledState");
       }
+      updateServoControls(data, fresh, calibrating, systemEmergency);
+      updateServoCalibration(data, fresh, calibrating, systemEmergency);
       const oledAvailable = fresh && data.oledOk === true;
       const oledBootReady = oledAvailable && data.esp32RaspberrySystemReady === true;
       const remoteOledActive = oledBootReady && data.esp32RemoteOledActive === true;
@@ -1983,7 +2373,7 @@ std::string DashboardServer::dashboardHtml()
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
       ws.onopen = () => setPill(connection, "PAINEL ONLINE", "ok");
-      ws.onclose = () => { manualEnabled = false; resetKeyboardState(); resetDrive(); setPill(connection, "PAINEL OFFLINE", "danger"); window.setTimeout(connect, 1000); };
+      ws.onclose = () => { manualEnabled = false; resetKeyboardState(); resetDrive(); disableServoControlsLocally(); stopServoCalibrationLocally(); setPill(connection, "PAINEL OFFLINE", "danger"); window.setTimeout(connect, 1000); };
       ws.onmessage = event => {
         const data = JSON.parse(event.data);
         updateMode(data);
@@ -2006,7 +2396,276 @@ std::string DashboardServer::dashboardHtml()
       return true;
     }
 
+    function clampServoAngle(value) {
+      return Math.round(Math.max(0, Math.min(180, Number(value) || 0)));
+    }
+
+    function showRequestedServoAngle(servoName, value) {
+      const control = servoControls[servoName];
+      if (!control) return 0;
+      const angleDegrees = clampServoAngle(value);
+      control.slider.value = String(angleDegrees);
+      control.input.value = String(angleDegrees);
+      control.value.textContent = `${angleDegrees}°`;
+      return angleDegrees;
+    }
+
+    function sendServoAngle(servoName, value, immediate = false) {
+      const angleDegrees = showRequestedServoAngle(servoName, value);
+      if (!servoControlAllowed) return;
+
+      const pendingTimer = servoSendTimers.get(servoName);
+      if (pendingTimer) window.clearTimeout(pendingTimer);
+      const transmit = () => {
+        servoSendTimers.delete(servoName);
+        send({ command: "servo_angle", servo: servoName, angleDegrees });
+      };
+      if (immediate) transmit();
+      else servoSendTimers.set(servoName, window.setTimeout(transmit, 50));
+    }
+
+    function disableAllServos() {
+      servoSendTimers.forEach(timer => window.clearTimeout(timer));
+      servoSendTimers.clear();
+      send({ command: "servo_disable_all" });
+    }
+
+    function disableServoControlsLocally() {
+      servoControlAllowed = false;
+      Object.values(servoControls).forEach(control => {
+        control.slider.disabled = true;
+        control.input.disabled = true;
+      });
+      element("disableServosButton").disabled = true;
+      setSubsystemStatus("servoControlStatus", "bloqueado", "warn");
+    }
+
+    function updateServoControls(data, fresh, calibrating, systemEmergency) {
+      const pcaReady = fresh && data.pca9685Ok === true;
+      const raspberryReady = data.esp32RaspberrySystemReady === true;
+      const servoCalibrating = data.servoCalibrationRequested === true ||
+        data.servoCalibrationActive === true;
+      servoControlAllowed = pcaReady && raspberryReady &&
+        data.mode === "manual" && !calibrating && !servoCalibrating &&
+        !systemEmergency;
+      Object.entries(servoControls).forEach(([servoName, control]) => {
+        control.slider.disabled = !servoControlAllowed;
+        control.input.disabled = !servoControlAllowed;
+        const angleDegrees = clampServoAngle(data[control.angleField]);
+        const userEditing = document.activeElement === control.slider ||
+          document.activeElement === control.input || servoSendTimers.has(servoName);
+        if (!userEditing) showRequestedServoAngle(servoName, angleDegrees);
+        const enabled = fresh && data[control.enabledField] === true;
+        control.outputEnabled = enabled;
+        const pulseUs = Math.max(0, Number(data[control.pulseField]) || 0);
+        control.state.textContent = enabled
+          ? `Saída ativa · alvo ${angleDegrees}° · ${pulseUs.toFixed(0)} µs.`
+          : `Sinal desligado · último alvo ${angleDegrees}°.`;
+        control.state.className = `servo-output-state ${enabled ? "state-good" : "state-neutral"}`;
+      });
+      element("disableServosButton").disabled = !pcaReady || servoCalibrating;
+
+      if (!fresh) setSubsystemStatus("servoControlStatus", "sem telemetria", "warn");
+      else if (!pcaReady) setSubsystemStatus("servoControlStatus", "PCA indisponível", "danger");
+      else if (systemEmergency) setSubsystemStatus("servoControlStatus", "E-STOP ativo", "danger");
+      else if (calibrating) setSubsystemStatus("servoControlStatus", "calibrando", "warn");
+      else if (servoCalibrating) setSubsystemStatus("servoControlStatus", "calibração de pulso", "warn");
+      else if (!raspberryReady) setSubsystemStatus("servoControlStatus", "aguardando sistema", "warn");
+      else if (data.mode !== "manual") setSubsystemStatus("servoControlStatus", "ative Manual", "warn");
+      else setSubsystemStatus("servoControlStatus", "controle liberado", "ok");
+    }
+
+    function servoCalibrationPulseBounds() {
+      const minimum = Number(latestServoTelemetry?.servoCalibrationAbsoluteMinimumPulseUs);
+      const maximum = Number(latestServoTelemetry?.servoCalibrationAbsoluteMaximumPulseUs);
+      return {
+        minimum: Number.isFinite(minimum) ? minimum : 500,
+        maximum: Number.isFinite(maximum) ? maximum : 2500
+      };
+    }
+
+    function clampServoCalibrationPulse(value) {
+      const bounds = servoCalibrationPulseBounds();
+      return Math.round(Math.max(bounds.minimum, Math.min(bounds.maximum, Number(value) || 1500)));
+    }
+
+    function showServoCalibrationPulse(value) {
+      const pulseUs = clampServoCalibrationPulse(value);
+      servoCalibrationPulseSlider.value = String(pulseUs);
+      servoCalibrationPulseInput.value = String(pulseUs);
+      element("servoCalibrationPulseValue").textContent = `${pulseUs} µs`;
+      return pulseUs;
+    }
+
+    function selectedServoCalibrationControl() {
+      return servoControls[servoCalibrationTarget.value] || servoControls.arm;
+    }
+
+    function loadSelectedServoCalibration(force = false) {
+      if (!latestServoTelemetry) return;
+      const control = selectedServoCalibrationControl();
+      const minimumPulseUs = Number(latestServoTelemetry[control.minimumField]);
+      const maximumPulseUs = Number(latestServoTelemetry[control.maximumField]);
+      if (!Number.isFinite(minimumPulseUs) || !Number.isFinite(maximumPulseUs) ||
+          maximumPulseUs <= minimumPulseUs) return;
+
+      const inverted = latestServoTelemetry[control.invertedField] === true;
+      const pulseAtZeroUs = inverted ? maximumPulseUs : minimumPulseUs;
+      const pulseAt180Us = inverted ? minimumPulseUs : maximumPulseUs;
+      const profileSignature = `${servoCalibrationTarget.value}:${pulseAtZeroUs}:${pulseAt180Us}`;
+      if (!force && profileSignature === loadedServoCalibrationProfile) return;
+      const editingEndpoints = document.activeElement === servoPulseAtZeroInput ||
+        document.activeElement === servoPulseAt180Input;
+      if (force || !editingEndpoints) {
+        servoPulseAtZeroInput.value = String(Math.round(pulseAtZeroUs));
+        servoPulseAt180Input.value = String(Math.round(pulseAt180Us));
+      }
+      if (force || !servoCalibrationOutputEnabled) {
+        showServoCalibrationPulse((pulseAtZeroUs + pulseAt180Us) / 2);
+      }
+      if (!force && loadedServoCalibrationProfile &&
+          loadedServoCalibrationProfile.startsWith(`${servoCalibrationTarget.value}:`)) {
+        element("servoCalibrationMessage").textContent =
+          `Perfil confirmado na ESP32: 0° = ${Math.round(pulseAtZeroUs)} µs · 180° = ${Math.round(pulseAt180Us)} µs.`;
+      }
+      loadedServoCalibrationProfile = profileSignature;
+    }
+
+    function clearServoCalibrationPulseTimer() {
+      if (servoCalibrationPulseTimer) window.clearTimeout(servoCalibrationPulseTimer);
+      servoCalibrationPulseTimer = null;
+    }
+
+    function sendServoCalibrationPulse(value, immediate = false) {
+      const pulseUs = showServoCalibrationPulse(value);
+      clearServoCalibrationPulseTimer();
+      if (!servoCalibrationControlAllowed) return;
+      if (!servoCalibrationOutputEnabled && !immediate) return;
+
+      const transmit = () => {
+        servoCalibrationPulseTimer = null;
+        servoCalibrationOutputEnabled = true;
+        send({
+          command: "servo_calibration_pulse",
+          servo: servoCalibrationTarget.value,
+          pulseUs
+        });
+      };
+      if (immediate) transmit();
+      else servoCalibrationPulseTimer = window.setTimeout(transmit, 60);
+    }
+
+    function disableServoCalibrationOutput() {
+      clearServoCalibrationPulseTimer();
+      servoCalibrationOutputEnabled = false;
+      send({ command: "servo_calibration_disable" });
+      element("servoCalibrationMessage").textContent = "Pulso desligado; a calibração continua aberta.";
+    }
+
+    function stopServoCalibrationLocally() {
+      clearServoCalibrationPulseTimer();
+      servoCalibrationControlAllowed = false;
+      servoCalibrationOutputEnabled = false;
+    }
+
+    function beginServoCalibration() {
+      stopServoCalibrationLocally();
+      element("servoCalibrationMessage").textContent = "Entrada solicitada. Nenhum pulso será aplicado automaticamente.";
+      send({ command: "servo_calibration_begin" });
+    }
+
+    function endServoCalibration() {
+      stopServoCalibrationLocally();
+      send({ command: "servo_calibration_end" });
+      element("servoCalibrationMessage").textContent = "Parada solicitada; todos os pulsos serão desligados.";
+    }
+
+    function captureServoCalibrationEndpoint(input) {
+      input.value = String(showServoCalibrationPulse(servoCalibrationPulseInput.value));
+    }
+
+    function saveServoCalibration() {
+      if (!servoCalibrationControlAllowed) return;
+      const pulseAtZeroUs = clampServoCalibrationPulse(servoPulseAtZeroInput.value);
+      const pulseAt180Us = clampServoCalibrationPulse(servoPulseAt180Input.value);
+      servoPulseAtZeroInput.value = String(pulseAtZeroUs);
+      servoPulseAt180Input.value = String(pulseAt180Us);
+      const minimumSpanUs = Number(latestServoTelemetry?.servoCalibrationMinimumSpanUs) || 200;
+      if (Math.abs(pulseAt180Us - pulseAtZeroUs) < minimumSpanUs) {
+        element("servoCalibrationMessage").textContent = `Os extremos precisam diferir pelo menos ${minimumSpanUs} µs.`;
+        return;
+      }
+      send({
+        command: "servo_calibration_save",
+        servo: servoCalibrationTarget.value,
+        pulseAtZeroUs,
+        pulseAt180Us
+      });
+      servoCalibrationOutputEnabled = false;
+      element("servoCalibrationMessage").textContent = "Salvamento solicitado. O ESP32 desligará o pulso e confirmará os novos limites na telemetria.";
+    }
+
+    function updateServoCalibration(data, fresh, calibrating, systemEmergency) {
+      latestServoTelemetry = data;
+      const supported = fresh && data.servoCalibrationSupported === true;
+      const active = supported && data.servoCalibrationActive === true &&
+        data.servoCalibrationRequested === true;
+      const starting = supported && data.servoCalibrationRequested === true && !active;
+      const pcaReady = data.pca9685Ok === true;
+      const raspberryReady = data.esp32RaspberrySystemReady === true;
+      const beginAllowed = supported && pcaReady && raspberryReady &&
+        !calibrating && !systemEmergency &&
+        (data.mode === "stopped" || data.mode === "manual") &&
+        !active && !starting;
+
+      element("servoCalibrationBeginButton").disabled = !beginAllowed;
+      element("servoCalibrationEndButton").disabled = !active && !starting;
+      servoCalibrationTarget.disabled = !supported || calibrating || systemEmergency;
+      servoCalibrationWorkspace.hidden = !active;
+      servoCalibrationControlAllowed = active && pcaReady && raspberryReady &&
+        !calibrating && !systemEmergency;
+
+      const workspaceControls = [
+        servoCalibrationPulseSlider, servoCalibrationPulseInput,
+        servoPulseAtZeroInput, servoPulseAt180Input,
+        element("servoCalibrationApplyButton"),
+        element("captureServoZeroButton"), element("captureServo180Button"),
+        element("servoCalibrationDisableButton"),
+        element("servoCalibrationSaveButton"),
+        ...servoCalibrationAdjustmentButtons
+      ];
+      workspaceControls.forEach(control => {
+        control.disabled = !servoCalibrationControlAllowed;
+      });
+
+      if (active) {
+        const selectedControl = selectedServoCalibrationControl();
+        const selectedByEsp = Number(data.servoCalibrationSelectedIndex) === selectedControl.index;
+        servoCalibrationOutputEnabled = selectedByEsp && data[selectedControl.enabledField] === true;
+        const userEditingPulse = document.activeElement === servoCalibrationPulseSlider ||
+          document.activeElement === servoCalibrationPulseInput || servoCalibrationPulseTimer;
+        if (servoCalibrationOutputEnabled && !userEditingPulse) {
+          showServoCalibrationPulse(data[selectedControl.pulseField]);
+        }
+        loadSelectedServoCalibration(false);
+      } else {
+        stopServoCalibrationLocally();
+      }
+
+      if (!fresh) setSubsystemStatus("servoCalibrationStatus", "sem telemetria", "warn");
+      else if (!supported) setSubsystemStatus("servoCalibrationStatus", "grave o firmware novo", "danger");
+      else if (systemEmergency) setSubsystemStatus("servoCalibrationStatus", "bloqueada", "danger");
+      else if (calibrating) setSubsystemStatus("servoCalibrationStatus", "sensores calibrando", "warn");
+      else if (!pcaReady) setSubsystemStatus("servoCalibrationStatus", "PCA indisponível", "danger");
+      else if (starting) setSubsystemStatus("servoCalibrationStatus", "iniciando", "warn");
+      else if (active) setSubsystemStatus("servoCalibrationStatus", "ativa · Parar desliga", "warn");
+      else setSubsystemStatus("servoCalibrationStatus", "pronta", "ok");
+    }
+
     function sendCommand(command) {
+      if (["start", "auto", "stop", "calibrate"].includes(command)) {
+        stopServoCalibrationLocally();
+      }
       if (manualEnabled) resetDrive();
       manualEnabled = false;
       resetKeyboardState();
@@ -2841,6 +3500,57 @@ std::string DashboardServer::dashboardHtml()
     manualTurnPower.addEventListener("input", updateManualPowerSettings);
     leftValue.addEventListener("change", updateDriveFromExactInputs);
     rightValue.addEventListener("change", updateDriveFromExactInputs);
+    Object.entries(servoControls).forEach(([servoName, control]) => {
+      control.slider.addEventListener("input", () => sendServoAngle(servoName, control.slider.value));
+      control.slider.addEventListener("change", () => sendServoAngle(servoName, control.slider.value, true));
+      control.input.addEventListener("change", () => sendServoAngle(servoName, control.input.value, true));
+    });
+    element("servoCalibrationBeginButton").addEventListener("click", beginServoCalibration);
+    element("servoCalibrationEndButton").addEventListener("click", endServoCalibration);
+    element("servoCalibrationApplyButton").addEventListener("click", () => {
+      sendServoCalibrationPulse(servoCalibrationPulseInput.value, true);
+    });
+    element("servoCalibrationDisableButton").addEventListener("click", disableServoCalibrationOutput);
+    element("servoCalibrationSaveButton").addEventListener("click", saveServoCalibration);
+    element("captureServoZeroButton").addEventListener("click", () => {
+      captureServoCalibrationEndpoint(servoPulseAtZeroInput);
+    });
+    element("captureServo180Button").addEventListener("click", () => {
+      captureServoCalibrationEndpoint(servoPulseAt180Input);
+    });
+    servoCalibrationTarget.addEventListener("change", () => {
+      if (servoCalibrationControlAllowed) disableServoCalibrationOutput();
+      loadedServoCalibrationProfile = "";
+      loadSelectedServoCalibration(true);
+      element("servoCalibrationMessage").textContent = "Servo trocado. O pulso anterior foi desligado; use Aplicar para iniciar o novo teste.";
+    });
+    servoCalibrationPulseSlider.addEventListener("input", () => {
+      sendServoCalibrationPulse(servoCalibrationPulseSlider.value);
+    });
+    servoCalibrationPulseSlider.addEventListener("change", () => {
+      if (servoCalibrationOutputEnabled) {
+        sendServoCalibrationPulse(servoCalibrationPulseSlider.value, true);
+      }
+    });
+    servoCalibrationPulseInput.addEventListener("change", () => {
+      showServoCalibrationPulse(servoCalibrationPulseInput.value);
+    });
+    servoCalibrationAdjustmentButtons.forEach(button => {
+      button.addEventListener("click", () => {
+        const nextPulseUs = Number(servoCalibrationPulseInput.value) +
+          Number(button.dataset.servoPulseDelta);
+        sendServoCalibrationPulse(nextPulseUs, true);
+      });
+    });
+    window.setInterval(() => {
+      if (servoCalibrationControlAllowed && servoCalibrationOutputEnabled) {
+        sendServoCalibrationPulse(servoCalibrationPulseInput.value, true);
+      } else if (servoControlAllowed) {
+        Object.entries(servoControls).forEach(([servoName, control]) => {
+          if (control.outputEnabled) sendServoAngle(servoName, control.input.value, true);
+        });
+      }
+    }, servoKeepAlivePeriodMs);
     document.querySelectorAll("#independentMotorControl [data-side][data-delta]").forEach(button => {
       button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
     });

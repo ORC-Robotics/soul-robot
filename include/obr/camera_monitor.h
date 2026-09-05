@@ -29,8 +29,8 @@ struct CameraCurveDiagnostics
     std::string lineState = "INVALID";
 };
 
-// Resultado tipado do IPC visual. A classificação verde é somente percepção
-// e não oferece nenhum campo que possa ser convertido em comando de motor.
+// Resultado tipado do IPC visual. Consumidores devem validar a classificação
+// verde antes de usá-la em alertas ou em uma decisão segura de movimento.
 struct CameraLineSnapshot
 {
     bool sourceFresh = false;

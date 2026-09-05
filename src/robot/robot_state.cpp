@@ -16,6 +16,18 @@ double clampMotorCommand(double command)
 
     return std::clamp(command, config::kMinMotorOutput, config::kMaxMotorOutput);
 }
+
+bool validServoAngle(double angleDegrees)
+{
+    return std::isfinite(angleDegrees) &&
+           angleDegrees >= config::kServoMinimumAngleDegrees &&
+           angleDegrees <= config::kServoMaximumAngleDegrees;
+}
+
+bool sameServoAngle(double firstDegrees, double secondDegrees)
+{
+    return std::abs(firstDegrees - secondDegrees) < 0.001;
+}
 }
 
 const char* autonomousMissionName(AutonomousMission mission)
@@ -55,6 +67,8 @@ void RobotState::start()
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    requestInitialServoPoseLocked();
     state_.autonomousStatus = {"manual", "Controle manual ativo"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -68,6 +82,8 @@ void RobotState::startAutonomous()
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    requestInitialServoPoseLocked();
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -79,7 +95,8 @@ bool RobotState::tryStartAutonomous()
 
     // O botão físico não libera E-Stop. A condição é revalidada dentro
     // do mutex para que uma emergência concorrente nunca seja apagada pela partida.
-    if (state_.emergencyStop || state_.mode != "stopped")
+    if (state_.emergencyStop || state_.mode != "stopped" ||
+        state_.servoCalibrationActive)
     {
         return false;
     }
@@ -89,6 +106,8 @@ bool RobotState::tryStartAutonomous()
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    requestInitialServoPoseLocked();
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -106,6 +125,8 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    disableServosLocked();
     state_.autonomousMission = mission;
     state_.autonomousStatus = {"ready", "Missão selecionada e pronta"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -133,6 +154,8 @@ void RobotState::stop()
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    disableServosLocked();
     state_.autonomousStatus = {"stopped", "Missão parada"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -146,6 +169,8 @@ void RobotState::emergencyStop()
     state_.right = 0.0;
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    disableServosLocked();
     state_.autonomousStatus = {"emergency", "Parada de emergência ativa"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -213,6 +238,141 @@ void RobotState::driveAutonomous(
     state_.right = clampMotorCommand(right);
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = encoderSynchronizationAllowed;
+}
+
+bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
+{
+    if (!validServoAngle(angleDegrees))
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.emergencyStop || state_.mode != "manual")
+    {
+        return false;
+    }
+
+    // A renovação do servo possui relógio próprio. Ela não pode impedir o
+    // watchdog dos motores de zerar um comando de tração antigo.
+    lastManualServoCommand_ = std::chrono::steady_clock::now();
+
+    switch (servo)
+    {
+    case ServoId::Arm:
+        if (state_.armServoRequested &&
+            sameServoAngle(state_.servoPose.armDegrees, angleDegrees))
+        {
+            return true;
+        }
+        state_.servoPose.armDegrees = angleDegrees;
+        state_.armServoRequested = true;
+        break;
+    case ServoId::Wrist:
+        if (state_.wristServoRequested &&
+            sameServoAngle(state_.servoPose.wristDegrees, angleDegrees))
+        {
+            return true;
+        }
+        state_.servoPose.wristDegrees = angleDegrees;
+        state_.wristServoRequested = true;
+        break;
+    case ServoId::Gripper:
+        if (state_.gripperServoRequested &&
+            sameServoAngle(state_.servoPose.gripperDegrees, angleDegrees))
+        {
+            return true;
+        }
+        state_.servoPose.gripperDegrees = angleDegrees;
+        state_.gripperServoRequested = true;
+        break;
+    }
+
+    ++state_.servoCommandSequence;
+    return true;
+}
+
+bool RobotState::setAutonomousServoPose(const ServoPose& pose)
+{
+    if (!validServoAngle(pose.armDegrees) ||
+        !validServoAngle(pose.wristDegrees) ||
+        !validServoAngle(pose.gripperDegrees))
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.emergencyStop || state_.mode != "autonomous")
+    {
+        return false;
+    }
+
+    if (state_.armServoRequested && state_.wristServoRequested &&
+        state_.gripperServoRequested &&
+        sameServoAngle(state_.servoPose.armDegrees, pose.armDegrees) &&
+        sameServoAngle(state_.servoPose.wristDegrees, pose.wristDegrees) &&
+        sameServoAngle(state_.servoPose.gripperDegrees, pose.gripperDegrees))
+    {
+        return true;
+    }
+
+    // Uma programação predefinida publica a pose inteira de uma vez. O módulo
+    // de saída mantém essa atualização agrupada também no protocolo UART.
+    state_.servoPose = pose;
+    state_.armServoRequested = true;
+    state_.wristServoRequested = true;
+    state_.gripperServoRequested = true;
+    ++state_.servoCommandSequence;
+    return true;
+}
+
+void RobotState::disableServos()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    disableServosLocked();
+}
+
+bool RobotState::beginServoCalibration()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.emergencyStop || state_.mode != "stopped")
+    {
+        return false;
+    }
+
+    // Este modo mantém somente os motores em zero e permite que o controlador
+    // dedicado envie um pulso bruto a um único servo. O botão Parar encerra o
+    // modo ao chamar stop() e remove essa autorização imediatamente.
+    state_.servoCalibrationActive = true;
+    state_.mode = "servo_calibration";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
+    disableServosLocked();
+    state_.autonomousStatus = {
+        "servo_calibration", "Calibração de servo em bancada"};
+    lastCommand_ = std::chrono::steady_clock::now();
+    return true;
+}
+
+void RobotState::endServoCalibration()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!state_.servoCalibrationActive)
+    {
+        return;
+    }
+
+    state_.servoCalibrationActive = false;
+    state_.mode = state_.emergencyStop ? "emergency" : "stopped";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
+    disableServosLocked();
+    state_.autonomousStatus = {"stopped", "Calibração de servo encerrada"};
+    lastCommand_ = std::chrono::steady_clock::now();
 }
 
 void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
@@ -302,4 +462,49 @@ void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)
         state_.right = 0.0;
         state_.rawMotorCommand = false;
     }
+}
+
+void RobotState::enforceManualServoTimeout(std::chrono::milliseconds timeout)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto age = std::chrono::steady_clock::now() - lastManualServoCommand_;
+    const bool anyServoRequested = state_.armServoRequested ||
+                                   state_.wristServoRequested ||
+                                   state_.gripperServoRequested;
+
+    // No modo autônomo, a própria missão encerra a pose com stop(), E-Stop ou
+    // disableServos(). No modo Manual, a perda do painel expira esta autorização.
+    if (state_.mode == "manual" && anyServoRequested && age > timeout)
+    {
+        disableServosLocked();
+    }
+}
+
+void RobotState::requestInitialServoPoseLocked()
+{
+    // A pose inicial só é solicitada após uma partida Manual ou Autônoma.
+    // Enquanto o robô estiver parado, disableServosLocked() remove os pulsos.
+    state_.servoPose = {
+        config::kServoInitialAngleDegrees,
+        config::kServoInitialAngleDegrees,
+        config::kServoInitialAngleDegrees};
+    state_.armServoRequested = true;
+    state_.wristServoRequested = true;
+    state_.gripperServoRequested = true;
+    ++state_.servoCommandSequence;
+    lastManualServoCommand_ = std::chrono::steady_clock::now();
+}
+
+void RobotState::disableServosLocked()
+{
+    if (!state_.armServoRequested && !state_.wristServoRequested &&
+        !state_.gripperServoRequested)
+    {
+        return;
+    }
+
+    state_.armServoRequested = false;
+    state_.wristServoRequested = false;
+    state_.gripperServoRequested = false;
+    ++state_.servoCommandSequence;
 }

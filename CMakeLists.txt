@@ -19,7 +19,9 @@ add_executable(robot_test
     src/robot/imu_turn_controller.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
+    src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
+    src/robot/servo_controller.cpp
     src/telemetry/telemetry.cpp
 )
 
@@ -58,5 +60,28 @@ if(BUILD_TESTING)
     add_test(
         NAME curve_diagnostics_logger_test
         COMMAND curve_diagnostics_logger_test)
+
+    add_executable(servo_controller_test
+        tests/servo_controller_test.cpp
+        src/hal/esp32_bridge.cpp
+        src/robot/robot_state.cpp
+        src/robot/servo_controller.cpp
+    )
+    target_include_directories(servo_controller_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(servo_controller_test pthread)
+    endif()
+    add_test(NAME servo_controller_test COMMAND servo_controller_test)
+
+    add_executable(oled_event_notifier_test
+        tests/oled_event_notifier_test.cpp
+        src/hal/esp32_bridge.cpp
+        src/robot/oled_event_notifier.cpp
+    )
+    target_include_directories(oled_event_notifier_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(oled_event_notifier_test pthread)
+    endif()
+    add_test(NAME oled_event_notifier_test COMMAND oled_event_notifier_test)
 
 endif()

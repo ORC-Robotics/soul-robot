@@ -28,7 +28,16 @@ RESET_ENCODERS
 CALIBRATE_SENSORS
 SYSTEM_STARTING
 SYSTEM_READY
+SERVO,<ARM|WRIST|GRIPPER>,<anguloGraus>
+SERVO_POSE,<bracoGraus>,<pulsoGraus>,<garraGraus>
+SERVO_DISABLE_ALL
+SERVO_CAL_BEGIN
+SERVO_CAL_PULSE,<ARM|WRIST|GRIPPER>,<pulsoUs>
+SERVO_CAL_DISABLE
+SERVO_CAL_SAVE,<ARM|WRIST|GRIPPER>,<pulsoEmZeroUs>,<pulsoEm180Us>
+SERVO_CAL_END
 OLED,<duracaoMs>,<tituloHex>,<linha1Hex>,<linha2Hex>
+OLED_BIG,<duracaoMs>,<textoPrincipalHex>,<detalheHex>
 OLED_CLEAR
 PING
 ```
@@ -40,10 +49,41 @@ protocolo; um campo vazio é enviado como `-`. `OLED_CLEAR` retorna imediatament
 à página local de bateria e ângulos. E-Stop e calibração continuam tendo
 prioridade visual sobre qualquer página remota.
 
+`OLED_BIG` usa o maior tamanho da fonte nativa que comporte o texto principal e
+o posiciona somente entre as linhas 16 e 63. Nos módulos bicolores usados pelo
+robô, essa é a região fisicamente azul. O detalhe opcional aparece na última
+linha. Enquanto ativo, o layout pulsa suavemente o contraste sem apagar o texto.
+O conteúdo permanece centralizado, com margem mínima de 4 pixels nas laterais e
+2 pixels nos limites verticais da região azul.
+E-Stop, calibração e animação de boot continuam tendo prioridade sobre esse
+alerta e restauram imediatamente o contraste normal.
+
+O conteúdo e a duração fazem parte de cada comando. Portanto, depois que esta
+versão for gravada, novos textos e eventos podem ser criados na Raspberry sem
+outra gravação da ESP32. Alterações no layout ou no pulso de contraste continuam
+pertencendo ao firmware.
+
 `SYSTEM_STARTING` mantém a animação de inicialização ativa. Depois que UART,
 câmera e serviços estão prontos, a Raspberry envia `SYSTEM_READY` a cada segundo.
 Se esse heartbeat desaparecer por mais de 3 segundos, a ESP32 volta à animação.
-Esse estado é apenas visual e não substitui os timeouts e travas dos motores.
+Esse heartbeat não substitui os timeouts e travas dos motores. Para os servos,
+ele também impede que um pulso antigo permaneça ativo se a Raspberry cair.
+
+`SERVO` movimenta um mecanismo entre 0° e 180°. `SERVO_POSE` valida os três
+ângulos antes de aplicar uma pose completa, sendo o formato indicado para
+programações predefinidas. `SERVO_DISABLE_ALL` remove os sinais dos três canais.
+Os servos também são desligados por `STOP`, `ESTOP`, calibração,
+`SYSTEM_STARTING` ou perda do heartbeat `SYSTEM_READY`. Os canais e pulsos ficam
+centralizados em `../obr_esp32_bridge/robot_config.h`.
+
+A calibração de servo é um modo separado, iniciado por `SERVO_CAL_BEGIN`, e
+começa sem emitir pulso. `SERVO_CAL_PULSE` aceita somente 500–2500 µs e mantém
+um único canal ativo; se o comando não for renovado por 2 s, o sinal é removido.
+`SERVO_CAL_SAVE` recebe os pulsos físicos correspondentes às posições lógicas
+0° e 180°, deduz automaticamente a inversão e grava o perfil na NVS com
+`Preferences`. `STOP` e `SERVO_CAL_END` encerram o modo e desligam os três
+canais. Uma gravação normal preserva os perfis; usar uma opção de apagamento
+total da flash pode remover a NVS e restaurar os padrões compilados.
 
 As potências ficam entre `-1.000` e `1.000` e são aplicadas diretamente ao PWM.
 Os lados esquerdo e direito são independentes: `MOTOR,0.050,0.000,0` aplica 5%
@@ -75,6 +115,9 @@ CALIBRATION,FAILED
 START_BUTTON,SHORT
 OLED,OK
 OLED,CLEARED
+SERVO_CAL,START
+SERVO_CAL,SAVED,<ARM|WRIST|GRIPPER>
+SERVO_CAL,END
 SENSOR,<campos CSV...>
 ```
 
@@ -97,7 +140,15 @@ distanciaCm,gyroZ,yawZ,accelX,accelY,accelZ,mpuOk,
 bateriaV,encoderEsquerdo,encoderDireito,startButton,pcaOk,
 potenciaEsquerda,potenciaDireita,taxaEsquerda,taxaDireita,
 rampa,gyroX,gyroY,temperaturaImu,oledOk,nSleepHigh,estop,
-bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,oledRemotaAtiva,sistemaRaspberryPronto
+bateriaAdcMillivolts,uptimeMs,calibracaoAtiva,oledRemotaAtiva,sistemaRaspberryPronto,
+idadeComandoMotorMs,timeoutMotor,fonteMotor,
+anguloBraco,pulsoBracoUs,bracoAtivo,
+anguloPulso,pulsoPulsoUs,pulsoAtivo,
+anguloGarra,pulsoGarraUs,garraAtiva,
+calibracaoServoAtiva,indiceServoEmTeste,
+minBracoUs,maxBracoUs,bracoInvertido,
+minPulsoUs,maxPulsoUs,pulsoInvertido,
+minGarraUs,maxGarraUs,garraInvertida
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

@@ -5,7 +5,9 @@
 #include "obr/esp32_bridge.h"
 #include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
+#include "obr/oled_event_notifier.h"
 #include "obr/robot_state.h"
+#include "obr/servo_controller.h"
 #include "obr/status_led.h"
 #include "obr/telemetry.h"
 
@@ -99,13 +101,16 @@ int main()
     RobotState robotState;
     Telemetry telemetry;
     Esp32Bridge esp32;
+    ServoController servos(esp32);
     CameraMonitor cameraMonitor;
     MissionController missionController;
     MotorController motors(esp32);
+    OledEventNotifier oledEvents(esp32);
     CurveDiagnosticsLogger curveDiagnosticsLogger(
         config::kCurveDiagnosticsPath);
     StatusLed readyLed(config::kRaspberryReadyLedPin);
-    DashboardServer dashboard(robotState, telemetry, esp32, motors, readyLed);
+    DashboardServer dashboard(
+        robotState, telemetry, esp32, motors, servos, readyLed);
 
     readyLed.begin();
     motors.begin();
@@ -158,12 +163,16 @@ int main()
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
         const ForwardLineSnapshot forwardLineSnapshot =
             cameraMonitor.forwardLineSnapshot();
+        const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
+                                               esp32Telemetry.oledOk &&
+                                               esp32Telemetry.raspberrySystemReady;
+        oledEvents.updateGreen(cameraLineSnapshot, oledEventDisplayAvailable);
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))
         {
-            // Este log apenas mostra a percepção. A classificação verde não
-            // participa de nenhuma decisão de movimento nesta etapa.
+            // Este log apenas mostra a percepção. O alerta da OLED e qualquer
+            // manobra continuam em módulos próprios, fora do caminho de log.
             std::cout << std::boolalpha
                       << "Camera line sourceFresh=" << cameraLineSnapshot.sourceFresh
                       << " lineSequence=" << cameraLineSnapshot.lineSequence
@@ -186,7 +195,17 @@ int main()
         if (startButtonPressedEdge && !esp32Telemetry.calibrationActive)
         {
             const RobotSnapshot stateAtButtonPress = robotState.snapshot();
-            if ((stateAtButtonPress.mode == "manual" ||
+            if (stateAtButtonPress.servoCalibrationActive ||
+                esp32Telemetry.servoCalibrationActive)
+            {
+                // O botão físico também funciona como parada durante o ajuste:
+                // o pulso é removido antes de qualquer nova ação de partida.
+                esp32.sendServoCalibrationEnd();
+                robotState.stop();
+                consumeNextStartButtonShortPress = true;
+                std::cout << "Physical Start button stopped servo calibration\n";
+            }
+            else if ((stateAtButtonPress.mode == "manual" ||
                  stateAtButtonPress.mode == "autonomous") &&
                 !stateAtButtonPress.emergencyStop)
             {
@@ -271,6 +290,8 @@ int main()
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.
         robotState.enforceCommandTimeout(std::chrono::milliseconds(config::kCommandTimeoutMs));
+        robotState.enforceManualServoTimeout(
+            std::chrono::milliseconds(config::kManualServoCommandTimeoutMs));
 
         const RobotSnapshot robotSnapshot = robotState.snapshot();
         const bool systemReady = esp32Telemetry.readyForOperation() &&
@@ -298,6 +319,7 @@ int main()
             }
         }
         motors.apply(robotSnapshot);
+        servos.apply(robotSnapshot);
 
         const MotorSynchronizationSnapshot finalMotorCommand =
             motors.synchronizationSnapshot();
@@ -438,6 +460,7 @@ int main()
 
     // Se o serviço for reiniciado de forma limpa, a OLED informa imediatamente
     // que a Raspberry voltou ao processo de inicialização.
+    servos.disableAll();
     esp32.sendSystemStarting();
     dashboard.stop();
     readyLed.off();

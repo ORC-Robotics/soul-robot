@@ -131,7 +131,7 @@ mantém os dois motores zerados. A câmera publica apenas a imagem ao vivo.
 | Tração | Quatro motores, agrupados em lado esquerdo e lado direito; dianteiros e traseiros possuem comportamentos/modelos diferentes |
 | Drivers | DRV8833 com PWM e nSLEEP |
 | IMU | MPU6050 |
-| Expansor PWM | PCA9685 em `0x40`, ainda sem atuadores definidos |
+| Expansor PWM | PCA9685 em `0x40`, com braço, pulso e garra nos canais 0, 1 e 2 |
 | Display | SSD1306 128×64, procurado em `0x3C` e `0x3D` |
 | Distância frontal | Sensor ultrassônico; **PREENCHER modelo exato** |
 | Encoders | Um conjunto quadrature por lado; **PREENCHER modelo e resolução** |
@@ -469,10 +469,24 @@ continuar segura mesmo se navegador, Wi-Fi, Raspberry ou UART falharem.
 - Endereço esperado: `0x40`.
 - Frequência inicial: 50 Hz.
 - Todos os 16 canais iniciam desligados.
-- Nenhum servo ou mecanismo está implementado.
+- Canal 0: braço.
+- Canal 1: pulso.
+- Canal 2: garra.
+- Faixa lógica exposta ao software: 0° a 180°.
+- Faixa padrão compilada e validada em bancada: 500–2500 µs por servo.
+- Faixa absoluta disponível somente na calibração de bancada: 500–2500 µs.
+- Os pulsos associados a 0° e 180° são salvos separadamente para cada servo na
+  NVS da ESP32; a ordem dos extremos define automaticamente a inversão.
+- E-Stop, `STOP`, calibração, reinício ou perda do heartbeat da Raspberry removem
+  os sinais dos três canais.
+- O dashboard permite ajuste livre somente no modo Manual.
+- No modo Manual, a falta de renovação do dashboard por 2 s remove os sinais dos
+  servos sem renovar ou interferir no timeout dos motores.
 
-> **PREENCHER:** finalidade do PCA9685, canais, atuadores, limites de pulso,
-> posições seguras, corrente da fonte e comportamento em E-Stop.
+> **CONFIRMAR NA BANCADA:** medir e registrar no painel os extremos finais do
+> MG995 do braço e dos dois MG90S. Os padrões de recuperação ficam em
+> `esp32/obr_esp32_bridge/robot_config.h`, mas a operação usa primeiro os perfis
+> válidos carregados da NVS.
 
 ### OLED SSD1306
 
@@ -546,15 +560,72 @@ RESET_ENCODERS
 CALIBRATE_SENSORS
 SYSTEM_STARTING
 SYSTEM_READY
+SERVO,<ARM|WRIST|GRIPPER>,<angleDegrees>
+SERVO_POSE,<armDegrees>,<wristDegrees>,<gripperDegrees>
+SERVO_DISABLE_ALL
+SERVO_CAL_BEGIN
+SERVO_CAL_PULSE,<ARM|WRIST|GRIPPER>,<pulseUs>
+SERVO_CAL_DISABLE
+SERVO_CAL_SAVE,<ARM|WRIST|GRIPPER>,<pulseAtZeroUs>,<pulseAt180Us>
+SERVO_CAL_END
 OLED,<durationMs>,<titleHex>,<line1Hex>,<line2Hex>
+OLED_BIG,<durationMs>,<primaryTextHex>,<secondaryTextHex>
 OLED_CLEAR
 PING
 ```
+
+### Calibração persistente dos servos
+
+O painel da Raspberry oferece a seção **Calibrar pulsos sem regravar**. Entrar
+nesse modo zera a tração e não aplica pulso automaticamente. O operador escolhe
+um servo, parte de 1500 µs, aproxima-se dos extremos em passos pequenos e usa o
+pulso atual como posição lógica 0° ou 180°. Ao salvar, a ESP32 valida uma faixa
+de 500–2500 µs, exige pelo menos 200 µs entre os extremos, deduz o sentido e
+grava somente o perfil daquele servo com a biblioteca `Preferences` do próprio
+core ESP32.
+
+Durante o ajuste, somente um canal pode ficar ativo. O navegador renova o pulso
+a cada 500 ms e o firmware o desliga após 2 s sem renovação. O botão **Parar**, o
+comando `STOP`, a perda do heartbeat da Raspberry e qualquer trava de segurança
+encerram a calibração e removem os três sinais. Uma gravação normal do sketch
+preserva a NVS; uma gravação configurada para apagar toda a flash pode remover
+os perfis e fazer o firmware voltar aos padrões compilados.
+
+Procedimento recomendado:
+
+1. Deixe o servo desacoplado da mecânica e alimente o PCA9685 corretamente.
+2. Selecione o servo e entre na calibração; confirme que nada se move sozinho.
+3. Aplique 1500 µs e procure cada extremo aos poucos, recuando ao notar ruído,
+   vibração, aquecimento ou batente.
+4. Capture o pulso da posição que o software chamará de 0° e depois o de 180°.
+5. Salve o perfil e repita nos outros servos.
+6. Encerre com **Parar** e confirme no controle normal os comandos 0°, 90° e
+   180° antes de acoplar a mecânica.
+
+Ao entrar em Manual ou Autônomo, o `RobotState` solicita a pose inicial
+`{0°, 0°, 0°}`. O firmware converte cada ângulo linearmente para a faixa
+500–2500 µs. No modo Parado, os três canais permanecem sem pulso.
 
 O comando `OLED` aceita título de até 12 caracteres, duas linhas de até 20
 caracteres ASCII e duração entre 500 e 30.000 ms. Os campos de texto são
 codificados em hexadecimal e `-` representa texto vazio. `OLED_CLEAR` restaura
 a página padrão sem esperar o timeout.
+
+`OLED_BIG` aceita um texto principal e um detalhe de até 20 caracteres. A ESP32
+calcula o maior tamanho da fonte que cabe na largura e mantém os dois textos nas
+linhas 16 a 63, região fisicamente azul do OLED bicolor. A cor não é selecionável
+por software; em um painel monocromático, o mesmo conteúdo aparecerá na cor única
+do módulo. O alerta pulsa suavemente entre os contrastes configurados, sem ficar
+completamente apagado, e restaura o contraste normal ao terminar.
+
+Depois que o suporte a `OLED_BIG` estiver gravado, a Raspberry pode alterar o
+texto, o detalhe, a duração e os gatilhos sem regravar a ESP32. Somente mudanças
+no desenho, na animação ou no protocolo exigem uma nova gravação do firmware.
+
+Um verde confirmado, recente e associado à faixa preta gera `VERDE` com o
+detalhe `ESQUERDA`, `DIREITA` ou `180 GRAUS`. O evento possui latch para não ser
+reenviado a cada frame. O ponto de integração de obstáculo já aceita um booleano
+confirmado e produz apenas `DESVIO`, mas ainda não recebe dados nesta branch.
 
 `SYSTEM_READY` é renovado pela Raspberry a cada segundo depois da primeira
 inicialização completa. Sem renovação por três segundos, a OLED retorna ao boot.
@@ -700,11 +771,11 @@ reiniciar seu estado quando uma nova execução começar. Ele preserva duas miss
 isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
 prova para `MainMission`.
 
-`MainMission` mantém a composição dos comportamentos da prova, mas o segue-faixa
-normal está deliberadamente vazio. `calculate_line_follower_command` recebe a
-máscara binária processada e o resultado verde e retorna os dois motores zerados.
-A classificação verde termina no overlay e na telemetria: ela não altera os
-comandos do seguidor nem inicia qualquer comportamento de movimento.
+`MainMission` mantém a composição dos comportamentos da prova. A classificação
+verde também alimenta a OLED depois de passar pelas validações de atualização,
+confirmação e associação com a faixa preta. O retorno de 180° já possui uma
+manobra própria; verde à esquerda e à direita ainda não iniciam movimento nesta
+branch e continuam disponíveis como percepção, telemetria e alerta visual.
 
 A classificação verde usa somente ROIs locais ao redor dos marcadores para medir
 a presença da faixa preta à frente, à esquerda e à direita. Essa percepção
@@ -730,7 +801,8 @@ Regras para os próximos comportamentos:
 - Inclinação de rampa é apenas telemetria/OLED.
 - Encoders não fecham velocidade, mas confirmam START/RUN por roda e sincronizam
   eficiência exclusivamente nos deslocamentos retos.
-- PCA9685 não aciona mecanismos.
+- PCA9685 aciona braço, pulso e garra, mas a Missão Principal ainda não possui
+  uma sequência autônoma definida para esses mecanismos.
 - Não existe lógica documentada para área de resgate, vítimas ou kit.
 
 > **PREENCHER:** estratégia completa exigida pela modalidade da equipe e status
@@ -848,6 +920,9 @@ Bibliotecas Arduino necessárias:
 - Adafruit PWM Servo Driver Library;
 - Adafruit GFX Library;
 - Adafruit SSD1306.
+
+`Preferences`, usada para salvar a calibração dos servos na NVS, já acompanha o
+core **esp32 by Espressif Systems** e não exige instalação separada.
 
 Firmware principal para o robô:
 
@@ -1105,7 +1180,8 @@ Confirme:
 - A distância física usa uma calibração empírica única; ainda não existe odometria
   2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
-- PCA9685 ainda não controla mecanismos.
+- Braço, pulso e garra já possuem controle manual e protocolo, mas as poses da
+  estratégia final ainda precisam ser definidas pela equipe.
 - Obstáculos, rampas, verdes, resgate e outras situações ainda não são classificados.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
@@ -1125,7 +1201,7 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Implementar detecção de travamento dos dois lados.
 - [ ] Definir limite de bateria baixa e política segura.
 - [ ] Integrar ultrassônico à estratégia quando a regra exigir.
-- [ ] Definir mecanismos e limites do PCA9685.
+- [ ] Confirmar no robô os canais e pulsos finais dos três servos do PCA9685.
 - [ ] Documentar estratégia completa da modalidade OBR.
 - [ ] Renomear `robot_test` quando a equipe decidir o nome final.
 - [ ] Remover credencial do firmware antes de tornar o repositório público.
@@ -1157,7 +1233,8 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 2. Qual é o modelo do ultrassônico?
 3. Como o MPU6050 está orientado fisicamente?
 4. O OLED é realmente bicolor amarelo/azul em todas as unidades?
-5. Quais atuadores serão ligados ao PCA9685?
+5. Quais são os pulsos finais, as posições seguras e as poses de prova do braço,
+   do pulso e da garra?
 
 ### Software e prova
 
