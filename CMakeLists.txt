@@ -18,6 +18,7 @@ add_executable(robot_test
     src/robot/motor_controller.cpp
     src/robot/curve_diagnostics_logger.cpp
     src/robot/imu_turn_controller.cpp
+    src/robot/line_course_mission.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
     src/robot/oled_event_notifier.cpp
@@ -42,6 +43,7 @@ if(BUILD_TESTING)
         tests/main_mission_test.cpp
         src/hal/camera_monitor.cpp
         src/robot/imu_turn_controller.cpp
+        src/robot/line_course_mission.cpp
         src/robot/main_mission.cpp
         src/robot/obstacle_avoidance.cpp
         src/robot/robot_state.cpp
