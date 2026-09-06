@@ -569,7 +569,7 @@ class DownwardCameraApplication:
                     maneuver_state.gap_forward_frames = 0
                     maneuver_state.gap_reacquire_frames = 0
                     maneuver_state.gap_line_lost_seen = True
-                
+
 
                 gap_blind_search_requested = False
                 if maneuver_state.gap_forward_active:

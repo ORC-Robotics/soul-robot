@@ -253,7 +253,10 @@ esp32/obr_esp32_bridge/
   Núcleo compartilhado e firmware de bancada com dashboard local.
 
 scripts/camera_line_frame.py
-  Captura inferior, processamento visual, IPC fresco do segue-faixa e stream MJPEG.
+  Entrypoint e fachada compatível da visão inferior.
+
+scripts/vision/
+  Configuração, percepção, guidance, controle, status e lifecycle da câmera inferior.
 
 scripts/forward_camera_stream.py e scripts/ball_vision/
   Captura frontal, assistente leve de linha e detector condicionado de vítimas.
@@ -262,7 +265,10 @@ obstacle_avoidance/
   Máquina de estados, calibrações e testes do desvio de obstáculo.
 
 scripts/deploy.ps1 e scripts/deploy.sh
-  Deploy atômico para a Raspberry.
+  Entrypoints compatíveis do deploy atômico para a Raspberry.
+
+deployment/
+  Implementação do deploy, instalação, unidades systemd e sudoers.
 
 scripts/run_robot.sh
   Supervisor do programa C++ e do gerenciador ocioso da câmera frontal.
@@ -271,11 +277,17 @@ scripts/run_line_camera.sh
   Supervisor exclusivo da câmera inferior: remove IPC antigo, publica o estado
   do serviço e inicia uma única instância da visão.
 
-scripts/obr-robot.service
+deployment/systemd/obr-robot.service
   Unidade systemd do programa C++, dashboard e ESP32.
 
-scripts/obr-line-camera.service
+deployment/systemd/obr-line-camera.service
   Unidade systemd independente da captura e visão da câmera inferior.
+
+tests/python/
+  Regressão Python da visão inferior, câmera frontal e detecção de bolas.
+
+tools/camera/ e tools/diagnostics/
+  Diagnósticos manuais de câmera e performance.
 ```
 
 ### Responsabilidade dos módulos C++
@@ -1331,8 +1343,8 @@ curl http://127.0.0.1:8080/camera-status.json
 | Visão e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
 | Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |
-| Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh` |
-| Startup | `scripts/run_robot.sh` / `scripts/obr-robot.service` |
+| Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh`; implementação em `deployment/` |
+| Startup | `scripts/run_robot.sh` / `deployment/systemd/obr-robot.service` |
 
 ## 30. Regra de manutenção deste guia
 

@@ -307,7 +307,7 @@ Para abrir a mesma interface da Raspberry Pi no computador, sem conectar o robô
 execute na pasta do projeto:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-local-dashboard.ps1
+powershell -ExecutionPolicy Bypass -File tools/run-local-dashboard.ps1
 ```
 
 Depois abra:
@@ -364,7 +364,9 @@ pede a senha SSH da Raspberry uma vez e a senha de `sudo` uma vez. Nenhuma senha
 ou chave privada é salva no repositório. Os deploys seguintes não fazem perguntas
 interativas.
 
-Se quiser executar somente a preparação, use `scripts/install-service.ps1`.
+Se quiser executar somente a preparação, use
+`deployment/install-service.ps1`. O caminho histórico
+`scripts/install-service.ps1` continua funcionando como wrapper.
 
 O deploy copia o código para `/home/raspberry/OBR2026K`, para o serviço e compila em
 `.build-staging`. O executável em uso só é substituído depois que o novo build
@@ -390,7 +392,7 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 Também é necessário preparar cada computador uma vez:
 
 ```sh
-bash scripts/install-service.sh --host obr.local
+bash deployment/install-service.sh --host obr.local
 ```
 
 Depois da preparação, o deploy é não interativo:
@@ -410,7 +412,7 @@ bash scripts/deploy.sh --no-run
 Para abrir um painel local com botão de deploy automático:
 
 ```sh
-python3 scripts/deploy_panel.py
+python3 deployment/deploy_panel.py
 ```
 
 Depois abra:
@@ -420,7 +422,8 @@ http://127.0.0.1:8765
 ```
 
 O botão executa o deploy em modo serviço, equivalente a `scripts/deploy.sh --service`
-no Linux/macOS ou `scripts/deploy.ps1 -Service` no Windows. O painel escuta apenas
+no Linux/macOS ou `scripts/deploy.ps1 -Service` no Windows. O comando histórico
+`scripts/deploy_panel.py` permanece como wrapper. O painel escuta apenas
 em `127.0.0.1`, então ele fica disponível só no computador de desenvolvimento.
 
 ## Serviço no boot
@@ -433,13 +436,13 @@ Execute o mesmo comando novamente quando um arquivo `.service` for alterado.
 No Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1
+powershell -ExecutionPolicy Bypass -File deployment/install-service.ps1
 ```
 
 No Linux/macOS:
 
 ```sh
-bash scripts/install-service.sh
+bash deployment/install-service.sh
 ```
 
 Depois disso, a Raspberry inicia dois serviços automaticamente no boot:
@@ -659,13 +662,13 @@ Depois de atualizar os arquivos de serviço, reinstale uma vez pelo computador d
 desenvolvimento:
 
 ```sh
-bash scripts/install-service.sh
+bash deployment/install-service.sh
 ```
 
 Se você já estiver no terminal da Raspberry, dentro de `/home/raspberry/OBR2026K`, use:
 
 ```sh
-sudo cp scripts/obr-robot.service scripts/obr-line-camera.service /etc/systemd/system/
+sudo cp deployment/systemd/obr-robot.service deployment/systemd/obr-line-camera.service /etc/systemd/system/
 chmod +x scripts/run_robot.sh scripts/run_line_camera.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now obr-robot obr-line-camera
