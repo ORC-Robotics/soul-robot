@@ -648,11 +648,15 @@ completamente apagado, e restaura o contraste normal ao terminar.
 Depois que o suporte a `OLED_BIG` estiver gravado, a Raspberry pode alterar o
 texto, o detalhe, a duração e os gatilhos sem regravar a ESP32. Somente mudanças
 no desenho, na animação ou no protocolo exigem uma nova gravação do firmware.
+O dashboard principal reúne essas opções em **Diagnóstico → OLED · estados e
+mensagens**. A seção mostra o estado físico atual, oferece os alertas automáticos
+de verde e desvio, atalhos visuais para as cinco fases da missão principal e os
+editores dos layouts comum e grande.
 
 Um verde confirmado, recente e associado à faixa preta gera `VERDE` com o
 detalhe `ESQUERDA`, `DIREITA` ou `180 GRAUS`. O evento possui latch para não ser
-reenviado a cada frame. O ponto de integração de obstáculo já aceita um booleano
-confirmado e produz apenas `DESVIO`, mas ainda não recebe dados nesta branch.
+reenviado a cada frame. O desvio integrado produz apenas `DESVIO` quando a
+manobra confirmada assume o controle do percurso.
 
 `SYSTEM_READY` é renovado pela Raspberry a cada segundo depois da primeira
 inicialização completa. Sem renovação por três segundos, a OLED retorna ao boot.

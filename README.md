@@ -193,6 +193,9 @@ Depois de gravar uma vez o firmware que entende `OLED_BIG`, textos, duração e
 novos gatilhos podem ser alterados somente no C++ da Raspberry por meio de
 `sendOledLargeMessage()`, sem regravar a ESP32. Uma nova gravação só é necessária
 para mudar o desenho, a animação ou o protocolo executado dentro da ESP32.
+No dashboard, **Diagnóstico → OLED · estados e mensagens** permite repetir os
+alertas automáticos de verde e desvio, simular as cinco fases da missão principal
+e enviar tanto a página comum quanto um texto grande com detalhe opcional.
 A barra usa 10,5 V como vazio e 14,0 V como cheio para a bateria de níquel de
 12 V instalada no robô. Ela é uma referência visual e não uma estimativa exata
 de capacidade restante sob todas as condições de carga.

@@ -543,6 +543,24 @@ void DashboardServer::handleCommand(const std::string& message)
             std::cout << "Sensor calibration requested\n";
         }
     }
+    else if (message.find("\"command\":\"oled_large_message\"") != std::string::npos)
+    {
+        const std::string primaryText = getJsonString(message, "primaryText", "");
+        const std::string secondaryText = getJsonString(message, "secondaryText", "");
+        const double requestedDurationMs = getJsonNumber(
+            message, "durationMs", config::kRemoteOledMaximumDurationMs);
+        const int durationMs = static_cast<int>(std::clamp(
+            requestedDurationMs,
+            static_cast<double>(config::kRemoteOledMinimumDurationMs),
+            static_cast<double>(config::kRemoteOledMaximumDurationMs)));
+        // O layout grande usa o mesmo caminho dos alertas automáticos. Assim,
+        // o painel testa exatamente a fonte adaptativa e o pulso gravados na ESP32.
+        if (!esp32_.sendOledLargeMessage(
+                primaryText, secondaryText, durationMs))
+        {
+            std::cerr << "Large OLED message was not sent to ESP32\n";
+        }
+    }
     else if (message.find("\"command\":\"oled_message\"") != std::string::npos)
     {
         const std::string title = getJsonString(message, "title", "");
@@ -908,6 +926,8 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
          << ",\"esp32RemoteOledActive\":" << (esp32.remoteOledActive ? "true" : "false")
          << ",\"esp32RaspberrySystemReady\":" << (esp32.raspberrySystemReady ? "true" : "false")
+         << ",\"oledNavigationAlertDurationMs\":"
+         << config::kOledNavigationAlertDurationMs
          << ",\"motorSleepPinHigh\":" << (esp32.motorSleepPinHigh ? "true" : "false")
          << ",\"esp32EmergencyStop\":" << (esp32.emergencyStopActive ? "true" : "false")
          << ",\"esp32CalibrationActive\":" << (esp32.calibrationActive ? "true" : "false")
@@ -1257,14 +1277,34 @@ std::string DashboardServer::dashboardHtml()
     .oled-editor summary::-webkit-details-marker { display: none; }
     .oled-editor summary::after { content: "+"; color: var(--text-secondary); font-size: 1.1rem; line-height: 1; }
     .oled-editor[open] summary::after { content: "−"; }
-    .oled-editor-body { display: grid; gap: var(--space-2); padding: 0 var(--space-3) var(--space-3); border-top: 1px solid var(--line-soft); }
-    .oled-editor-state { margin: var(--space-3) 0 0; color: var(--muted); font-size: .65rem; line-height: 1.35; }
+    .oled-summary-state { margin-left: auto; padding: 3px 6px; border: 1px solid var(--border-primary); border-radius: 99px; color: var(--muted); background: var(--bg-primary); font-size: .54rem; letter-spacing: .06em; }
+    .oled-editor-body { display: grid; gap: var(--space-3); padding: 0 var(--space-3) var(--space-3); border-top: 1px solid var(--line-soft); }
+    .oled-live-state { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
+    .oled-live-state div { flex: 0 0 auto; }
+    .oled-live-state span { display: block; color: var(--muted); font-size: .57rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .oled-live-state strong { display: block; margin-top: 4px; color: var(--text); font-size: .82rem; letter-spacing: .04em; }
+    .oled-editor-state { margin: 0; color: var(--muted); font-size: .65rem; line-height: 1.4; text-align: right; }
+    .oled-section { display: grid; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--line-soft); }
+    .oled-section-heading { display: flex; align-items: end; justify-content: space-between; gap: var(--space-3); }
+    .oled-section-heading strong { color: var(--text-secondary); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+    .oled-section-heading span { color: var(--muted); font-size: .61rem; line-height: 1.35; text-align: right; }
+    .oled-preset-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
+    .oled-preset-grid.mission-states { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .oled-preset { min-height: 58px; display: grid; align-content: center; gap: 3px; padding: var(--space-2); border-color: var(--border-primary); background: var(--bg-control); color: var(--text-primary); text-align: left; }
+    .oled-preset:hover:not(:disabled) { border-color: var(--focus-ring); background: var(--interactive-hover); }
+    .oled-preset strong { font-size: .72rem; letter-spacing: .06em; }
+    .oled-preset span { color: var(--muted); font-size: .58rem; font-weight: 750; line-height: 1.25; }
+    .oled-layout-selector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; padding: 2px; border: 1px solid var(--border-primary); border-radius: 9px; background: var(--bg-primary); }
+    .oled-layout-button { min-height: 34px; border: 0; background: transparent; color: var(--muted); font-size: .66rem; }
+    .oled-layout-button.active { color: var(--bg-primary); background: var(--text-primary); }
     .oled-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .oled-fields[hidden] { display: none; }
     .oled-field { min-width: 0; }
     .oled-field.wide { grid-column: 1 / -1; }
     .oled-field label { display: block; margin-bottom: var(--space-1); color: var(--muted); font-size: .59rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
     .oled-field input { width: 100%; min-width: 0; min-height: var(--control-height); padding: var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; outline: none; color: var(--text); background: var(--bg-control); font: inherit; font-size: .78rem; }
     .oled-field input:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--focus-ring); }
+    .oled-layout-hint { margin: 0; color: var(--muted); font-size: .62rem; line-height: 1.4; }
     .oled-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .oled-actions button { min-height: var(--control-height); font-size: .72rem; }
     .oled-actions .oled-clear { border-color: var(--border-primary); background: var(--bg-control); color: var(--text-primary); }
@@ -1382,6 +1422,7 @@ std::string DashboardServer::dashboardHtml()
       .diagnostic-tools { grid-template-columns: 1fr; }
       .telemetry-card, .telemetry-card.wide,
       .diagnostic-third { grid-column: span 12; }
+      .oled-preset-grid, .oled-preset-grid.mission-states { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 680px) {
       html, body { overflow-x: hidden; }
@@ -1419,6 +1460,10 @@ std::string DashboardServer::dashboardHtml()
       .servo-calibration-adjustments { grid-template-columns: repeat(4, minmax(0, 1fr)); }
       .servo-calibration-adjustments input { grid-column: 1 / 4; }
       .servo-calibration-endpoints { grid-template-columns: 1fr; }
+      .oled-live-state, .oled-section-heading { align-items: flex-start; flex-direction: column; }
+      .oled-editor-state, .oled-section-heading span { text-align: left; }
+      .oled-preset-grid, .oled-preset-grid.mission-states, .oled-fields, .oled-actions { grid-template-columns: 1fr; }
+      .oled-field.wide { grid-column: auto; }
       .telemetry-row { align-items: flex-start; flex-wrap: wrap; padding: var(--space-2) 0; }
       footer { flex-direction: column; }
     }
@@ -1809,17 +1854,56 @@ std::string DashboardServer::dashboardHtml()
 
         <article class="card section-card diagnostic-oled-card">
           <details class="oled-editor">
-            <summary>Personalizar OLED pela Raspberry</summary>
+            <summary><span>OLED · estados e mensagens</span><span id="oledEditorSummaryState" class="oled-summary-state">SEM TELEMETRIA</span></summary>
             <div class="oled-editor-body">
-              <p id="oledRemoteStatus" class="oled-editor-state">Aguardando telemetria da OLED.</p>
-              <div class="oled-fields">
-                <div class="oled-field wide"><label for="oledTitle">Título · até 12 caracteres</label><input id="oledTitle" maxlength="12" value="OBR 2026" placeholder="OBR 2026"></div>
-                <div class="oled-field"><label for="oledFirstLine">Linha 1 · até 20</label><input id="oledFirstLine" maxlength="20" value="ROBO PRONTO" placeholder="ROBO PRONTO"></div>
-                <div class="oled-field"><label for="oledSecondLine">Linha 2 · até 20</label><input id="oledSecondLine" maxlength="20" value="AGUARDANDO" placeholder="AGUARDANDO"></div>
-                <div class="oled-field wide"><label for="oledDurationSeconds">Duração · 0,5 a 30 segundos</label><input id="oledDurationSeconds" type="number" min="0.5" max="30" step="0.5" value="10" inputmode="decimal"></div>
+              <div class="oled-live-state">
+                <div><span>Estado físico atual</span><strong id="oledCurrentState">AGUARDANDO TELEMETRIA</strong></div>
+                <p id="oledRemoteStatus" class="oled-editor-state">Aguardando telemetria da OLED.</p>
               </div>
+
+              <section class="oled-section" aria-labelledby="oledAutomaticAlertsTitle">
+                <div class="oled-section-heading"><strong id="oledAutomaticAlertsTitle">Alertas automáticos atuais</strong><span>Envia o mesmo layout grande e pulsante usado durante a missão.</span></div>
+                <div class="oled-preset-grid">
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="ESQUERDA" data-preset-label="Verde · esquerda" disabled><strong>VERDE</strong><span>ESQUERDA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="DIREITA" data-preset-label="Verde · direita" disabled><strong>VERDE</strong><span>DIREITA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="180 GRAUS" data-preset-label="Verde · retorno de 180 graus" disabled><strong>VERDE</strong><span>180 GRAUS</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="DESVIO" data-secondary="" data-preset-label="Desvio de obstáculo" disabled><strong>DESVIO</strong><span>SEM DETALHE</span></button>
+                </div>
+              </section>
+
+              <section class="oled-section" aria-labelledby="oledMissionStatesTitle">
+                <div class="oled-section-heading"><strong id="oledMissionStatesTitle">Estados da missão principal</strong><span>Atalhos para simular visualmente as cinco fases atuais; não são alertas automáticos.</span></div>
+                <div class="oled-preset-grid mission-states">
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="LINHA" data-secondary="PERCURSO INICIAL" data-preset-label="Percurso inicial" disabled><strong>LINHA</strong><span>PERCURSO INICIAL</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="RESGATE" data-secondary="AREA DE RESGATE" data-preset-label="Área de resgate" disabled><strong>RESGATE</strong><span>ÁREA DE RESGATE</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="LINHA" data-secondary="PERCURSO FINAL" data-preset-label="Percurso final" disabled><strong>LINHA</strong><span>PERCURSO FINAL</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="MISSAO" data-secondary="CONCLUIDA" data-preset-label="Missão concluída" disabled><strong>MISSÃO</strong><span>CONCLUÍDA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="MISSAO" data-secondary="INTERROMPIDA" data-preset-label="Missão interrompida" disabled><strong>MISSÃO</strong><span>INTERROMPIDA</span></button>
+                </div>
+              </section>
+
+              <section class="oled-section" aria-labelledby="oledCustomMessageTitle">
+                <div class="oled-section-heading"><strong id="oledCustomMessageTitle">Mensagem personalizada</strong><span>Escolha entre a página comum e o texto grande adaptativo.</span></div>
+                <div class="oled-layout-selector" role="group" aria-label="Layout da mensagem OLED">
+                  <button type="button" class="oled-layout-button active" data-oled-layout="standard" aria-pressed="true">Título + duas linhas</button>
+                  <button type="button" class="oled-layout-button" data-oled-layout="large" aria-pressed="false">Texto grande + detalhe</button>
+                </div>
+                <div id="oledStandardFields" class="oled-fields">
+                  <div class="oled-field wide"><label for="oledTitle">Título · até 12 caracteres</label><input id="oledTitle" maxlength="12" value="OBR 2026" placeholder="OBR 2026"></div>
+                  <div class="oled-field"><label for="oledFirstLine">Linha 1 · até 20</label><input id="oledFirstLine" maxlength="20" value="ROBO PRONTO" placeholder="ROBO PRONTO"></div>
+                  <div class="oled-field"><label for="oledSecondLine">Linha 2 · até 20</label><input id="oledSecondLine" maxlength="20" value="AGUARDANDO" placeholder="AGUARDANDO"></div>
+                </div>
+                <div id="oledLargeFields" class="oled-fields" hidden>
+                  <div class="oled-field"><label for="oledPrimaryText">Texto principal · até 20</label><input id="oledPrimaryText" maxlength="20" value="VERDE" placeholder="VERDE"></div>
+                  <div class="oled-field"><label for="oledSecondaryText">Detalhe opcional · até 20</label><input id="oledSecondaryText" maxlength="20" value="ESQUERDA" placeholder="ESQUERDA"></div>
+                </div>
+                <div class="oled-fields">
+                  <div class="oled-field wide"><label for="oledDurationSeconds">Duração · 0,5 a 30 segundos</label><input id="oledDurationSeconds" type="number" min="0.5" max="30" step="0.5" value="10" inputmode="decimal"></div>
+                </div>
+                <p id="oledLayoutHint" class="oled-layout-hint">A página comum mostra título, duas linhas e o tempo restante.</p>
+              </section>
               <div class="oled-actions">
-                <button id="oledShowButton" type="button" onclick="showOledMessage()" disabled>Mostrar na OLED</button>
+                <button id="oledShowButton" type="button" data-oled-send onclick="showOledMessage()" disabled>Mostrar página comum</button>
                 <button id="oledClearButton" type="button" class="oled-clear" onclick="clearOledMessage()" disabled>Tela padrão</button>
               </div>
             </div>
@@ -1916,7 +2000,19 @@ std::string DashboardServer::dashboardHtml()
     const oledTitle = element("oledTitle");
     const oledFirstLine = element("oledFirstLine");
     const oledSecondLine = element("oledSecondLine");
+    const oledPrimaryText = element("oledPrimaryText");
+    const oledSecondaryText = element("oledSecondaryText");
     const oledDurationSeconds = element("oledDurationSeconds");
+    const oledStandardFields = element("oledStandardFields");
+    const oledLargeFields = element("oledLargeFields");
+    const oledLayoutButtons = Array.from(
+      document.querySelectorAll("[data-oled-layout]"));
+    const oledSendButtons = Array.from(
+      document.querySelectorAll("[data-oled-send]"));
+    const oledPresetButtons = Array.from(
+      document.querySelectorAll("[data-oled-preset]"));
+    let selectedOledLayout = "standard";
+    let oledAutomaticAlertDurationMs = 2500;
     const servoControls = {
       arm: {
         slider: element("armServoSlider"), input: element("armServoInput"),
@@ -2442,18 +2538,54 @@ std::string DashboardServer::dashboardHtml()
       const oledAvailable = fresh && data.oledOk === true;
       const oledBootReady = oledAvailable && data.esp32RaspberrySystemReady === true;
       const remoteOledActive = oledBootReady && data.esp32RemoteOledActive === true;
-      element("oledShowButton").disabled = !oledBootReady;
+      const receivedOledAlertDurationMs = Number(
+        data.oledNavigationAlertDurationMs);
+      if (Number.isFinite(receivedOledAlertDurationMs) &&
+          receivedOledAlertDurationMs >= 500 &&
+          receivedOledAlertDurationMs <= 30000) {
+        oledAutomaticAlertDurationMs = receivedOledAlertDurationMs;
+      }
+      const oledCanReceive = oledBootReady && !systemEmergency && !calibrating;
+      const oledStateLabel = !fresh
+        ? "SEM TELEMETRIA"
+        : !oledAvailable
+          ? "INDISPONÍVEL"
+          : systemEmergency
+            ? "EMERGÊNCIA"
+            : calibrating
+              ? "CALIBRANDO"
+              : !oledBootReady
+                ? "INICIALIZANDO"
+                : remoteOledActive ? "MENSAGEM REMOTA" : "TELA PADRÃO";
+      const oledStateClass = !fresh
+        ? "state-neutral"
+        : !oledAvailable || systemEmergency
+          ? "state-bad"
+          : calibrating || !oledBootReady
+            ? "state-warn"
+            : "state-good";
+      const oledCurrentState = element("oledCurrentState");
+      const oledEditorSummaryState = element("oledEditorSummaryState");
+      oledCurrentState.textContent = oledStateLabel;
+      oledCurrentState.className = oledStateClass;
+      oledEditorSummaryState.textContent = oledStateLabel;
+      oledEditorSummaryState.className = `oled-summary-state ${oledStateClass}`;
+      oledSendButtons.forEach(button => { button.disabled = !oledCanReceive; });
       element("oledClearButton").disabled = !oledAvailable || !remoteOledActive;
       element("oledRemoteStatus").textContent = !fresh
         ? "Sem telemetria da ESP32."
         : !oledAvailable
         ? "OLED indisponível."
+        : systemEmergency
+          ? "A página local de emergência tem prioridade sobre qualquer mensagem remota."
+        : calibrating
+          ? "A calibração dos sensores controla a OLED até terminar."
         : !oledBootReady
           ? "Inicializando Raspberry, câmera e serviços do robô."
         : remoteOledActive
           ? "Mensagem da Raspberry em exibição; depois do prazo, a tela padrão retorna."
           : "Tela padrão ativa: bateria, giro e inclinação.";
-      element("oledRemoteStatus").className = `oled-editor-state ${!fresh ? "state-neutral" : remoteOledActive ? "state-good" : (oledBootReady ? "" : "state-warn")}`.trim();
+      element("oledRemoteStatus").className = `oled-editor-state ${oledStateClass}`;
       element("oledBootState").textContent = !fresh
         ? "sem telemetria"
         : !oledAvailable ? "indisponível"
@@ -2780,29 +2912,115 @@ std::string DashboardServer::dashboardHtml()
         .slice(0, maximumLength);
     }
 
+    function oledDurationMilliseconds() {
+      const durationSeconds = Math.max(0.5, Math.min(30, Number(oledDurationSeconds.value) || 10));
+      oledDurationSeconds.value = durationSeconds.toFixed(1);
+      return Math.round(durationSeconds * 1000);
+    }
+
+    function setOledEditorFeedback(message, tone = "warn") {
+      element("oledRemoteStatus").textContent = message;
+      element("oledRemoteStatus").className = `oled-editor-state state-${tone}`;
+    }
+
+    function selectOledLayout(layout) {
+      if (!["standard", "large"].includes(layout)) return;
+      selectedOledLayout = layout;
+      const large = layout === "large";
+      oledStandardFields.hidden = large;
+      oledLargeFields.hidden = !large;
+      oledLayoutButtons.forEach(button => {
+        const selected = button.dataset.oledLayout === layout;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      element("oledShowButton").textContent = large
+        ? "Mostrar texto grande"
+        : "Mostrar página comum";
+      element("oledLayoutHint").textContent = large
+        ? "A ESP32 escolhe a maior fonte que cabe, mantém o detalhe abaixo e pulsa o contraste."
+        : "A página comum mostra título, duas linhas e o tempo restante.";
+    }
+
+    function sendOledLargeMessage(primaryText, secondaryText, durationMs, feedback) {
+      const primary = sanitizeOledText(primaryText, 20);
+      const secondary = sanitizeOledText(secondaryText, 20);
+      oledPrimaryText.value = primary;
+      oledSecondaryText.value = secondary;
+      if (!primary.trim()) {
+        setOledEditorFeedback("Digite o texto principal antes de enviar.");
+        return false;
+      }
+      const sent = send({
+        command: "oled_large_message",
+        primaryText: primary,
+        secondaryText: secondary,
+        durationMs
+      });
+      setOledEditorFeedback(
+        sent ? feedback : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
+      return sent;
+    }
+
+    function simulateOledPreset(button) {
+      selectOledLayout("large");
+      const durationMs = oledAutomaticAlertDurationMs;
+      oledDurationSeconds.value = (durationMs / 1000).toFixed(1);
+      sendOledLargeMessage(
+        button.dataset.primary,
+        button.dataset.secondary,
+        durationMs,
+        `Simulação enviada: ${button.dataset.presetLabel}.`
+      );
+    }
+
     function showOledMessage() {
+      const durationMs = oledDurationMilliseconds();
+      if (selectedOledLayout === "large") {
+        sendOledLargeMessage(
+          oledPrimaryText.value,
+          oledSecondaryText.value,
+          durationMs,
+          "Texto grande enviado; aguardando confirmação na telemetria."
+        );
+        return;
+      }
+
       const title = sanitizeOledText(oledTitle.value, 12);
       const firstLine = sanitizeOledText(oledFirstLine.value, 20);
       const secondLine = sanitizeOledText(oledSecondLine.value, 20);
-      const durationSeconds = Math.max(0.5, Math.min(30, Number(oledDurationSeconds.value) || 10));
       oledTitle.value = title;
       oledFirstLine.value = firstLine;
       oledSecondLine.value = secondLine;
-      oledDurationSeconds.value = durationSeconds.toFixed(1);
       if (!title.trim() && !firstLine.trim() && !secondLine.trim()) {
-        element("oledRemoteStatus").textContent = "Digite pelo menos um texto antes de enviar.";
-        element("oledRemoteStatus").className = "oled-editor-state state-warn";
+        setOledEditorFeedback("Digite pelo menos um texto antes de enviar.");
         return;
       }
-      send({ command: "oled_message", title, firstLine, secondLine, durationMs: Math.round(durationSeconds * 1000) });
-      element("oledRemoteStatus").textContent = "Mensagem enviada; aguardando confirmação na telemetria.";
-      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+      const sent = send({
+        command: "oled_message",
+        title,
+        firstLine,
+        secondLine,
+        durationMs
+      });
+      setOledEditorFeedback(
+        sent
+          ? "Página comum enviada; aguardando confirmação na telemetria."
+          : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
     }
 
     function clearOledMessage() {
-      send({ command: "oled_clear" });
-      element("oledRemoteStatus").textContent = "Retorno à tela padrão solicitado.";
-      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+      const sent = send({ command: "oled_clear" });
+      setOledEditorFeedback(
+        sent
+          ? "Retorno à tela padrão solicitado."
+          : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
     }
 
     function selectAutonomousMission() {
@@ -3749,6 +3967,12 @@ std::string DashboardServer::dashboardHtml()
     document.querySelectorAll("#independentMotorControl [data-side][data-delta]").forEach(button => {
       button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
     });
+    oledLayoutButtons.forEach(button => {
+      button.addEventListener("click", () => selectOledLayout(button.dataset.oledLayout));
+    });
+    oledPresetButtons.forEach(button => {
+      button.addEventListener("click", () => simulateOledPreset(button));
+    });
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     document.addEventListener("keydown", event => {
@@ -3777,6 +4001,7 @@ std::string DashboardServer::dashboardHtml()
     window.setInterval(refreshCameraStatus, 200);
     window.setInterval(refreshForwardCameraStatus, 500);
     selectDashboardMode("operation");
+    selectOledLayout("standard");
     renderCameraView("downward");
     restoreManualPowerSettings();
     updateKeyboardIndicators();
