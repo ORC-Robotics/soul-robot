@@ -14,6 +14,13 @@ enum class GreenInterpretation
     TurnAround180
 };
 
+enum class CourseMarker
+{
+    None,
+    Gray,
+    Red
+};
+
 // Transporta o baseline do controle inferior para diagnóstico assíncrono.
 // As posições FAR/MEDIUM só participam do controle quando o respectivo gate
 // trusted do CameraLineSnapshot confirma que a leitura é válida.
@@ -46,6 +53,12 @@ struct CameraLineSnapshot
     std::uint64_t greenCandidateCount = 0;
     bool greenConfirmed = false;
     GreenInterpretation greenInterpretation = GreenInterpretation::None;
+
+    // Marcadores de transição só têm efeito depois da confirmação temporal
+    // feita pela visão. A ausência destes campos preserva o percurso atual.
+    bool courseMarkerConfirmed = false;
+    CourseMarker courseMarker = CourseMarker::None;
+    bool rescueExitConfirmed = false;
 
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;

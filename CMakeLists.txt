@@ -25,6 +25,7 @@ add_executable(robot_test
     src/robot/mission_controller.cpp
     src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
+    src/robot/rescue_area_mission.cpp
     src/robot/servo_controller.cpp
     src/robot/obstacle_avoidance.cpp
     src/telemetry/telemetry.cpp
@@ -50,6 +51,8 @@ if(BUILD_TESTING)
         src/robot/line_course_mission.cpp
         src/robot/main_mission.cpp
         src/robot/obstacle_avoidance.cpp
+        src/robot/ball_alignment_mission.cpp
+        src/robot/rescue_area_mission.cpp
         src/robot/robot_state.cpp
     )
     target_include_directories(main_mission_test PRIVATE

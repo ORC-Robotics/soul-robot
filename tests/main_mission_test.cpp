@@ -1620,6 +1620,40 @@ void testObstacleTakesControlAndSurvivesCameraLoss()
             snapshot.autonomousStatus.phase == "obstacle_settling",
         "O desvio iniciado deve manter autoridade se a câmera ficar indisponível.");
 }
+
+void testConfirmedCourseMarkersControlOnlyExpectedPhase()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot red = freshVision(GreenInterpretation::None);
+    red.courseMarkerConfirmed = true;
+    red.courseMarker = CourseMarker::Red;
+
+    RobotSnapshot snapshot = fixture.update(red);
+    requireFollowingLine(
+        snapshot,
+        "A faixa vermelha não deve encerrar o percurso inicial");
+    require(
+        !fixture.mission.requiresRescueVision(),
+        "O percurso inicial não deve ligar a visão de resgate.");
+
+    CameraLineSnapshot gray = freshVision(GreenInterpretation::None);
+    gray.courseMarkerConfirmed = true;
+    gray.courseMarker = CourseMarker::Gray;
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "rescue_area_entering",
+        "A faixa cinza confirmada deve entrar no resgate com os motores parados.");
+    require(
+        fixture.mission.requiresRescueVision(),
+        "A fase de resgate deve solicitar a visão frontal de vítimas.");
+
+    fixture.mission.reset();
+    require(
+        !fixture.mission.requiresRescueVision(),
+        "O reset deve restaurar o primeiro percurso sem visão pesada.");
+}
 }
 
 int main()
@@ -1670,6 +1704,7 @@ int main()
         testGapWithoutSearchPreservesExistingBehavior();
         testUnavailableCameraStopsMission();
         testObstacleTakesControlAndSurvivesCameraLoss();
+        testConfirmedCourseMarkersControlOnlyExpectedPhase();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }

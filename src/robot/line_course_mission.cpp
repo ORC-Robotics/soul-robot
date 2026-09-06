@@ -50,8 +50,7 @@ void LineCourseMission::update(
     const ForwardLineSnapshot& forwardLineSnapshot)
 {
     const RobotSnapshot robotSnapshot = robotState.snapshot();
-    if (robotSnapshot.mode != "autonomous" ||
-        robotSnapshot.autonomousMission != AutonomousMission::MainMission)
+    if (robotSnapshot.mode != "autonomous")
     {
         return;
     }

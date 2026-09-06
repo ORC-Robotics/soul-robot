@@ -228,6 +228,28 @@ bool parseGreenInterpretation(
     return false;
 }
 
+bool parseCourseMarker(
+    const std::string& marker,
+    CourseMarker& result)
+{
+    if (marker == "NONE")
+    {
+        result = CourseMarker::None;
+        return true;
+    }
+    if (marker == "GRAY")
+    {
+        result = CourseMarker::Gray;
+        return true;
+    }
+    if (marker == "RED")
+    {
+        result = CourseMarker::Red;
+        return true;
+    }
+    return false;
+}
+
 bool isNormalizedValue(double value)
 {
     return std::isfinite(value) && value >= -1.0 && value <= 1.0;
@@ -260,6 +282,9 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
     snapshot.greenInterpretation = GreenInterpretation::None;
+    snapshot.courseMarkerConfirmed = false;
+    snapshot.courseMarker = CourseMarker::None;
+    snapshot.rescueExitConfirmed = false;
     if (hasCachedSnapshot)
     {
         snapshot.ageMs =
@@ -403,6 +428,32 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             return unavailableLineSnapshot(
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
         }
+
+        // Os marcadores são opcionais até o detector físico ser calibrado.
+        // Um processo antigo nunca inicia resgate nem conclui a missão por engano.
+        bool courseMarkerConfirmed = false;
+        if (tryGetJsonBool(
+                json, "courseMarkerConfirmed", courseMarkerConfirmed))
+        {
+            candidate.courseMarkerConfirmed = courseMarkerConfirmed;
+        }
+        std::string courseMarker;
+        if (tryGetJsonString(json, "courseMarker", courseMarker))
+        {
+            if (!parseCourseMarker(courseMarker, candidate.courseMarker))
+            {
+                return unavailableLineSnapshot(
+                    cachedLineSnapshot_, hasCachedLineSnapshot_);
+            }
+        }
+        if (candidate.courseMarkerConfirmed &&
+            candidate.courseMarker == CourseMarker::None)
+        {
+            return unavailableLineSnapshot(
+                cachedLineSnapshot_, hasCachedLineSnapshot_);
+        }
+        tryGetJsonBool(
+            json, "rescueExitConfirmed", candidate.rescueExitConfirmed);
 
         // A origem do controle é opcional para manter compatibilidade com um
         // processo de câmera antigo. Este campo serve somente ao diagnóstico.
