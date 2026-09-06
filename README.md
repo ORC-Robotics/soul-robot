@@ -365,8 +365,7 @@ ou chave privada é salva no repositório. Os deploys seguintes não fazem pergu
 interativas.
 
 Se quiser executar somente a preparação, use
-`deployment/install-service.ps1`. O caminho histórico
-`scripts/install-service.ps1` continua funcionando como wrapper.
+`deployment/install-service.ps1`.
 
 O deploy copia o código para `/home/raspberry/OBR2026K`, para o serviço e compila em
 `.build-staging`. O executável em uso só é substituído depois que o novo build
@@ -422,8 +421,7 @@ http://127.0.0.1:8765
 ```
 
 O botão executa o deploy em modo serviço, equivalente a `scripts/deploy.sh --service`
-no Linux/macOS ou `scripts/deploy.ps1 -Service` no Windows. O comando histórico
-`scripts/deploy_panel.py` permanece como wrapper. O painel escuta apenas
+no Linux/macOS ou `scripts/deploy.ps1 -Service` no Windows. O painel escuta apenas
 em `127.0.0.1`, então ele fica disponível só no computador de desenvolvimento.
 
 ## Serviço no boot
