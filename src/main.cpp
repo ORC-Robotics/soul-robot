@@ -3,6 +3,7 @@
 #include "obr/curve_diagnostics_logger.h"
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
+#include "obr/forward_ball_vision_lifecycle.h"
 #include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
 #include "obr/oled_event_notifier.h"
@@ -18,7 +19,6 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -124,6 +124,7 @@ int main()
     Esp32Bridge esp32;
     ServoController servos(esp32);
     CameraMonitor cameraMonitor;
+    ForwardBallVisionLifecycle forwardBallVision(cameraMonitor);
     MissionController missionController;
     MotorController motors(esp32);
     OledEventNotifier oledEvents(esp32);
@@ -135,8 +136,7 @@ int main()
 
     readyLed.begin();
     motors.begin();
-    bool ballDetectionControlKnown =
-        cameraMonitor.setForwardBallDetectionEnabled(false);
+    forwardBallVision.begin();
 
     if (!dashboard.start())
     {
@@ -153,11 +153,6 @@ int main()
 #endif
 
     unsigned long long handledStartButtonPressSequence = 0;
-    std::uint64_t requestedBallTargetSequence =
-        std::numeric_limits<std::uint64_t>::max();
-    bool ballDetectionEnabled = false;
-    bool ballDetectionWriteFailureLogged = false;
-    bool ballTargetWriteFailureLogged = false;
     bool previousStartButtonPressed = false;
     bool consumeNextStartButtonShortPress = false;
     bool startupComplete = false;
@@ -190,57 +185,16 @@ int main()
         const RobotSnapshot stateAtLoopStart = robotState.snapshot();
         const bool rescueAreaActive =
             missionController.requiresForwardBallDetection(stateAtLoopStart);
-        bool rescueTargetReady = !rescueAreaActive;
-        if (rescueAreaActive &&
-            requestedBallTargetSequence == stateAtLoopStart.autonomousRunSequence)
-        {
-            rescueTargetReady = true;
-        }
-        else if (rescueAreaActive &&
-                 cameraMonitor.requestForwardBallTargetSequence(
-                     stateAtLoopStart.autonomousRunSequence))
-        {
-            requestedBallTargetSequence = stateAtLoopStart.autonomousRunSequence;
-            rescueTargetReady = true;
-            ballTargetWriteFailureLogged = false;
-        }
-        else if (rescueAreaActive && !ballTargetWriteFailureLogged)
-        {
-            std::cerr << "Victim target sequence could not be published\n";
-            ballTargetWriteFailureLogged = true;
-        }
-
-        const bool shouldEnableBallDetection =
-            rescueAreaActive && rescueTargetReady;
-        if (!ballDetectionControlKnown ||
-            shouldEnableBallDetection != ballDetectionEnabled)
-        {
-            if (cameraMonitor.setForwardBallDetectionEnabled(
-                    shouldEnableBallDetection))
-            {
-                ballDetectionEnabled = shouldEnableBallDetection;
-                ballDetectionControlKnown = true;
-                ballDetectionWriteFailureLogged = false;
-                std::cout << "Victim detection "
-                          << (ballDetectionEnabled ? "enabled" : "disabled")
-                          << " by rescue-area gate\n";
-            }
-            else if (!ballDetectionWriteFailureLogged)
-            {
-                ballDetectionControlKnown = false;
-                std::cerr << "Victim detection gate could not be published\n";
-                ballDetectionWriteFailureLogged = true;
-            }
-        }
+        forwardBallVision.update(
+            rescueAreaActive,
+            stateAtLoopStart.autonomousRunSequence);
 
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
         const ForwardLineSnapshot forwardLineSnapshot =
             cameraMonitor.forwardLineSnapshot();
         const ForwardBallSnapshot forwardBallSnapshot =
-            ballDetectionEnabled
-                ? cameraMonitor.forwardBallSnapshot()
-                : ForwardBallSnapshot{};
+            forwardBallVision.snapshot();
         const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
                                                esp32Telemetry.oledOk &&
                                                esp32Telemetry.raspberrySystemReady;
@@ -557,7 +511,7 @@ int main()
     // Se o serviço for reiniciado de forma limpa, a OLED informa imediatamente
     // que a Raspberry voltou ao processo de inicialização.
     servos.disableAll();
-    cameraMonitor.setForwardBallDetectionEnabled(false);
+    forwardBallVision.stop();
     esp32.sendSystemStarting();
     dashboard.stop();
     readyLed.off();

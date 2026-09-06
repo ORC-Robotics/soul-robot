@@ -12,6 +12,7 @@ add_executable(robot_test
     src/dashboard/dashboard_server.cpp
     src/hal/camera_monitor.cpp
     src/hal/esp32_bridge.cpp
+    src/hal/forward_ball_vision_lifecycle.cpp
     src/hal/gpio.cpp
     src/hal/status_led.cpp
     src/robot/ball_alignment_mission.cpp
