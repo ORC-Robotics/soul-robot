@@ -35,6 +35,7 @@ class ImuTurnController
 {
 public:
     static bool imuReady(const Esp32TelemetrySnapshot& telemetry);
+    static double angularDistanceDegrees(double first, double second);
 
     bool start(
         double targetDegrees,
@@ -66,5 +67,4 @@ private:
     std::chrono::steady_clock::time_point startedAt_{};
     std::chrono::steady_clock::time_point phaseStartedAt_{};
 
-    static double angularDistanceDegrees(double first, double second);
 };

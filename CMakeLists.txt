@@ -17,6 +17,7 @@ add_executable(robot_test
     src/robot/ball_alignment_mission.cpp
     src/robot/motor_controller.cpp
     src/robot/curve_diagnostics_logger.cpp
+    src/robot/forward_line_assist.cpp
     src/robot/imu_turn_controller.cpp
     src/robot/line_course_mission.cpp
     src/robot/main_mission.cpp
@@ -42,6 +43,7 @@ if(BUILD_TESTING)
     add_executable(main_mission_test
         tests/main_mission_test.cpp
         src/hal/camera_monitor.cpp
+        src/robot/forward_line_assist.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/line_course_mission.cpp
         src/robot/main_mission.cpp
