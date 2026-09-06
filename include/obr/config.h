@@ -74,6 +74,29 @@ constexpr const char* kForwardCameraStatusPath =
 constexpr const char* kForwardLineStatusPath =
     "/dev/shm/obr_forward_line_status.json";
 
+// Gate explícito do detector de vítimas da câmera frontal. O processo da CAM1
+// continua entregando o assistente leve de linha, mas só executa HSV e Hough
+// quando a missão Área de Resgate está realmente ativa.
+constexpr const char* kForwardBallDetectionControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled";
+constexpr const char* kForwardBallDetectionTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled.tmp";
+
+// Identifica a execução autônoma dona do alvo. A troca atômica impede que uma
+// vítima rastreada antes de Stop seja reutilizada depois de uma nova partida.
+constexpr const char* kForwardBallTargetSequenceControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence";
+constexpr const char* kForwardBallTargetSequenceTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence.tmp";
+
+// Resultado rápido do detector de vítimas, publicado somente durante o resgate.
+constexpr const char* kForwardBallStatusPath =
+    "/dev/shm/obr_forward_ball_status.json";
+
+// Idade máxima, em milissegundos, aceita para alinhar com uma vítima.
+// A expiração zera os motores no mesmo ciclo do controlador.
+constexpr int kForwardBallStatusTimeoutMs = 500;
+
 // Idade máxima, em milissegundos, aceita para a leitura frontal.
 // Uma amostra mais antiga perde autoridade imediatamente e não pode manter
 // nem o seguimento frontal nem uma decisão de linha encontrada.
@@ -190,6 +213,79 @@ constexpr double kMotorRunMinimumPower = 0.61;
 // Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
 constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
+
+// Margem angular, em graus, aceita para considerar a vítima centralizada.
+constexpr double kBallAlignmentDeadbandDegrees = 1.0;
+
+// Tempo, em milissegundos, com PWM zerado antes de verificar novamente o tx.
+// A pausa evita decidir enquanto a inércia ainda cruza o centro da imagem.
+constexpr int kBallAlignmentCrossingBrakeMs = 160;
+
+// Erros até este valor usam pulsos curtos em vez de um pivot contínuo.
+constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 3.0;
+
+// Duração, em milissegundos, de uma correção angular fina.
+constexpr int kBallAlignmentFineCorrectionPulseMs = 80;
+
+// Quantidade de frames novos e alinhados exigida antes da aproximação.
+constexpr int kBallAlignmentStableFrames = 3;
+
+// Taxa máxima dos encoders, em contagens por segundo, aceita como parada.
+constexpr double kBallAlignmentStationaryRateCountsPerSecond = 20.0;
+
+// Tempo máximo, em milissegundos, para o alvo travado reaparecer.
+// Durante toda a perda, a saída dos motores permanece zerada.
+constexpr int kBallAlignmentTargetLossTimeoutMs = 1000;
+
+// Potência inicial do pivot usada para vencer a inércia dos motores.
+constexpr double kBallAlignmentStartPower = 0.70;
+
+// Faixa proporcional do pivot depois que os encoders confirmam movimento.
+constexpr double kBallAlignmentMinimumRunPower = kMotorRunMinimumPower;
+constexpr double kBallAlignmentMaximumRunPower = 0.68;
+
+// Erro angular, em graus, que libera a potência máxima do alinhamento.
+constexpr double kBallAlignmentFullPowerErrorDegrees = 12.0;
+
+// Distância frontal, em centímetros, que conclui a aproximação da vítima.
+constexpr double kBallApproachStopDistanceCm = 5.0;
+
+// Potência base e correção diferencial usadas durante a aproximação.
+constexpr double kBallApproachBasePower = 0.70;
+constexpr double kBallApproachMaximumSteeringCorrection = 0.09;
+
+// Erro angular, em graus, que aplica a correção diferencial máxima.
+constexpr double kBallApproachFullSteeringErrorDegrees = 10.0;
+
+static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
+                  kBallAlignmentFullPowerErrorDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentStartPower >=
+                      kBallAlignmentMaximumRunPower &&
+                  kBallAlignmentMaximumRunPower >=
+                      kBallAlignmentMinimumRunPower &&
+                  kBallAlignmentMinimumRunPower >=
+                      kMotorRunMinimumPower &&
+                  kBallAlignmentStartPower <= kMaxMotorOutput &&
+                  kBallAlignmentCrossingBrakeMs > 0 &&
+                  kBallAlignmentFineCorrectionThresholdDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentFineCorrectionPulseMs > 0 &&
+                  kBallAlignmentStableFrames > 0 &&
+                  kBallAlignmentStationaryRateCountsPerSecond >= 0.0 &&
+                  kBallAlignmentTargetLossTimeoutMs > 0 &&
+                  kBallApproachStopDistanceCm > 0.0 &&
+                  kBallApproachBasePower >= kMotorStartMinimumPower &&
+                  kBallApproachBasePower +
+                          kBallApproachMaximumSteeringCorrection <=
+                      kMaxMotorOutput &&
+                  kBallApproachBasePower -
+                          kBallApproachMaximumSteeringCorrection >=
+                      kMotorRunMinimumPower &&
+                  kBallApproachMaximumSteeringCorrection > 0.0 &&
+                  kBallApproachFullSteeringErrorDegrees >
+                      kBallAlignmentDeadbandDegrees,
+              "Os limites do alinhamento de vítimas devem permanecer seguros.");
 
 // Quantidade de amostras novas e válidas dos encoders para trocar STARTING por RUNNING.
 // A confirmação evita liberar 0,61 por um pico isolado ou ruído de telemetria.

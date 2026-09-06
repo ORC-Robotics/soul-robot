@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <exception>
 #include <fstream>
@@ -593,4 +594,136 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
             cachedForwardLineSnapshot_,
             hasCachedForwardLineSnapshot_);
     }
+}
+
+ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
+{
+    ForwardBallSnapshot snapshot;
+    try
+    {
+        std::ifstream file(config::kForwardBallStatusPath);
+        if (!file)
+        {
+            return snapshot;
+        }
+        std::ostringstream content;
+        content << file.rdbuf();
+        if (file.bad())
+        {
+            return snapshot;
+        }
+        const std::string json = content.str();
+        const bool active = getJsonBool(json, "active", false);
+        if (!tryGetJsonBool(json, "ballDetected", snapshot.detected) ||
+            !tryGetJsonNumber(json, "timestamp", snapshot.timestamp) ||
+            !tryGetJsonUnsignedInteger(
+                json, "targetSequence", snapshot.targetSequence) ||
+            !tryGetJsonBool(json, "targetLocked", snapshot.targetLocked))
+        {
+            return ForwardBallSnapshot{};
+        }
+
+        snapshot.ageMs = (currentUnixSeconds() - snapshot.timestamp) * 1000.0;
+        snapshot.sourceFresh = active && std::isfinite(snapshot.ageMs) &&
+                               snapshot.ageMs >= 0.0 &&
+                               snapshot.ageMs <=
+                                   config::kForwardBallStatusTimeoutMs;
+        if (!snapshot.sourceFresh || !snapshot.detected)
+        {
+            snapshot.detected = false;
+            return snapshot;
+        }
+
+        if (!tryGetJsonString(json, "ballType", snapshot.type) ||
+            !tryGetJsonNumber(json, "ballTxDegrees", snapshot.txDegrees) ||
+            !tryGetJsonNumber(json, "ballDistanceCm", snapshot.distanceCm) ||
+            !tryGetJsonNumber(json, "ballRadiusPixels", snapshot.radiusPixels) ||
+            !tryGetJsonNumber(
+                json, "visibleAreaPixels", snapshot.visibleAreaPixels))
+        {
+            return ForwardBallSnapshot{};
+        }
+        const bool valuesValid = !snapshot.type.empty() &&
+                                 std::isfinite(snapshot.txDegrees) &&
+                                 std::abs(snapshot.txDegrees) <= 45.0 &&
+                                 std::isfinite(snapshot.distanceCm) &&
+                                 snapshot.distanceCm > 0.0 &&
+                                 std::isfinite(snapshot.radiusPixels) &&
+                                 snapshot.radiusPixels > 0.0 &&
+                                 std::isfinite(snapshot.visibleAreaPixels) &&
+                                 snapshot.visibleAreaPixels > 0.0 &&
+                                 snapshot.targetLocked;
+        if (!valuesValid)
+        {
+            return ForwardBallSnapshot{};
+        }
+        return snapshot;
+    }
+    catch (const std::exception&)
+    {
+        return ForwardBallSnapshot{};
+    }
+}
+
+bool CameraMonitor::setForwardBallDetectionEnabled(bool enabled) const
+{
+#ifdef _WIN32
+    (void)enabled;
+    return true;
+#else
+    {
+        std::ofstream control(
+            config::kForwardBallDetectionTemporaryControlPath,
+            std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << (enabled ? "1\n" : "0\n");
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(
+            config::kForwardBallDetectionTemporaryControlPath,
+            config::kForwardBallDetectionControlPath) != 0)
+    {
+        std::remove(config::kForwardBallDetectionTemporaryControlPath);
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool CameraMonitor::requestForwardBallTargetSequence(
+    std::uint64_t sequence) const
+{
+#ifdef _WIN32
+    (void)sequence;
+    return true;
+#else
+    {
+        std::ofstream control(
+            config::kForwardBallTargetSequenceTemporaryControlPath,
+            std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << sequence << '\n';
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(
+            config::kForwardBallTargetSequenceTemporaryControlPath,
+            config::kForwardBallTargetSequenceControlPath) != 0)
+    {
+        std::remove(config::kForwardBallTargetSequenceTemporaryControlPath);
+        return false;
+    }
+    return true;
+#endif
 }

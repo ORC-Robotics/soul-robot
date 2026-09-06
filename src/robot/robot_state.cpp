@@ -38,6 +38,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "drive_distance";
     case AutonomousMission::TurnRight90:
         return "turn_right_90";
+    case AutonomousMission::RescueArea:
+        return "rescue_area";
     case AutonomousMission::MainMission:
     default:
         return "main_mission";
@@ -406,6 +408,10 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "esp32_not_ready" ||
                                        status.phase == "camera_not_ready" ||
                                        status.phase == "line_ipc_stale" ||
+                                       status.phase == "rescue_esp32_not_ready" ||
+                                       status.phase == "ball_reached" ||
+                                       status.phase ==
+                                           "ball_alignment_target_lost_timeout" ||
                                        terminalObstacleStatus;
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {

@@ -79,6 +79,103 @@ class ForwardCameraStreamTest(unittest.TestCase):
             ):
                 self.assertTrue(forward_camera_stream.requested_enabled())
 
+    def test_ball_detection_control_file_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            control_path = os.path.join(temporary_directory, "ball_enabled")
+            temporary_path = os.path.join(
+                temporary_directory,
+                "ball_enabled.tmp",
+            )
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_DETECTION_CONTROL_PATH",
+                control_path,
+            ), mock.patch.object(
+                forward_camera_stream,
+                "TEMP_BALL_DETECTION_CONTROL_PATH",
+                temporary_path,
+            ):
+                forward_camera_stream.write_requested_ball_detection_enabled(True)
+                self.assertTrue(
+                    forward_camera_stream.requested_ball_detection_enabled()
+                )
+                forward_camera_stream.write_requested_ball_detection_enabled(False)
+                self.assertFalse(
+                    forward_camera_stream.requested_ball_detection_enabled()
+                )
+
+    def test_disabled_ball_detection_skips_heavy_pipeline(self):
+        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
+        with mock.patch.object(
+            forward_camera_stream.ball_vision_pipeline,
+            "analyze",
+        ) as detector:
+            observation, candidates, status = (
+                forward_camera_stream.analyze_requested_ball_frame(frame, False)
+            )
+
+        detector.assert_not_called()
+        self.assertIsNone(observation)
+        self.assertEqual(candidates, ())
+        self.assertFalse(status["ballDetectionEnabled"])
+        self.assertFalse(status["ballDetected"])
+        self.assertIsNone(status["ballTxDegrees"])
+
+    def test_ball_detection_has_independent_rate_limit(self):
+        interval = 1.0 / forward_camera_stream.BALL_DETECTION_FPS
+
+        self.assertTrue(forward_camera_stream.ball_analysis_due(10.0, 0.0))
+        self.assertFalse(
+            forward_camera_stream.ball_analysis_due(
+                10.0 + interval * 0.5,
+                10.0,
+            )
+        )
+        self.assertTrue(
+            forward_camera_stream.ball_analysis_due(
+                10.0 + interval * 1.1,
+                10.0,
+            )
+        )
+
+    def test_fast_ball_status_contains_only_control_fields(self):
+        ball_status = forward_camera_stream.empty_ball_status()
+        ball_status.update({
+            "ballDetected": True,
+            "ballType": "black_ball",
+            "ballTxDegrees": 7.5,
+            "ballDistanceCm": 42.0,
+            "ballRadiusPixels": 70.0,
+            "visibleAreaPixels": 15000.0,
+            "targetSequence": 8,
+            "targetLocked": True,
+        })
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            status_path = os.path.join(temporary_directory, "ball.json")
+            temporary_path = os.path.join(temporary_directory, "ball.tmp.json")
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_STATUS_PATH",
+                status_path,
+            ), mock.patch.object(
+                forward_camera_stream,
+                "TEMP_BALL_STATUS_PATH",
+                temporary_path,
+            ):
+                forward_camera_stream.save_ball_control_status(True, ball_status)
+
+            with open(status_path, "r", encoding="utf-8") as status_file:
+                status = json.load(status_file)
+
+        self.assertTrue(status["active"])
+        self.assertTrue(status["ballDetected"])
+        self.assertEqual(status["ballType"], "black_ball")
+        self.assertEqual(status["ballTxDegrees"], 7.5)
+        self.assertEqual(status["visibleAreaPixels"], 15000.0)
+        self.assertEqual(status["targetSequence"], 8)
+        self.assertTrue(status["targetLocked"])
+        self.assertNotIn("ballPayload", status)
+
     def test_disabled_status_keeps_forward_profile_without_line_data(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             status_path = os.path.join(temporary_directory, "status.json")

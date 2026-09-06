@@ -113,13 +113,15 @@ flowchart LR
 ### Fluxo autônomo principal
 
 1. `MissionController` identifica a missão autônoma selecionada.
-2. `MainMission` coordena os comportamentos que forem adicionados futuramente.
-3. Cada comportamento deverá atualizar `RobotState`, sem acessar GPIO ou dashboard.
-4. `MotorController` aplicará os limites antes de enviar comandos à ESP32.
-5. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
+2. `MainMission` coordena segue-faixa, retorno verde e desvio de obstáculo.
+3. A missão isolada `rescue_area` liga o detector de vítimas somente durante sua execução.
+4. Cada comportamento atualiza `RobotState`, sem acessar GPIO ou dashboard.
+5. `MotorController` aplica os limites antes de enviar comandos à ESP32.
+6. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
 
-No estado atual, a Missão Principal não possui comportamentos instalados e
-mantém os dois motores zerados. A câmera publica apenas a imagem ao vivo.
+A Missão Principal preserva o segue-faixa geométrico atual e entrega autoridade
+temporária ao desvio quando o ultrassônico confirma um obstáculo. A visão de
+vítimas é uma etapa separada e não consome CPU enquanto o robô segue a linha.
 
 ## 4. Hardware conhecido
 
@@ -253,6 +255,12 @@ esp32/obr_esp32_bridge/
 scripts/camera_line_frame.py
   Captura inferior, processamento visual, IPC fresco do segue-faixa e stream MJPEG.
 
+scripts/forward_camera_stream.py e scripts/ball_vision/
+  Captura frontal, assistente leve de linha e detector condicionado de vítimas.
+
+obstacle_avoidance/
+  Máquina de estados, calibrações e testes do desvio de obstáculo.
+
 scripts/deploy.ps1 e scripts/deploy.sh
   Deploy atômico para a Raspberry.
 
@@ -281,6 +289,8 @@ scripts/obr-line-camera.service
 | `MotorController` | Aplica START/RUN por roda no autônomo, sincroniza somente a reta pelos encoders e envia comandos seguros para a ESP32 |
 | `MissionController` | Seleciona a missão e reinicia o estado interno a cada nova execução |
 | `MainMission` | Coordena o segue-faixa, seus fallbacks e os demais comportamentos autônomos |
+| `BallAlignmentMission` | Alinha pelo `tx` da vítima travada e aproxima até a distância segura configurada |
+| `ObstacleAvoidance` | Confirma o ultrassônico e executa o desvio completo com IMU e encoders |
 | `CameraMonitor` | Valida captura e telemetria visual antes de liberar prévias para a missão |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
@@ -726,6 +736,25 @@ por este módulo conforme cada situação exigir.
 > bateria. Ajuste `kEncoderCalibrationCounts`, `kEncoderCalibrationDistanceCm` e
 > a previsão de frenagem em `include/obr/config.h` com novas medições.
 
+#### `rescue_area`
+
+- É uma etapa explícita: selecionar a missão não liga a visão pesada; pressionar
+  Auto ou o botão físico abre o gate do detector.
+- Detecta vítimas pretas por HSV/contornos e prateadas por Hough, brilho e textura.
+- Mantém o assistente frontal a 30 FPS e limita o detector pesado a 15 análises
+  por segundo enquanto o gate estiver aberto.
+- Escolhe inicialmente a maior área visível, confirma por três frames e mantém o
+  mesmo alvo travado durante toda a execução.
+- Alinha pelo `tx`, com frenagem antes da confirmação, e aproxima até 5 cm.
+- IPC frontal com mais de 500 ms ou medição inválida mantém os motores zerados.
+- Depois da primeira aquisição, perder o alvo por 1 s encerra a missão.
+- Stop, E-Stop, troca de missão, conclusão e falha desligam o detector e impedem
+  reutilizar o alvo de uma execução anterior.
+
+Ainda não existe um classificador automático de entrada na área de resgate. Até
+ele ser implementado, a transição para `rescue_area` é explícita pelo dashboard;
+um classificador futuro deve apenas selecionar/iniciar esta mesma etapa segura.
+
 ## 16. Câmera ao vivo
 
 Arquivo: `scripts/camera_line_frame.py`.
@@ -771,8 +800,8 @@ o IPC de visão. `ONLINE` só aparece depois de uma publicação nova da visão;
 
 `MissionController` possui uma responsabilidade simples: selecionar a missão e
 reiniciar seu estado quando uma nova execução começar. Ele preserva duas missões
-isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
-prova para `MainMission`.
+isoladas de teste, `turn_right_90` e `drive_distance`, executa `rescue_area` com
+`BallAlignmentMission` e delega a estratégia normal para `MainMission`.
 
 `MainMission` mantém a composição dos comportamentos da prova. O desvio de
 obstáculo possui prioridade sobre o segue-faixa depois de duas leituras de até
@@ -807,7 +836,8 @@ Regras para os próximos comportamentos:
   eficiência exclusivamente nos deslocamentos retos.
 - PCA9685 aciona braço, pulso e garra, mas a Missão Principal ainda não possui
   uma sequência autônoma definida para esses mecanismos.
-- Não existe lógica documentada para área de resgate, vítimas ou kit.
+- A área de resgate possui detecção, alinhamento e aproximação da vítima, mas
+  ainda não possui entrada automática, coleta, entrega nem lógica do kit.
 
 > **PREENCHER:** estratégia completa exigida pela modalidade da equipe e status
 > de cada desafio do regulamento 2026.
@@ -1175,8 +1205,8 @@ Confirme:
 - Credencial do Wi-Fi de bancada está no firmware.
 - `robot_test` é um nome provisório para o binário principal.
 - Parser JSON do C++ é manual e simples, sem biblioteca dedicada.
-- A Missão Principal ainda não possui comportamentos autônomos instalados.
-- Ultrassônico ainda não influencia a estratégia.
+- O desvio de obstáculo e a missão de resgate possuem testes automatizados, mas
+  ainda precisam de validação física completa no robô e na iluminação da arena.
 - Bateria baixa não gera parada automática.
 - Não há detecção explícita de travamento simultâneo dos dois lados.
 - Não há controle fechado de velocidade por encoder.
@@ -1185,7 +1215,8 @@ Confirme:
 - Yaw do MPU6050 deriva por não usar referência absoluta.
 - Braço, pulso e garra já possuem controle manual e protocolo, mas as poses da
   estratégia final ainda precisam ser definidas pela equipe.
-- Obstáculos, rampas, verdes, resgate e outras situações ainda não são classificados.
+- Rampas, entrada automática no resgate, coleta, kit e outras situações da prova
+  ainda não possuem estratégia completa.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
   em kernels Linux recentes; funciona na configuração atual, mas deve ser
@@ -1203,7 +1234,10 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Especificar e testar cada novo comportamento antes de integrá-lo à Missão Principal.
 - [ ] Implementar detecção de travamento dos dois lados.
 - [ ] Definir limite de bateria baixa e política segura.
-- [ ] Integrar ultrassônico à estratégia quando a regra exigir.
+- [x] Integrar o ultrassônico ao desvio de obstáculo da Missão Principal.
+- [ ] Validar fisicamente as distâncias e os ângulos do desvio de obstáculo.
+- [ ] Classificar automaticamente a entrada da área de resgate.
+- [ ] Calibrar e validar vítimas pretas e prateadas na iluminação da arena.
 - [ ] Confirmar no robô os canais e pulsos finais dos três servos do PCA9685.
 - [ ] Documentar estratégia completa da modalidade OBR.
 - [ ] Renomear `robot_test` quando a equipe decidir o nome final.
@@ -1293,8 +1327,10 @@ curl http://127.0.0.1:8080/camera-status.json
 | Estados e modos | `src/robot/robot_state.cpp` |
 | Seleção de missões | `src/robot/mission_controller.cpp` |
 | Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
+| Desvio de obstáculo | `obstacle_avoidance/` |
+| Visão e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
-| Captura da câmera | `scripts/camera_line_frame.py` |
+| Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |
 | Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh` |
 | Startup | `scripts/run_robot.sh` / `scripts/obr-robot.service` |
 

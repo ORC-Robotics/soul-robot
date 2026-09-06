@@ -1,5 +1,6 @@
 #pragma once
 
+#include "obr/ball_alignment_mission.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/main_mission.h"
@@ -18,7 +19,8 @@ public:
         const Esp32TelemetrySnapshot& esp32Telemetry,
         bool cameraReady,
         const CameraLineSnapshot& cameraLineSnapshot,
-        const ForwardLineSnapshot& forwardLineSnapshot);
+        const ForwardLineSnapshot& forwardLineSnapshot,
+        const ForwardBallSnapshot& forwardBallSnapshot);
 
 private:
     enum class DistancePhase
@@ -30,6 +32,7 @@ private:
     };
 
     MainMission mainMission_;
+    BallAlignmentMission ballAlignmentMission_;
     ImuTurnController testTurnController_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
@@ -52,6 +55,10 @@ private:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         double targetDistanceCm);
+    void updateRescueArea(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const ForwardBallSnapshot& forwardBallSnapshot);
     void resetMissionState();
 
 };

@@ -14,6 +14,7 @@ add_executable(robot_test
     src/hal/esp32_bridge.cpp
     src/hal/gpio.cpp
     src/hal/status_led.cpp
+    src/robot/ball_alignment_mission.cpp
     src/robot/motor_controller.cpp
     src/robot/curve_diagnostics_logger.cpp
     src/robot/imu_turn_controller.cpp
@@ -54,6 +55,18 @@ if(BUILD_TESTING)
         target_link_libraries(main_mission_test pthread)
     endif()
     add_test(NAME main_mission_test COMMAND main_mission_test)
+
+    add_executable(ball_alignment_mission_test
+        tests/ball_alignment_mission_test.cpp
+        src/robot/ball_alignment_mission.cpp
+    )
+    target_include_directories(ball_alignment_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(ball_alignment_mission_test pthread)
+    endif()
+    add_test(
+        NAME ball_alignment_mission_test
+        COMMAND ball_alignment_mission_test)
 
     add_executable(obstacle_avoidance_test
         obstacle_avoidance/obstacle_avoidance_test.cpp

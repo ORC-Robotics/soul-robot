@@ -79,6 +79,23 @@ struct ForwardLineSnapshot
     bool normalCommandValid() const;
 };
 
+// Leitura da vítima travada publicada pelo processo da câmera frontal.
+// tx é negativo à esquerda e positivo à direita do centro da imagem.
+struct ForwardBallSnapshot
+{
+    bool sourceFresh = false;
+    bool detected = false;
+    std::string type;
+    double txDegrees = std::numeric_limits<double>::quiet_NaN();
+    double distanceCm = std::numeric_limits<double>::quiet_NaN();
+    double radiusPixels = std::numeric_limits<double>::quiet_NaN();
+    double visibleAreaPixels = std::numeric_limits<double>::quiet_NaN();
+    std::uint64_t targetSequence = 0;
+    bool targetLocked = false;
+    double timestamp = 0.0;
+    double ageMs = 0.0;
+};
+
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.
 class CameraMonitor
 {
@@ -86,6 +103,9 @@ public:
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
+    ForwardBallSnapshot forwardBallSnapshot() const;
+    bool setForwardBallDetectionEnabled(bool enabled) const;
+    bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
 
 private:
     CameraLineSnapshot cachedLineSnapshot_;

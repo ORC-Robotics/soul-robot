@@ -10,9 +10,9 @@ competição e não autoriza testes autônomos no chão.
 
 - CAM0 / índice `0`: câmera inferior (`down`), responsável pelo segue-faixa,
   detecção de verde e publicação de `obr_line_status.json`.
-- CAM1 / índice `1`: câmera frontal (`forward`), reservada para visão de resgate.
-  Enquanto não houver pipeline e stream frontal validados, o dashboard deve
-  manter o placeholder `NÃO CONFIGURADA`.
+- CAM1 / índice `1`: câmera frontal (`forward`), usada pelo assistente leve de
+  linha e pela visão de resgate. O detector de vítimas permanece desligado fora
+  da execução explícita de `rescue_area`.
 
 Os papéis são definidos pelos índices configurados, não pelo modelo do sensor.
 Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
@@ -24,7 +24,10 @@ Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
 - O HSV precisa ser calibrado usando frames RGB reais da pista.
 - A nova transição START/RUN (`0.67` para `0.61`) ainda precisa de validação
   física com os encoders e as rodas suspensas.
-- A câmera frontal ainda não possui pipeline de resgate validado.
+- O pipeline de resgate existe, mas HSV, Hough, FOV, distância e aproximação ainda
+  não foram validados na iluminação e no piso da arena.
+- O desvio de obstáculo ainda precisa validar no robô os limiares de 8/15 cm e a
+  sequência calibrada de giros e deslocamentos.
 - A visualização RGB e as máscaras do dashboard continuam em evolução.
 
 ## Resultados da validação de 17 de agosto de 2026
@@ -59,5 +62,11 @@ Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
 6. Com `obr-line-camera` parado, confirmar que o IPC de linha foi removido e que
    a Missão Principal não pode ser iniciada; após iniciar o serviço, aceitar
    somente uma publicação nova e fresca.
-6. Validar por lado a troca STARTING (`0.67`) para RUNNING (`0.61`) depois de
+7. Validar por lado a troca STARTING (`0.67`) para RUNNING (`0.61`) depois de
    duas amostras recentes do encoder e o retorno a STARTING após três falhas.
+8. Fora de `rescue_area`, confirmar pelo HUD e pela CPU que HSV/Hough permanecem
+   inativos; depois iniciar a etapa e validar aquisição, alinhamento, perda do
+   alvo, Stop e E-Stop com as rodas suspensas.
+9. Validar o desvio primeiro com motores suspensos e potência reduzida; conferir
+   confirmação ultrassônica, cada giro, cada distância, falhas de IMU/encoder e
+   retorno da autoridade ao segue-faixa.

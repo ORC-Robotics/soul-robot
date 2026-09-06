@@ -584,6 +584,24 @@ capturando e publicando sua leitura leve em
 Ela não executa sensores FAR/MEDIUM/NEAR, GREEN, GAP, recovery nem comandos de
 motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
+O mesmo processo contém o detector de vítimas pretas e prateadas, mas o trecho
+pesado de HSV, contornos e Hough permanece desligado por padrão. Ele só é executado
+quando `rescue_area` está selecionada **e** a missão autônoma foi iniciada. Parar,
+acionar o E-Stop, trocar de missão, concluir a aproximação ou atingir a falha de
+alvo fecha o gate e limpa a vítima anterior. A Missão Principal e o segue-faixa,
+portanto, não pagam continuamente o custo desse detector.
+
+Quando habilitado, o detector pesado é limitado a 15 análises por segundo sem
+reduzir os 30 FPS do assistente frontal. Frames intermediários continuam servindo
+à linha e ao stream, preservando o comportamento desta branch.
+
+Durante o resgate, o rastreador escolhe a vítima de maior área visível, exige três
+frames para travá-la e associa o alvo à sequência da execução autônoma. O C++ usa
+o `tx` para alinhar, aguarda o robô parar antes de confirmar o centro e aproxima
+até 5 cm. IPC ausente por mais de 500 ms zera os motores; perder o alvo já travado
+por 1 s encerra a missão. O HUD da câmera frontal expõe tipo, posição, distância,
+ângulo e custo de processamento para calibração.
+
 O código também pode solicitar que o stream frontal já fique disponível no início:
 
 ```sh

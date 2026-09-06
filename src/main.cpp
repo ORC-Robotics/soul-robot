@@ -15,8 +15,10 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -63,6 +65,12 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
+    if (mission == AutonomousMission::RescueArea)
+    {
+        // A visão pesada é ligada somente depois da partida. A missão começa
+        // parada e aguarda um IPC frontal recente antes de mover os motores.
+        return true;
+    }
     return cameraReady && cameraLineSnapshot.sourceFresh;
 }
 
@@ -89,6 +97,10 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     {
         return "encoders";
     }
+    if (mission == AutonomousMission::RescueArea)
+    {
+        return "forward_ball_tx";
+    }
     return "camera";
 }
 }
@@ -114,6 +126,8 @@ int main()
 
     readyLed.begin();
     motors.begin();
+    bool ballDetectionControlKnown =
+        cameraMonitor.setForwardBallDetectionEnabled(false);
 
     if (!dashboard.start())
     {
@@ -130,6 +144,11 @@ int main()
 #endif
 
     unsigned long long handledStartButtonPressSequence = 0;
+    std::uint64_t requestedBallTargetSequence =
+        std::numeric_limits<std::uint64_t>::max();
+    bool ballDetectionEnabled = false;
+    bool ballDetectionWriteFailureLogged = false;
+    bool ballTargetWriteFailureLogged = false;
     bool previousStartButtonPressed = false;
     bool consumeNextStartButtonShortPress = false;
     bool startupComplete = false;
@@ -159,10 +178,62 @@ int main()
             consumeNextStartButtonShortPress = false;
         }
 
+        const RobotSnapshot stateAtLoopStart = robotState.snapshot();
+        const bool rescueAreaActive =
+            stateAtLoopStart.mode == "autonomous" &&
+            stateAtLoopStart.autonomousMission == AutonomousMission::RescueArea &&
+            !stateAtLoopStart.emergencyStop;
+        bool rescueTargetReady = !rescueAreaActive;
+        if (rescueAreaActive &&
+            requestedBallTargetSequence == stateAtLoopStart.autonomousRunSequence)
+        {
+            rescueTargetReady = true;
+        }
+        else if (rescueAreaActive &&
+                 cameraMonitor.requestForwardBallTargetSequence(
+                     stateAtLoopStart.autonomousRunSequence))
+        {
+            requestedBallTargetSequence = stateAtLoopStart.autonomousRunSequence;
+            rescueTargetReady = true;
+            ballTargetWriteFailureLogged = false;
+        }
+        else if (rescueAreaActive && !ballTargetWriteFailureLogged)
+        {
+            std::cerr << "Victim target sequence could not be published\n";
+            ballTargetWriteFailureLogged = true;
+        }
+
+        const bool shouldEnableBallDetection =
+            rescueAreaActive && rescueTargetReady;
+        if (!ballDetectionControlKnown ||
+            shouldEnableBallDetection != ballDetectionEnabled)
+        {
+            if (cameraMonitor.setForwardBallDetectionEnabled(
+                    shouldEnableBallDetection))
+            {
+                ballDetectionEnabled = shouldEnableBallDetection;
+                ballDetectionControlKnown = true;
+                ballDetectionWriteFailureLogged = false;
+                std::cout << "Victim detection "
+                          << (ballDetectionEnabled ? "enabled" : "disabled")
+                          << " by rescue-area gate\n";
+            }
+            else if (!ballDetectionWriteFailureLogged)
+            {
+                ballDetectionControlKnown = false;
+                std::cerr << "Victim detection gate could not be published\n";
+                ballDetectionWriteFailureLogged = true;
+            }
+        }
+
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
         const ForwardLineSnapshot forwardLineSnapshot =
             cameraMonitor.forwardLineSnapshot();
+        const ForwardBallSnapshot forwardBallSnapshot =
+            ballDetectionEnabled
+                ? cameraMonitor.forwardBallSnapshot()
+                : ForwardBallSnapshot{};
         const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
                                                esp32Telemetry.oledOk &&
                                                esp32Telemetry.raspberrySystemReady;
@@ -285,7 +356,8 @@ int main()
             esp32Telemetry,
             cameraReady,
             cameraLineSnapshot,
-            forwardLineSnapshot);
+            forwardLineSnapshot,
+            forwardBallSnapshot);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.
@@ -300,8 +372,13 @@ int main()
         oledEvents.updateObstacleDetour(
             obstacleDetourActive,
             oledEventDisplayAvailable);
+        const bool selectedPerceptionReady =
+            robotSnapshot.autonomousMission == AutonomousMission::RescueArea
+                ? forwardBallSnapshot.sourceFresh
+                : cameraReady;
         const bool systemReady = esp32Telemetry.readyForOperation() &&
-                                 !robotSnapshot.emergencyStop && cameraReady;
+                                 !robotSnapshot.emergencyStop &&
+                                 selectedPerceptionReady;
         readyLed.setReady(systemReady);
 
         // A conclusão do boot fica travada até o processo reiniciar. Uma falha
@@ -467,6 +544,7 @@ int main()
     // Se o serviço for reiniciado de forma limpa, a OLED informa imediatamente
     // que a Raspberry voltou ao processo de inicialização.
     servos.disableAll();
+    cameraMonitor.setForwardBallDetectionEnabled(false);
     esp32.sendSystemStarting();
     dashboard.stop();
     readyLed.off();

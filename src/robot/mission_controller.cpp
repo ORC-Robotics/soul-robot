@@ -95,7 +95,8 @@ void MissionController::update(
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
     const CameraLineSnapshot& cameraLineSnapshot,
-    const ForwardLineSnapshot& forwardLineSnapshot)
+    const ForwardLineSnapshot& forwardLineSnapshot,
+    const ForwardBallSnapshot& forwardBallSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -121,12 +122,21 @@ void MissionController::update(
         return;
     case AutonomousMission::DriveDistance:
         testTurnController_.reset();
+        ballAlignmentMission_.reset();
         updateDriveDistance(
             robotState, esp32Telemetry, snapshot.driveDistanceTargetCm);
+        return;
+    case AutonomousMission::RescueArea:
+        testTurnController_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateRescueArea(
+            robotState, esp32Telemetry, forwardBallSnapshot);
         return;
     case AutonomousMission::MainMission:
     default:
         testTurnController_.reset();
+        ballAlignmentMission_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.update(
             robotState,
@@ -136,6 +146,40 @@ void MissionController::update(
             forwardLineSnapshot);
         return;
     }
+}
+
+void MissionController::updateRescueArea(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const ForwardBallSnapshot& forwardBallSnapshot)
+{
+    if (!esp32Telemetry.readyForOperation())
+    {
+        // A missão de resgate nunca move o robô sem a confirmação recente da
+        // ESP32, do nSLEEP e do E-Stop local. A parada também fecha o gate do
+        // detector no próximo ciclo do programa principal.
+        ballAlignmentMission_.reset();
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "rescue_esp32_not_ready",
+            "Resgate interrompido: ESP32 não está pronta"));
+        return;
+    }
+
+    const BallAlignmentOutput output = ballAlignmentMission_.update(
+        forwardBallSnapshot,
+        esp32Telemetry,
+        activeAutonomousRunSequence_);
+    // A ausência ou expiração da visão produz zero neste mesmo ciclo.
+    // O RobotState ainda aplica clamp, E-Stop e timeout antes dos motores.
+    robotState.driveAutonomous(output.leftPower, output.rightPower);
+    if (output.finished)
+    {
+        // Conclusão e falha são estados terminais: parar encerra a missão e
+        // impede que a visão pesada continue consumindo CPU sem necessidade.
+        robotState.stop();
+    }
+    robotState.updateAutonomousStatus(output.status);
 }
 
 void MissionController::updateTurnRight90(
@@ -438,6 +482,7 @@ void MissionController::updateDriveDistance(
 void MissionController::resetMissionState()
 {
     mainMission_.reset();
+    ballAlignmentMission_.reset();
     testTurnController_.reset();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;

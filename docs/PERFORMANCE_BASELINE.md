@@ -8,7 +8,8 @@ prejudiquem a missão, a visão ou o controle do robô.
 O serviço `obr-robot` executa `scripts/run_robot.sh` e mantém dois processos:
 
 - `build/robot_test`: missão, controle, UART e servidor HTTP/WebSocket do dashboard;
-- `scripts/forward_camera_stream.py`: gerenciador da câmera frontal, normalmente ocioso.
+- `scripts/forward_camera_stream.py`: captura frontal e assistente leve de linha;
+  a visão pesada de vítimas permanece normalmente ociosa.
 
 O serviço independente `obr-line-camera` executa `scripts/run_line_camera.sh`, que
 mantém uma única instância de `scripts/camera_line_frame.py` para captura inferior,
@@ -32,7 +33,10 @@ tempo gasto no ciclo periódico do servidor sem instrumentar o loop de controle.
 - publicação MJPEG inferior: limite de 30 FPS;
 - snapshot JPEG em `/tmp`: 2 Hz;
 - IPC rápido da linha em `/dev/shm`: uma publicação por frame processado;
-- câmera frontal desligada: consulta seu arquivo de controle a 10 Hz;
+- captura frontal: 960×540, alvo de 30 FPS para o assistente de linha;
+- HSV/Hough de vítimas: desligado fora de `rescue_area` e limitado a 15 análises
+  por segundo quando essa missão está em execução;
+- IPC rápido da vítima em `/dev/shm`: publicado somente nos frames analisados;
 - reconexão do WebSocket e do MJPEG: tentativa após 1 segundo;
 - `requestAnimationFrame`: uma chamada isolada ao trocar a origem do MJPEG, sem loop.
 

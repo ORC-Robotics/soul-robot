@@ -55,9 +55,9 @@ if [[ ! -x "$ROBOT_BIN" ]]; then
 fi
 
 if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
-  # A CAM1 processa continuamente. Esta opção controla somente se o stream de
-  # diagnóstico começa disponível no boot; o padrão ligado evita uma ativação
-  # manual no dashboard e não altera a leitura frontal contínua.
+  # A CAM1 mantém somente a leitura leve contínua. A visão pesada de vítimas é
+  # liberada pelo C++ apenas durante a Área de Resgate. Esta opção controla se o
+  # stream de diagnóstico começa disponível e não altera nenhum desses gates.
   pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
   OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
     "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
