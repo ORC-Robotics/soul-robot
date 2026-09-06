@@ -39,6 +39,19 @@ AutonomousStatus makeTurnAroundForwardStatus(
     return status;
 }
 
+AutonomousStatus makeObstacleStatus(
+    const ObstacleAvoidanceOutput& output)
+{
+    AutonomousStatus status = makeMainMissionStatus(
+        output.phase, output.action, output.progressPercent);
+    status.targetDistanceCm = output.targetDistanceCm;
+    status.leftDistanceCm = output.leftDistanceCm;
+    status.rightDistanceCm = output.rightDistanceCm;
+    status.averageDistanceCm =
+        (output.leftDistanceCm + output.rightDistanceCm) * 0.5;
+    return status;
+}
+
 bool turnAroundDetected(const CameraLineSnapshot& snapshot)
 {
     return snapshot.greenConfirmed && snapshot.greenPathBlackValid &&
@@ -82,6 +95,7 @@ double shortestAngularDistanceDegrees(double first, double second)
 void MainMission::reset()
 {
     turnAroundPhase_ = TurnAroundPhase::Idle;
+    obstacleAvoidance_.reset();
     turnAroundController_.reset();
     turnAroundArmed_ = true;
     forwardStartLeftCount_ = 0;
@@ -645,26 +659,56 @@ void MainMission::update(
         return;
     }
 
-    if (!esp32Telemetry.readyForOperation() || !cameraReady ||
-        !cameraLineSnapshot.sourceFresh)
+    // E-Stop, calibração e perda da ESP32 continuam acima de qualquer manobra.
+    // Sem essa telemetria não existe uma forma segura de manter os motores ativos.
+    if (!esp32Telemetry.readyForOperation())
     {
-        std::string phase;
-        std::string action;
-        if (!esp32Telemetry.readyForOperation())
-        {
-            phase = "esp32_not_ready";
-            action = "Missão interrompida: ESP32 sem telemetria pronta";
-        }
-        else if (!cameraReady)
-        {
-            phase = "camera_not_ready";
-            action = "Missão interrompida: câmera inferior indisponível";
-        }
-        else
-        {
-            phase = "line_ipc_stale";
-            action = "Missão interrompida: IPC visual ausente ou antigo";
-        }
+        reset();
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "esp32_not_ready",
+            "Missão interrompida: ESP32 sem telemetria pronta"));
+        std::cout << "MainMission stopped: esp32_not_ready" << std::endl;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    // O desvio só pode iniciar fora do retorno verde. Depois de iniciado, ele
+    // mantém autoridade até terminar a ré final ou falhar com os motores zerados.
+    const ObstacleAvoidanceOutput obstacleOutput = obstacleAvoidance_.update(
+        esp32Telemetry,
+        turnAroundPhase_ == TurnAroundPhase::Idle && cameraReady &&
+            cameraLineSnapshot.sourceFresh);
+    if (obstacleOutput.failed)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeObstacleStatus(obstacleOutput));
+        std::cout << "Obstacle avoidance stopped: "
+                  << obstacleOutput.phase << std::endl;
+        return;
+    }
+    if (obstacleOutput.hasControl)
+    {
+        // O desvio substitui temporariamente tanto a câmera inferior quanto o
+        // Forward Assist; nenhum dos dois atualiza os motores durante a manobra.
+        resetForwardAssist();
+        robotState.driveAutonomous(
+            obstacleOutput.leftPower,
+            obstacleOutput.rightPower);
+        robotState.updateAutonomousStatus(makeObstacleStatus(obstacleOutput));
+        return;
+    }
+
+    // A câmera não participa dos giros nem dos deslocamentos do desvio. Sua
+    // disponibilidade volta a ser obrigatória quando o módulo devolve o controle.
+    if (!cameraReady || !cameraLineSnapshot.sourceFresh)
+    {
+        const std::string phase =
+            !cameraReady ? "camera_not_ready" : "line_ipc_stale";
+        const std::string action = !cameraReady
+                                       ? "Missão interrompida: câmera inferior indisponível"
+                                       : "Missão interrompida: IPC visual ausente ou antigo";
         reset();
         robotState.stop();
         robotState.updateAutonomousStatus(
@@ -673,7 +717,6 @@ void MainMission::update(
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
     const auto startTurnAroundForward = [&]()
     {
         if (!turnAroundEncodersReady(esp32Telemetry) ||

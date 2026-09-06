@@ -178,12 +178,11 @@ apagar o texto, e a tela normal recupera o contraste padrão ao final. O layout
 reserva no mínimo 4 pixels nas laterais e 2 pixels nos limites verticais da
 região azul; ambos os textos são centralizados pelas dimensões reais da fonte.
 
-A integração futura do obstáculo deve alimentar o mesmo módulo com
-`oledEvents.updateObstacleDetour(obstacleConfirmed, oledEventDisplayAvailable)`.
-Quando a
-confirmação passa de falsa para verdadeira, a OLED mostra apenas `DESVIO`. A
-detecção ainda não é chamada nesta branch porque sua lógica não
-foi portada. Em displays bicolores, a cor é determinada fisicamente pela linha:
+O desvio de obstáculo integrado alimenta o mesmo módulo com
+`oledEvents.updateObstacleDetour(obstacleDetourActive, oledEventDisplayAvailable)`.
+Quando duas leituras ultrassônicas confirmam um obstáculo e a manobra começa, a
+OLED mostra apenas `DESVIO`. Em displays bicolores, a cor é determinada
+fisicamente pela linha:
 o software posiciona os textos entre as linhas 16 e 63, mas não escolhe azul por
 comando.
 

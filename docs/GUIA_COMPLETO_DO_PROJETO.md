@@ -439,7 +439,9 @@ continuar segura mesmo se navegador, Wi-Fi, Raspberry ou UART falharem.
 - Pulso TRIG de 10 µs.
 - Timeout de ECHO de 25 ms.
 - Faixa aceita pelo software: 2 cm a 400 cm.
-- Atualmente é exibido na telemetria, mas não participa da lógica autônoma.
+- Na Missão Principal, duas leituras de até 8 cm iniciam o desvio de obstáculo.
+- Depois do desvio, três leituras a partir de 15 cm rearmam a detecção para um
+  novo obstáculo.
 
 > **PREENCHER:** modelo, tensão, divisor do ECHO, posição, ângulo e distância
 > entre o sensor e a frente real do robô.
@@ -681,9 +683,10 @@ mudam o modo por conta própria.
 
 #### `main_mission` — padrão
 
-É o encapsulamento da estratégia completa da prova. Atualmente executa o
-segue-faixa por trajetória visual e seus fallbacks seguros; futuros comportamentos
-devem ser chamados explicitamente por este módulo conforme cada situação exigir.
+É o encapsulamento da estratégia normal da prova. Atualmente executa o
+segue-faixa por trajetória visual, seus fallbacks seguros, o retorno verde e o
+desvio de obstáculo; futuros comportamentos devem ser chamados explicitamente
+por este módulo conforme cada situação exigir.
 
 #### `turn_right_90`
 
@@ -771,8 +774,10 @@ reiniciar seu estado quando uma nova execução começar. Ele preserva duas miss
 isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
 prova para `MainMission`.
 
-`MainMission` mantém a composição dos comportamentos da prova. A classificação
-verde também alimenta a OLED depois de passar pelas validações de atualização,
+`MainMission` mantém a composição dos comportamentos da prova. O desvio de
+obstáculo possui prioridade sobre o segue-faixa depois de duas leituras de até
+8 cm; uma vez iniciado, mantém autoridade até concluir a ré final ou falhar. A
+classificação verde também alimenta a OLED depois de passar pelas validações de atualização,
 confirmação e associação com a faixa preta. O retorno de 180° já possui uma
 manobra própria; verde à esquerda e à direita ainda não iniciam movimento nesta
 branch e continuam disponíveis como percepção, telemetria e alerta visual.
@@ -797,7 +802,6 @@ Regras para os próximos comportamentos:
 
 ### Recursos ainda não usados pela missão principal
 
-- Ultrassônico não interrompe movimento nem desvia de obstáculos.
 - Inclinação de rampa é apenas telemetria/OLED.
 - Encoders não fecham velocidade, mas confirmam START/RUN por roda e sincronizam
   eficiência exclusivamente nos deslocamentos retos.
@@ -1167,7 +1171,6 @@ Confirme:
 
 ## 25. Limitações e dívidas técnicas conhecidas
 
-- Não há testes automatizados de C++.
 - Dashboard não possui autenticação ou HTTPS.
 - Credencial do Wi-Fi de bancada está no firmware.
 - `robot_test` é um nome provisório para o binário principal.

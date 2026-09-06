@@ -1525,7 +1525,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
               </select>
-              <span id="missionHint" class="mission-hint">Orquestrador da prova; comportamentos ainda não instalados.</span>
+              <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
                 <span class="distance-input-label">Distância alvo</span>
                 <div class="distance-input">
@@ -2040,7 +2040,7 @@ std::string DashboardServer::dashboardHtml()
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
-          : "Orquestrador da prova; comportamentos ainda não instalados.";
+          : "Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.";
     }
 
     function updateStateMachine(data) {
@@ -2083,7 +2083,29 @@ std::string DashboardServer::dashboardHtml()
         distance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
         distance_encoder_mismatch: ["LADOS DESBALANCEADOS", "danger", "machineStepFeedback"],
         distance_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
-        distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"]
+        distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"],
+        obstacle_detected: ["OBSTÁCULO CONFIRMADO", "warn", "machineStepFeedback"],
+        obstacle_waiting_sensors: ["DESVIO: SENSORES", "warn", "machineStepPerception"],
+        obstacle_settling: ["DESVIO: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        obstacle_turning: ["DESVIO: GIRANDO", "active", "machineStepMotion"],
+        obstacle_turn_settling: ["DESVIO: ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
+        obstacle_turn_correction: ["DESVIO: CORRIGINDO GIRO", "active", "machineStepMotion"],
+        obstacle_first_forward_start: ["DESVIO: RETA 1", "active", "machineStepMotion"],
+        obstacle_first_forward: ["DESVIO: RETA 1", "active", "machineStepMotion"],
+        obstacle_second_forward_start: ["DESVIO: RETA 2", "active", "machineStepMotion"],
+        obstacle_second_forward: ["DESVIO: RETA 2", "active", "machineStepMotion"],
+        obstacle_third_forward_start: ["DESVIO: RETA 3", "active", "machineStepMotion"],
+        obstacle_third_forward: ["DESVIO: RETA 3", "active", "machineStepMotion"],
+        obstacle_reverse_start: ["DESVIO: RÉ", "active", "machineStepMotion"],
+        obstacle_reversing: ["DESVIO: RÉ", "active", "machineStepMotion"],
+        obstacle_stage_completed: ["DESVIO: ETAPA CONCLUÍDA", "warn", "machineStepFeedback"],
+        obstacle_completed: ["DESVIO CONCLUÍDO", "active", "machineStepFeedback"],
+        obstacle_encoder_lost: ["DESVIO: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        obstacle_distance_timeout: ["DESVIO: TIMEOUT", "danger", "machineStepFeedback"],
+        obstacle_turn_start_failed: ["DESVIO: FALHA NO GIRO", "danger", "machineStepFeedback"],
+        obstacle_turn_timeout: ["DESVIO: TIMEOUT DO GIRO", "danger", "machineStepFeedback"],
+        obstacle_turn_imu_lost: ["DESVIO: IMU PERDIDA", "danger", "machineStepFeedback"],
+        obstacle_turn_correction_failed: ["DESVIO: CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"]
       };
       let phase = String(data.autonomousPhase || "stopped");
       let action = String(data.autonomousAction || "Aguardando estado da missão");
@@ -2118,10 +2140,12 @@ std::string DashboardServer::dashboardHtml()
         ? "Giro 90° à direita"
         : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
+      const obstacleActive = phase.startsWith("obstacle_");
       element("machineBehavior").textContent = mission === "turn_right_90"
         ? "TESTE DE GIRO"
         : mission === "drive_distance"
           ? "TESTE DE DISTÂNCIA"
+          : obstacleActive ? "DESVIO DE OBSTÁCULO"
           : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;

@@ -301,6 +301,65 @@ constexpr double kEncoderCalibrationDistanceCm = 18.7;
 constexpr double kEncoderCountsPerCentimeter =
     kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
 
+// Duas leituras ultrassônicas dentro deste limite, em centímetros, confirmam
+// um obstáculo. A histerese exige afastamento antes de armar uma nova manobra.
+constexpr double kObstacleDetectionDistanceCm = 8.0;
+constexpr int kObstacleDetectionConfirmationSamples = 2;
+constexpr double kObstacleRearmDistanceCm = 15.0;
+constexpr int kObstacleRearmConfirmationSamples = 3;
+
+// Ângulos, em graus, executados na ordem da máquina de desvio.
+constexpr double kObstacleFirstRightTurnDegrees = 45.0;
+constexpr double kObstacleFirstLeftTurnDegrees = 45.0;
+constexpr double kObstacleSecondLeftTurnDegrees = 90.0;
+constexpr double kObstacleFinalRightTurnDegrees = 90.0;
+constexpr double kObstacleTurnToleranceDegrees = 4.0;
+
+// Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
+constexpr double kObstacleFirstForwardDistanceCm = 25.0;
+constexpr double kObstacleSecondForwardDistanceCm = 30.0;
+constexpr double kObstacleThirdForwardDistanceCm = 21.5;
+constexpr double kObstacleReverseDistanceCm = 5.0;
+
+// Potências normalizadas dos deslocamentos para frente e em ré.
+constexpr double kObstacleForwardPower = 0.75;
+constexpr double kObstacleReversePower = 0.75;
+
+// Pausa entre etapas e limites de segurança da odometria do desvio.
+constexpr int kObstacleStageSettleMs = 250;
+constexpr int kObstacleEncoderFreshnessMs = 300;
+constexpr int kObstacleDistanceSafetyTimeoutMs = 12000;
+
+// Horizonte, em segundos, usado para antecipar a inércia antes da distância-alvo.
+constexpr double kObstacleBrakePredictionSeconds = 0.14;
+
+static_assert(kObstacleDetectionDistanceCm > 0.0 &&
+                  kObstacleRearmDistanceCm > kObstacleDetectionDistanceCm &&
+                  kObstacleDetectionConfirmationSamples > 0 &&
+                  kObstacleRearmConfirmationSamples > 0,
+              "A detecção de obstáculo deve possuir histerese válida.");
+static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
+                  kObstacleFirstLeftTurnDegrees > 0.0 &&
+                  kObstacleSecondLeftTurnDegrees > 0.0 &&
+                  kObstacleSecondLeftTurnDegrees <= 180.0 &&
+                  kObstacleFinalRightTurnDegrees > 0.0 &&
+                  kObstacleFinalRightTurnDegrees <= 180.0 &&
+                  kObstacleTurnToleranceDegrees > 0.0,
+              "Os ângulos do desvio devem permanecer válidos.");
+static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
+                  kObstacleSecondForwardDistanceCm > 0.0 &&
+                  kObstacleThirdForwardDistanceCm > 0.0 &&
+                  kObstacleReverseDistanceCm > 0.0 &&
+                  kObstacleForwardPower > 0.0 &&
+                  kObstacleForwardPower <= kMaxMotorOutput &&
+                  kObstacleReversePower > 0.0 &&
+                  kObstacleReversePower <= kMaxMotorOutput &&
+                  kObstacleStageSettleMs >= 0 &&
+                  kObstacleEncoderFreshnessMs > 0 &&
+                  kObstacleDistanceSafetyTimeoutMs > 0 &&
+                  kObstacleBrakePredictionSeconds >= 0.0,
+              "Os deslocamentos do desvio devem permanecer seguros.");
+
 // Distância inicial e faixa aceitas pelo modo de percurso por encoder.
 // O limite evita comandos acidentais excessivamente longos pelo dashboard.
 constexpr double kDriveDistanceDefaultTargetCm = 20.0;

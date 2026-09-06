@@ -294,6 +294,12 @@ int main()
             std::chrono::milliseconds(config::kManualServoCommandTimeoutMs));
 
         const RobotSnapshot robotSnapshot = robotState.snapshot();
+        const bool obstacleDetourActive =
+            robotSnapshot.mode == "autonomous" &&
+            robotSnapshot.autonomousStatus.phase.rfind("obstacle_", 0) == 0;
+        oledEvents.updateObstacleDetour(
+            obstacleDetourActive,
+            oledEventDisplayAvailable);
         const bool systemReady = esp32Telemetry.readyForOperation() &&
                                  !robotSnapshot.emergencyStop && cameraReady;
         readyLed.setReady(systemReady);

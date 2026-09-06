@@ -381,6 +381,13 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
 
     // Uma atualização atrasada do controlador autônomo não pode substituir no painel
     // um estado manual, parado ou de emergência que acabou de ser solicitado.
+    const bool terminalObstacleStatus =
+        status.phase == "obstacle_turn_start_failed" ||
+        status.phase == "obstacle_turn_timeout" ||
+        status.phase == "obstacle_turn_imu_lost" ||
+        status.phase == "obstacle_turn_correction_failed" ||
+        status.phase == "obstacle_encoder_lost" ||
+        status.phase == "obstacle_distance_timeout";
     const bool terminalMissionStatus = status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||
@@ -398,7 +405,8 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "turnaround_line_search_timeout" ||
                                        status.phase == "esp32_not_ready" ||
                                        status.phase == "camera_not_ready" ||
-                                       status.phase == "line_ipc_stale";
+                                       status.phase == "line_ipc_stale" ||
+                                       terminalObstacleStatus;
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;

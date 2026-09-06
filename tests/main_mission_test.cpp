@@ -1595,6 +1595,31 @@ void testUnavailableCameraStopsMission()
             snapshot.autonomousStatus.phase == "camera_not_ready",
         "Câmera indisponível deve encerrar a missão com motores zerados.");
 }
+
+void testObstacleTakesControlAndSurvivesCameraLoss()
+{
+    MissionFixture fixture;
+    fixture.telemetry.ultrasonicDistanceCm = 6.0;
+
+    RobotSnapshot snapshot = fixture.update(
+        freshVision(GreenInterpretation::None));
+    requireFollowingLine(snapshot, "Primeira confirmação do obstáculo");
+
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "obstacle_detected",
+        "Duas leituras ultrassônicas devem parar antes de iniciar o desvio.");
+
+    snapshot = fixture.update(
+        freshVision(GreenInterpretation::None), false);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "obstacle_settling",
+        "O desvio iniciado deve manter autoridade se a câmera ficar indisponível.");
+}
 }
 
 int main()
@@ -1644,6 +1669,7 @@ int main()
         testGreenAndExistingCriticalTurnCancelForwardAuthority();
         testGapWithoutSearchPreservesExistingBehavior();
         testUnavailableCameraStopsMission();
+        testObstacleTakesControlAndSurvivesCameraLoss();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }
