@@ -29,7 +29,10 @@ sistema e modos manual/autônomo quando ela for integrada novamente.
 
 ```txt
 src/main.cpp
-  Conecta os módulos e executa o loop principal.
+  Instala os sinais de encerramento e inicia RobotApplication.
+
+src/application/
+  Possui os módulos de runtime e executa o ciclo de vida da aplicação.
 
 src/dashboard/
   Dashboard HTTP/WebSocket e comandos vindos do navegador.
@@ -587,10 +590,10 @@ motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
 O mesmo processo contém o detector de vítimas pretas e prateadas, mas o trecho
 pesado de HSV, contornos e Hough permanece desligado por padrão. Ele só é executado
-quando `rescue_area` está selecionada **e** a missão autônoma foi iniciada. Parar,
-acionar o E-Stop, trocar de missão, concluir a aproximação ou atingir a falha de
-alvo fecha o gate e limpa a vítima anterior. A Missão Principal e o segue-faixa,
-portanto, não pagam continuamente o custo desse detector.
+durante o modo isolado `rescue_area` ou quando a Missão Principal entra na fase de
+resgate. Parar, acionar o E-Stop, trocar de missão, concluir a aproximação no modo
+isolado ou atingir uma falha fecha o gate e limpa a vítima anterior. Os percursos
+de linha, portanto, não pagam continuamente o custo desse detector.
 
 Quando habilitado, o detector pesado é limitado a 15 análises por segundo sem
 reduzir os 30 FPS do assistente frontal. Frames intermediários continuam servindo

@@ -294,13 +294,16 @@ tools/camera/ e tools/diagnostics/
 
 | Módulo | Responsabilidade |
 | --- | --- |
-| `main.cpp` | Liga os módulos, executa o loop de 20 ms e coordena prontidão |
+| `main.cpp` | Instala os sinais de encerramento e inicia a aplicação |
+| `RobotApplication` | Possui os módulos de runtime e coordena inicialização, loop de 20 ms e desligamento |
 | `RobotState` | Guarda modo, missão, E-Stop, potências e idade do comando |
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
 | `MotorController` | Aplica START/RUN por roda no autônomo, sincroniza somente a reta pelos encoders e envia comandos seguros para a ESP32 |
 | `MissionController` | Seleciona a missão e reinicia o estado interno a cada nova execução |
-| `MainMission` | Coordena o segue-faixa, seus fallbacks e os demais comportamentos autônomos |
+| `MainMission` | Coordena percurso inicial, resgate, percurso final e conclusão |
+| `LineCourseMission` | Reúne segue-faixa, GREEN, GAP, SEARCH, assistência frontal, rampa e obstáculo |
+| `RescueAreaMission` | Reutiliza o alinhamento de vítima e possui o ciclo de vida do resgate |
 | `BallAlignmentMission` | Alinha pelo `tx` da vítima travada e aproxima até a distância segura configurada |
 | `ObstacleAvoidance` | Confirma o ultrassônico e executa o desvio completo com IMU e encoders |
 | `CameraMonitor` | Valida captura e telemetria visual antes de liberar prévias para a missão |
@@ -705,10 +708,17 @@ mudam o modo por conta própria.
 
 #### `main_mission` — padrão
 
-É o encapsulamento da estratégia normal da prova. Atualmente executa o
-segue-faixa por trajetória visual, seus fallbacks seguros, o retorno verde e o
-desvio de obstáculo; futuros comportamentos devem ser chamados explicitamente
-por este módulo conforme cada situação exigir.
+É o coordenador da estratégia normal da prova. Seu fluxo é:
+
+```txt
+percurso inicial -> faixa cinza confirmada -> área de resgate
+-> saída do resgate confirmada -> percurso final -> faixa vermelha confirmada
+-> missão concluída
+```
+
+Os dois percursos usam a mesma `LineCourseMission`, portanto preservam
+segue-faixa, GREEN, GAP, SEARCH, assistência frontal, rampa e desvio de
+obstáculo. A `MainMission` apenas troca de fase e zera os motores nas transições.
 
 #### `turn_right_90`
 
@@ -763,9 +773,21 @@ por este módulo conforme cada situação exigir.
 - Stop, E-Stop, troca de missão, conclusão e falha desligam o detector e impedem
   reutilizar o alvo de uma execução anterior.
 
-Ainda não existe um classificador automático de entrada na área de resgate. Até
-ele ser implementado, a transição para `rescue_area` é explícita pelo dashboard;
-um classificador futuro deve apenas selecionar/iniciar esta mesma etapa segura.
+O modo isolado encerra depois da aproximação da vítima. Na Missão Principal, o
+mesmo módulo permanece parado depois dessa etapa até a estratégia validada de
+procura da saída confirmar `rescueExitConfirmed`.
+
+#### `obstacle_avoidance`
+
+Executa isoladamente a mesma instância lógica de `ObstacleAvoidance` usada pela
+`LineCourseMission`. O teste depende somente do ultrassom, MPU6050 e encoders;
+conclusão ou falha encerram o modo com os motores zerados.
+
+Os contratos `courseMarker` (`GRAY`/`RED`), `courseMarkerConfirmed` e
+`rescueExitConfirmed` já são aceitos pelo C++ como campos opcionais do IPC. Eles
+permanecem inativos enquanto a visão Python não publicar uma confirmação
+calibrada; por isso um processo de câmera antigo conserva exatamente o fluxo de
+linha anterior e nunca troca de fase por ausência desses campos.
 
 ## 16. Câmera ao vivo
 
@@ -810,14 +832,15 @@ o IPC de visão. `ONLINE` só aparece depois de uma publicação nova da visão;
 
 ## 17. Estrutura autônoma atual
 
-`MissionController` possui uma responsabilidade simples: selecionar a missão e
-reiniciar seu estado quando uma nova execução começar. Ele preserva duas missões
-isoladas de teste, `turn_right_90` e `drive_distance`, executa `rescue_area` com
-`BallAlignmentMission` e delega a estratégia normal para `MainMission`.
+`MissionController` seleciona a missão e reinicia seu estado quando uma nova
+execução começa. `turn_right_90`, `drive_distance`, `rescue_area` e
+`obstacle_avoidance` são ferramentas isoladas de teste. `MainMission` coordena
+as fases da prova e delega os dois percursos para `LineCourseMission` e o resgate
+para `RescueAreaMission`.
 
-`MainMission` mantém a composição dos comportamentos da prova. O desvio de
-obstáculo possui prioridade sobre o segue-faixa depois de duas leituras de até
-8 cm; uma vez iniciado, mantém autoridade até concluir a ré final ou falhar. A
+`LineCourseMission` compõe os comportamentos do percurso. O desvio de obstáculo
+possui prioridade sobre o segue-faixa depois de duas leituras de até 8 cm; uma
+vez iniciado, mantém autoridade até concluir a ré final ou falhar. A
 classificação verde também alimenta a OLED depois de passar pelas validações de atualização,
 confirmação e associação com a faixa preta. O retorno de 180° já possui uma
 manobra própria; verde à esquerda e à direita ainda não iniciam movimento nesta
@@ -1339,8 +1362,10 @@ curl http://127.0.0.1:8080/camera-status.json
 | Estados e modos | `src/robot/robot_state.cpp` |
 | Seleção de missões | `src/robot/mission_controller.cpp` |
 | Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
+| Percurso de linha reutilizável | `src/robot/line_course_mission.cpp` |
+| Ciclo de vida da aplicação | `src/application/robot_application.cpp` |
 | Desvio de obstáculo | `include/obr/obstacle_avoidance.h` / `src/robot/obstacle_avoidance.cpp` |
-| Visão e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/ball_alignment_mission.cpp` |
+| Resgate e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/rescue_area_mission.cpp` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
 | Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |
 | Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh`; implementação em `deployment/` |
