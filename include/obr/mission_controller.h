@@ -1,9 +1,10 @@
 #pragma once
 
-#include "obr/ball_alignment_mission.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/main_mission.h"
+#include "obr/obstacle_avoidance.h"
+#include "obr/rescue_area_mission.h"
 #include "obr/robot_state.h"
 
 #include <chrono>
@@ -14,6 +15,7 @@
 class MissionController
 {
 public:
+    bool requiresForwardBallDetection(const RobotSnapshot& snapshot) const;
     void update(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
@@ -32,7 +34,8 @@ private:
     };
 
     MainMission mainMission_;
-    BallAlignmentMission ballAlignmentMission_;
+    RescueAreaMission rescueAreaMission_;
+    ObstacleAvoidance obstacleAvoidanceTest_;
     ImuTurnController testTurnController_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
@@ -59,6 +62,9 @@ private:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         const ForwardBallSnapshot& forwardBallSnapshot);
+    void updateObstacleAvoidance(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetMissionState();
 
 };

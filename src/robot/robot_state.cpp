@@ -40,6 +40,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "turn_right_90";
     case AutonomousMission::RescueArea:
         return "rescue_area";
+    case AutonomousMission::ObstacleAvoidance:
+        return "obstacle_avoidance";
     case AutonomousMission::MainMission:
     default:
         return "main_mission";

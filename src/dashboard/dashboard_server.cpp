@@ -508,6 +508,12 @@ void DashboardServer::handleCommand(const std::string& message)
             robotState_.setAutonomousMission(AutonomousMission::RescueArea);
             std::cout << "Autonomous mission selected: rescue_area\n";
         }
+        else if (message.find("\"mission\":\"obstacle_avoidance\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::ObstacleAvoidance);
+            std::cout << "Autonomous mission selected: obstacle_avoidance\n";
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
@@ -1547,6 +1553,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
                 <option value="rescue_area">ÁREA DE RESGATE · VÍTIMA MAIS PRÓXIMA</option>
+                <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
               </select>
               <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
@@ -2055,6 +2062,8 @@ std::string DashboardServer::dashboardHtml()
           ? "Percorrendo a distância selecionada pelos encoders"
           : selectedMission === "rescue_area"
             ? "Detectando, alinhando e aproximando da vítima mais próxima"
+          : selectedMission === "obstacle_avoidance"
+            ? "Executando o desvio ultrassônico de obstáculo"
           : "Missão principal em execução";
       element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "servo_calibration" ? "Motores zerados · Parar desliga os pulsos" : mode === "emergency" ? "Movimento bloqueado pela trava de segurança" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
@@ -2082,6 +2091,8 @@ std::string DashboardServer::dashboardHtml()
           ? "Avança os dois lados até o alvo medido pelos encoders."
           : mission === "rescue_area"
             ? "Gate de resgate: o detector de vítimas só consome CPU enquanto esta etapa estiver em execução."
+          : mission === "obstacle_avoidance"
+            ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
           : "Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.";
     }
 
@@ -2194,7 +2205,9 @@ std::string DashboardServer::dashboardHtml()
         ? "Giro 90° à direita"
         : mission === "drive_distance"
           ? "Percorrer distância"
-          : mission === "rescue_area" ? "Área de resgate" : "Missão principal";
+          : mission === "rescue_area" ? "Área de resgate"
+          : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
+          : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
       const obstacleActive = phase.startsWith("obstacle_");
       element("machineBehavior").textContent = mission === "turn_right_90"
@@ -2203,6 +2216,8 @@ std::string DashboardServer::dashboardHtml()
           ? "TESTE DE DISTÂNCIA"
           : mission === "rescue_area"
             ? "DETECTOR DE VÍTIMAS"
+          : mission === "obstacle_avoidance"
+            ? "TESTE DE OBSTÁCULO"
           : obstacleActive ? "DESVIO DE OBSTÁCULO"
           : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;

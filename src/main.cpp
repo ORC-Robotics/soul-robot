@@ -71,6 +71,11 @@ bool selectedMissionReady(
         // parada e aguarda um IPC frontal recente antes de mover os motores.
         return true;
     }
+    if (mission == AutonomousMission::ObstacleAvoidance)
+    {
+        // O teste isolado usa ultrassom, IMU e encoders da ESP32.
+        return telemetry.readyForOperation();
+    }
     return cameraReady && cameraLineSnapshot.sourceFresh;
 }
 
@@ -100,6 +105,10 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::RescueArea)
     {
         return "forward_ball_tx";
+    }
+    if (mission == AutonomousMission::ObstacleAvoidance)
+    {
+        return "ultrasonic_imu_encoders";
     }
     return "camera";
 }
@@ -180,9 +189,7 @@ int main()
 
         const RobotSnapshot stateAtLoopStart = robotState.snapshot();
         const bool rescueAreaActive =
-            stateAtLoopStart.mode == "autonomous" &&
-            stateAtLoopStart.autonomousMission == AutonomousMission::RescueArea &&
-            !stateAtLoopStart.emergencyStop;
+            missionController.requiresForwardBallDetection(stateAtLoopStart);
         bool rescueTargetReady = !rescueAreaActive;
         if (rescueAreaActive &&
             requestedBallTargetSequence == stateAtLoopStart.autonomousRunSequence)
@@ -372,10 +379,16 @@ int main()
         oledEvents.updateObstacleDetour(
             obstacleDetourActive,
             oledEventDisplayAvailable);
+        const bool rescueVisionRequired =
+            missionController.requiresForwardBallDetection(robotSnapshot);
         const bool selectedPerceptionReady =
-            robotSnapshot.autonomousMission == AutonomousMission::RescueArea
+            rescueVisionRequired
                 ? forwardBallSnapshot.sourceFresh
-                : cameraReady;
+                : selectedMissionReady(
+                      robotSnapshot.autonomousMission,
+                      esp32Telemetry,
+                      cameraReady,
+                      cameraLineSnapshot);
         const bool systemReady = esp32Telemetry.readyForOperation() &&
                                  !robotSnapshot.emergencyStop &&
                                  selectedPerceptionReady;
