@@ -1,6 +1,6 @@
-#include "obstacle_avoidance/obstacle_avoidance.h"
+#include "obr/obstacle_avoidance.h"
 
-#include "obstacle_avoidance/config.h"
+#include "obr/config.h"
 
 #include <algorithm>
 #include <chrono>
@@ -11,7 +11,7 @@ namespace
 bool ultrasonicReadingIsValid(const Esp32TelemetrySnapshot& telemetry)
 {
     return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
-           telemetry.lastSensorAgeMs <= obstacle_config::kEncoderFreshnessMs &&
+           telemetry.lastSensorAgeMs <= config::kObstacleEncoderFreshnessMs &&
            std::isfinite(telemetry.ultrasonicDistanceCm) &&
            telemetry.ultrasonicDistanceCm >= 2.0 &&
            telemetry.ultrasonicDistanceCm <= 400.0;
@@ -20,7 +20,7 @@ bool ultrasonicReadingIsValid(const Esp32TelemetrySnapshot& telemetry)
 bool encodersAreReady(const Esp32TelemetrySnapshot& telemetry)
 {
     return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
-           telemetry.lastSensorAgeMs <= obstacle_config::kEncoderFreshnessMs &&
+           telemetry.lastSensorAgeMs <= config::kObstacleEncoderFreshnessMs &&
            std::isfinite(telemetry.leftEncoderRate) &&
            std::isfinite(telemetry.rightEncoderRate);
 }
@@ -69,8 +69,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     {
         return updateDistance(
             telemetry,
-            obstacle_config::kFirstForwardDistanceCm,
-            obstacle_config::kForwardPower,
+            config::kObstacleFirstForwardDistanceCm,
+            config::kObstacleForwardPower,
             "obstacle_first_forward",
             "Desvio: avançando ao lado do obstáculo");
     }
@@ -78,8 +78,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     {
         return updateDistance(
             telemetry,
-            obstacle_config::kSecondForwardDistanceCm,
-            obstacle_config::kForwardPower,
+            config::kObstacleSecondForwardDistanceCm,
+            config::kObstacleForwardPower,
             "obstacle_second_forward",
             "Desvio: ultrapassando o comprimento do obstáculo");
     }
@@ -87,16 +87,16 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     {
         return updateDistance(
             telemetry,
-            obstacle_config::kThirdForwardDistanceCm,
-            obstacle_config::kForwardPower,
+            config::kObstacleThirdForwardDistanceCm,
+            config::kObstacleForwardPower,
             "obstacle_third_forward",
             "Desvio: aproximando-se novamente da linha");
     }
 
     return updateDistance(
         telemetry,
-        obstacle_config::kReverseDistanceCm,
-        -obstacle_config::kReversePower,
+        config::kObstacleReverseDistanceCm,
+        -config::kObstacleReversePower,
         "obstacle_reversing",
         "Desvio: recuando para posicionar a câmera sobre a linha");
 }
@@ -130,11 +130,11 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
 
     if (!armed_)
     {
-        if (telemetry.ultrasonicDistanceCm >= obstacle_config::kRearmDistanceCm)
+        if (telemetry.ultrasonicDistanceCm >= config::kObstacleRearmDistanceCm)
         {
             ++rearmConfirmationSamples_;
             if (rearmConfirmationSamples_ >=
-                obstacle_config::kRearmConfirmationSamples)
+                config::kObstacleRearmConfirmationSamples)
             {
                 armed_ = true;
                 rearmConfirmationSamples_ = 0;
@@ -148,7 +148,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
     }
 
     if (!allowStart ||
-        telemetry.ultrasonicDistanceCm > obstacle_config::kDetectionDistanceCm)
+        telemetry.ultrasonicDistanceCm > config::kObstacleDetectionDistanceCm)
     {
         obstacleConfirmationSamples_ = 0;
         return {};
@@ -156,7 +156,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
 
     ++obstacleConfirmationSamples_;
     if (obstacleConfirmationSamples_ <
-        obstacle_config::kDetectionConfirmationSamples)
+        config::kObstacleDetectionConfirmationSamples)
     {
         return {};
     }
@@ -233,7 +233,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateSettling(
     const Esp32TelemetrySnapshot& telemetry)
 {
     if (std::chrono::steady_clock::now() - phaseStartedAt_ <
-        std::chrono::milliseconds(obstacle_config::kStageSettleMs))
+        std::chrono::milliseconds(config::kObstacleStageSettleMs))
     {
         return stoppedOutput(
             "obstacle_settling",
@@ -244,7 +244,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateSettling(
     {
         if (!startTurn(
                 Phase::TurningRight,
-                obstacle_config::kFirstRightTurnDegrees,
+                config::kObstacleFirstRightTurnDegrees,
                 ImuTurnDirection::Right,
                 telemetry))
         {
@@ -258,7 +258,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateSettling(
     {
         if (!startTurn(
                 Phase::TurningLeft45,
-                obstacle_config::kFirstLeftTurnDegrees,
+                config::kObstacleFirstLeftTurnDegrees,
                 ImuTurnDirection::Left,
                 telemetry))
         {
@@ -272,7 +272,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateSettling(
     {
         if (!startTurn(
                 Phase::TurningLeft90,
-                obstacle_config::kSecondLeftTurnDegrees,
+                config::kObstacleSecondLeftTurnDegrees,
                 ImuTurnDirection::Left,
                 telemetry))
         {
@@ -287,7 +287,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateSettling(
     {
         if (!startTurn(
                 Phase::TurningRight90,
-                obstacle_config::kFinalRightTurnDegrees,
+                config::kObstacleFinalRightTurnDegrees,
                 ImuTurnDirection::Right,
                 telemetry))
         {
@@ -319,9 +319,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateDistance(
     const double rightCounts = std::abs(static_cast<double>(
         telemetry.rightEncoderCount - distanceStartRightCount_));
     const double leftDistanceCm =
-        leftCounts / obstacle_config::kEncoderCountsPerCentimeter;
+        leftCounts / config::kEncoderCountsPerCentimeter;
     const double rightDistanceCm =
-        rightCounts / obstacle_config::kEncoderCountsPerCentimeter;
+        rightCounts / config::kEncoderCountsPerCentimeter;
     const double minimumDistanceCm = std::min(leftDistanceCm, rightDistanceCm);
     const double progressPercent = std::clamp(
         minimumDistanceCm / targetDistanceCm * 100.0, 0.0, 100.0);
@@ -333,7 +333,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateDistance(
             "Desvio interrompido: encoders sem dados recentes");
     }
     if (std::chrono::steady_clock::now() - phaseStartedAt_ >
-        std::chrono::milliseconds(obstacle_config::kDistanceSafetyTimeoutMs))
+        std::chrono::milliseconds(config::kObstacleDistanceSafetyTimeoutMs))
     {
         return fail(
             "obstacle_distance_timeout",
@@ -341,14 +341,14 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateDistance(
     }
 
     const double predictionSeconds =
-        obstacle_config::kBrakePredictionSeconds +
+        config::kObstacleBrakePredictionSeconds +
         telemetry.lastSensorAgeMs / 1000.0;
     const double projectedLeftCounts =
         leftCounts + std::abs(telemetry.leftEncoderRate) * predictionSeconds;
     const double projectedRightCounts =
         rightCounts + std::abs(telemetry.rightEncoderRate) * predictionSeconds;
     const double targetCounts =
-        targetDistanceCm * obstacle_config::kEncoderCountsPerCentimeter;
+        targetDistanceCm * config::kEncoderCountsPerCentimeter;
 
     if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
     {
@@ -402,7 +402,7 @@ bool ObstacleAvoidance::startTurn(
             degrees,
             direction,
             telemetry,
-            obstacle_config::kTurnToleranceDegrees))
+            config::kObstacleTurnToleranceDegrees))
     {
         return false;
     }

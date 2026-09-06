@@ -261,8 +261,8 @@ scripts/vision/
 scripts/forward_camera_stream.py e scripts/ball_vision/
   Captura frontal, assistente leve de linha e detector condicionado de vítimas.
 
-obstacle_avoidance/
-  Máquina de estados, calibrações e testes do desvio de obstáculo.
+include/obr/obstacle_avoidance.h e src/robot/obstacle_avoidance.cpp
+  Interface e implementação da máquina de estados do desvio de obstáculo.
 
 scripts/deploy.ps1 e scripts/deploy.sh
   Entrypoints compatíveis do deploy atômico para a Raspberry.
@@ -1339,7 +1339,7 @@ curl http://127.0.0.1:8080/camera-status.json
 | Estados e modos | `src/robot/robot_state.cpp` |
 | Seleção de missões | `src/robot/mission_controller.cpp` |
 | Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
-| Desvio de obstáculo | `obstacle_avoidance/` |
+| Desvio de obstáculo | `include/obr/obstacle_avoidance.h` / `src/robot/obstacle_avoidance.cpp` |
 | Visão e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
 | Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |

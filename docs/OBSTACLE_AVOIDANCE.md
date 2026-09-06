@@ -1,14 +1,14 @@
 # Módulo de desvio de obstáculo
 
-Esta pasta contém todo o código específico, as calibrações e os testes do
+Este módulo contém o código específico, as calibrações e os testes do
 desvio de obstáculo usado no OBR2026K.
 
 ## Conteúdo
 
-- `obstacle_avoidance.h`: interface pública e máquina de estados.
-- `obstacle_avoidance.cpp`: detecção, giros e deslocamentos.
-- `config.h`: aliases internos para os limites centralizados em `include/obr/config.h`.
-- `obstacle_avoidance_test.cpp`: regressões da sequência completa e das falhas.
+- `include/obr/obstacle_avoidance.h`: interface pública e máquina de estados.
+- `src/robot/obstacle_avoidance.cpp`: detecção, giros e deslocamentos.
+- `include/obr/config.h`: limites e calibrações centralizados.
+- `tests/obstacle_avoidance_test.cpp`: regressões da sequência completa e das falhas.
 
 ## Sequência atual
 
@@ -37,7 +37,7 @@ No projeto de destino, preserve esses nomes ou crie um adaptador com os campos
 de ultrassônico, idade da telemetria, contagens/taxas dos encoders, yaw, giroscópio
 e estado do MPU6050.
 
-Adicione `obstacle_avoidance.cpp` ao build, inclua a raiz que contém esta pasta e
+Adicione `src/robot/obstacle_avoidance.cpp` ao build, inclua `include/` e
 chame `ObstacleAvoidance::update()` em cada ciclo. Quando `hasControl` for
 verdadeiro, aplique `leftPower` e `rightPower`. Quando `failed` for verdadeiro,
 pare o robô. Quando `completed` for verdadeiro, devolva o controle ao seguidor.

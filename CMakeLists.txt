@@ -23,13 +23,12 @@ add_executable(robot_test
     src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
     src/robot/servo_controller.cpp
-    obstacle_avoidance/obstacle_avoidance.cpp
+    src/robot/obstacle_avoidance.cpp
     src/telemetry/telemetry.cpp
 )
 
 target_include_directories(robot_test PRIVATE
     include
-    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 if(WIN32)
@@ -44,12 +43,11 @@ if(BUILD_TESTING)
         src/hal/camera_monitor.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/main_mission.cpp
-        obstacle_avoidance/obstacle_avoidance.cpp
+        src/robot/obstacle_avoidance.cpp
         src/robot/robot_state.cpp
     )
     target_include_directories(main_mission_test PRIVATE
         include
-        ${CMAKE_CURRENT_SOURCE_DIR}
     )
     if(NOT WIN32)
         target_link_libraries(main_mission_test pthread)
@@ -69,13 +67,12 @@ if(BUILD_TESTING)
         COMMAND ball_alignment_mission_test)
 
     add_executable(obstacle_avoidance_test
-        obstacle_avoidance/obstacle_avoidance_test.cpp
+        tests/obstacle_avoidance_test.cpp
         src/robot/imu_turn_controller.cpp
-        obstacle_avoidance/obstacle_avoidance.cpp
+        src/robot/obstacle_avoidance.cpp
     )
     target_include_directories(obstacle_avoidance_test PRIVATE
         include
-        ${CMAKE_CURRENT_SOURCE_DIR}
     )
     if(NOT WIN32)
         target_link_libraries(obstacle_avoidance_test pthread)

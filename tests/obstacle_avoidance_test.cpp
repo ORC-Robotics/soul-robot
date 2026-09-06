@@ -1,6 +1,5 @@
-#include "obstacle_avoidance/obstacle_avoidance.h"
+#include "obr/obstacle_avoidance.h"
 
-#include "obstacle_avoidance/config.h"
 #include "obr/config.h"
 
 #include <chrono>
@@ -54,7 +53,7 @@ ObstacleAvoidanceOutput finishStageSettling(
     Esp32TelemetrySnapshot& telemetry)
 {
     std::this_thread::sleep_for(std::chrono::milliseconds(
-        obstacle_config::kStageSettleMs + 20));
+        config::kObstacleStageSettleMs + 20));
     return avoidance.update(telemetry, true);
 }
 
@@ -64,7 +63,7 @@ ObstacleAvoidanceOutput completeDistance(
     double distanceCm)
 {
     const long long targetCounts = static_cast<long long>(std::ceil(
-        distanceCm * obstacle_config::kEncoderCountsPerCentimeter));
+        distanceCm * config::kEncoderCountsPerCentimeter));
     telemetry.leftEncoderCount += targetCounts;
     telemetry.rightEncoderCount += targetCounts;
     return avoidance.update(telemetry, true);
@@ -119,14 +118,14 @@ void testCompleteMeasuredRouteAndRecoverLine()
     ObstacleAvoidanceOutput output = completeTurn(
         avoidance,
         telemetry,
-        obstacle_config::kFirstRightTurnDegrees);
+        config::kObstacleFirstRightTurnDegrees);
     require(output.phase == "obstacle_first_forward_start",
             "O giro à direita deve liberar a primeira reta.");
 
     output = completeDistance(
         avoidance,
         telemetry,
-        obstacle_config::kFirstForwardDistanceCm);
+        config::kObstacleFirstForwardDistanceCm);
     require(output.hasControl && output.leftPower == 0.0 &&
                 output.rightPower == 0.0,
             "A primeira reta deve parar antes do giro à esquerda.");
@@ -142,7 +141,7 @@ void testCompleteMeasuredRouteAndRecoverLine()
     output = completeDistance(
         avoidance,
         telemetry,
-        obstacle_config::kSecondForwardDistanceCm);
+        config::kObstacleSecondForwardDistanceCm);
     require(output.phase == "obstacle_stage_completed",
             "A segunda reta deve iniciar o giro de 90 graus à esquerda.");
     finishStageSettling(avoidance, telemetry);
@@ -150,14 +149,14 @@ void testCompleteMeasuredRouteAndRecoverLine()
     output = completeTurn(
         avoidance,
         telemetry,
-        -obstacle_config::kSecondLeftTurnDegrees);
+        -config::kObstacleSecondLeftTurnDegrees);
     require(output.phase == "obstacle_third_forward_start",
             "O giro de 90 graus deve liberar a aproximação da linha.");
 
     output = completeDistance(
         avoidance,
         telemetry,
-        obstacle_config::kThirdForwardDistanceCm);
+        config::kObstacleThirdForwardDistanceCm);
     require(output.phase == "obstacle_stage_completed",
             "A terceira reta deve liberar a busca visual.");
 
@@ -181,7 +180,7 @@ void testCompleteMeasuredRouteAndRecoverLine()
     output = completeDistance(
         avoidance,
         telemetry,
-        obstacle_config::kReverseDistanceCm);
+        config::kObstacleReverseDistanceCm);
     require(output.phase == "obstacle_stage_completed",
             "A ré deve parar depois de 5 cm medidos pelos encoders.");
 
@@ -201,9 +200,9 @@ void testLostEncoderStopsActiveRoute()
     completeTurn(
         avoidance,
         telemetry,
-        obstacle_config::kFirstRightTurnDegrees);
+        config::kObstacleFirstRightTurnDegrees);
 
-    telemetry.lastSensorAgeMs = obstacle_config::kEncoderFreshnessMs + 1;
+    telemetry.lastSensorAgeMs = config::kObstacleEncoderFreshnessMs + 1;
     const ObstacleAvoidanceOutput output =
         avoidance.update(telemetry, true);
     require(output.failed && output.leftPower == 0.0 &&

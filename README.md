@@ -307,7 +307,7 @@ Para abrir a mesma interface da Raspberry Pi no computador, sem conectar o robô
 execute na pasta do projeto:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/run-local-dashboard.ps1
+powershell -ExecutionPolicy Bypass -File tools/dashboard/run-local-dashboard.ps1
 ```
 
 Depois abra:

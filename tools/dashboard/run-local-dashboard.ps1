@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$projectRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $dashboardUrl = "http://127.0.0.1:8080"
 
 if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {

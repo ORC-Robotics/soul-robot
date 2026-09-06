@@ -4,7 +4,7 @@
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/robot_state.h"
-#include "obstacle_avoidance/obstacle_avoidance.h"
+#include "obr/obstacle_avoidance.h"
 
 #include <chrono>
 
