@@ -4,14 +4,16 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
 
 
-SCRIPT_DIRECTORY = os.path.dirname(__file__)
-CAMERA_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "camera_line_frame.py")
-FORWARD_SCRIPT_PATH = os.path.join(SCRIPT_DIRECTORY, "forward_camera_stream.py")
+SCRIPT_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
+CAMERA_SCRIPT_PATH = SCRIPT_DIRECTORY / "camera_line_frame.py"
+FORWARD_SCRIPT_PATH = SCRIPT_DIRECTORY / "forward_camera_stream.py"
+sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
 CV2_ALREADY_LOADED = "cv2" in sys.modules
 try:

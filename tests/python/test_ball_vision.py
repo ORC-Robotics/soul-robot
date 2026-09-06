@@ -1,9 +1,14 @@
 import math
+from pathlib import Path
+import sys
 import unittest
 from unittest import mock
 
 import cv2
 import numpy as np
+
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 from ball_vision import BallVisionPipeline
 from ball_vision.ball_detector import (

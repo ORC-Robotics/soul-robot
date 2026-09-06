@@ -1,10 +1,15 @@
 import json
 import os
+from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 import cv2
 import numpy as np
+
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
 
 import camera_line_frame
 

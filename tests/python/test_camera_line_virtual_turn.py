@@ -2,6 +2,7 @@
 
 import importlib.util
 import math
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,9 @@ from unittest.mock import patch
 import numpy as np
 
 
-MODULE_PATH = Path(__file__).with_name("camera_line_frame.py")
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+MODULE_PATH = SCRIPTS_DIRECTORY / "camera_line_frame.py"
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "camera_line_frame_virtual_turn_test",
     MODULE_PATH,
