@@ -81,12 +81,17 @@ from .line_masks import (
 from .normal_trajectory import (
     draw_normal_trajectory_overlay,
 )
+from .silver_detection import (
+    SilverShadowMonitor,
+    empty_silver_shadow_status,
+)
 from .stream_display import (
     create_display_frame,
     draw_green_candidate_overlays,
     draw_green_rejection_details,
     draw_green_roi_overlays,
     draw_line_mode_green_overlays,
+    draw_silver_shadow_overlay,
     encode_frame,
     get_display_mode,
     handle_signal,
@@ -116,6 +121,8 @@ class DownwardCameraApplication:
         camera_details = {}
         status_publisher = LineStatusPublisher()
         self.dataset_recorder = None
+        silver_shadow_monitor = SilverShadowMonitor()
+        silver_shadow_status = empty_silver_shadow_status()
 
         if GPIO is None or Picamera2 is None or Transform is None:
             error_message = "Dependências GPIO, libcamera ou Picamera2 não encontradas."
@@ -235,6 +242,8 @@ class DownwardCameraApplication:
                     self.dataset_recorder = SilverDatasetRecorder("down")
                 except Exception as error:
                     print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
+
+            silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
 
             while stream_display.running:
                 calibration_requested = calibration_capture.before_frame()
@@ -369,6 +378,11 @@ class DownwardCameraApplication:
 
                 line_timestamp = time.time()
                 line_sequence += 1
+                silver_shadow_status = silver_shadow_monitor.process(
+                    raw_frame,
+                    line_sequence,
+                    line_timestamp,
+                )
                 green_raw_interpretation = green_interpretation["interpretation"]
                 green_tracker_result = green_tracker.update(
                     line_sequence,
@@ -754,6 +768,7 @@ class DownwardCameraApplication:
                         line_sequence,
                         green_status,
                         specular_repair_status=specular_repair_status,
+                        silver_status=silver_shadow_status,
                     )
 
                 if green_capture_requested:
@@ -896,6 +911,9 @@ class DownwardCameraApplication:
                         fusion_style_line,
                         line_follower_command,
                     )
+                    # O shadow é desenhado somente na cópia exibida. O frame bruto
+                    # usado pela visão, pelo modelo e pelo dataset permanece intacto.
+                    draw_silver_shadow_overlay(frame, silver_shadow_status)
 
                 now = time.monotonic()
                 elapsed = now - previous_time
@@ -950,6 +968,7 @@ class DownwardCameraApplication:
                         normal_trajectory=normal_trajectory,
                         fusion_style_line=fusion_style_line,
                         line_follower_command=line_follower_command,
+                        silver_shadow_status=silver_shadow_status,
                     )
                     last_status_time = now
         except Exception as error:

@@ -256,6 +256,7 @@ from vision.stream_display import (
     draw_green_rejection_details,
     draw_green_roi_overlays,
     draw_line_mode_green_overlays,
+    draw_silver_shadow_overlay,
     encode_frame,
     frame_condition,
     get_display_mode,
@@ -555,6 +556,7 @@ def save_line_status(
     line_sequence,
     green_status,
     specular_repair_status=None,
+    silver_status=None,
 ):
     _status_publisher.LINE_STATUS_PATH = LINE_STATUS_PATH
     _status_publisher.TEMP_LINE_STATUS_PATH = TEMP_LINE_STATUS_PATH
@@ -564,6 +566,7 @@ def save_line_status(
         line_sequence,
         green_status,
         specular_repair_status,
+        silver_status,
     )
 
 def save_status(
@@ -585,6 +588,7 @@ def save_status(
     normal_trajectory=None,
     fusion_style_line=None,
     line_follower_command=None,
+    silver_shadow_status=None,
 ):
     _status_publisher.STATUS_PATH = STATUS_PATH
     _status_publisher.TEMP_STATUS_PATH = TEMP_STATUS_PATH
@@ -595,6 +599,7 @@ def save_status(
         far_line_confidence, medium_line_confidence,
         far_thickness_consistency, medium_thickness_consistency,
         normal_trajectory, fusion_style_line, line_follower_command,
+        silver_shadow_status,
     )
 
 

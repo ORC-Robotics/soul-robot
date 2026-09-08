@@ -88,6 +88,76 @@ def create_display_frame(
     return display_frame
 
 
+def draw_silver_shadow_overlay(display_frame, shadow_status):
+    """Mostra a decisão shadow somente na cópia enviada ao dashboard."""
+
+    status = shadow_status if isinstance(shadow_status, dict) else {}
+    available = status.get("silverShadowAvailable") is True
+    detected = status.get("silverShadowDetected") is True
+
+    if available:
+        label = str(status.get("silverShadowLabel") or "sem leitura").upper()
+        try:
+            silver_percent = float(status.get("silverShadowProbability", 0.0)) * 100.0
+            margin_percent = float(status.get("silverShadowMargin", 0.0)) * 100.0
+            inference_ms = float(status.get("silverShadowInferenceMs", 0.0))
+        except (TypeError, ValueError):
+            silver_percent = 0.0
+            margin_percent = 0.0
+            inference_ms = 0.0
+        title = f"PRATA {label}"
+        details = (
+            f"S {silver_percent:.1f}%  M {margin_percent:.1f}%  "
+            f"{inference_ms:.1f} ms"
+        )
+        confirmation_frames = int(status.get("silverConfirmationFrames", 0))
+        required_frames = int(
+            status.get("silverConfirmationRequiredFrames", 4)
+        )
+        title = (
+            "ENTRADA RESGATE CONFIRMADA"
+            if status.get("courseMarkerConfirmed") is True
+            else f"{title}  {confirmation_frames}/{required_frames}"
+        )
+    else:
+        title = "PRATA INDISPONIVEL"
+        details = "CLASSIFICADOR DE PRATA"
+
+    color = (0, 255, 255) if detected else (190, 190, 190)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    title_size = cv2.getTextSize(title, font, 0.46, 1)[0]
+    details_size = cv2.getTextSize(details, font, 0.36, 1)[0]
+    box_width = max(title_size[0], details_size[0]) + 14
+    box_height = 43
+    left = max(0, display_frame.shape[1] - box_width - 5)
+    top = 5
+    right = display_frame.shape[1] - 5
+    bottom = min(display_frame.shape[0] - 1, top + box_height)
+
+    cv2.rectangle(display_frame, (left, top), (right, bottom), (0, 0, 0), -1)
+    cv2.rectangle(display_frame, (left, top), (right, bottom), color, 1)
+    cv2.putText(
+        display_frame,
+        title,
+        (left + 7, top + 17),
+        font,
+        0.46,
+        color,
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        display_frame,
+        details,
+        (left + 7, top + 35),
+        font,
+        0.36,
+        color,
+        1,
+        cv2.LINE_AA,
+    )
+
+
 def draw_green_decision_symbol(display_frame, center, interpretation, accepted):
     """Desenha símbolos geométricos leves, sem renderizar texto no vídeo."""
 

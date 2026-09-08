@@ -3,12 +3,13 @@
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from silver_classifier import SilverClassification
-from vision.silver_detection import SilverLineDetector
+from vision.silver_detection import SilverLineDetector, SilverShadowMonitor
 
 
 class FixedClassifier:
@@ -19,6 +20,21 @@ class FixedClassifier:
     def classify(self, frame):
         self.received_frame = frame
         return self.classification
+
+
+class FailingDetector:
+    def detect(self, frame):
+        raise RuntimeError("falha simulada")
+
+
+class SequenceDetector:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls = 0
+
+    def detect(self, frame):
+        self.calls += 1
+        return next(self.results)
 
 
 def classification(black, other, silver):
@@ -86,6 +102,87 @@ class SilverLineDetectorTest(unittest.TestCase):
             SilverLineDetector(classifier, roi=(0.8, 0.0, 0.2, 1.0))
         with self.assertRaises(ValueError):
             SilverLineDetector(classifier, minimum_silver_confidence=1.1)
+
+    def test_shadow_publishes_diagnostics_without_changing_detection(self):
+        detector = SilverLineDetector(
+            FixedClassifier(classification(0.05, 0.10, 0.85))
+        )
+        monitor = SilverShadowMonitor(detector)
+
+        with mock.patch("builtins.print"):
+            status = monitor.process(
+                np.zeros((10, 20, 3), dtype=np.uint8),
+                sequence=7,
+                timestamp=123.5,
+            )
+
+        self.assertTrue(status["silverShadowAvailable"])
+        self.assertTrue(status["silverShadowDetected"])
+        self.assertEqual(status["silverShadowLabel"], "silver")
+        self.assertAlmostEqual(status["silverShadowProbability"], 0.85)
+        self.assertAlmostEqual(status["silverShadowMargin"], 0.75)
+        self.assertEqual(status["silverShadowSequence"], 7)
+        self.assertEqual(status["silverShadowTimestamp"], 123.5)
+
+    def test_shadow_failure_disables_only_optional_detector(self):
+        monitor = SilverShadowMonitor(FailingDetector())
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+        with mock.patch("builtins.print") as print_mock:
+            first_status = monitor.process(frame, 1, 10.0)
+            second_status = monitor.process(frame, 2, 11.0)
+
+        self.assertFalse(first_status["silverShadowAvailable"])
+        self.assertFalse(second_status["silverShadowAvailable"])
+        self.assertIn("falha simulada", first_status["silverShadowError"])
+        self.assertIsNone(monitor.detector)
+        print_mock.assert_called_once()
+
+    def test_shadow_uses_fast_cadence_and_confirms_four_positive_frames(self):
+        positive_detector = SilverLineDetector(
+            FixedClassifier(classification(0.05, 0.10, 0.85))
+        )
+        positive_result = positive_detector.detect(
+            np.zeros((10, 20, 3), dtype=np.uint8)
+        )
+        detector = SequenceDetector([positive_result] * 4)
+        monitor = SilverShadowMonitor(detector)
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+        with mock.patch("builtins.print"):
+            first = monitor.process(frame, 1, 10.0, monotonic_time=0.0)
+            skipped = monitor.process(frame, 2, 10.05, monotonic_time=0.05)
+            second = monitor.process(frame, 3, 10.11, monotonic_time=0.11)
+            third = monitor.process(frame, 4, 10.22, monotonic_time=0.22)
+            confirmed = monitor.process(frame, 5, 10.33, monotonic_time=0.33)
+
+        self.assertEqual(first["silverConfirmationFrames"], 1)
+        self.assertEqual(first["silverInferenceTargetFps"], 15.0)
+        self.assertIs(skipped, first)
+        self.assertEqual(second["silverConfirmationFrames"], 2)
+        self.assertEqual(third["silverConfirmationFrames"], 3)
+        self.assertTrue(confirmed["courseMarkerConfirmed"])
+        self.assertEqual(confirmed["courseMarker"], "GRAY")
+        self.assertEqual(confirmed["silverInferenceTargetFps"], 6.0)
+        self.assertEqual(detector.calls, 4)
+
+    def test_shadow_negative_resets_confirmation_and_search_cadence(self):
+        fixed = FixedClassifier(classification(0.05, 0.10, 0.85))
+        silver_detector = SilverLineDetector(fixed)
+        positive = silver_detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
+        fixed.classification = classification(0.80, 0.05, 0.15)
+        negative = silver_detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
+        monitor = SilverShadowMonitor(SequenceDetector([positive, negative]))
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+        with mock.patch("builtins.print"):
+            monitor.process(frame, 1, 10.0, monotonic_time=0.0)
+            reset = monitor.process(frame, 2, 10.11, monotonic_time=0.11)
+
+        self.assertEqual(reset["silverConfirmationFrames"], 0)
+        self.assertFalse(reset["courseMarkerConfirmed"])
+        self.assertEqual(reset["courseMarker"], "NONE")
+        self.assertEqual(reset["silverInferenceTargetFps"], 6.0)
 
 
 if __name__ == "__main__":

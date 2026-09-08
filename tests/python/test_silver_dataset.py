@@ -91,6 +91,38 @@ class SilverDatasetTest(unittest.TestCase):
             self.assertEqual(status["datasetCaptureSession"], "session_001")
             self.assertFalse(status["datasetCaptureActive"])
 
+    def test_camera_status_includes_silver_shadow_diagnostics(self):
+        publisher = status_publisher.LineStatusPublisher(
+            status_path=str(self.root / "down.json"),
+            temp_status_path=str(self.root / "down.tmp.json"),
+        )
+        shadow_status = {
+            "silverShadowAvailable": True,
+            "silverShadowDetected": True,
+            "silverShadowLabel": "silver",
+            "silverShadowConfidence": 0.91,
+            "silverShadowBlackProbability": 0.04,
+            "silverShadowOtherProbability": 0.05,
+            "silverShadowProbability": 0.91,
+            "silverShadowMargin": 0.86,
+            "silverShadowInferenceMs": 3.4,
+            "silverShadowSequence": 12,
+            "silverShadowTimestamp": 123.0,
+            "silverShadowError": "",
+        }
+
+        publisher.save_status(
+            30.0,
+            CAMERA_PROFILES["down"],
+            {},
+            silver_shadow_status=shadow_status,
+        )
+
+        saved = json.loads((self.root / "down.json").read_text())
+        self.assertEqual(saved["silverShadowLabel"], "silver")
+        self.assertTrue(saved["silverShadowDetected"])
+        self.assertEqual(saved["silverShadowInferenceMs"], 3.4)
+
     def test_controller_rejects_path_traversal(self):
         with self.assertRaises(ValueError):
             capture.prepare_session("down", "../../outside")

@@ -1558,6 +1558,7 @@ std::string DashboardServer::dashboardHtml()
               <div class="camera-hud-value"><span>Reparo da máscara</span><strong id="operationSpecularRepair">—</strong></div>
               <div class="camera-hud-value speed"><span>Speed</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
               <div class="camera-hud-value pipeline"><span>Pipeline</span><strong id="operationPipelinePrimary">BIN — · SPEC — ms</strong><small id="operationPipelineSecondary">MORPH — · CONT — ms</small></div>
+              <div class="camera-hud-value"><span>Entrada prata</span><strong id="operationSilverShadowState">INDISPONÍVEL</strong><small id="operationSilverShadowDetails">—</small></div>
             </div>
           </div>
           <div id="forwardBallTelemetry" class="camera-hud" aria-label="Detecção de vítimas da câmera frontal" hidden>
@@ -2005,7 +2006,9 @@ std::string DashboardServer::dashboardHtml()
       lineSequence: element("operationLineSequence"),
       specularRepair: element("operationSpecularRepair"),
       pipelinePrimary: element("operationPipelinePrimary"),
-      pipelineSecondary: element("operationPipelineSecondary")
+      pipelineSecondary: element("operationPipelineSecondary"),
+      silverShadowState: element("operationSilverShadowState"),
+      silverShadowDetails: element("operationSilverShadowDetails")
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
@@ -3747,6 +3750,30 @@ std::string DashboardServer::dashboardHtml()
   setTextIfChanged(
     operationCameraDiagnosticFields.pipelineSecondary,
     `MORPH ${formatPipelineTiming(data.morphMs)} · CONT ${formatPipelineTiming(data.contoursMs)} ms`
+  );
+
+  const silverShadowAvailable = data.silverShadowAvailable === true;
+  const silverShadowDetected = data.silverShadowDetected === true;
+  const silverMarkerConfirmed = data.courseMarkerConfirmed === true &&
+    data.courseMarker === "GRAY";
+  const silverConfirmationFrames = Number(data.silverConfirmationFrames) || 0;
+  const silverConfirmationRequiredFrames =
+    Number(data.silverConfirmationRequiredFrames) || 4;
+  setTextIfChanged(
+    operationCameraDiagnosticFields.silverShadowState,
+    !silverShadowAvailable
+      ? "INDISPONÍVEL"
+      : silverMarkerConfirmed
+        ? "ENTRADA CONFIRMADA"
+        : silverShadowDetected
+          ? `CONFIRMANDO ${silverConfirmationFrames}/${silverConfirmationRequiredFrames}`
+          : String(data.silverShadowLabel || "SEM LEITURA").toUpperCase()
+  );
+  setTextIfChanged(
+    operationCameraDiagnosticFields.silverShadowDetails,
+    silverShadowAvailable
+      ? `S ${formatNumber(Number(data.silverShadowProbability) * 100, 1)}% · MARGEM ${formatNumber(Number(data.silverShadowMargin) * 100, 1)}% · ${formatPipelineTiming(data.silverShadowInferenceMs)} ms · ${formatNumber(data.silverInferenceTargetFps, 0)} FPS`
+      : String(data.silverShadowError || "—")
   );
 }
 
