@@ -7,6 +7,7 @@ import cv2  # type: ignore
 import numpy as np
 
 from . import stream_display
+from .calibration_capture import CalibrationCapture
 from .line_control import LineFollowerController
 from .maneuver_state import LineManeuverState
 from .status_publisher import LineStatusPublisher
@@ -128,6 +129,7 @@ class DownwardCameraApplication:
         picam2 = None
         camera_started = False
         light_ready = False
+        calibration_capture = None
 
         try:
             camera_indices = configured_camera_indices()
@@ -170,6 +172,7 @@ class DownwardCameraApplication:
                 flush=True,
             )
             camera_started = True
+            calibration_capture = CalibrationCapture(picam2, camera_profile, camera_details)
 
             previous_time = time.monotonic()
             last_stream_time = 0.0
@@ -222,9 +225,10 @@ class DownwardCameraApplication:
             )
 
             while stream_display.running:
+                calibration_requested = calibration_capture.before_frame()
                 green_capture_requested = os.path.isfile(GREEN_CAPTURE_REQUEST_PATH)
                 green_capture_metadata = {}
-                if green_capture_requested:
+                if green_capture_requested or calibration_requested:
                     # A captura preserva metadados do mesmo frame usado no diagnóstico.
                     camera_request = picam2.capture_request()
                     try:
@@ -299,6 +303,13 @@ class DownwardCameraApplication:
                             green_start_y=dead_zone_end_y,
                         )
                     )
+                    if vision_profile.get("line_exclude_green", False):
+                        # O detector e sua associação conservam o preto original.
+                        # Somente a máscara entregue ao seguidor exclui o verde.
+                        line_candidate_mask, accepted_line_contours = create_line_candidate_mask(
+                            structural_mask, vision_profile,
+                            return_accepted_contours=True, green_mask=green_mask,
+                        )
                     # A classificação usa o preto estrutural local, não uma
                     # referência de direção ou posição destinada ao controle.
                     green_association_mask = structural_mask.copy()
@@ -758,6 +769,13 @@ class DownwardCameraApplication:
                         except FileNotFoundError:
                             pass
 
+                # Os pares de calibração usam a máscara real antes de qualquer
+                # desenho. A gravação de PNG ocorre fora do loop de processamento.
+                calibration_capture.after_frame(
+                    raw_frame, line_candidate_mask, structural_mask,
+                    green_capture_metadata, line_sequence, fusion_style_line,
+                    green_status,
+                )
                 display_mode = get_display_mode()
                 frame = create_display_frame(
                     raw_frame,
@@ -929,6 +947,8 @@ class DownwardCameraApplication:
             )
             return 1
         finally:
+            if calibration_capture is not None:
+                calibration_capture.close()
             if stream_server is not None:
                 stream_server.shutdown()
                 stream_server.server_close()

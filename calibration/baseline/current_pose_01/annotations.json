@@ -1,0 +1,9 @@
+{
+  "shape": [360, 480],
+  "scenario": "strong_bend_shadow_reflection",
+  "annotation_origin": "Manually traced from raw/0000.png; approximate boundaries excluded, never generated from candidate mask.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[0, 37], [102, 37], [357, 122], [347, 217], [329, 359], [229, 359], [258, 185], [0, 99]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "limitations": "Single static pose; approximate tape boundary; chassis outside annotation; no independent scenario validation. Horizontal widths depend on this bend geometry."
+}

@@ -1,0 +1,3336 @@
+--- local/scripts/vision/application.py
++++ deployed/scripts/vision/application.py
+@@ -7,7 +7,10 @@
+ import numpy as np
+ 
+ from . import stream_display
+-from .calibration_capture import CalibrationCapture
++try:
++    from silver_dataset_recorder import SilverDatasetRecorder
++except ImportError:
++    SilverDatasetRecorder = None
+ from .line_control import LineFollowerController
+ from .maneuver_state import LineManeuverState
+ from .status_publisher import LineStatusPublisher
+@@ -111,6 +114,7 @@
+         vision_profile = camera_profile["vision"]
+         camera_details = {}
+         status_publisher = LineStatusPublisher()
++        self.dataset_recorder = None
+ 
+         if GPIO is None or Picamera2 is None or Transform is None:
+             error_message = "Dependências GPIO, libcamera ou Picamera2 não encontradas."
+@@ -129,7 +133,6 @@
+         picam2 = None
+         camera_started = False
+         light_ready = False
+-        calibration_capture = None
+ 
+         try:
+             camera_indices = configured_camera_indices()
+@@ -172,7 +175,6 @@
+                 flush=True,
+             )
+             camera_started = True
+-            calibration_capture = CalibrationCapture(picam2, camera_profile, camera_details)
+ 
+             previous_time = time.monotonic()
+             last_stream_time = 0.0
+@@ -224,11 +226,17 @@
+                 flush=True,
+             )
+ 
++            # A coleta compartilha os frames da câmera e falha sem interromper a visão.
++            if SilverDatasetRecorder is not None:
++                try:
++                    self.dataset_recorder = SilverDatasetRecorder("down")
++                except Exception as error:
++                    print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
++
+             while stream_display.running:
+-                calibration_requested = calibration_capture.before_frame()
+                 green_capture_requested = os.path.isfile(GREEN_CAPTURE_REQUEST_PATH)
+                 green_capture_metadata = {}
+-                if green_capture_requested or calibration_requested:
++                if green_capture_requested:
+                     # A captura preserva metadados do mesmo frame usado no diagnóstico.
+                     camera_request = picam2.capture_request()
+                     try:
+@@ -238,6 +246,13 @@
+                         camera_request.release()
+                 else:
+                     raw_frame = picam2.capture_array()
++
++                if self.dataset_recorder is not None:
++                    try:
++                        self.dataset_recorder.submit(raw_frame)
++                    except Exception as error:
++                        print(f"Coleta do dataset inferior desativada após erro inesperado: {error}", flush=True)
++                        self.dataset_recorder = None
+ 
+                 frame_height = raw_frame.shape[0]
+                 vision_geometry = resolve_vision_geometry(
+@@ -762,12 +777,6 @@
+                         except FileNotFoundError:
+                             pass
+ 
+-                # Os pares de calibração usam a máscara real antes de qualquer
+-                # desenho. A gravação de PNG ocorre fora do loop de processamento.
+-                calibration_capture.after_frame(
+-                    raw_frame, line_candidate_mask, structural_mask,
+-                    green_capture_metadata, line_sequence, fusion_style_line,
+-                )
+                 display_mode = get_display_mode()
+                 frame = create_display_frame(
+                     raw_frame,
+@@ -939,8 +948,6 @@
+             )
+             return 1
+         finally:
+-            if calibration_capture is not None:
+-                calibration_capture.close()
+             if stream_server is not None:
+                 stream_server.shutdown()
+                 stream_server.server_close()
+
+--- local/scripts/vision/geometry.py
++++ deployed/scripts/vision/geometry.py
+@@ -0,0 +1,1197 @@
++"""Extrai e projeta a trajetória geométrica da faixa inferior."""
++
++import math
++import time
++
++import cv2  # type: ignore
++import numpy as np
++
++from .virtual_sensors import VIRTUAL_NEAR_Y1
++
++
++# Reaquisição geométrica após gaps.
++#
++# Quando não existe faixa no NEAR, procura uma continuação válida
++# mais à frente antes de declarar a trajetória completamente perdida.
++GEOMETRIC_GAP_FORWARD_MAX_FRAMES = 45
++GEOMETRIC_GAP_REACQUIRE_FRAMES = 2
++GEOMETRIC_GAP_SEARCH_STEP_PX = 6
++GEOMETRIC_GAP_MAX_SEARCH_PX = 120
++
++# Mantém por poucos quadros a evidência de que o NEAR-C estava visível.
++# A memória permite reconhecer o início de um GAP sem depender de uma única
++# amostra geométrica na altura exata usada pelo rastreador preservado.
++GAP_NEAR_HISTORY_FRAMES = 3
++
++# Uma faixa encontrada após o gap precisa continuar também nesta
++# distância para não aceitarmos um pequeno blob isolado como caminho.
++GEOMETRIC_GAP_CONFIRM_OFFSET_PX = 12
++GEOMETRIC_GAP_PROJECTION_POINTS = 5
++# Limita quanto o centro da faixa pode mudar entre a primeira
++# detecção após o gap e sua amostra de confirmação.
++GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX = 50
++# Geometria preservada exclusivamente para detectar e reaquistar GAP.
++# Estes parâmetros não antecipam curvas nem alteram o controle LINE normal.
++GEOMETRIC_PATH_BAND_HALF_HEIGHT = 2
++GEOMETRIC_PATH_LOCAL_HEADING_POINTS = 5
++
++# Distância aproximada entre pontos consecutivos da trajetória.
++GEOMETRIC_TRACE_STEP_PX = 10.0
++
++# Permite ao rastreador procurar o centro da faixa um pouco
++# antes ou depois da distância nominal de avanço.
++GEOMETRIC_TRACE_SEARCH_RANGE_PX = 5.0
++
++GEOMETRIC_TRACE_MAX_BACKTRACK_Y_PX = 10.0
++
++# Permite inclusive uma mudança de 90 graus entre dois passos.
++# Nunca permite continuar para trás.
++GEOMETRIC_TRACE_MAX_TURN_DEG = 90.0
++
++# Limite de segurança contra caminhos que entrem em ciclos.
++GEOMETRIC_TRACE_MAX_POINTS = 80
++
++# Peso dado ao progresso em direção a uma saída lateral
++# inequívoca do componente da faixa.
++GEOMETRIC_TRACE_TARGET_PROGRESS_GAIN = 2.0
++
++# Pequena margem usada para considerar que a faixa alcançou
++# uma borda da imagem.
++GEOMETRIC_TRACE_EXIT_MARGIN_PX = 3
++
++# FAR e NEAR continuam presos às alturas extremas escolhidas.
++GEOMETRIC_PATH_FAR_Y_RATIO = 0.00
++GEOMETRIC_PATH_NEAR_Y_RATIO = VIRTUAL_NEAR_Y1
++
++
++def find_active_band_segments(processed_line_mask, y):
++    """
++    Encontra os segmentos horizontais da faixa preta em uma pequena
++    banda ao redor de uma determinada altura da imagem.
++
++    Cada segmento retornado contém o centro horizontal ponderado
++    pela quantidade real de pixels da máscara.
++    """
++
++    height, width = processed_line_mask.shape[:2]
++
++    y0 = max(
++        0,
++        y - GEOMETRIC_PATH_BAND_HALF_HEIGHT,
++    )
++    y1 = min(
++        height,
++        y + GEOMETRIC_PATH_BAND_HALF_HEIGHT + 1,
++    )
++
++    band = processed_line_mask[y0:y1, :]
++
++    if band.size == 0:
++        return []
++
++    active_columns = np.any(band > 0, axis=0)
++    active_x = np.flatnonzero(active_columns)
++
++    if active_x.size == 0:
++        return []
++
++    split_indices = np.where(
++        np.diff(active_x) > 1
++    )[0] + 1
++
++    groups = np.split(
++        active_x,
++        split_indices,
++    )
++
++    segments = []
++
++    for group in groups:
++        if group.size == 0:
++            continue
++
++        x0 = int(group[0])
++        x1 = int(group[-1])
++
++        column_weights = np.count_nonzero(
++            band[:, x0:x1 + 1],
++            axis=0,
++        ).astype(np.float32)
++
++        total_weight = float(column_weights.sum())
++
++        if total_weight <= 0.0:
++            continue
++
++        columns = np.arange(
++            x0,
++            x1 + 1,
++            dtype=np.float32,
++        )
++
++        center_x = float(
++            np.sum(columns * column_weights)
++            / total_weight
++        )
++
++        segments.append({
++            "x0": x0,
++            "x1": x1,
++            "centerX": center_x,
++        })
++
++    return segments
++
++def find_geometric_lateral_exit(
++    processed_line_mask,
++    start_point,
++):
++    """
++    Detecta uma saída lateral inequívoca do mesmo componente
++    conectado que contém o início da trajetória.
++
++    Se o componente alcançar o topo, mantém o comportamento
++    geométrico normal.
++
++    Se tocar somente a esquerda ou somente a direita, retorna
++    um alvo naquela borda.
++
++    Se houver ambiguidade, não interfere no rastreamento.
++    """
++
++    height, width = processed_line_mask.shape[:2]
++
++    binary_mask = (
++        processed_line_mask > 0
++    ).astype(np.uint8)
++
++    _, labels = cv2.connectedComponents(
++        binary_mask,
++        connectivity=8,
++    )
++
++    start_x = max(
++        0,
++        min(
++            width - 1,
++            int(round(start_point[0])),
++        ),
++    )
++
++    start_y = max(
++        0,
++        min(
++            height - 1,
++            int(round(start_point[1])),
++        ),
++    )
++
++    component_label = int(
++        labels[start_y, start_x]
++    )
++
++    if component_label == 0:
++        return None
++
++    margin = GEOMETRIC_TRACE_EXIT_MARGIN_PX
++
++    top_region = labels[
++        0:min(height, margin + 1),
++        :
++    ]
++
++    # Se a própria faixa chega ao topo, o tracer normal já
++    # possui uma continuação natural para frente.
++    if np.any(
++        top_region == component_label
++    ):
++        return None
++
++    left_region = labels[
++        :,
++        0:min(width, margin + 1),
++    ]
++
++    right_region = labels[
++        :,
++        max(0, width - margin - 1):width,
++    ]
++
++    left_positions = np.argwhere(
++        left_region == component_label
++    )
++
++    right_positions = np.argwhere(
++        right_region == component_label
++    )
++
++    touches_left = (
++        left_positions.size > 0
++    )
++
++    touches_right = (
++        right_positions.size > 0
++    )
++
++    # Nenhuma saída lateral ou duas saídas:
++    # geometria ambígua, então não escolhemos por conta própria.
++    if touches_left == touches_right:
++        return None
++
++    if touches_left:
++        target_y = float(
++            np.mean(left_positions[:, 0])
++        )
++
++        return (
++            0.0,
++            target_y,
++        )
++
++    target_y = float(
++        np.mean(right_positions[:, 0])
++    )
++
++    return (
++        float(width - 1),
++        target_y,
++    )
++
++def find_geometric_gap_start(
++    processed_line_mask,
++    near_y,
++):
++    """
++    Procura uma continuação válida da faixa à frente quando o
++    NEAR está vazio.
++
++    A primeira banda encontrada só é aceita se existir uma segunda
++    amostra coerente um pouco mais à frente. Isso ajuda a rejeitar
++    manchas pretas isoladas.
++
++    Não cria pixels nem preenche o gap. Apenas encontra onde a
++    faixa real reaparece.
++    """
++
++    height, width = processed_line_mask.shape[:2]
++
++    image_center_x = (
++        float(width - 1) / 2.0
++    )
++
++    minimum_y = max(
++        0,
++        near_y - GEOMETRIC_GAP_MAX_SEARCH_PX,
++    )
++
++    search_y = (
++        near_y - GEOMETRIC_GAP_SEARCH_STEP_PX
++    )
++
++    while search_y >= minimum_y:
++        segments = find_active_band_segments(
++            processed_line_mask,
++            search_y,
++        )
++
++        if not segments:
++            search_y -= (
++                GEOMETRIC_GAP_SEARCH_STEP_PX
++            )
++            continue
++
++        confirmation_y = max(
++            0,
++            search_y
++            - GEOMETRIC_GAP_CONFIRM_OFFSET_PX,
++        )
++
++        confirmation_segments = (
++            find_active_band_segments(
++                processed_line_mask,
++                confirmation_y,
++            )
++        )
++
++        if not confirmation_segments:
++            search_y -= (
++                GEOMETRIC_GAP_SEARCH_STEP_PX
++            )
++            continue
++
++        valid_candidates = []
++
++        for segment in segments:
++            center_x = float(
++                segment["centerX"]
++            )
++
++            confirmation_segment = min(
++                confirmation_segments,
++                key=lambda candidate: abs(
++                    float(candidate["centerX"])
++                    - center_x
++                ),
++            )
++
++            confirmation_x = float(
++                confirmation_segment["centerX"]
++            )
++
++            center_shift = abs(
++                confirmation_x - center_x
++            )
++
++            if (
++                center_shift
++                <= GEOMETRIC_GAP_MAX_CENTER_SHIFT_PX
++            ):
++                valid_candidates.append(
++                    segment
++                )
++
++        if valid_candidates:
++            selected_segment = min(
++                valid_candidates,
++                key=lambda segment: abs(
++                    float(segment["centerX"])
++                    - image_center_x
++                ),
++            )
++
++            start_point = (
++                float(
++                    selected_segment["centerX"]
++                ),
++                float(search_y),
++            )
++
++            return start_point
++
++        search_y -= (
++            GEOMETRIC_GAP_SEARCH_STEP_PX
++        )
++
++    return None
++
++def find_next_geometric_path_point(
++    distance_map,
++    current_point,
++    direction,
++    target_point=None,
++):
++    """
++    Procura o próximo ponto central da faixa ao redor do ponto atual.
++
++    A busca acontece em uma coroa circular, permitindo que a
++    trajetória avance em qualquer direção até 90 graus em relação
++    à direção atual.
++
++    O distance transform favorece pontos mais distantes das bordas,
++    ou seja, próximos do eixo central da faixa.
++    """
++
++    height, width = distance_map.shape[:2]
++
++    current_x = float(current_point[0])
++    current_y = float(current_point[1])
++
++    step = GEOMETRIC_TRACE_STEP_PX
++    search_range = GEOMETRIC_TRACE_SEARCH_RANGE_PX
++
++    minimum_step = max(
++        2.0,
++        step - search_range,
++    )
++
++    maximum_step = (
++        step + search_range
++    )
++
++    search_radius = int(
++        math.ceil(maximum_step)
++    )
++
++    center_x = int(round(current_x))
++    center_y = int(round(current_y))
++
++    x0 = max(
++        0,
++        center_x - search_radius,
++    )
++    x1 = min(
++        width,
++        center_x + search_radius + 1,
++    )
++
++    y0 = max(
++        0,
++        center_y - search_radius,
++    )
++    y1 = min(
++        height,
++        center_y + search_radius + 1,
++    )
++
++    local_distance = distance_map[
++        y0:y1,
++        x0:x1,
++    ]
++
++    if local_distance.size == 0:
++        return None
++
++    local_y, local_x = np.nonzero(
++        local_distance > 0.0
++    )
++
++    if local_x.size == 0:
++        return None
++
++    candidate_x = (
++        local_x.astype(np.float32)
++        + float(x0)
++    )
++
++    candidate_y = (
++        local_y.astype(np.float32)
++        + float(y0)
++    )
++
++    delta_x = (
++        candidate_x - current_x
++    )
++
++    delta_y = (
++        candidate_y - current_y
++    )
++
++    radial_distance = np.hypot(
++        delta_x,
++        delta_y,
++    )
++
++    valid_distance = (
++        (radial_distance >= minimum_step)
++        & (radial_distance <= maximum_step)
++    )
++
++    safe_distance = np.maximum(
++        radial_distance,
++        1e-6,
++    )
++
++    alignment = (
++        delta_x * float(direction[0])
++        + delta_y * float(direction[1])
++    ) / safe_distance
++
++    minimum_alignment = math.cos(
++        math.radians(
++            GEOMETRIC_TRACE_MAX_TURN_DEG
++        )
++    )
++
++    # Tolerância numérica para que uma mudança exatamente
++    # perpendicular seja realmente aceita quando o limite é 90°.
++    alignment_tolerance = 1e-6
++
++    valid_direction = (
++        alignment >= minimum_alignment - alignment_tolerance
++    )
++
++    valid = (
++        valid_distance
++        & valid_direction
++    )
++
++    if not np.any(valid):
++        return None
++
++    center_strength = local_distance[
++        local_y,
++        local_x,
++    ].astype(np.float32)
++
++    # A distância ao contorno é medida em pixels e pode crescer
++    # muito dentro de regiões pretas largas. Normalizamos somente
++    # entre os candidatos geometricamente válidos para que uma
++    # grande massa preta não domine a continuidade da trajetória.
++    maximum_center_strength = float(
++        np.max(
++            center_strength[valid]
++        )
++    )
++
++    if maximum_center_strength > 0.0:
++        center_strength = (
++            center_strength
++            / maximum_center_strength
++        )
++
++    # Prioridades:
++    #
++    # 1. manter continuidade com a direção atual da faixa;
++    # 2. preferir o centro físico entre caminhos coerentes;
++    # 3. manter aproximadamente o passo nominal.
++    score = (
++        center_strength
++        + alignment * 2.0
++        - np.abs(
++            radial_distance - step
++        ) * 0.10
++    )
++
++    if target_point is not None:
++        target_x = float(
++            target_point[0]
++        )
++
++        target_y = float(
++            target_point[1]
++        )
++
++        current_target_distance = (
++            math.hypot(
++                target_x - current_x,
++                target_y - current_y,
++            )
++        )
++
++        candidate_target_distance = (
++            np.hypot(
++                target_x - candidate_x,
++                target_y - candidate_y,
++            )
++        )
++
++        # Positivo = candidato aproxima da saída correta.
++        # Negativo = candidato se afasta dela.
++        target_progress = (
++            current_target_distance
++            - candidate_target_distance
++        )
++
++        score += (
++            target_progress
++            * GEOMETRIC_TRACE_TARGET_PROGRESS_GAIN
++        )
++
++    score[~valid] = -np.inf
++
++    best_index = int(
++        np.argmax(score)
++    )
++
++    next_x = float(
++        candidate_x[best_index]
++    )
++
++    next_y = float(
++        candidate_y[best_index]
++    )
++
++    movement_x = (
++        next_x - current_x
++    )
++
++    movement_y = (
++        next_y - current_y
++    )
++
++    movement_length = math.hypot(
++        movement_x,
++        movement_y,
++    )
++
++    if movement_length <= 0.0:
++        return None
++
++    next_direction = (
++        movement_x / movement_length,
++        movement_y / movement_length,
++    )
++
++    return (
++        (next_x, next_y),
++        next_direction,
++    )
++
++def estimate_geometric_initial_direction(
++    processed_line_mask,
++    near_point,
++):
++    """
++    Estima a direção inicial real da faixa a partir do NEAR.
++
++    Usa duas pequenas amostras à frente do NEAR e acompanha
++    o segmento mais próximo entre elas. Depois ajusta uma reta
++    aos pontos encontrados.
++
++    Caso não exista informação suficiente, mantém o fallback
++    seguro apontando para a frente da câmera.
++    """
++
++    height, _ = processed_line_mask.shape[:2]
++
++    near_x = float(near_point[0])
++    near_y = float(near_point[1])
++
++    direction_points = [
++        (
++            near_x,
++            near_y,
++        )
++    ]
++
++    previous_x = near_x
++
++    for multiplier in (
++        1.0,
++        2.0,
++    ):
++        sample_y = int(round(
++            near_y
++            - GEOMETRIC_TRACE_STEP_PX
++            * multiplier
++        ))
++
++        if sample_y < 0:
++            break
++
++        if sample_y >= height:
++            continue
++
++        segments = find_active_band_segments(
++            processed_line_mask,
++            sample_y,
++        )
++
++        if not segments:
++            break
++
++        selected_segment = min(
++            segments,
++            key=lambda segment: abs(
++                segment["centerX"]
++                - previous_x
++            ),
++        )
++
++        sample_x = float(
++            selected_segment["centerX"]
++        )
++
++        direction_points.append(
++            (
++                sample_x,
++                float(sample_y),
++            )
++        )
++
++        previous_x = sample_x
++
++    if len(direction_points) < 2:
++        return (
++            0.0,
++            -1.0,
++        )
++
++    fit_points = np.asarray(
++        direction_points,
++        dtype=np.float32,
++    ).reshape(-1, 1, 2)
++
++    vx, vy, _, _ = cv2.fitLine(
++        fit_points,
++        cv2.DIST_L2,
++        0,
++        0.01,
++        0.01,
++    ).flatten()
++
++    vx = float(vx)
++    vy = float(vy)
++
++    reference_x = (
++        direction_points[-1][0]
++        - near_x
++    )
++
++    reference_y = (
++        direction_points[-1][1]
++        - near_y
++    )
++
++    # O cv2.fitLine não possui sentido definido.
++    # Orienta o vetor do NEAR em direção à faixa à frente.
++    if (
++        vx * reference_x
++        + vy * reference_y
++    ) < 0.0:
++        vx = -vx
++        vy = -vy
++
++    length = math.hypot(
++        vx,
++        vy,
++    )
++
++    if length <= 0.0:
++        return (
++            0.0,
++            -1.0,
++        )
++
++    return (
++        vx / length,
++        vy / length,
++    )
++
++def project_geometric_gap_to_near(
++    path_points,
++    near_y,
++    frame_width,
++):
++    """
++    Projeta a direção local da faixa reaparecida através do gap
++    até a altura fixa do NEAR.
++
++    O ponto retornado é apenas uma estimativa geométrica.
++    Ele não representa pixels realmente observados na máscara.
++    """
++
++    point_count = min(
++        len(path_points),
++        GEOMETRIC_GAP_PROJECTION_POINTS,
++    )
++
++    if point_count < 2:
++        return None
++
++    local_points = np.asarray(
++        path_points[:point_count],
++        dtype=np.float32,
++    ).reshape(-1, 1, 2)
++
++    vx, vy, _, _ = cv2.fitLine(
++        local_points,
++        cv2.DIST_L2,
++        0,
++        0.01,
++        0.01,
++    ).flatten()
++
++    vx = float(vx)
++    vy = float(vy)
++
++    first_point = path_points[0]
++    last_point = path_points[point_count - 1]
++
++    reference_x = (
++        float(last_point[0])
++        - float(first_point[0])
++    )
++
++    reference_y = (
++        float(last_point[1])
++        - float(first_point[1])
++    )
++
++    # O cv2.fitLine não define o sentido do vetor.
++    # Orienta a direção do começo da faixa para o FAR.
++    if (
++        vx * reference_x
++        + vy * reference_y
++    ) < 0.0:
++        vx = -vx
++        vy = -vy
++
++    # Uma direção praticamente horizontal não possui uma
++    # interseção estável com a altura fixa do NEAR.
++    if abs(vy) <= 1e-6:
++        return None
++
++    start_x = float(first_point[0])
++    start_y = float(first_point[1])
++
++    scale = (
++        float(near_y) - start_y
++    ) / vy
++
++    projected_x = (
++        start_x + vx * scale
++    )
++
++    if not math.isfinite(projected_x):
++        return None
++
++    # Se a continuação atingiria o NEAR fora da imagem,
++    # não fingimos possuir uma referência utilizável.
++    if (
++        projected_x < 0.0
++        or projected_x > float(frame_width - 1)
++    ):
++        return None
++
++    return (
++        projected_x,
++        float(near_y),
++    )
++
++def calculate_geometric_far_heading(path_points):
++    """
++    Calcula a direção local no final da trajetória disponível.
++
++    Não exige que a trajetória alcance o FAR superior:
++    também funciona quando ela sai lateralmente da imagem.
++
++    0 graus representa seguir para a frente.
++    Valor positivo aponta para a direita.
++    Valor negativo aponta para a esquerda.
++    """
++
++    point_count = min(
++        len(path_points),
++        GEOMETRIC_PATH_LOCAL_HEADING_POINTS,
++    )
++
++    if point_count < 2:
++        return None
++
++    local_points = path_points[
++        -point_count:
++    ]
++
++    fit_points = np.asarray(
++        local_points,
++        dtype=np.float32,
++    ).reshape(-1, 1, 2)
++
++    vx, vy, _, _ = cv2.fitLine(
++        fit_points,
++        cv2.DIST_L2,
++        0,
++        0.01,
++        0.01,
++    ).flatten()
++
++    vx = float(vx)
++    vy = float(vy)
++
++    first_point = local_points[0]
++    last_point = local_points[-1]
++
++    reference_x = (
++        float(last_point[0])
++        - float(first_point[0])
++    )
++
++    reference_y = (
++        float(last_point[1])
++        - float(first_point[1])
++    )
++
++    # O fitLine não possui sentido definido.
++    # Orienta o vetor no mesmo sentido em que a trajetória
++    # foi percorrida, do NEAR em direção ao futuro.
++    if (
++        vx * reference_x
++        + vy * reference_y
++    ) < 0.0:
++        vx = -vx
++        vy = -vy
++
++    return float(
++        math.degrees(
++            math.atan2(
++                vx,
++                -vy,
++            )
++        )
++    )
++
++def extract_geometric_line_path(processed_line_mask):
++    """
++    Rastreia a faixa somente para travessia e reaquisição de GAP.
++
++    Diferentemente da versão baseada em bandas horizontais,
++    os pontos intermediários não possuem Y fixo. O caminho pode
++    avançar verticalmente, diagonalmente ou lateralmente.
++
++    NEAR e FAR continuam presos às alturas de referência.
++    """
++
++    height, width = processed_line_mask.shape[:2]
++
++    far_y = int(round(
++        height * GEOMETRIC_PATH_FAR_Y_RATIO
++    ))
++
++    near_y = int(round(
++        height * GEOMETRIC_PATH_NEAR_Y_RATIO
++    ))
++
++    far_y = max(
++        0,
++        min(height - 1, far_y),
++    )
++
++    near_y = max(
++        0,
++        min(height - 1, near_y),
++    )
++
++    # No início, escolhe a faixa mais próxima do centro físico
++    # da câmera. Depois disso, a própria continuidade geométrica
++    # decide o caminho.
++    image_center_x = (
++        float(width - 1) / 2.0
++    )
++
++    near_segments = find_active_band_segments(
++        processed_line_mask,
++        near_y,
++    )
++
++    gap_reacquired = False
++    if near_segments:
++        near_segment = min(
++            near_segments,
++            key=lambda segment: abs(
++                float(segment["centerX"])
++                - image_center_x
++            ),
++        )
++
++        start_point = (
++            float(near_segment["centerX"]),
++            float(near_y),
++        )
++
++        # Há observação real exatamente no NEAR.
++        near_point = start_point
++
++    else:
++        gap_start = find_geometric_gap_start(
++            processed_line_mask,
++            near_y,
++        )
++
++        if gap_start is None:
++            return {
++                "nearPoint": None,
++                "farHeadingDeg": None,
++                "virtualNearPoint": None,
++                "lateralExitTarget": None,
++            }
++
++        start_point = gap_start
++
++        gap_reacquired = True
++
++        # Não fingimos que existe uma medição no NEAR.
++        # A trajetória começa onde a faixa reaparece.
++        near_point = None
++
++    lateral_exit_target = (
++        find_geometric_lateral_exit(
++            processed_line_mask,
++            start_point,
++        )
++    )
++
++    # Quanto maior o valor, mais longe este pixel está das bordas
++    # da faixa. Os máximos locais formam aproximadamente seu eixo.
++    distance_map = cv2.distanceTransform(
++        processed_line_mask,
++        cv2.DIST_L2,
++        3,
++    )
++
++    path_points = [
++        start_point
++    ]
++
++    current_point = start_point
++
++    # A direção inicial é medida na própria geometria da faixa.
++    # Depois do primeiro passo, o rastreador continua atualizando
++    # a direção normalmente pelos pontos encontrados.
++    direction = estimate_geometric_initial_direction(
++        processed_line_mask,
++        start_point,
++    )
++
++    maximum_step = (
++        GEOMETRIC_TRACE_STEP_PX
++        + GEOMETRIC_TRACE_SEARCH_RANGE_PX
++    )
++
++    virtual_near_point = None
++
++    for _ in range(
++        GEOMETRIC_TRACE_MAX_POINTS - 1
++    ):
++        current_x = float(
++            current_point[0]
++        )
++
++        current_y = float(
++            current_point[1]
++        )
++
++        if lateral_exit_target is not None:
++            distance_to_lateral_exit = math.hypot(
++                float(lateral_exit_target[0])
++                - current_x,
++                float(lateral_exit_target[1])
++                - current_y,
++            )
++
++            if distance_to_lateral_exit <= maximum_step:
++                if distance_to_lateral_exit > 1.0:
++                    path_points.append(
++                        lateral_exit_target
++                    )
++
++                break
++
++        # Quando a trajetória chega suficientemente perto do FAR,
++        # tenta conectar ao centro real da faixa exatamente no Y
++        # superior de referência.
++        if current_y <= (
++            far_y + maximum_step
++        ):
++            far_segments = (
++                find_active_band_segments(
++                    processed_line_mask,
++                    far_y,
++                )
++            )
++
++            if far_segments:
++                selected_far_segment = min(
++                    far_segments,
++                    key=lambda segment: abs(
++                        segment["centerX"]
++                        - current_x
++                    ),
++                )
++
++                candidate_far_point = (
++                    float(
++                        selected_far_segment[
++                            "centerX"
++                        ]
++                    ),
++                    float(far_y),
++                )
++
++                distance_to_far = math.hypot(
++                    (
++                        candidate_far_point[0]
++                        - current_x
++                    ),
++                    (
++                        candidate_far_point[1]
++                        - current_y
++                    ),
++                )
++
++                if distance_to_far <= (
++                    maximum_step * 2.0
++                ):
++                    if distance_to_far > 1.0:
++                        path_points.append(
++                            candidate_far_point
++                        )
++
++                    break
++
++        next_result = (
++            find_next_geometric_path_point(
++                distance_map,
++                current_point,
++                direction,
++                lateral_exit_target,
++            )
++        )
++
++        if next_result is None:
++            break
++
++        next_point, next_direction = (
++            next_result
++        )
++
++        path_points.append(
++            next_point
++        )
++
++        current_point = (
++            next_point
++        )
++
++        direction = (
++            next_direction
++        )
++
++    if gap_reacquired:
++        virtual_near_point = (
++            project_geometric_gap_to_near(
++                path_points,
++                near_y,
++                width,
++            )
++        )
++
++    far_heading = calculate_geometric_far_heading(
++        path_points,
++    )
++
++    return {
++        "nearPoint": near_point,
++        "farHeadingDeg": far_heading,
++        "virtualNearPoint": virtual_near_point,
++        "lateralExitTarget": lateral_exit_target,
++    }
++
++
++def extract_gap_geometric_guidance(
++    processed_line_mask,
++    gap_forward_active,
++    green_direction,
++    near_center_visible,
++    forward_control_trusted=True,
++):
++    """Executa a geometria somente quando ela pode participar do GAP."""
++
++    geometry_required = (
++        forward_control_trusted
++        and (
++            gap_forward_active
++            or (
++                green_direction == "NENHUMA"
++                and not near_center_visible
++            )
++        )
++    )
++    if not geometry_required:
++        return {
++            "nearPoint": None,
++            "farHeadingDeg": None,
++            "virtualNearPoint": None,
++            "lateralExitTarget": None,
++            "processingMs": 0.0,
++        }
++
++    geometric_started = time.perf_counter()
++    geometric_guidance = extract_geometric_line_path(
++        processed_line_mask
++    )
++    geometric_guidance["processingMs"] = (
++        time.perf_counter() - geometric_started
++    ) * 1000.0
++    return geometric_guidance
++
+
+--- local/scripts/vision/green_detector.py
++++ deployed/scripts/vision/green_detector.py
+@@ -0,0 +1,1154 @@
++"""Detecção, classificação e diagnóstico dos marcadores verdes."""
++
++import json
++import math
++import os
++import time
++
++import cv2  # type: ignore
++import numpy as np
++
++from .numeric import (
++    DOWNWARD_REFERENCE_FRAME_HEIGHT,
++    scaled_odd_kernel_size,
++    scaled_reference_pixels,
++)
++
++
++# O array RGB888 do Picamera2 chega na ordem BGR usada pelo OpenCV.
++CAMERA_ARRAY_COLOR_ORDER = "BGR"
++
++GREEN_CAPTURE_RAW_PATH = "/dev/shm/obr_green_raw.png"
++GREEN_CAPTURE_HSV_MASK_PATH = "/dev/shm/obr_green_hsv_mask.png"
++GREEN_CAPTURE_FINAL_MASK_PATH = "/dev/shm/obr_green_final_mask.png"
++GREEN_CAPTURE_CANDIDATES_PATH = "/dev/shm/obr_green_candidates.png"
++GREEN_CAPTURE_STATS_PATH = "/dev/shm/obr_green_stats.json"
++# Mantém compatibilidade para chamadas diagnósticas fora do runtime principal.
++DEFAULT_CAPTURE_EXPOSURE_VALUE = 0.4
++
++# O branco da pista sob iluminação esverdeada chegou à saturação 136.
++# Exigir 140 preserva o cartão verde e bloqueia esse falso positivo.
++GREEN_HUE_MIN = 40
++GREEN_HUE_MAX = 90
++GREEN_SATURATION_MIN = 140
++GREEN_VALUE_MIN = 60
++GREEN_OPEN_KERNEL_SIZE = 5
++GREEN_CLOSE_KERNEL_SIZE = 5
++GREEN_OPEN_ITERATIONS = 2
++GREEN_CLOSE_ITERATIONS = 2
++
++# Estes limites aceitam o marcador oficial observado, enquanto HSV, formato e
++# associação com a faixa continuam bloqueando ruídos verdes.
++GREEN_MIN_AREA_RATIO = 2600.0 / (320.0 * 200.0)
++GREEN_MIN_AREA_PX = 80.0
++GREEN_MIN_DIMENSION_PX = 6.0
++GREEN_ASPECT_RATIO_MIN = 0.35
++GREEN_ASPECT_RATIO_MAX = 1.0
++GREEN_MIN_EXTENT = 0.35
++GREEN_PARTIAL_BORDER_TOLERANCE_PX = 4
++GREEN_PARTIAL_AREA_FACTOR = 0.40
++GREEN_PARTIAL_DIMENSION_FACTOR = 0.50
++GREEN_PARTIAL_ASPECT_RATIO_MIN = 0.20
++GREEN_PARTIAL_EXTENT_MIN = 0.20
++GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
++
++# As ROIs relacionam cada marcador verde com a faixa preta ao redor.
++GREEN_ROI_HALF_SIZE_DIVISOR = 20
++GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
++GREEN_ROI_MIN_BLACK_RATIO = 0.25
++GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS = 1.5
++
++GREEN_OBSERVATION_STATES = {
++    "SEM_VERDE",
++    "UM_CANDIDATO",
++    "DOIS_CANDIDATOS",
++    "MULTIPLOS_AMBIGUOS",
++}
++GREEN_INTERPRETATIONS = {
++    "SEM_DECISAO",
++    "ESQUERDA",
++    "DIREITA",
++    "RETORNO_180",
++    "VERDE_FALSO",
++    "AMBIGUO",
++}
++VISIBLE_GREEN_INTERPRETATIONS = {
++    "ESQUERDA",
++    "DIREITA",
++    "RETORNO_180",
++}
++
++
++def frame_to_hsv(frame, camera_format="RGB888"):
++    """Converte o array da câmera para HSV respeitando a ordem real dos canais."""
++
++    if camera_format != "RGB888" or CAMERA_ARRAY_COLOR_ORDER != "BGR":
++        raise ValueError("Formato ou ordem de canais não suportados para HSV.")
++    return cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
++
++
++def rgb_pixel_to_camera_array(red, green, blue):
++    """Representa uma cor RGB na ordem BGR entregue por capture_array."""
++
++    if CAMERA_ARRAY_COLOR_ORDER != "BGR":
++        raise ValueError("Ordem de canais inesperada.")
++    return int(blue), int(green), int(red)
++
++
++def is_hsv_green(hue, saturation, value):
++    """Aplica aos pixels sintéticos os mesmos limites usados por cv2.inRange."""
++
++    return (
++        GREEN_HUE_MIN <= int(hue) <= GREEN_HUE_MAX
++        and int(saturation) >= GREEN_SATURATION_MIN
++        and int(value) >= GREEN_VALUE_MIN
++    )
++
++
++def create_green_mask(
++    frame,
++    green_end_y,
++    camera_format="RGB888",
++    green_start_y=0,
++):
++    """Segmenta verde entre a zona morta superior e o limite verde inferior."""
++
++    useful_end_y = max(0, min(frame.shape[0], int(green_end_y)))
++    useful_start_y = max(0, min(useful_end_y, int(green_start_y)))
++    green_mask = np.zeros(
++        (useful_end_y, frame.shape[1]),
++        dtype=np.uint8,
++    )
++    if useful_start_y >= useful_end_y:
++        return green_mask
++
++    useful_frame = frame[useful_start_y:useful_end_y, :]
++    hsv_frame = frame_to_hsv(useful_frame, camera_format)
++    useful_green_mask = cv2.inRange(
++        hsv_frame,
++        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
++        (GREEN_HUE_MAX, 255, 255),
++    )
++    if cv2.countNonZero(useful_green_mask) == 0:
++        return green_mask
++    green_kernel_size = scaled_odd_kernel_size(
++        GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
++    )
++    open_kernel = cv2.getStructuringElement(
++        cv2.MORPH_RECT,
++        (green_kernel_size, green_kernel_size),
++    )
++    close_kernel = cv2.getStructuringElement(
++        cv2.MORPH_RECT,
++        (green_kernel_size, green_kernel_size),
++    )
++    useful_green_mask = cv2.morphologyEx(
++        useful_green_mask,
++        cv2.MORPH_OPEN,
++        open_kernel,
++        iterations=GREEN_OPEN_ITERATIONS,
++    )
++    useful_green_mask = cv2.morphologyEx(
++        useful_green_mask,
++        cv2.MORPH_CLOSE,
++        close_kernel,
++        iterations=GREEN_CLOSE_ITERATIONS,
++    )
++    green_mask[useful_start_y:useful_end_y, :] = useful_green_mask
++    return green_mask
++
++
++def create_green_mask_stages(
++    frame,
++    green_end_y,
++    camera_format="RGB888",
++    green_start_y=0,
++):
++    """Expõe as etapas da segmentação dentro dos mesmos limites verticais."""
++
++    useful_end_y = max(0, min(frame.shape[0], int(green_end_y)))
++    useful_start_y = max(0, min(useful_end_y, int(green_start_y)))
++    hsv_frame = np.zeros(
++        (useful_end_y, frame.shape[1], 3),
++        dtype=np.uint8,
++    )
++    empty_mask = np.zeros(
++        (useful_end_y, frame.shape[1]),
++        dtype=np.uint8,
++    )
++    if useful_start_y >= useful_end_y:
++        return (
++            hsv_frame,
++            empty_mask,
++            empty_mask.copy(),
++            empty_mask.copy(),
++            empty_mask.copy(),
++        )
++
++    useful_frame = frame[useful_start_y:useful_end_y, :]
++    useful_hsv_frame = frame_to_hsv(useful_frame, camera_format)
++    useful_hue_mask = cv2.inRange(
++        useful_hsv_frame,
++        (GREEN_HUE_MIN, 0, 0),
++        (GREEN_HUE_MAX, 255, 255),
++    )
++    useful_hue_saturation_mask = cv2.inRange(
++        useful_hsv_frame,
++        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, 0),
++        (GREEN_HUE_MAX, 255, 255),
++    )
++    useful_hsv_mask = cv2.inRange(
++        useful_hsv_frame,
++        (GREEN_HUE_MIN, GREEN_SATURATION_MIN, GREEN_VALUE_MIN),
++        (GREEN_HUE_MAX, 255, 255),
++    )
++    useful_final_mask = useful_hsv_mask.copy()
++    if cv2.countNonZero(useful_hsv_mask) > 0:
++        green_kernel_size = scaled_odd_kernel_size(
++            GREEN_OPEN_KERNEL_SIZE, frame.shape[0]
++        )
++        open_kernel = cv2.getStructuringElement(
++            cv2.MORPH_RECT,
++            (green_kernel_size, green_kernel_size),
++        )
++        close_kernel = cv2.getStructuringElement(
++            cv2.MORPH_RECT,
++            (green_kernel_size, green_kernel_size),
++        )
++        useful_final_mask = cv2.morphologyEx(
++            useful_final_mask,
++            cv2.MORPH_OPEN,
++            open_kernel,
++            iterations=GREEN_OPEN_ITERATIONS,
++        )
++        useful_final_mask = cv2.morphologyEx(
++            useful_final_mask,
++            cv2.MORPH_CLOSE,
++            close_kernel,
++            iterations=GREEN_CLOSE_ITERATIONS,
++        )
++    hue_mask = empty_mask.copy()
++    hue_saturation_mask = empty_mask.copy()
++    hsv_mask = empty_mask.copy()
++    final_mask = empty_mask.copy()
++    active_rows = slice(useful_start_y, useful_end_y)
++    hsv_frame[active_rows, :] = useful_hsv_frame
++    hue_mask[active_rows, :] = useful_hue_mask
++    hue_saturation_mask[active_rows, :] = useful_hue_saturation_mask
++    hsv_mask[active_rows, :] = useful_hsv_mask
++    final_mask[active_rows, :] = useful_final_mask
++    return hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask
++
++
++def expanded_boxes_overlap(first_box, second_box, distance_px):
++    """Indica se dois fragmentos podem pertencer à mesma marcação verde."""
++
++    first_x, first_y, first_width, first_height = first_box
++    second_x, second_y, second_width, second_height = second_box
++    return not (
++        first_x + first_width + distance_px < second_x
++        or second_x + second_width + distance_px < first_x
++        or first_y + first_height + distance_px < second_y
++        or second_y + second_height + distance_px < first_y
++    )
++
++
++def group_fragment_boxes(
++    boxes,
++    distance_px=GREEN_FRAGMENT_MERGE_DISTANCE_PX,
++):
++    """Agrupa caixas próximas de forma transitiva antes de unir os contornos."""
++
++    groups = []
++    for box_index, box in enumerate(boxes):
++        matching_groups = []
++        for group_index, group in enumerate(groups):
++            if any(
++                expanded_boxes_overlap(box, boxes[index], distance_px)
++                for index in group
++            ):
++                matching_groups.append(group_index)
++        merged_group = [box_index]
++        for group_index in reversed(matching_groups):
++            merged_group.extend(groups.pop(group_index))
++        groups.append(merged_group)
++    return groups
++
++
++def merge_green_fragments(contours, frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT):
++    """Une fragmentos próximos para que um quadrado não seja contado duas vezes."""
++
++    valid_contours = [
++        contour
++        for contour in contours
++        if contour is not None and len(contour) >= 3
++    ]
++    boxes = [cv2.boundingRect(contour) for contour in valid_contours]
++    groups = group_fragment_boxes(
++        boxes,
++        distance_px=scaled_reference_pixels(
++            GREEN_FRAGMENT_MERGE_DISTANCE_PX, frame_height
++        ),
++    )
++    return [
++        cv2.convexHull(np.concatenate(
++            [valid_contours[index] for index in group], axis=0
++        ))
++        for group in groups
++    ]
++
++
++def green_geometry_is_valid(
++    area,
++    short_side,
++    aspect_ratio,
++    extent,
++    partial,
++    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
++):
++    """Aplica filtros amplos de tamanho e formato ao marcador oficial."""
++
++    dimension_scale = float(frame_height) / DOWNWARD_REFERENCE_FRAME_HEIGHT
++    minimum_area = GREEN_MIN_AREA_PX * dimension_scale * dimension_scale
++    minimum_dimension = scaled_reference_pixels(
++        GREEN_MIN_DIMENSION_PX, frame_height
++    )
++    minimum_aspect = GREEN_ASPECT_RATIO_MIN
++    minimum_extent = GREEN_MIN_EXTENT
++    if partial:
++        minimum_area *= GREEN_PARTIAL_AREA_FACTOR
++        minimum_dimension *= GREEN_PARTIAL_DIMENSION_FACTOR
++        minimum_aspect = GREEN_PARTIAL_ASPECT_RATIO_MIN
++        minimum_extent = GREEN_PARTIAL_EXTENT_MIN
++    return (
++        math.isfinite(float(area))
++        and float(area) >= minimum_area
++        and float(short_side) >= minimum_dimension
++        and minimum_aspect <= float(aspect_ratio) <= GREEN_ASPECT_RATIO_MAX
++        and float(extent) >= minimum_extent
++    )
++
++
++def contour_touches_useful_border(
++    box,
++    frame_width,
++    useful_height,
++    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
++):
++    """Marca candidatos parciais próximos de qualquer limite da área útil."""
++
++    x, y, width, height = box
++    tolerance = scaled_reference_pixels(
++        GREEN_PARTIAL_BORDER_TOLERANCE_PX, frame_height
++    )
++    return (
++        x <= tolerance
++        or y <= tolerance
++        or x + width >= frame_width - tolerance
++        or y + height >= useful_height - tolerance
++    )
++
++
++def describe_green_contour(
++    contour,
++    frame_width,
++    useful_height,
++    frame_height=DOWNWARD_REFERENCE_FRAME_HEIGHT,
++):
++    """Calcula a geometria local do candidato sem referência de controle."""
++
++    area = float(cv2.contourArea(contour))
++    box = cv2.boundingRect(contour)
++    rotated_rect = cv2.minAreaRect(contour)
++    rect_width, rect_height = rotated_rect[1]
++    short_side = min(float(rect_width), float(rect_height))
++    long_side = max(float(rect_width), float(rect_height))
++    aspect_ratio = short_side / long_side if long_side > 0.0 else 0.0
++    box_area = float(box[2] * box[3])
++    extent = area / box_area if box_area > 0.0 else 0.0
++    moments = cv2.moments(contour)
++    if moments["m00"] > 0.0:
++        center_x = float(moments["m10"] / moments["m00"])
++        center_y = float(moments["m01"] / moments["m00"])
++    else:
++        center_x = float(box[0] + box[2] / 2.0)
++        center_y = float(box[1] + box[3] / 2.0)
++    centroid = (center_x, center_y)
++    partial = contour_touches_useful_border(
++        box, frame_width, useful_height, frame_height
++    )
++
++    geometry_valid = green_geometry_is_valid(
++        area,
++        short_side,
++        aspect_ratio,
++        extent,
++        partial,
++        frame_height,
++    )
++
++    return {
++        "contour": contour,
++        "area": area,
++        "centroid": centroid,
++        "bounding_box": box,
++        "rotated_rect": rotated_rect,
++        "short_side": short_side,
++        "long_side": long_side,
++        "aspect_ratio": aspect_ratio,
++        "extent": extent,
++        "partial": partial,
++        "geometry_valid": geometry_valid,
++        "frameHeight": int(frame_height),
++    }
++
++
++def find_green_candidates(
++    frame,
++    green_end_y,
++    camera_format="RGB888",
++    green_start_y=0,
++    timings=None,
++):
++    """Segmenta e separa candidatos geométricos de ruídos verdes rejeitados."""
++
++    mask_started = time.perf_counter() if timings is not None else 0.0
++    green_mask = create_green_mask(
++        frame,
++        green_end_y,
++        camera_format,
++        green_start_y,
++    )
++    if timings is not None:
++        timings["green_mask_ms"] = (
++            time.perf_counter() - mask_started
++        ) * 1000.0
++    contours_started = time.perf_counter() if timings is not None else 0.0
++    contours, _ = cv2.findContours(
++        green_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
++    )
++    merged_contours = merge_green_fragments(contours, frame.shape[0])
++    candidates = []
++    rejected = []
++    scaled_minimum_area = green_minimum_area(
++        frame.shape[1], green_mask.shape[0]
++    )
++    for contour in merged_contours:
++        description = describe_green_contour(
++            contour,
++            frame.shape[1],
++            green_mask.shape[0],
++            frame.shape[0],
++        )
++        description["scaled_minimum_area"] = scaled_minimum_area
++        description["scaled_area_valid"] = (
++            description["area"] > scaled_minimum_area
++        )
++        # O teste estrito preserva o comportamento original de area > 4000.
++        if (
++            not description["scaled_area_valid"]
++            or not description["geometry_valid"]
++        ):
++            rejected.append(description)
++            continue
++        candidates.append(description)
++    candidates.sort(key=lambda candidate: candidate["area"], reverse=True)
++    if timings is not None:
++        timings["green_contours_ms"] = (
++            time.perf_counter() - contours_started
++        ) * 1000.0
++    return green_mask, candidates, rejected
++
++
++def green_minimum_area(frame_width, useful_height):
++    """Escala os 2.600 px de referência pela área útil da resolução atual."""
++
++    return float(frame_width) * float(useful_height) * GREEN_MIN_AREA_RATIO
++
++
++def camera_array_rgb_channels(frame):
++    """Nomeia os canais segundo a ordem que o detector realmente interpreta."""
++
++    if CAMERA_ARRAY_COLOR_ORDER != "BGR":
++        raise ValueError("Ordem de canais inesperada para o diagnóstico verde.")
++    blue = frame[:, :, 0]
++    green = frame[:, :, 1]
++    red = frame[:, :, 2]
++    return red, green, blue
++
++
++def channel_percentiles(channel):
++    """Resume um canal da região útil com percentis comparáveis entre ensaios."""
++
++    values = np.percentile(channel, (1, 5, 50, 95, 99))
++    return {
++        "p01": float(values[0]),
++        "p05": float(values[1]),
++        "p50": float(values[2]),
++        "p95": float(values[3]),
++        "p99": float(values[4]),
++    }
++
++
++def mask_active_percent(mask):
++    """Calcula a fração ativa da máscara em porcentagem da região útil."""
++
++    return (
++        100.0 * float(cv2.countNonZero(mask)) / float(mask.size)
++        if mask.size > 0
++        else 0.0
++    )
++
++
++def green_geometry_rejection_reasons(candidate):
++    """Detalha quais filtros geométricos vigentes rejeitaram um componente."""
++
++    partial = bool(candidate["partial"])
++    frame_height = candidate.get(
++        "frameHeight", DOWNWARD_REFERENCE_FRAME_HEIGHT
++    )
++    dimension_scale = float(frame_height) / DOWNWARD_REFERENCE_FRAME_HEIGHT
++    minimum_area = GREEN_MIN_AREA_PX * dimension_scale * dimension_scale
++    minimum_dimension = scaled_reference_pixels(
++        GREEN_MIN_DIMENSION_PX, frame_height
++    )
++    minimum_aspect = GREEN_ASPECT_RATIO_MIN
++    minimum_extent = GREEN_MIN_EXTENT
++    if partial:
++        minimum_area *= GREEN_PARTIAL_AREA_FACTOR
++        minimum_dimension *= GREEN_PARTIAL_DIMENSION_FACTOR
++        minimum_aspect = GREEN_PARTIAL_ASPECT_RATIO_MIN
++        minimum_extent = GREEN_PARTIAL_EXTENT_MIN
++
++    reasons = []
++    if not candidate.get("scaled_area_valid", True):
++        reasons.append("area_below_scaled_reference")
++    if not math.isfinite(candidate["area"]) or candidate["area"] < minimum_area:
++        reasons.append("area_below_minimum")
++    if candidate["short_side"] < minimum_dimension:
++        reasons.append("dimension_below_minimum")
++    if not minimum_aspect <= candidate["aspect_ratio"] <= GREEN_ASPECT_RATIO_MAX:
++        reasons.append("aspect_ratio_outside_range")
++    if candidate["extent"] < minimum_extent:
++        reasons.append("extent_below_minimum")
++    return reasons
++
++
++def json_safe_camera_metadata(metadata):
++    """Seleciona apenas metadados necessários e converte valores para JSON."""
++
++    def safe_value(value):
++        if value is None or isinstance(value, (str, bool, int)):
++            return value
++        if isinstance(value, float):
++            return value if math.isfinite(value) else None
++        if isinstance(value, (tuple, list)):
++            return [safe_value(item) for item in value]
++        try:
++            converted = float(value)
++            return converted if math.isfinite(converted) else None
++        except (TypeError, ValueError):
++            return str(value)
++
++    names = (
++        "ExposureTime",
++        "AnalogueGain",
++        "ColourGains",
++        "ColourTemperature",
++        "AwbEnable",
++        "AeEnable",
++    )
++    return {name: safe_value(metadata.get(name)) for name in names}
++
++
++def component_pixel_statistics(candidate, useful_frame, hsv_frame, final_mask):
++    """Mede cor somente nos pixels finais pertencentes ao componente."""
++
++    component_mask = np.zeros(final_mask.shape, dtype=np.uint8)
++    cv2.drawContours(component_mask, [candidate["contour"]], -1, 255, -1)
++    active_pixels = (component_mask > 0) & (final_mask > 0)
++    red, green, blue = camera_array_rgb_channels(useful_frame)
++    hue = hsv_frame[:, :, 0][active_pixels]
++    saturation = hsv_frame[:, :, 1][active_pixels]
++    value = hsv_frame[:, :, 2][active_pixels]
++    red_values = red[active_pixels]
++    green_values = green[active_pixels]
++    blue_values = blue[active_pixels]
++    dominance = green_values.astype(np.int16) - np.maximum(
++        red_values, blue_values
++    ).astype(np.int16)
++
++    def median(values):
++        return float(np.median(values)) if values.size else 0.0
++
++    def range_summary(values):
++        if not values.size:
++            return {"min": 0.0, "median": 0.0, "max": 0.0}
++        return {
++            "min": float(np.min(values)),
++            "median": median(values),
++            "max": float(np.max(values)),
++        }
++
++    return {
++        "sampled_pixel_count": int(np.count_nonzero(active_pixels)),
++        "hue_median": median(hue),
++        "saturation": range_summary(saturation),
++        "value": range_summary(value),
++        "rgb_medians": {
++            "red": median(red_values),
++            "green": median(green_values),
++            "blue": median(blue_values),
++        },
++        "green_dominance_median": median(dominance),
++    }
++
++
++def build_green_capture_stats(
++    frame,
++    camera_format,
++    mask_stages,
++    candidates,
++    rejected,
++    interpretation,
++    camera_metadata,
++    camera_exposure_value=DEFAULT_CAPTURE_EXPOSURE_VALUE,
++):
++    """Monta a evidência one-shot do pipeline antes de desenhar o overlay."""
++
++    hsv_frame, hue_mask, hue_saturation_mask, hsv_mask, final_mask = mask_stages
++    useful_frame = frame[:hsv_frame.shape[0], :]
++    red, green, blue = camera_array_rgb_channels(useful_frame)
++    dominance = green.astype(np.int16) - np.maximum(red, blue).astype(np.int16)
++    hsv_contours, _ = cv2.findContours(
++        hsv_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
++    )
++    final_contours, _ = cv2.findContours(
++        final_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
++    )
++    all_components = [
++        (candidate, True) for candidate in candidates
++    ] + [
++        (candidate, False) for candidate in rejected
++    ]
++    component_stats = []
++    for component_id, (candidate, accepted) in enumerate(all_components, start=1):
++        geometry_reasons = green_geometry_rejection_reasons(candidate)
++        reason = "geometria válida" if accepted else ", ".join(geometry_reasons)
++        hull_area = float(cv2.contourArea(cv2.convexHull(candidate["contour"])))
++        component_stats.append({
++            "id": component_id,
++            "area": float(candidate["area"]),
++            "bbox": [int(value) for value in candidate["bounding_box"]],
++            "centroid": [float(value) for value in candidate["centroid"]],
++            "partial": bool(candidate["partial"]),
++            "aspect_ratio": float(candidate["aspect_ratio"]),
++            "extent": float(candidate["extent"]),
++            "solidity": (
++                float(candidate["area"] / hull_area) if hull_area > 0.0 else 0.0
++            ),
++            "geometry_valid": bool(candidate["geometry_valid"]),
++            "accepted": accepted,
++            "rejected": not accepted,
++            "reason": reason,
++            **component_pixel_statistics(
++                candidate, useful_frame, hsv_frame, final_mask
++            ),
++        })
++
++    return {
++        "captured_at_unix_seconds": time.time(),
++        "detector_region": {
++            "x": 0,
++            "y": 0,
++            "width": int(useful_frame.shape[1]),
++            "height": int(useful_frame.shape[0]),
++        },
++        "camera": {
++            "requested_format": camera_format,
++            "detector_array_order": CAMERA_ARRAY_COLOR_ORDER,
++            "requested_controls": {
++                "AwbEnable": True,
++                "AeEnable": True,
++                "ExposureValue": float(camera_exposure_value),
++            },
++            "metadata": json_safe_camera_metadata(camera_metadata),
++        },
++        "thresholds": {
++            "hue": [GREEN_HUE_MIN, GREEN_HUE_MAX],
++            "saturation_min": GREEN_SATURATION_MIN,
++            "value_min": GREEN_VALUE_MIN,
++            "open_kernel": [GREEN_OPEN_KERNEL_SIZE, GREEN_OPEN_KERNEL_SIZE],
++            "close_kernel": [GREEN_CLOSE_KERNEL_SIZE, GREEN_CLOSE_KERNEL_SIZE],
++            "minimum_area_px": GREEN_MIN_AREA_PX,
++            "minimum_dimension_px": GREEN_MIN_DIMENSION_PX,
++            "aspect_ratio": [GREEN_ASPECT_RATIO_MIN, GREEN_ASPECT_RATIO_MAX],
++            "minimum_extent": GREEN_MIN_EXTENT,
++            "solidity_filter_enabled": False,
++            "fragment_merge_distance_px": GREEN_FRAGMENT_MERGE_DISTANCE_PX,
++        },
++        "frame_percentiles": {
++            "array_channels": {
++                "channel_0": channel_percentiles(useful_frame[:, :, 0]),
++                "channel_1": channel_percentiles(useful_frame[:, :, 1]),
++                "channel_2": channel_percentiles(useful_frame[:, :, 2]),
++            },
++            "rgb": {
++                "red": channel_percentiles(red),
++                "green": channel_percentiles(green),
++                "blue": channel_percentiles(blue),
++            },
++            "hsv": {
++                "hue": channel_percentiles(hsv_frame[:, :, 0]),
++                "saturation": channel_percentiles(hsv_frame[:, :, 1]),
++                "value": channel_percentiles(hsv_frame[:, :, 2]),
++            },
++        },
++        "mean_green_dominance": float(np.mean(dominance)),
++        "mask_active_percent": {
++            "hue_only": mask_active_percent(hue_mask),
++            "hue_and_saturation": mask_active_percent(hue_saturation_mask),
++            "full_hsv": mask_active_percent(hsv_mask),
++            "after_morphology": mask_active_percent(final_mask),
++        },
++        "mask_active_pixels": {
++            "hue_only": int(cv2.countNonZero(hue_mask)),
++            "hue_and_saturation": int(cv2.countNonZero(hue_saturation_mask)),
++            "full_hsv": int(cv2.countNonZero(hsv_mask)),
++            "after_morphology": int(cv2.countNonZero(final_mask)),
++        },
++        "pipeline_counts": {
++            "hsv_mask_external_contours": len(hsv_contours),
++            "final_mask_external_contours": len(final_contours),
++            "accepted_candidates": len(candidates),
++            "rejected_candidates": len(rejected),
++            "detector_components_after_merge": len(all_components),
++        },
++        "interpretation": interpretation.get("interpretation", "SEM_DECISAO"),
++        "components": component_stats,
++    }
++
++
++def save_green_capture(
++    frame,
++    camera_format,
++    mask_stages,
++    candidates,
++    rejected,
++    interpretation,
++    camera_metadata,
++    camera_exposure_value=DEFAULT_CAPTURE_EXPOSURE_VALUE,
++):
++    """Grava uma captura diagnóstica completa por substituições atômicas."""
++
++    _hsv_frame, _hue_mask, _hue_saturation_mask, hsv_mask, final_mask = (
++        mask_stages
++    )
++    candidates_image = frame.copy()
++    for component_id, candidate in enumerate(candidates, start=1):
++        cv2.drawContours(
++            candidates_image, [candidate["contour"]], -1, (0, 255, 0), 2
++        )
++        center = tuple(int(round(value)) for value in candidate["centroid"])
++        cv2.putText(
++            candidates_image, str(component_id), center,
++            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA,
++        )
++    rejected_id_start = len(candidates) + 1
++    for offset, candidate in enumerate(rejected):
++        component_id = rejected_id_start + offset
++        cv2.drawContours(
++            candidates_image, [candidate["contour"]], -1, (180, 80, 180), 1
++        )
++        center = tuple(int(round(value)) for value in candidate["centroid"])
++        cv2.putText(
++            candidates_image, str(component_id), center,
++            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 80, 180), 1, cv2.LINE_AA,
++        )
++
++    stats = build_green_capture_stats(
++        frame,
++        camera_format,
++        mask_stages,
++        candidates,
++        rejected,
++        interpretation,
++        camera_metadata,
++        camera_exposure_value,
++    )
++    image_outputs = (
++        (GREEN_CAPTURE_RAW_PATH, "/dev/shm/.obr_green_raw.tmp.png", frame),
++        (
++            GREEN_CAPTURE_HSV_MASK_PATH,
++            "/dev/shm/.obr_green_hsv_mask.tmp.png",
++            hsv_mask,
++        ),
++        (
++            GREEN_CAPTURE_FINAL_MASK_PATH,
++            "/dev/shm/.obr_green_final_mask.tmp.png",
++            final_mask,
++        ),
++        (
++            GREEN_CAPTURE_CANDIDATES_PATH,
++            "/dev/shm/.obr_green_candidates.tmp.png",
++            candidates_image,
++        ),
++    )
++    temporary_paths = [temporary for _target, temporary, _image in image_outputs]
++    temporary_paths.append("/dev/shm/.obr_green_stats.tmp.json")
++    try:
++        for _target, temporary, image in image_outputs:
++            if not cv2.imwrite(temporary, image):
++                raise OSError(f"Não foi possível gravar {temporary}.")
++        with open(temporary_paths[-1], "w", encoding="utf-8") as stats_file:
++            json.dump(stats, stats_file, indent=2, allow_nan=False)
++        for target, temporary, _image in image_outputs:
++            os.replace(temporary, target)
++        os.replace(temporary_paths[-1], GREEN_CAPTURE_STATS_PATH)
++    finally:
++        for temporary in temporary_paths:
++            try:
++                os.unlink(temporary)
++            except FileNotFoundError:
++                pass
++
++
++def green_observation_state(candidate_count):
++    """Converte a quantidade de marcações geométricas no estado de observação."""
++
++    if candidate_count <= 0:
++        return "SEM_VERDE"
++    if candidate_count == 1:
++        return "UM_CANDIDATO"
++    if candidate_count == 2:
++        return "DOIS_CANDIDATOS"
++    return "MULTIPLOS_AMBIGUOS"
++
++
++def empty_green_status():
++    """Cria um estado verde finito e seguro para publicação diagnóstica."""
++
++    return {
++        "greenObservationState": "SEM_VERDE",
++        "greenInterpretation": "SEM_DECISAO",
++        "greenConfirmed": False,
++        "greenRawInterpretation": "SEM_DECISAO",
++        "greenDecisionState": "idle",
++        "greenPathBlackValid": False,
++        "greenCandidateCount": 0,
++        "greenRejectedCount": 0,
++        "greenMarkerCount": 0,
++        "greenValidatedMarkerCount": 0,
++        "greenFrontRoiMeasured": False,
++        "greenFrontBlackRatio": 0.0,
++        "greenFrontRoiValid": False,
++        "greenLeftRoiMeasured": False,
++        "greenLeftBlackRatio": 0.0,
++        "greenLeftRoiValid": False,
++        "greenRightRoiMeasured": False,
++        "greenRightBlackRatio": 0.0,
++        "greenRightRoiValid": False,
++        "greenLeftSeen": False,
++        "greenRightSeen": False,
++        "greenPairCompatible": False,
++        "greenPrimaryX": 0.0,
++        "greenPrimaryY": 0.0,
++        "greenPrimaryArea": 0.0,
++        "greenSecondaryX": 0.0,
++        "greenSecondaryY": 0.0,
++        "greenSecondaryArea": 0.0,
++        "greenConsecutiveSamples": 0,
++        "greenProcessingMs": 0.0,
++    }
++
++
++def green_marker_roi_geometry(contour, frame_width):
++    """Calcula as ROIs horizontal e superior ao redor do marcador verde."""
++
++    box = cv2.boxPoints(cv2.minAreaRect(contour))
++    minimum_x = float(np.min(box[:, 0]))
++    maximum_x = float(np.max(box[:, 0]))
++    minimum_y = float(np.min(box[:, 1]))
++    maximum_y = float(np.max(box[:, 1]))
++    center_x = int(round((minimum_x + maximum_x) / 2.0))
++    center_y = int(round((minimum_y + maximum_y) / 2.0))
++    half_size = max(1, int(frame_width) // GREEN_ROI_HALF_SIZE_DIVISOR)
++
++    # A ROI horizontal cruza o marcador e mede separadamente somente as partes
++    # externas à esquerda e à direita. Assim existe uma única ROI lateral.
++    horizontal_roi = (
++        int(round(minimum_x)) - 2 * half_size,
++        center_y - half_size,
++        int(round(maximum_x)) + 2 * half_size,
++        center_y + half_size,
++    )
++    # A ROI superior é perpendicular à horizontal. Ela deve ter amostra
++    # visível antes que o marcador possa ser chamado de verdadeiro ou falso.
++    upper_roi = (
++        center_x - half_size,
++        int(round(minimum_y)) - 3 * half_size,
++        center_x + half_size,
++        int(round(minimum_y)),
++    )
++    return {
++        "box": box,
++        "center": (center_x, center_y),
++        "marker_horizontal_bounds": (
++            int(round(minimum_x)),
++            int(round(maximum_x)),
++        ),
++        "horizontal_roi": horizontal_roi,
++        "upper_roi": upper_roi,
++    }
++
++
++def measure_black_roi(black_mask, roi):
++    """Mede preto somente quando ao menos metade da ROI permanece na imagem."""
++
++    x1, y1, x2, y2 = (int(value) for value in roi)
++    nominal_width = max(0, x2 - x1)
++    nominal_height = max(0, y2 - y1)
++    nominal_area = nominal_width * nominal_height
++    if black_mask is None or black_mask.size == 0 or nominal_area <= 0:
++        return {
++            "measured": False,
++            "valid": False,
++            "black_ratio": 0.0,
++            "visible_ratio": 0.0,
++        }
++
++    clipped_x1 = max(0, min(black_mask.shape[1], x1))
++    clipped_y1 = max(0, min(black_mask.shape[0], y1))
++    clipped_x2 = max(0, min(black_mask.shape[1], x2))
++    clipped_y2 = max(0, min(black_mask.shape[0], y2))
++    visible_width = max(0, clipped_x2 - clipped_x1)
++    visible_height = max(0, clipped_y2 - clipped_y1)
++    visible_area = visible_width * visible_height
++    visible_ratio = visible_area / nominal_area
++    if visible_area <= 0 or visible_ratio < GREEN_ROI_MIN_VISIBLE_RATIO:
++        return {
++            "measured": False,
++            "valid": False,
++            "black_ratio": 0.0,
++            "visible_ratio": visible_ratio,
++        }
++
++    region = black_mask[clipped_y1:clipped_y2, clipped_x1:clipped_x2]
++    black_ratio = float(np.count_nonzero(region > 0)) / visible_area
++    return {
++        "measured": True,
++        "valid": black_ratio >= GREEN_ROI_MIN_BLACK_RATIO,
++        "black_ratio": black_ratio,
++        "visible_ratio": visible_ratio,
++    }
++
++
++def measure_horizontal_black_roi(black_mask, geometry):
++    """Mede os dois lados dentro da única ROI horizontal."""
++
++    x1, y1, x2, y2 = geometry["horizontal_roi"]
++    marker_left_x, marker_right_x = geometry["marker_horizontal_bounds"]
++    left = measure_black_roi(
++        black_mask,
++        (x1, y1, marker_left_x, y2),
++    )
++    right = measure_black_roi(
++        black_mask,
++        (marker_right_x, y1, x2, y2),
++    )
++    return {
++        "measured": left["measured"] and right["measured"],
++        "valid": left["valid"] or right["valid"],
++        "left_measured": left["measured"],
++        "left_valid": left["valid"],
++        "left_black_ratio": left["black_ratio"],
++        "right_measured": right["measured"],
++        "right_valid": right["valid"],
++        "right_black_ratio": right["black_ratio"],
++    }
++
++
++def analyze_green_marker_contours(green_contours, selected_black_mask):
++    """Classifica o verde pelas ROIs horizontal e superior."""
++
++    result = {
++        "interpretation": "SEM_DECISAO",
++        "observation_state": "SEM_VERDE",
++        "left_seen": False,
++        "right_seen": False,
++        "pair_compatible": False,
++        "path_black_valid": False,
++        "markers": [],
++    }
++    if selected_black_mask is None or selected_black_mask.size == 0:
++        return result
++
++    upper_valid_markers = []
++    upper_measurement_missing = False
++    for contour in green_contours:
++        geometry = green_marker_roi_geometry(
++            contour,
++            selected_black_mask.shape[1],
++        )
++        upper_measurement = measure_black_roi(
++            selected_black_mask,
++            geometry["upper_roi"],
++        )
++        marker = {
++            "contour": contour,
++            "geometry": geometry,
++            "upper": upper_measurement,
++            "horizontal": measure_horizontal_black_roi(
++                selected_black_mask,
++                geometry,
++            ),
++        }
++        result["markers"].append(marker)
++        if upper_measurement["valid"]:
++            upper_valid_markers.append(marker)
++        elif not upper_measurement["measured"]:
++            upper_measurement_missing = True
++
++    result["observation_state"] = green_observation_state(len(green_contours))
++    if green_contours and upper_measurement_missing:
++        # Nenhuma classificação verdadeira ou falsa é publicada enquanto
++        # uma ROI superior ainda não possui área visível suficiente.
++        result["interpretation"] = "AMBIGUO"
++        return result
++    if not upper_valid_markers:
++        if green_contours:
++            result["interpretation"] = "VERDE_FALSO"
++        return result
++
++    for marker in upper_valid_markers:
++        horizontal = marker["horizontal"]
++        left_valid = horizontal["left_valid"]
++        right_valid = horizontal["right_valid"]
++        marker["interpretation"] = (
++            "AMBIGUO" if not horizontal["measured"] else
++            "DIREITA" if left_valid and not right_valid else
++            "ESQUERDA" if right_valid and not left_valid else
++            "AMBIGUO"
++        )
++
++    if len(upper_valid_markers) > 2:
++        result["interpretation"] = "AMBIGUO"
++        return result
++
++    if len(upper_valid_markers) == 2:
++        first, second = upper_valid_markers
++        first_center = np.mean(first["geometry"]["box"], axis=0)
++        second_center = np.mean(second["geometry"]["box"], axis=0)
++        first_height = float(np.ptp(first["geometry"]["box"][:, 1]))
++        second_height = float(np.ptp(second["geometry"]["box"][:, 1]))
++        vertical_tolerance = (
++            GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS
++            * max(1.0, first_height, second_height)
++        )
++        directions = {
++            first["interpretation"],
++            second["interpretation"],
++        }
++        pair_compatible = (
++            directions == {"ESQUERDA", "DIREITA"}
++            and abs(float(first_center[1] - second_center[1]))
++            <= vertical_tolerance
++        )
++        result["left_seen"] = "ESQUERDA" in directions
++        result["right_seen"] = "DIREITA" in directions
++        result["pair_compatible"] = pair_compatible
++        if not pair_compatible:
++            result["interpretation"] = "AMBIGUO"
++            return result
++        result.update({
++            "interpretation": "RETORNO_180",
++            "left_seen": True,
++            "right_seen": True,
++            "pair_compatible": True,
++            "path_black_valid": True,
++        })
++        return result
++
++    marker = upper_valid_markers[0]
++    interpretation = marker["interpretation"]
++    result["interpretation"] = interpretation
++    result["left_seen"] = interpretation == "ESQUERDA"
++    result["right_seen"] = interpretation == "DIREITA"
++    result["path_black_valid"] = interpretation in (
++        "ESQUERDA",
++        "DIREITA",
++    )
++    return result
++
++
++def build_green_status(
++    candidates,
++    rejected_count,
++    interpretation_result,
++    tracker_result,
++    processing_ms,
++):
++    """Monta os campos diagnósticos sem permitir NaN no JSON rápido."""
++
++    status = empty_green_status()
++    published_interpretation, confirmed, consecutive_samples = tracker_result
++    status.update({
++        "greenObservationState": interpretation_result["observation_state"],
++        "greenInterpretation": published_interpretation,
++        "greenConfirmed": confirmed,
++        "greenCandidateCount": len(candidates),
++        "greenRejectedCount": int(rejected_count),
++        "greenLeftSeen": interpretation_result["left_seen"],
++        "greenRightSeen": interpretation_result["right_seen"],
++        "greenPairCompatible": interpretation_result["pair_compatible"],
++        "greenConsecutiveSamples": int(consecutive_samples),
++        "greenProcessingMs": float(processing_ms),
++    })
++
++    # A ROI superior valida a associação com a faixa. Os campos laterais
++    # preservam o IPC, mas agora descrevem as metades da única ROI horizontal.
++    markers = interpretation_result.get("markers", [])
++    upper_valid_markers = [
++        marker for marker in markers
++        if marker.get("upper", {}).get("valid", False)
++    ]
++    status["greenMarkerCount"] = len(markers)
++    status["greenValidatedMarkerCount"] = len(upper_valid_markers)
++    diagnostic_marker = (
++        upper_valid_markers[0] if upper_valid_markers else
++        (markers[0] if markers else None)
++    )
++    if diagnostic_marker is not None:
++        upper = diagnostic_marker.get("upper", {})
++        status["greenFrontRoiMeasured"] = bool(
++            upper.get("measured", False)
++        )
++        status["greenFrontBlackRatio"] = float(
++            upper.get("black_ratio", 0.0)
++        )
++        status["greenFrontRoiValid"] = bool(upper.get("valid", False))
++        horizontal = diagnostic_marker.get("horizontal", {})
++        for prefix, side in (("greenLeft", "left"), ("greenRight", "right")):
++            status[f"{prefix}RoiMeasured"] = bool(
++                horizontal.get(f"{side}_measured", False)
++            )
++            status[f"{prefix}BlackRatio"] = float(
++                horizontal.get(f"{side}_black_ratio", 0.0)
++            )
++            status[f"{prefix}RoiValid"] = bool(
++                horizontal.get(f"{side}_valid", False)
++            )
++    for prefix, candidate in zip(("greenPrimary", "greenSecondary"), candidates):
++        status[f"{prefix}X"] = float(candidate["centroid"][0])
++        status[f"{prefix}Y"] = float(candidate["centroid"][1])
++        status[f"{prefix}Area"] = float(candidate["area"])
++
++    for key, value in tuple(status.items()):
++        if isinstance(value, float) and not math.isfinite(value):
++            status[key] = 0.0
++    if status["greenObservationState"] not in GREEN_OBSERVATION_STATES:
++        status["greenObservationState"] = "SEM_VERDE"
++    if status["greenInterpretation"] not in GREEN_INTERPRETATIONS:
++        status["greenInterpretation"] = "SEM_DECISAO"
++        status["greenConfirmed"] = False
++    return status
+
+--- local/scripts/vision/green_observation.py
++++ deployed/scripts/vision/green_observation.py
+@@ -0,0 +1,146 @@
++"""Confirma e retém temporalmente as interpretações dos marcadores verdes."""
++
++import time
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class GreenObservationConfig:
++    """Agrupa as confirmações e a retenção temporal do detector verde."""
++
++    # Quantidade mínima de frames iguais para publicar uma interpretação.
++    confirmation_frames: int = 2
++    # Marcadores laterais também precisam desta quantidade de observações.
++    single_observation_frames: int = 2
++    # Ausências consecutivas exigidas para apagar uma decisão não lateral.
++    clear_hysteresis_frames: int = 2
++    # Tempo, em segundos, que preserva o último lado realmente observado.
++    direction_retention_seconds: float = 0.3
++
++    def __post_init__(self):
++        for name, value in (
++            ("confirmation_frames", self.confirmation_frames),
++            ("single_observation_frames", self.single_observation_frames),
++            ("clear_hysteresis_frames", self.clear_hysteresis_frames),
++        ):
++            if value <= 0:
++                raise ValueError(f"{name} deve ser positivo")
++        if self.direction_retention_seconds < 0.0:
++            raise ValueError(
++                "direction_retention_seconds não pode ser negativo"
++            )
++
++
++DEFAULT_GREEN_OBSERVATION_CONFIG = GreenObservationConfig()
++
++# Aliases preservam a API consumida pelo entrypoint e pelos testes existentes.
++GREEN_CONFIRMATION_FRAMES = (
++    DEFAULT_GREEN_OBSERVATION_CONFIG.confirmation_frames
++)
++GREEN_SINGLE_OBSERVATION_FRAMES = (
++    DEFAULT_GREEN_OBSERVATION_CONFIG.single_observation_frames
++)
++GREEN_CLEAR_HYSTERESIS_FRAMES = (
++    DEFAULT_GREEN_OBSERVATION_CONFIG.clear_hysteresis_frames
++)
++GREEN_DIRECTION_RETENTION_SECONDS = (
++    DEFAULT_GREEN_OBSERVATION_CONFIG.direction_retention_seconds
++)
++
++
++class GreenObservationTracker:
++    """Confirma observações novas e remove decisões após curta histerese."""
++
++    def __init__(self, config=DEFAULT_GREEN_OBSERVATION_CONFIG):
++        self.config = config
++        self.last_sequence = None
++        self.pending_interpretation = "SEM_DECISAO"
++        self.consecutive_samples = 0
++        self.missing_samples = 0
++        self.confirmed_interpretation = "SEM_DECISAO"
++        self.last_direction_seen_at = None
++
++    def update(self, line_sequence, interpretation, observed_at=None):
++        """Confirma frames novos e retém brevemente a orientação lateral."""
++
++        observed_at = (
++            time.perf_counter() if observed_at is None else float(observed_at)
++        )
++        if line_sequence == self.last_sequence:
++            return (
++                self.confirmed_interpretation,
++                self.confirmed_interpretation != "SEM_DECISAO",
++                self.consecutive_samples,
++            )
++        self.last_sequence = line_sequence
++
++        if interpretation in ("ESQUERDA", "DIREITA"):
++            # O instante é renovado em todo frame detectado, inclusive durante
++            # a confirmação, para que a retenção conte da última visão real.
++            self.last_direction_seen_at = observed_at
++
++        if interpretation == "SEM_DECISAO":
++            direction_is_retained = (
++                self.confirmed_interpretation in ("ESQUERDA", "DIREITA")
++                and self.last_direction_seen_at is not None
++                and observed_at - self.last_direction_seen_at
++                < self.config.direction_retention_seconds
++            )
++            if direction_is_retained:
++                return (
++                    self.confirmed_interpretation,
++                    True,
++                    self.consecutive_samples,
++                )
++            if self.confirmed_interpretation in ("ESQUERDA", "DIREITA"):
++                self.pending_interpretation = "SEM_DECISAO"
++                self.confirmed_interpretation = "SEM_DECISAO"
++                self.consecutive_samples = 0
++                self.missing_samples = 0
++                return "SEM_DECISAO", False, 0
++            self.missing_samples += 1
++            if (
++                self.missing_samples
++                >= self.config.clear_hysteresis_frames
++            ):
++                self.pending_interpretation = "SEM_DECISAO"
++                self.confirmed_interpretation = "SEM_DECISAO"
++                self.consecutive_samples = 0
++            return (
++                self.confirmed_interpretation,
++                self.confirmed_interpretation != "SEM_DECISAO",
++                self.consecutive_samples,
++            )
++
++        self.missing_samples = 0
++        if interpretation != self.pending_interpretation:
++            self.pending_interpretation = interpretation
++            self.consecutive_samples = 1
++            self.confirmed_interpretation = "SEM_DECISAO"
++        else:
++            self.consecutive_samples += 1
++
++        required_samples = self.config.confirmation_frames
++        if interpretation in ("ESQUERDA", "DIREITA"):
++            required_samples = max(
++                required_samples,
++                self.config.single_observation_frames,
++            )
++        # A telemetria representa o progresso da confirmação, não há motivo
++        # para crescer sem limite depois de a decisão já estar aceita.
++        self.consecutive_samples = min(
++            self.consecutive_samples,
++            required_samples,
++        )
++        confirmable = interpretation not in ("AMBIGUO", "SEM_DECISAO")
++        if confirmable and self.consecutive_samples >= required_samples:
++            self.confirmed_interpretation = interpretation
++
++        published_interpretation = self.confirmed_interpretation
++        if interpretation == "AMBIGUO":
++            return "AMBIGUO", False, self.consecutive_samples
++        return (
++            published_interpretation,
++            self.confirmed_interpretation != "SEM_DECISAO",
++            self.consecutive_samples,
++        )
+
+--- local/scripts/vision/medium_spin.py
++++ deployed/scripts/vision/medium_spin.py
+@@ -0,0 +1,278 @@
++"""Estados críticos acionados pela leitura lateral do sensor MEDIUM."""
++
++from dataclasses import dataclass
++
++from .numeric import finite_virtual_position
++from .pivot import (
++    PIVOT_STATE_LEFT,
++    PIVOT_STATE_NONE,
++    PIVOT_STATE_RIGHT,
++)
++
++
++@dataclass(frozen=True)
++class MediumSpinConfig:
++    """Agrupa limiares e tempos do SPIN e do hard corner."""
++
++    # A histerese exige erro maior para entrar do que para permanecer no SPIN.
++    spin_enter_threshold: float = 0.45
++    spin_exit_threshold: float = 0.30
++    # Potência diferencial aplicada durante o giro no próprio eixo.
++    spin_power: float = 0.72
++    # Abaixo deste erro, o MEDIUM deixa de fornecer uma direção confiável.
++    direction_lost_threshold: float = 0.15
++    # Quantidade máxima de frames sem direção antes de cancelar o estado.
++    critical_invalid_max_frames: int = 10
++    # Limites que consideram a faixa novamente alinhada após um hard corner.
++    hard_corner_near_recovery_threshold: float = 0.18
++    hard_corner_medium_recovery_threshold: float = 0.20
++    # Confirmações consecutivas exigidas para devolver o controle ao normal.
++    hard_corner_recovery_frames: int = 2
++    hard_corner_far_recovery_frames: int = 2
++    # Em 30 FPS, trinta frames limitam o hard corner a cerca de um segundo.
++    hard_corner_max_frames: int = 30
++
++    def __post_init__(self):
++        if not (
++            0.0
++            < self.spin_exit_threshold
++            < self.spin_enter_threshold
++            <= 1.0
++        ):
++            raise ValueError(
++                "medium spin exige 0 < saída < entrada <= 1"
++            )
++        if not 0.0 < self.spin_power <= 1.0:
++            raise ValueError("spin_power deve estar em (0, 1]")
++        if not 0.0 <= self.direction_lost_threshold < self.spin_exit_threshold:
++            raise ValueError(
++                "direction_lost_threshold deve ficar abaixo da saída do spin"
++            )
++        if self.critical_invalid_max_frames < 0:
++            raise ValueError(
++                "critical_invalid_max_frames não pode ser negativo"
++            )
++        for name, value in (
++            (
++                "hard_corner_near_recovery_threshold",
++                self.hard_corner_near_recovery_threshold,
++            ),
++            (
++                "hard_corner_medium_recovery_threshold",
++                self.hard_corner_medium_recovery_threshold,
++            ),
++        ):
++            if not 0.0 <= value <= 1.0:
++                raise ValueError(f"{name} deve estar em [0, 1]")
++        for name, value in (
++            ("hard_corner_recovery_frames", self.hard_corner_recovery_frames),
++            (
++                "hard_corner_far_recovery_frames",
++                self.hard_corner_far_recovery_frames,
++            ),
++            ("hard_corner_max_frames", self.hard_corner_max_frames),
++        ):
++            if value <= 0:
++                raise ValueError(f"{name} deve ser positivo")
++
++
++DEFAULT_MEDIUM_SPIN_CONFIG = MediumSpinConfig()
++
++# Aliases preservam a API de configuração consumida pelo entrypoint e testes.
++VIRTUAL_MEDIUM_SPIN_ENTER_THRESHOLD = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.spin_enter_threshold
++)
++VIRTUAL_MEDIUM_SPIN_EXIT_THRESHOLD = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.spin_exit_threshold
++)
++VIRTUAL_MEDIUM_SPIN_POWER = DEFAULT_MEDIUM_SPIN_CONFIG.spin_power
++VIRTUAL_MEDIUM_DIRECTION_LOST_THRESHOLD = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.direction_lost_threshold
++)
++VIRTUAL_MEDIUM_CRITICAL_INVALID_MAX_FRAMES = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.critical_invalid_max_frames
++)
++VIRTUAL_HARD_CORNER_NEAR_RECOVERY_THRESHOLD = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.hard_corner_near_recovery_threshold
++)
++VIRTUAL_HARD_CORNER_MEDIUM_RECOVERY_THRESHOLD = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.hard_corner_medium_recovery_threshold
++)
++VIRTUAL_HARD_CORNER_RECOVERY_FRAMES = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.hard_corner_recovery_frames
++)
++VIRTUAL_HARD_CORNER_FAR_RECOVERY_FRAMES = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.hard_corner_far_recovery_frames
++)
++VIRTUAL_HARD_CORNER_MAX_FRAMES = (
++    DEFAULT_MEDIUM_SPIN_CONFIG.hard_corner_max_frames
++)
++
++
++class VirtualMediumSpinTracker:
++    """Mantém os SPINs do MEDIUM e a direção persistente do hard corner."""
++
++    def __init__(self, config=DEFAULT_MEDIUM_SPIN_CONFIG):
++        self.config = config
++        self.reset()
++
++    def reset(self):
++        """Cancela a ação crítica sem preservar a direção antiga."""
++
++        self.state = PIVOT_STATE_NONE
++        self.critical_state = PIVOT_STATE_NONE
++        self.invalid_frames = 0
++        self.hard_corner_state = PIVOT_STATE_NONE
++        self.hard_corner_frames = 0
++        self.hard_corner_recovery_frames = 0
++        self.hard_corner_far_recovery_frames = 0
++        self.hard_corner_entry_blocked = False
++        return self.state
++
++    def clear_hard_corner(self, block_entry=False):
++        """Limpa a manobra persistente e seus contadores internos."""
++
++        self.hard_corner_state = PIVOT_STATE_NONE
++        self.hard_corner_frames = 0
++        self.hard_corner_recovery_frames = 0
++        self.hard_corner_far_recovery_frames = 0
++        self.hard_corner_entry_blocked = bool(block_entry)
++        self.state = PIVOT_STATE_NONE
++        self.critical_state = PIVOT_STATE_NONE
++        self.invalid_frames = 0
++
++    def update(
++        self,
++        medium_position,
++        near_position_valid,
++        critical_entry_allowed=True,
++        hard_corner_entry_requested=False,
++        near_fine_position=None,
++        far_position=None,
++    ):
++        """Atualiza a ação crítica e limita a perda direcional do MEDIUM."""
++
++        medium_position = finite_virtual_position(medium_position)
++        near_fine_position = finite_virtual_position(near_fine_position)
++        far_position = finite_virtual_position(far_position)
++        if not hard_corner_entry_requested:
++            # Um timeout não pode reabrir a mesma manobra enquanto o gatilho
++            # contínuo permanecer ativo. A próxima observação distinta rearma.
++            self.hard_corner_entry_blocked = False
++
++        if (
++            self.hard_corner_state == PIVOT_STATE_NONE
++            and hard_corner_entry_requested
++            and not self.hard_corner_entry_blocked
++            and medium_position is not None
++        ):
++            # A direção observada na entrada permanece fixa durante todo o
++            # giro, mesmo que os sensores mudem de lado durante a rotação.
++            self.hard_corner_state = (
++                PIVOT_STATE_RIGHT
++                if medium_position > 0.0
++                else PIVOT_STATE_LEFT
++            )
++            self.hard_corner_frames = 0
++            self.hard_corner_recovery_frames = 0
++            self.hard_corner_far_recovery_frames = 0
++            self.critical_state = PIVOT_STATE_NONE
++            self.invalid_frames = 0
++
++        if self.hard_corner_state != PIVOT_STATE_NONE:
++            self.hard_corner_frames += 1
++            line_aligned = (
++                near_position_valid
++                and near_fine_position is not None
++                and abs(near_fine_position)
++                <= self.config.hard_corner_near_recovery_threshold
++                and medium_position is not None
++                and abs(medium_position)
++                <= self.config.hard_corner_medium_recovery_threshold
++            )
++            if line_aligned:
++                self.hard_corner_recovery_frames += 1
++            else:
++                self.hard_corner_recovery_frames = 0
++
++            if far_position is not None:
++                self.hard_corner_far_recovery_frames += 1
++            else:
++                self.hard_corner_far_recovery_frames = 0
++
++            hard_corner_recovered = (
++                self.hard_corner_recovery_frames
++                >= self.config.hard_corner_recovery_frames
++            )
++            hard_corner_far_recovered = (
++                self.hard_corner_far_recovery_frames
++                >= self.config.hard_corner_far_recovery_frames
++            )
++            hard_corner_timed_out = (
++                self.hard_corner_frames >= self.config.hard_corner_max_frames
++            )
++            if hard_corner_recovered or hard_corner_far_recovered:
++                # O mesmo frame já volta ao fluxo normal ou ao recovery.
++                self.clear_hard_corner()
++                return self.state
++            if hard_corner_timed_out:
++                # O timeout não inicia uma busca adicional e bloqueia a
++                # reentrada até o gatilho atual desaparecer.
++                self.clear_hard_corner(block_entry=True)
++                return self.state
++            self.state = self.hard_corner_state
++            return self.state
++
++        medium_direction_lost = (
++            medium_position is None
++            or abs(medium_position) < self.config.direction_lost_threshold
++        )
++        if medium_direction_lost:
++            self.state = PIVOT_STATE_NONE
++            if near_position_valid or self.critical_state == PIVOT_STATE_NONE:
++                return self.reset()
++            if (
++                self.invalid_frames
++                >= self.config.critical_invalid_max_frames
++            ):
++                return self.reset()
++            self.invalid_frames += 1
++            self.state = self.critical_state
++            return self.state
++
++        medium_magnitude = abs(medium_position)
++        medium_state = (
++            PIVOT_STATE_RIGHT
++            if medium_position > 0.0
++            else PIVOT_STATE_LEFT
++        )
++
++        # Qualquer leitura válida encerra imediatamente a tolerância. Se ela
++        # ainda for crítica, o lado atual substitui a observação anterior.
++        self.invalid_frames = 0
++
++        if not critical_entry_allowed:
++            return self.reset()
++
++        if near_position_valid:
++            self.state = PIVOT_STATE_NONE
++            if medium_magnitude >= self.config.spin_enter_threshold:
++                self.critical_state = medium_state
++            else:
++                self.critical_state = PIVOT_STATE_NONE
++            return self.state
++
++        if self.state != PIVOT_STATE_NONE:
++            if (
++                medium_magnitude <= self.config.spin_exit_threshold
++                or medium_state != self.state
++            ):
++                return self.reset()
++            return self.state
++
++        if medium_magnitude >= self.config.spin_enter_threshold:
++            self.state = medium_state
++            self.critical_state = medium_state
++        else:
++            self.critical_state = PIVOT_STATE_NONE
++        return self.state
+
+--- local/scripts/vision/pivot.py
++++ deployed/scripts/vision/pivot.py
+@@ -0,0 +1,73 @@
++"""Histerese do pivot comandado pelo seguidor de linha."""
++
++from dataclasses import dataclass
++
++from .numeric import finite_virtual_position
++
++
++PIVOT_STATE_NONE = "NONE"
++PIVOT_STATE_LEFT = "LEFT"
++PIVOT_STATE_RIGHT = "RIGHT"
++
++
++@dataclass(frozen=True)
++class PivotConfig:
++    """Limiares de entrada e saída do pivot normal."""
++
++    enter_threshold: float = 0.45
++    exit_threshold: float = 0.35
++
++    def __post_init__(self):
++        if not 0.0 < self.exit_threshold < self.enter_threshold <= 1.0:
++            raise ValueError(
++                "pivot exige 0 < exit_threshold < enter_threshold <= 1"
++            )
++
++
++DEFAULT_PIVOT_CONFIG = PivotConfig()
++PIVOT_ENTER_THRESHOLD = DEFAULT_PIVOT_CONFIG.enter_threshold
++PIVOT_EXIT_THRESHOLD = DEFAULT_PIVOT_CONFIG.exit_threshold
++
++
++class VirtualPivotStateTracker:
++    """Mantém o lado do pivot normal e aplica histerese sem troca direta."""
++
++    def __init__(self, config=DEFAULT_PIVOT_CONFIG):
++        self.config = config
++        self.state = PIVOT_STATE_NONE
++
++    def reset(self):
++        """Encerra o pivot persistente antes de outro modo assumir."""
++
++        self.state = PIVOT_STATE_NONE
++        return self.state
++
++    def update(self, steering_error):
++        """Atualiza a entrada ou saída usando o erro do frame atual."""
++
++        steering_error = finite_virtual_position(steering_error)
++        if steering_error is None:
++            return self.reset()
++
++        steering_magnitude = abs(steering_error)
++        if self.state == PIVOT_STATE_RIGHT:
++            if (
++                steering_error <= 0.0
++                or steering_magnitude <= self.config.exit_threshold
++            ):
++                return self.reset()
++            return self.state
++
++        if self.state == PIVOT_STATE_LEFT:
++            if (
++                steering_error >= 0.0
++                or steering_magnitude <= self.config.exit_threshold
++            ):
++                return self.reset()
++            return self.state
++
++        if steering_error >= self.config.enter_threshold:
++            self.state = PIVOT_STATE_RIGHT
++        elif steering_error <= -self.config.enter_threshold:
++            self.state = PIVOT_STATE_LEFT
++        return self.state
+
+--- local/scripts/vision/reorient.py
++++ deployed/scripts/vision/reorient.py
+@@ -0,0 +1,146 @@
++"""Estado de reorientação baseado na concordância entre MEDIUM e FAR."""
++
++from dataclasses import dataclass
++
++
++VIRTUAL_STATE_NORMAL = "NORMAL"
++VIRTUAL_STATE_REORIENT_LEFT = "REORIENT_LEFT"
++VIRTUAL_STATE_REORIENT_RIGHT = "REORIENT_RIGHT"
++
++
++@dataclass(frozen=True)
++class ReorientConfig:
++    """Confirmações temporais e limiar lateral do recovery."""
++
++    direction_threshold: float = 0.20
++    confirmation_frames: int = 4
++    recovery_frames: int = 2
++    medium_scan_max_frames: int = 3
++
++    def __post_init__(self):
++        if not 0.0 < self.direction_threshold <= 1.0:
++            raise ValueError("direction_threshold deve estar em (0, 1]")
++        if self.confirmation_frames <= 0:
++            raise ValueError("confirmation_frames deve ser positivo")
++        if self.recovery_frames <= 0:
++            raise ValueError("recovery_frames deve ser positivo")
++        if self.medium_scan_max_frames <= 0:
++            raise ValueError("medium_scan_max_frames deve ser positivo")
++
++
++DEFAULT_REORIENT_CONFIG = ReorientConfig()
++VIRTUAL_MEDIUM_SCAN_MAX_FRAMES = (
++    DEFAULT_REORIENT_CONFIG.medium_scan_max_frames
++)
++VIRTUAL_REORIENT_DIRECTION_THRESHOLD = (
++    DEFAULT_REORIENT_CONFIG.direction_threshold
++)
++VIRTUAL_REORIENT_CONFIRMATION_FRAMES = (
++    DEFAULT_REORIENT_CONFIG.confirmation_frames
++)
++VIRTUAL_REORIENT_RECOVERY_FRAMES = (
++    DEFAULT_REORIENT_CONFIG.recovery_frames
++)
++
++
++def virtual_sensor_trust_is_active(sensors, trust_name):
++    """Aceita somente o booleano verdadeiro produzido pelo gate visual."""
++
++    return sensors.get(trust_name) is True
++
++
++def virtual_reorient_direction(sensors, config=DEFAULT_REORIENT_CONFIG):
++    """Detecta concordância lateral entre MEDIUM e FAR BAND."""
++
++    if not (
++        virtual_sensor_trust_is_active(sensors, "mediumTrusted")
++        and virtual_sensor_trust_is_active(sensors, "farTrusted")
++    ):
++        return None
++    medium_position = sensors.get("mediumPosition")
++    far_band_position = sensors.get("farBandPosition")
++    if medium_position is None or far_band_position is None:
++        return None
++
++    threshold = config.direction_threshold
++    if medium_position >= threshold and far_band_position >= threshold:
++        return "RIGHT"
++    if medium_position <= -threshold and far_band_position <= -threshold:
++        return "LEFT"
++    return None
++
++
++class VirtualTurnStateTracker:
++    """Mantém somente o pivot temporário usado para recuperar a linha."""
++
++    def __init__(self, config=DEFAULT_REORIENT_CONFIG):
++        self.config = config
++        self.reset()
++
++    def reset(self):
++        """Retorna ao seguidor normal e limpa todas as confirmações."""
++
++        self.state = VIRTUAL_STATE_NORMAL
++        self.reorient_candidate = None
++        self.reorient_frames = 0
++        self.normal_recovery_frames = 0
++        self.medium_scan_frames = 0
++        return self.state
++
++    def allow_medium_scan(self, direction):
++        """Consome uma janela curta de scan enquanto permanece NORMAL."""
++
++        if direction is None or self.state != VIRTUAL_STATE_NORMAL:
++            return False
++        if self.medium_scan_frames >= self.config.medium_scan_max_frames:
++            return False
++        self.medium_scan_frames += 1
++        return True
++
++    def update(self, sensors, steering_valid):
++        """Confirma o recovery e devolve autoridade ao steering normal."""
++
++        if steering_valid:
++            self.reorient_candidate = None
++            self.reorient_frames = 0
++            self.medium_scan_frames = 0
++            if self.state in (
++                VIRTUAL_STATE_REORIENT_LEFT,
++                VIRTUAL_STATE_REORIENT_RIGHT,
++            ):
++                self.normal_recovery_frames += 1
++                if (
++                    self.normal_recovery_frames
++                    >= self.config.recovery_frames
++                ):
++                    return self.reset()
++                return self.state
++            return self.reset()
++
++        self.normal_recovery_frames = 0
++        if self.state in (
++            VIRTUAL_STATE_REORIENT_LEFT,
++            VIRTUAL_STATE_REORIENT_RIGHT,
++        ):
++            return self.state
++
++        direction = virtual_reorient_direction(sensors, self.config)
++        if direction is None:
++            self.reorient_candidate = None
++            self.reorient_frames = 0
++            return self.state
++
++        if direction == self.reorient_candidate:
++            self.reorient_frames += 1
++        else:
++            self.reorient_candidate = direction
++            self.reorient_frames = 1
++
++        if self.reorient_frames >= self.config.confirmation_frames:
++            self.state = (
++                VIRTUAL_STATE_REORIENT_LEFT
++                if direction == "LEFT"
++                else VIRTUAL_STATE_REORIENT_RIGHT
++            )
++            self.medium_scan_frames = 0
++        return self.state
+
+--- local/scripts/vision/search.py
++++ deployed/scripts/vision/search.py
+@@ -0,0 +1,85 @@
++"""Máquina de estado da busca cega usada para recuperar a linha."""
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class LineSearchConfig:
++    """Janelas temporais de uma varredura, expressas em frames."""
++
++    initial_frames: int = 12
++    reverse_frames: int = 30
++
++    def __post_init__(self):
++        if self.initial_frames <= 0:
++            raise ValueError("initial_frames deve ser positivo")
++        if self.reverse_frames <= 0:
++            raise ValueError("reverse_frames deve ser positivo")
++
++
++DEFAULT_LINE_SEARCH_CONFIG = LineSearchConfig()
++
++# Aliases temporários preservam a API usada pela telemetria e pelos testes.
++VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES = (
++    DEFAULT_LINE_SEARCH_CONFIG.initial_frames
++)
++VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES = (
++    DEFAULT_LINE_SEARCH_CONFIG.reverse_frames
++)
++
++
++class VirtualLineSearchTracker:
++    """Alterna uma busca curta e outra maior sem memorizar steering."""
++
++    def __init__(self, config=DEFAULT_LINE_SEARCH_CONFIG):
++        self.config = config
++        self.last_direction = None
++        self.active = False
++        self.initial_direction = None
++        self.search_frames = 0
++
++    def remember(self, direction):
++        """Guarda somente uma direção lateral realmente observada."""
++
++        if direction in ("LEFT", "RIGHT"):
++            self.last_direction = direction
++
++    def stop(self):
++        """Interrompe a busca sem apagar a última direção confiável."""
++
++        self.active = False
++        self.initial_direction = None
++        self.search_frames = 0
++
++    def start(self, preferred_direction=None):
++        """Inicia a busca uma única vez com a melhor direção disponível."""
++
++        if self.active:
++            return
++        initial_direction = (
++            preferred_direction
++            if preferred_direction in ("LEFT", "RIGHT")
++            else self.last_direction
++        )
++        self.initial_direction = initial_direction or "RIGHT"
++        self.active = True
++        self.search_frames = 0
++
++    def next_direction(self):
++        """Retorna o lado da janela atual e avança um frame."""
++
++        if not self.active:
++            return None
++        cycle_frames = (
++            self.config.initial_frames
++            + self.config.reverse_frames
++        )
++        cycle_index = self.search_frames % cycle_frames
++        if cycle_index < self.config.initial_frames:
++            direction = self.initial_direction
++        else:
++            direction = (
++                "RIGHT" if self.initial_direction == "LEFT" else "LEFT"
++            )
++        self.search_frames += 1
++        return direction
+
+--- local/scripts/vision/status_publisher.py
++++ deployed/scripts/vision/status_publisher.py
+@@ -4,6 +4,12 @@
+ import math
+ import os
+ import time
++try:
++    from silver_dataset_recorder import read_dataset_status
++except ImportError:
++    # A ausência da coleta opcional não impede a publicação da visão.
++    def read_dataset_status():
++        return {}
+ from .camera import (
+     camera_transform_settings,
+ )
+@@ -346,6 +352,7 @@
+         ),
+     }
+     status.update(green_status or empty_green_status())
++    status.update(read_dataset_status())
+     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
+         json.dump(status, status_file, allow_nan=False)
+     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
+
+--- local/src/dashboard/dashboard_server.cpp
++++ deployed/src/dashboard/dashboard_server.cpp
+@@ -1087,6 +1087,11 @@
+     .camera-view-button:hover { background: var(--bg-card-hover); }
+     .camera-view-button.active { color: var(--text-primary); border-color: var(--border-primary); background: var(--interactive-active); box-shadow: none; }
+     .camera-view-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
++    .dataset-capture-strip { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-2); min-height: 30px; margin: 0 0 var(--space-2); padding: 6px var(--space-2); border: 1px solid var(--line-soft); border-radius: 8px; background: var(--bg-primary); color: var(--muted); }
++    .dataset-capture-strip strong { color: var(--text-muted); font-size: .59rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
++    .dataset-capture-strip span { min-width: 0; font-size: .62rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
++    .dataset-capture-strip[data-state="active"] strong { color: var(--green); }
++    .dataset-capture-strip[data-state="stale"] strong { color: var(--yellow); }
+     .camera-feed-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+     .camera-feed-grid[data-view="dual"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+     .camera-feed-card { min-width: 0; padding: var(--space-2); border: 1px solid var(--line-soft); border-radius: 13px; background: var(--bg-primary); }
+@@ -1536,6 +1541,10 @@
+             <summary>Detalhes da câmera</summary>
+             <div id="cameraTechnicalMetadata" class="camera-technical-metadata"></div>
+           </details>
++          <div id="datasetCaptureStatus" class="dataset-capture-strip" data-state="paused" aria-live="polite">
++            <strong id="datasetCaptureState">Dataset pausado</strong>
++            <span id="datasetCaptureDetails">Nenhuma coleta configurada.</span>
++          </div>
+           <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
+           <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
+             <div class="camera-hud-header">
+@@ -1967,6 +1976,9 @@
+     const cameraTechnicalMetadata = element("cameraTechnicalMetadata");
+     const operationCameraName = element("operationCameraName");
+     const operationCameraFps = element("operationCameraFps");
++    const datasetCaptureStatus = element("datasetCaptureStatus");
++    const datasetCaptureState = element("datasetCaptureState");
++    const datasetCaptureDetails = element("datasetCaptureDetails");
+     const cameraHudFps = element("cameraHudFps");
+     const downwardCameraTelemetry = element("downwardCameraTelemetry");
+     const forwardBallTelemetry = element("forwardBallTelemetry");
+@@ -3178,6 +3190,58 @@
+       return "unconfigured";
+     }
+ 
++    function updateDatasetCaptureStatus(data) {
++      const counts = data.datasetCaptureCounts && typeof data.datasetCaptureCounts === "object"
++        ? data.datasetCaptureCounts : {};
++      const safeCount = value => {
++        const number = Number(value);
++        return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
++      };
++      const camera = typeof data.datasetCaptureCamera === "string" ? data.datasetCaptureCamera : "";
++      const session = typeof data.datasetCaptureSession === "string" ? data.datasetCaptureSession : "";
++      const label = typeof data.datasetCaptureLabel === "string" ? data.datasetCaptureLabel : "";
++      const fps = Number(data.datasetCaptureFps);
++      const dropped = safeCount(data.datasetCaptureDropped);
++      const lastSavedAt = Number(data.datasetCaptureLastSavedAt);
++      const updatedAt = Number(data.datasetCaptureUpdatedAt);
++      const active = data.datasetCaptureActive === true;
++      const updateAgeSeconds = Date.now() / 1000 - updatedAt;
++      const stale = data.datasetCaptureStale === true || (active && (
++        !Number.isFinite(updatedAt) || updatedAt <= 0 || updateAgeSeconds < 0 || updateAgeSeconds > 4.0
++      ));
++      const configured = Boolean(camera || session || label);
++
++      datasetCaptureStatus.dataset.state = stale ? "stale" : (active ? "active" : "paused");
++      datasetCaptureState.textContent = stale
++        ? "Dataset sem atualização"
++        : (active ? "Dataset capturando" : "Dataset pausado");
++
++      if (!configured) {
++        datasetCaptureDetails.textContent = "Nenhuma coleta configurada.";
++        datasetCaptureStatus.removeAttribute("title");
++        return;
++      }
++
++      const details = [
++        (camera || "--").toUpperCase(),
++        (label || "--").toUpperCase(),
++      ];
++      if (!stale) {
++        details.push(Number.isFinite(fps) && fps > 0 ? `${fps.toFixed(1)} FPS` : "-- FPS");
++      }
++      details.push(`B ${safeCount(counts.black)}`);
++      details.push(`O ${safeCount(counts.other)}`);
++      details.push(`S ${safeCount(counts.silver)}`);
++      if (!stale) details.push(`${dropped} perdidas`);
++      details.push(session || "--");
++      datasetCaptureDetails.textContent = details.join(" · ");
++      if (Number.isFinite(lastSavedAt) && lastSavedAt > 0) {
++        datasetCaptureStatus.title = `Último JPEG salvo: ${new Date(lastSavedAt * 1000).toLocaleString("pt-BR")}`;
++      } else {
++        datasetCaptureStatus.removeAttribute("title");
++      }
++    }
++
+     function setCameraStatus(cameraId, status) {
+       const camera = cameras[cameraId];
+       camera.status = status;
+@@ -3749,6 +3813,7 @@
+         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
+         if (!response.ok) throw new Error("camera status unavailable");
+         const data = await response.json();
++        updateDatasetCaptureStatus(data);
+         let visualState = String(data.state || "FALHA").toUpperCase();
+         const statusTimestamp = Number(data.timestamp);
+         const nowMs = performance.now();
+@@ -3827,6 +3892,7 @@
+         const response = await fetch(`${camera.statusUrl}?ts=${Date.now()}`, { cache: "no-store" });
+         if (!response.ok) throw new Error("forward camera status unavailable");
+         const data = await response.json();
++        updateDatasetCaptureStatus(data);
+         const backendEnabled = data.enabled === true;
+         const backendActive = data.active === true;
+         const backendFailed = data.state === "error";

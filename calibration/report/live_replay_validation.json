@@ -1,0 +1,108 @@
+{
+  "compared_fields": [
+    "valid",
+    "farPoint",
+    "nearPoint",
+    "angleDeg",
+    "selection"
+  ],
+  "excluded_fields": "History starts empty in replay; stable-frame counters and timing are not expected to match.",
+  "datasets": [
+    {
+      "dataset": "baseline_gap_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "baseline_gentle_curve_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "baseline_intersection_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "baseline_straight_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "fixed_ae_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "fixed_all_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "fixed_awb_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "live_gap_55_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "live_gentle_curve_55_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "original_live_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "short_exposure_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "validation_gap_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "validation_gentle_curve_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "validation_intersection_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "validation_same_pose_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    },
+    {
+      "dataset": "validation_straight_01",
+      "frames": 90,
+      "matched_live_replay_geometry": 90,
+      "baseline_mask_verified_pixelwise": true
+    }
+  ]
+}

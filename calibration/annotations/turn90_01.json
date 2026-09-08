@@ -1,0 +1,14 @@
+{
+  "shape": [360, 480],
+  "scenario": "turn90",
+  "annotation_origin": "Manual trace from baseline_turn90_01/raw/0000.png before candidate masks; operator confirmed 90-degree turn.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[168, 94], [217, 98], [479, 97], [479, 166], [467, 166], [466, 184], [251, 186], [245, 359], [157, 359], [162, 180], [169, 180]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 260], [465, 260], [465, 359], [27, 359]]],
+    "reflection": [[[100, 105], [400, 105], [400, 200], [100, 200]]],
+    "lateral_exit": [[[370, 70], [465, 70], [465, 210], [370, 210]]]
+  },
+  "limitations": "Static right turn with lateral exit; horizontal width is a geometry-dependent span. Seven-pixel uncertain boundary excluded. No turn control or motors executed."
+}

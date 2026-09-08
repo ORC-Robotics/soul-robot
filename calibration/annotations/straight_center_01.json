@@ -1,0 +1,13 @@
+{
+  "shape": [360, 480],
+  "scenario": "straight_center",
+  "annotation_origin": "Manual trace from baseline_straight_01/raw/0000.png; independent of binary mask.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[217, 38], [304, 38], [292, 359], [202, 359]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 270], [465, 270], [465, 359], [27, 359]]],
+    "reflection": [[[115, 115], [375, 115], [375, 225], [115, 225]]]
+  },
+  "limitations": "Single static straight pose; approximate tape boundary excludes seven pixels; width is horizontal and follows the photographed geometry."
+}

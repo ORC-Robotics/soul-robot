@@ -1,0 +1,14 @@
+{
+  "shape": [360, 480],
+  "scenario": "white_floor",
+  "annotation_origin": "Raw baseline_white_floor_01/raw/0000.png and operator confirmation: no black tape or green marking visible.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 260], [465, 260], [465, 359], [27, 359]]],
+    "reflection": [[[95, 105], [390, 105], [390, 220], [95, 220]]],
+    "natural_particles": [[[120, 60], [300, 60], [300, 220], [120, 220]]]
+  },
+  "limitations": "Negative control: no line recall or tape-floor contrast is defined. Natural small particles and chassis shadows remain visible. Correct trajectory result is absence, not an invented line."
+}

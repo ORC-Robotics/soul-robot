@@ -1,0 +1,1176 @@
+{
+  "candidate_id": "relative61_min40_green_v1",
+  "score_version": 3,
+  "scope": "New static captures after parameter freeze. Each original/candidate pair uses identical RGB.",
+  "frames": 180,
+  "scenarios": [
+    "shadow_removed_same_pose"
+  ],
+  "rows": [
+    {
+      "dataset": "holdout_shadow_removed_candidate_01",
+      "scenario": "shadow_removed_same_pose",
+      "frames": 90,
+      "source_and_camera_settings_verified": true,
+      "safety_verified_all_frames": true,
+      "captured_masks_reproduced": true,
+      "preservation_regressions": [],
+      "original": {
+        "dataset": "holdout_shadow_removed_candidate_01",
+        "experiment": "original_70",
+        "metrics_path": "calibration\\experiments\\holdout_shadow_removed_candidate_01\\original_70",
+        "scenario": "shadow_removed_same_pose",
+        "segmentation": {
+          "line_roi_start_ratio": 0.0,
+          "line_background_kernel_size": 201,
+          "line_max_background_ratio_percent": 70,
+          "line_max_brightness": 190,
+          "open_kernel_shape": "ellipse",
+          "open_kernel_size": 17,
+          "close_kernel_size": 11,
+          "full_line_min_short_side_ratio": 0.041666666666666664,
+          "full_line_max_area_ratio": 1.0,
+          "geometry_reference": {
+            "frame_height": 480,
+            "structural_end_y": 480,
+            "green_end_y": 400
+          },
+          "green_detection_enabled": true,
+          "overlay_line_thickness": 2,
+          "overlay_thin_line_thickness": 1,
+          "debug_text_overlay": false,
+          "line_exclude_green": false,
+          "line_min_threshold": 0
+        },
+        "frames": 90,
+        "score": 77.97822909446546,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9142265127490098,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9937456179575693,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999524398073041,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.7797822909446546,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9099122483003723,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.9014033564814815
+        },
+        "worst_frame_line_recall": 1.0,
+        "camera_metadata_ranges": {
+          "ExposureTime": {
+            "min": 14650,
+            "max": 14650
+          },
+          "AnalogueGain": {
+            "min": 1.4970760345458984,
+            "max": 1.4970760345458984
+          },
+          "DigitalGain": {
+            "min": 1.0030745267868042,
+            "max": 1.0030745267868042
+          },
+          "ColourGains": {
+            "min": [
+              1.871065378189087,
+              1.2967807054519653
+            ],
+            "max": [
+              1.8794913291931152,
+              1.2991458177566528
+            ]
+          }
+        },
+        "requested_camera_controls": {
+          "AeEnable": true,
+          "AwbEnable": true,
+          "ExposureValue": 0.4,
+          "Sharpness": 1.2,
+          "Contrast": 1.05,
+          "Saturation": 1.0
+        },
+        "cadence": {
+          "min_ms": 33.318,
+          "max_ms": 33.338,
+          "mean_ms": 33.327258426966296,
+          "fps": 30.00546841233312,
+          "duplicate_or_backward_timestamps": 0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.0,
+            "std": 0.0,
+            "p95": 4.0,
+            "min": 4.0,
+            "max": 4.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 3818.722222222222,
+            "std": 105.34894692062161,
+            "p95": 3984.45,
+            "min": 3543.0,
+            "max": 4061.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 8591.844444444445,
+            "std": 212.52994095531372,
+            "p95": 8990.9,
+            "min": 8163.0,
+            "max": 9024.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.08577348725099027,
+            "std": 0.0021217137133775336,
+            "p95": 0.08975731014585353,
+            "min": 0.08149227805009529,
+            "max": 0.09008775169962768
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9142265127490098,
+            "std": 0.0021217137133775336,
+            "p95": 0.9168315546726034,
+            "min": 0.9099122483003723,
+            "max": 0.9185077219499047
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.22021770905534543,
+            "std": 0.0042893968721723795,
+            "p95": 0.2282717767850218,
+            "min": 0.21420255173638172,
+            "max": 0.23016264958692906
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 36555.433333333334,
+            "std": 206.88418928902658,
+            "p95": 36943.95,
+            "min": 36153.0,
+            "max": 36976.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.1686274509803922,
+            "std": 2.7755575615628914e-17,
+            "p95": 0.16862745098039217,
+            "min": 0.16862745098039217,
+            "max": 0.16862745098039217
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.995555635641763,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.9955556356417631,
+            "min": 0.9955556356417631,
+            "max": 0.9955556356417631
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7695132756309865,
+            "std": 0.008186914135069329,
+            "p95": 0.7925169326184034,
+            "min": 0.7642627173213136,
+            "max": 0.7929177045609542
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788895098.5188355,
+            "std": 0.8657955813819215,
+            "p95": 1788895099.8532345,
+            "min": 1788895097.0357518,
+            "max": 1788895100.00052
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9937456179575693,
+            "std": 0.002319170964056455,
+            "p95": 0.9968388113492568,
+            "min": 0.9869057382844537,
+            "max": 0.9975676062383746
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 220.2921348314607,
+            "std": 81.74930192426976,
+            "p95": 373.0,
+            "min": 85.0,
+            "max": 463.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 85.51685393258427,
+            "std": 81.04487761638653,
+            "p95": 265.59999999999997,
+            "min": 0.0,
+            "max": 406.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.2409724269061147,
+            "std": 0.22479311247825148,
+            "p95": 0.5461118903630379,
+            "min": 0.04576204210305965,
+            "max": 1.454587584527642
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.31644194756554306,
+            "std": 0.16704810116572233,
+            "p95": 0.45,
+            "min": 0.056666666666666664,
+            "max": 1.09
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "dataset": "holdout_shadow_removed_candidate_01",
+        "experiment": "captured_candidate",
+        "metrics_path": "calibration\\experiments\\holdout_shadow_removed_candidate_01\\captured_candidate",
+        "scenario": "shadow_removed_same_pose",
+        "segmentation": {
+          "line_roi_start_ratio": 0.0,
+          "line_background_kernel_size": 201,
+          "line_max_background_ratio_percent": 61,
+          "line_max_brightness": 190,
+          "open_kernel_shape": "ellipse",
+          "open_kernel_size": 17,
+          "close_kernel_size": 11,
+          "full_line_min_short_side_ratio": 0.041666666666666664,
+          "full_line_max_area_ratio": 1.0,
+          "geometry_reference": {
+            "frame_height": 480,
+            "structural_end_y": 480,
+            "green_end_y": 400
+          },
+          "green_detection_enabled": true,
+          "overlay_line_thickness": 2,
+          "overlay_thin_line_thickness": 1,
+          "debug_text_overlay": false,
+          "line_exclude_green": true,
+          "line_min_threshold": 40
+        },
+        "frames": 90,
+        "score": 96.87996400440466,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9967785553525652,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9974599746239402,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999524398073041,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9687996400440465,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9957072547394903,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.9992766203703703
+        },
+        "worst_frame_line_recall": 1.0,
+        "camera_metadata_ranges": {
+          "ExposureTime": {
+            "min": 14650,
+            "max": 14650
+          },
+          "AnalogueGain": {
+            "min": 1.4970760345458984,
+            "max": 1.4970760345458984
+          },
+          "DigitalGain": {
+            "min": 1.0030745267868042,
+            "max": 1.0030745267868042
+          },
+          "ColourGains": {
+            "min": [
+              1.871065378189087,
+              1.2967807054519653
+            ],
+            "max": [
+              1.8794913291931152,
+              1.2991458177566528
+            ]
+          }
+        },
+        "requested_camera_controls": {
+          "AeEnable": true,
+          "AwbEnable": true,
+          "ExposureValue": 0.4,
+          "Sharpness": 1.2,
+          "Contrast": 1.05,
+          "Saturation": 1.0
+        },
+        "cadence": {
+          "min_ms": 33.318,
+          "max_ms": 33.338,
+          "mean_ms": 33.327258426966296,
+          "fps": 30.00546841233312,
+          "duplicate_or_backward_timestamps": 0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.9,
+            "std": 0.3,
+            "p95": 2.0,
+            "min": 1.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.9,
+            "std": 0.3,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 354.0444444444444,
+            "std": 123.21101241466573,
+            "p95": 447.65,
+            "min": 0.0,
+            "max": 477.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 322.68888888888887,
+            "std": 111.5836153289386,
+            "p95": 401.55,
+            "min": 0.0,
+            "max": 430.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.003221444647434731,
+            "std": 0.0011139535717531273,
+            "p95": 0.0040087252543202275,
+            "min": 0.0,
+            "max": 0.004292745260509712
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9967785553525652,
+            "std": 0.0011139535717531273,
+            "p95": 1.0,
+            "min": 0.9957072547394903,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.031200359955953497,
+            "std": 0.00017480400209610636,
+            "p95": 0.03147324650597732,
+            "min": 0.030870507159344467,
+            "max": 0.03158311801191624
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 27692.37777777778,
+            "std": 123.6074950781957,
+            "p95": 27787.55,
+            "min": 27330.0,
+            "max": 27817.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.1686274509803922,
+            "std": 2.7755575615628914e-17,
+            "p95": 0.16862745098039217,
+            "min": 0.16862745098039217,
+            "max": 0.16862745098039217
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9962593275548636,
+            "std": 0.0008013290758137852,
+            "p95": 0.9984224699908201,
+            "min": 0.9955749677539306,
+            "max": 0.9984224699908201
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.8465115881929486,
+            "std": 1.2772556921268662e-08,
+            "p95": 0.8465116087880777,
+            "min": 0.846511580271745,
+            "max": 0.8465116087880777
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788895098.5188355,
+            "std": 0.8657955813819215,
+            "p95": 1788895099.8532345,
+            "min": 1788895097.0357518,
+            "max": 1788895100.00052
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9974599746239402,
+            "std": 0.0040385075444573934,
+            "p95": 0.9998567854640387,
+            "min": 0.9853483992467044,
+            "max": 0.9999623664007226
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 67.37078651685393,
+            "std": 107.06161011331535,
+            "p95": 340.2,
+            "min": 1.0,
+            "max": 389.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 68.02247191011236,
+            "std": 115.85151068812664,
+            "p95": 366.79999999999995,
+            "min": 0.0,
+            "max": 419.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.12359550561797752,
+            "std": 0.32911951721071486,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.0099625468164794,
+            "std": 0.006685262118542993,
+            "p95": 0.024333333333333325,
+            "min": 0.0,
+            "max": 0.02666666666666667
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.0199250936329588,
+            "std": 0.012561732985657997,
+            "p95": 0.045333333333333316,
+            "min": 0.0,
+            "max": 0.05333333333333334
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "holdout_shadow_removed_original_01",
+      "scenario": "shadow_removed_same_pose",
+      "frames": 90,
+      "source_and_camera_settings_verified": true,
+      "safety_verified_all_frames": true,
+      "captured_masks_reproduced": true,
+      "preservation_regressions": [],
+      "original": {
+        "dataset": "holdout_shadow_removed_original_01",
+        "experiment": "captured_original",
+        "metrics_path": "calibration\\experiments\\holdout_shadow_removed_original_01\\captured_original",
+        "scenario": "shadow_removed_same_pose",
+        "segmentation": {
+          "line_roi_start_ratio": 0.0,
+          "line_background_kernel_size": 201,
+          "line_max_background_ratio_percent": 70,
+          "line_max_brightness": 190,
+          "open_kernel_shape": "ellipse",
+          "open_kernel_size": 17,
+          "close_kernel_size": 11,
+          "full_line_min_short_side_ratio": 0.041666666666666664,
+          "full_line_max_area_ratio": 1.0,
+          "geometry_reference": {
+            "frame_height": 480,
+            "structural_end_y": 480,
+            "green_end_y": 400
+          },
+          "green_detection_enabled": true,
+          "overlay_line_thickness": 2,
+          "overlay_thin_line_thickness": 1,
+          "debug_text_overlay": false
+        },
+        "frames": 90,
+        "score": 76.07679098335167,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9096053225604283,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9929433267862541,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999487761819408,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.7607679098335167,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9072168036019128,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.8685619212962963
+        },
+        "worst_frame_line_recall": 1.0,
+        "camera_metadata_ranges": {
+          "ExposureTime": {
+            "min": 14650,
+            "max": 14650
+          },
+          "AnalogueGain": {
+            "min": 1.4970760345458984,
+            "max": 1.4970760345458984
+          },
+          "DigitalGain": {
+            "min": 1.0030745267868042,
+            "max": 1.0030745267868042
+          },
+          "ColourGains": {
+            "min": [
+              1.8757174015045166,
+              1.2966444492340088
+            ],
+            "max": [
+              1.8799748420715332,
+              1.297835111618042
+            ]
+          }
+        },
+        "requested_camera_controls": {
+          "AeEnable": true,
+          "AwbEnable": true,
+          "ExposureValue": 0.4,
+          "Sharpness": 1.2,
+          "Contrast": 1.05,
+          "Saturation": 1.0
+        },
+        "cadence": {
+          "min_ms": 33.323,
+          "max_ms": 33.332,
+          "mean_ms": 33.327258426966296,
+          "fps": 30.00546841233312,
+          "duplicate_or_backward_timestamps": 0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.0,
+            "std": 0.0,
+            "p95": 4.0,
+            "min": 4.0,
+            "max": 4.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 3707.6666666666665,
+            "std": 94.40739142437712,
+            "p95": 3836.7,
+            "min": 3473.0,
+            "max": 3903.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 9054.744444444445,
+            "std": 120.94503444964036,
+            "p95": 9239.3,
+            "min": 8742.0,
+            "max": 9294.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.09039467743957158,
+            "std": 0.0012074098218973865,
+            "p95": 0.09223711926843632,
+            "min": 0.08727250945901432,
+            "max": 0.09278319639808719
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9096053225604283,
+            "std": 0.0012074098218973867,
+            "p95": 0.911795066337889,
+            "min": 0.9072168036019128,
+            "max": 0.9127274905409857
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.2392320901664833,
+            "std": 0.001992348394372167,
+            "p95": 0.24266692305572987,
+            "min": 0.23488955159985936,
+            "max": 0.24420257979820756
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 37014.84444444445,
+            "std": 123.77541589607733,
+            "p95": 37203.55,
+            "min": 36694.0,
+            "max": 37262.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.16237037037037041,
+            "std": 0.0019139604048031356,
+            "p95": 0.16470588235294117,
+            "min": 0.1607843137254902,
+            "max": 0.16470588235294117
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.99555563629271,
+            "std": 8.555119695815496e-10,
+            "p95": 0.9955556374170731,
+            "min": 0.9955556356417631,
+            "max": 0.9955556374170731
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7677172792880658,
+            "std": 0.008349845215569376,
+            "p95": 0.7862631962808301,
+            "min": 0.7626428488976106,
+            "max": 0.7913723784398039
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788895091.0220199,
+            "std": 0.8660048208838717,
+            "p95": 1788895092.3575385,
+            "min": 1788895089.5389824,
+            "max": 1788895092.5054355
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9929433267862541,
+            "std": 0.002839330260943249,
+            "p95": 0.9968862037091533,
+            "min": 0.985207100591716,
+            "max": 0.9983392444969881
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 251.92134831460675,
+            "std": 101.7237087164835,
+            "p95": 433.59999999999997,
+            "min": 59.0,
+            "max": 530.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 90.64044943820225,
+            "std": 84.10537093445771,
+            "p95": 260.39999999999986,
+            "min": 2.0,
+            "max": 404.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.3109644771027265,
+            "std": 0.1888136579136707,
+            "p95": 0.7100346472156058,
+            "min": 0.032994620148950465,
+            "max": 0.9376793392747826
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.3833707865168539,
+            "std": 0.1572449240447313,
+            "p95": 0.6773333333333332,
+            "min": 0.07333333333333333,
+            "max": 0.93
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "dataset": "holdout_shadow_removed_original_01",
+        "experiment": "frozen_candidate",
+        "metrics_path": "calibration\\experiments\\holdout_shadow_removed_original_01\\frozen_candidate",
+        "scenario": "shadow_removed_same_pose",
+        "segmentation": {
+          "line_roi_start_ratio": 0.0,
+          "line_background_kernel_size": 201,
+          "line_max_background_ratio_percent": 61,
+          "line_max_brightness": 190,
+          "open_kernel_shape": "ellipse",
+          "open_kernel_size": 17,
+          "close_kernel_size": 11,
+          "full_line_min_short_side_ratio": 0.041666666666666664,
+          "full_line_max_area_ratio": 1.0,
+          "geometry_reference": {
+            "frame_height": 480,
+            "structural_end_y": 480,
+            "green_end_y": 400
+          },
+          "green_detection_enabled": true,
+          "overlay_line_thickness": 2,
+          "overlay_thin_line_thickness": 1,
+          "debug_text_overlay": false,
+          "line_min_threshold": 40,
+          "line_exclude_green": true
+        },
+        "frames": 90,
+        "score": 96.89967882667972,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9942021317307085,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9985136261127475,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999487761819408,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9689967882667972,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9923928560732362,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.9884982638888888
+        },
+        "worst_frame_line_recall": 1.0,
+        "camera_metadata_ranges": {
+          "ExposureTime": {
+            "min": 14650,
+            "max": 14650
+          },
+          "AnalogueGain": {
+            "min": 1.4970760345458984,
+            "max": 1.4970760345458984
+          },
+          "DigitalGain": {
+            "min": 1.0030745267868042,
+            "max": 1.0030745267868042
+          },
+          "ColourGains": {
+            "min": [
+              1.8757174015045166,
+              1.2966444492340088
+            ],
+            "max": [
+              1.8799748420715332,
+              1.297835111618042
+            ]
+          }
+        },
+        "requested_camera_controls": {
+          "AeEnable": true,
+          "AwbEnable": true,
+          "ExposureValue": 0.4,
+          "Sharpness": 1.2,
+          "Contrast": 1.05,
+          "Saturation": 1.0
+        },
+        "cadence": {
+          "min_ms": 33.323,
+          "max_ms": 33.332,
+          "mean_ms": 33.327258426966296,
+          "fps": 30.00546841233312,
+          "duplicate_or_backward_timestamps": 0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 2.0,
+            "std": 0.0,
+            "p95": 2.0,
+            "min": 2.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 636.2,
+            "std": 62.479898989817336,
+            "p95": 779.55,
+            "min": 508.0,
+            "max": 835.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 580.7666666666667,
+            "std": 56.11398122472588,
+            "p95": 705.3,
+            "min": 462.0,
+            "max": 762.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.005797868269291559,
+            "std": 0.0005601930859320343,
+            "p95": 0.007041100540087241,
+            "min": 0.004612205372919731,
+            "max": 0.00760714392676376
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9942021317307085,
+            "std": 0.0005601930859320343,
+            "p95": 0.9948761592907985,
+            "min": 0.9923928560732362,
+            "max": 0.9953877946270803
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.03100321173320277,
+            "std": 0.00015023929930497472,
+            "p95": 0.03124515063181403,
+            "min": 0.030829325715989116,
+            "max": 0.03147283950557032
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 27967.144444444446,
+            "std": 62.418402042829065,
+            "p95": 28112.35,
+            "min": 27846.0,
+            "max": 28167.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.16237037037037041,
+            "std": 0.0019139604048031356,
+            "p95": 0.16470588235294117,
+            "min": 0.1607843137254902,
+            "max": 0.16470588235294117
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9962266797006638,
+            "std": 2.220446049250313e-16,
+            "p95": 0.9962266797006636,
+            "min": 0.9962266797006636,
+            "max": 0.9962266797006636
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.846212849482136,
+            "std": 0.00030253203893537245,
+            "p95": 0.846511580271745,
+            "min": 0.8451482563582033,
+            "max": 0.8465116087880777
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788895091.0220199,
+            "std": 0.8660048208838717,
+            "p95": 1788895092.3575385,
+            "min": 1788895089.5389824,
+            "max": 1788895092.5054355
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9985136261127475,
+            "std": 0.0017850058651119455,
+            "p95": 0.9998505103470476,
+            "min": 0.9919375812743824,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 39.853932584269664,
+            "std": 48.018383783338585,
+            "p95": 176.59999999999994,
+            "min": 0.0,
+            "max": 217.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 38.674157303370784,
+            "std": 55.45942443914581,
+            "p95": 200.39999999999998,
+            "min": 0.0,
+            "max": 245.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.005,
+            "std": 0.004633913956021436,
+            "p95": 0.014333333333333325,
+            "min": 0.0,
+            "max": 0.02
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.010674157303370787,
+            "std": 0.009870317363901959,
+            "p95": 0.03,
+            "min": 0.0,
+            "max": 0.03666666666666667
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    }
+  ],
+  "preservation_regression_detected": false
+}

@@ -1,0 +1,8 @@
+# Os dados reais permanecem no disco; o relatório e as anotações são versionáveis.
+/captures/
+/experiments/
+/baseline/provenance/
+/baseline/*/raw/
+/baseline/*/mask/
+/baseline/*/structural/
+/baseline/*/metadata/

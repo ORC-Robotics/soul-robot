@@ -1,0 +1,147 @@
+﻿{
+  "timestamp": 1788891092.3255494,
+  "files": {
+    "scripts/vision/calibration_capture.py": {
+      "sha256": "82996eca39535f775f39f2b3926afb7d936cfc256570d3adf47f35f5ad30af7d",
+      "size": 15277,
+      "mtime": 1788890675.003595
+    },
+    "scripts/vision/pivot.py": {
+      "sha256": "d4b9088db0425bcbb45a5ab6cccc2988745370254817abc4bd67bbdfe3bd64d4",
+      "size": 2254,
+      "mtime": 1788357065.7178063
+    },
+    "scripts/vision/green_detection.py": {
+      "sha256": "83286c0f13783e01f4dcdce828a25a715b01fcd35a69fe76135e58cbd5c08502",
+      "size": 43433,
+      "mtime": 1788890922.622205
+    },
+    "scripts/vision/camera.py": {
+      "sha256": "12d347a28dfde011ced2f1413179b78ddd1c12074c45f02fe04f956373b620df",
+      "size": 5981,
+      "mtime": 1788890922.5622044
+    },
+    "scripts/vision/line_masks.py": {
+      "sha256": "e0be92b95fc2d1dd39b1e081c3f027a53013b552cf088bb427ab849ac568f6f0",
+      "size": 15072,
+      "mtime": 1788890922.5862045
+    },
+    "scripts/vision/maneuver_state.py": {
+      "sha256": "89f2d02433b6714fbfe721e3d33f3e01aec4086bb9de4351254ce8d9cf34491f",
+      "size": 887,
+      "mtime": 1788890922.5662043
+    },
+    "scripts/vision/__init__.py": {
+      "sha256": "d9e5c91fca78bba2c9fb773623fe8c2eebbcaa43b4822b43a7c79ae8ff894c57",
+      "size": 71,
+      "mtime": 1788890922.7382061
+    },
+    "scripts/vision/normal_trajectory.py": {
+      "sha256": "92713e8f1a0805beea1dc2f0316407f91278aed1918f66162765bd9cf1a9a3e5",
+      "size": 24296,
+      "mtime": 1788890922.5942047
+    },
+    "scripts/vision/stream_display.py": {
+      "sha256": "3d8aa41af7d44d24913d8c2cf0353e0ac2e85d0fbcceb82181d941c996599487",
+      "size": 12790,
+      "mtime": 1788890922.5742044
+    },
+    "scripts/vision/geometric_guidance.py": {
+      "sha256": "28609dc1c53b0e2acdfbfed1c982910787f792a6bb67eb24e9f19977b1893d91",
+      "size": 23782,
+      "mtime": 1788890922.7982068
+    },
+    "scripts/vision/medium_spin.py": {
+      "sha256": "ac2ff3d0975186b3a7687e3fdad8b62d792ebdf9a8c52201528cdea99b62289d",
+      "size": 10742,
+      "mtime": 1788357065.6898057
+    },
+    "scripts/vision/virtual_sensors.py": {
+      "sha256": "1d731614181baeda194f963c4a509f84a69cda55bb73ff37819e7e8476b2a418",
+      "size": 49031,
+      "mtime": 1788890922.7742066
+    },
+    "scripts/vision/green_observation.py": {
+      "sha256": "d6b799282cacc762f37ff4f337aa1885cff977330aebc31c7bc4008988fc4edc",
+      "size": 5977,
+      "mtime": 1788357065.6458046
+    },
+    "scripts/vision/line_control.py": {
+      "sha256": "5faad0d0c159014ff9db04f30aaa35a77f03319c3379fa46c41df9b51a8a8db9",
+      "size": 52754,
+      "mtime": 1788890922.7542064
+    },
+    "scripts/vision/green_detector.py": {
+      "sha256": "c1e8e628087f2368c7086701621841a4727bad3a0549f393bad561d90b14f7fc",
+      "size": 41290,
+      "mtime": 1788357065.6298041
+    },
+    "scripts/vision/camera_config.py": {
+      "sha256": "8e32ffb7a9c9e0e94d63381c323fbf42cd1cd5443147d4281ae100f09ed2569a",
+      "size": 29675,
+      "mtime": 1788890922.814207
+    },
+    "scripts/vision/search.py": {
+      "sha256": "58abe6ca82af7e17a6660c8ab856b745a1dd89799cf4124ac3567aa081396aa2",
+      "size": 2681,
+      "mtime": 1788357065.741807
+    },
+    "scripts/vision/status_publisher.py": {
+      "sha256": "3020343c7a184de84e06c51383d0734f107edb901bf6a99f3cb48a24dd926a11",
+      "size": 14098,
+      "mtime": 1788890922.7822068
+    },
+    "scripts/vision/reorient.py": {
+      "sha256": "dd4ef82578b4aa3f14c7d47ac8f895e862100220a779d176940ae8b29db81f65",
+      "size": 4951,
+      "mtime": 1788357065.7298067
+    },
+    "scripts/vision/application.py": {
+      "sha256": "a0ddd7901a4d1d0ee36886110a67913972b11ee441e0735a3b6942794159fd75",
+      "size": 42241,
+      "mtime": 1788890922.534204
+    },
+    "scripts/vision/numeric.py": {
+      "sha256": "059f9fec2b34b965c0aaeaed110e7f7975ac85634e65bca17ba0e2e3775eb348",
+      "size": 1093,
+      "mtime": 1788890922.802207
+    },
+    "scripts/vision/geometry.py": {
+      "sha256": "e04d578775f698a2a424431e8e8c983828f3f58e085b2d83a3ce4ddc7681abc0",
+      "size": 28174,
+      "mtime": 1788357065.5618024
+    },
+    "scripts/vision/fusion_guidance.py": {
+      "sha256": "25479fe924aefe7315427132c47bf02e2ffec7be04663fd468e4062ed05f0cbf",
+      "size": 56305,
+      "mtime": 1788890922.5582042
+    },
+    "scripts/camera_line_frame.py": {
+      "sha256": "8017dba4658bea1a88652e6a80b52987434e44580b3e745a0300c2a914a015b5",
+      "size": 18524,
+      "mtime": 1788890922.3302019
+    },
+    "scripts/request_line_calibration.py": {
+      "sha256": "1d8eacb58bdfb60116c2adfcb8de8abb671bb7195dc181c8eb30afcfe5054985",
+      "size": 2618,
+      "mtime": 1788890675.2795978
+    },
+    "src/robot/robot_state.cpp": {
+      "sha256": "9d6faf6d9e713e7feb14ed537f05a4e330c2ceb118bd4ff5d6448285fe655856",
+      "size": 17790,
+      "mtime": 1788890921.5621936
+    },
+    "src/robot/motor_controller.cpp": {
+      "sha256": "b36be5b366b0df12e6f161b90c7734082de740d8f8edb8b98939a4e4fbfbf724",
+      "size": 15830,
+      "mtime": 1788890921.5261931
+    },
+    "src/dashboard/dashboard_server.cpp": {
+      "sha256": "81df7a454bc966ef7a40979200c421a8dddc7c1a4d361436fd692e460e2f8ce1",
+      "size": 255380,
+      "mtime": 1788890921.6381943
+    }
+  },
+  "request": "{\"experiment\": \"baseline_gap_01\", \"scenario\": \"gap\", \"frames\": 90, \"controls\": {}, \"segmentation\": {}, \"requested_at_unix_seconds\": 1788891051.996297}",
+  "gap_exists": false
+}

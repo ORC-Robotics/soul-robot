@@ -1,0 +1,13 @@
+{
+  "shape": [360, 480],
+  "scenario": "gentle_curve",
+  "annotation_origin": "Manual trace from baseline_gentle_curve_01/raw/0000.png; operator described this pose as gentle curve.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[319, 40], [431, 41], [306, 203], [310, 207], [272, 250], [274, 359], [183, 359], [182, 237], [174, 226], [216, 177]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 270], [465, 270], [465, 359], [27, 359]]],
+    "reflection": [[[200, 110], [400, 110], [400, 225], [200, 225]]]
+  },
+  "limitations": "Single static bend assembled with straight tape segments; independent geometric holdout still required; seven-pixel uncertain boundary excluded."
+}

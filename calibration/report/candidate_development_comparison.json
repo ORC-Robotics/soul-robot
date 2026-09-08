@@ -1,0 +1,4365 @@
+{
+  "candidate_id": "relative61_min40_green_v1",
+  "scope": "Development comparison only; these samples are not the frozen-candidate holdout.",
+  "score_version": 3,
+  "rows": [
+    {
+      "dataset": "validation_same_pose_01",
+      "scenario": "strong_bend_shadow_reflection",
+      "original": {
+        "score": 86.60579431552932,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.941746194538148,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9966430984273069,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9995988241210885,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9607977334573621,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.8660579431552932,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.855555555555555,
+            "std": 0.35153982265680833,
+            "p95": 5.0,
+            "min": 4.0,
+            "max": 5.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.8555555555555556,
+            "std": 0.35153982265680833,
+            "p95": 4.0,
+            "min": 3.0,
+            "max": 4.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 4443.544444444445,
+            "std": 142.943746597597,
+            "p95": 4635.7,
+            "min": 4082.0,
+            "max": 4674.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 4714.422222222222,
+            "std": 119.96545593329753,
+            "p95": 4886.2,
+            "min": 4437.0,
+            "max": 4915.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.058253805461852014,
+            "std": 0.0014823543591703527,
+            "p95": 0.060376379295431805,
+            "min": 0.05482583499116511,
+            "max": 0.06073224678421829
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.941746194538148,
+            "std": 0.0014823543591703527,
+            "p95": 0.9445853773060336,
+            "min": 0.9392677532157817,
+            "max": 0.9451741650088349
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.03920226654263793,
+            "std": 0.0019033051320164849,
+            "p95": 0.04359345038269275,
+            "min": 0.0368151932423538,
+            "max": 0.045204068521634305
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 51950.444444444445,
+            "std": 135.67322761458144,
+            "p95": 52135.65,
+            "min": 51633.0,
+            "max": 52173.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.12949891067538125,
+            "std": 0.0005780609656392833,
+            "p95": 0.12941176470588237,
+            "min": 0.12941176470588237,
+            "max": 0.13333333333333333
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.8864863551861949,
+            "std": 3.3306690738754696e-16,
+            "p95": 0.8864863551861952,
+            "min": 0.8864863551861952,
+            "max": 0.8864863551861952
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7859474043497399,
+            "std": 0.0008603485306870064,
+            "p95": 0.7880057368402381,
+            "min": 0.7849335422519992,
+            "max": 0.7881646655231561
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788888208.6003902,
+            "std": 0.8662108619463362,
+            "p95": 1788888209.9350476,
+            "min": 1788888207.1168292,
+            "max": 1788888210.0833628
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9966430984273069,
+            "std": 0.002241964959206925,
+            "p95": 0.9987180855894161,
+            "min": 0.9901482877273472,
+            "max": 0.9992010325118309
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 163.6067415730337,
+            "std": 109.43117666579897,
+            "p95": 411.2,
+            "min": 39.0,
+            "max": 481.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 80.01123595505618,
+            "std": 99.64662218036075,
+            "p95": 310.0,
+            "min": 0.0,
+            "max": 411.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.14606741573033707,
+            "std": 0.35317378978655534,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.059905307933822496,
+            "std": 0.07488213892872306,
+            "p95": 0.26055420131139284,
+            "min": 0.0,
+            "max": 0.3410132089539593
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.11745318352059925,
+            "std": 0.1460166242240598,
+            "p95": 0.506666666666666,
+            "min": 0.0,
+            "max": 0.6633333333333333
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 98.1935303451867,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9999187216229315,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9997598271208615,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9995988241210885,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9819353034518671,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9896677193464232,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.0222222222222221,
+            "std": 0.14740554623801777,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.022222222222222223,
+            "std": 0.14740554623801777,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 7.2555555555555555,
+            "std": 48.140895322678986,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 334.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 6.5777777777777775,
+            "std": 43.6384075933569,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 301.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 8.127837706851412e-05,
+            "std": 0.0005392184210030635,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.003719309518219638
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9999187216229315,
+            "std": 0.0005392184210030634,
+            "p95": 1.0,
+            "min": 0.9962806904817804,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.01806469654813295,
+            "std": 0.0001008772358105018,
+            "p95": 0.018235273696593616,
+            "min": 0.017838341613517047,
+            "max": 0.018279342011417416
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 46751.311111111114,
+            "std": 48.618616563444185,
+            "p95": 46749.0,
+            "min": 46738.0,
+            "max": 47082.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.12949891067538125,
+            "std": 0.0005780609656392833,
+            "p95": 0.12941176470588237,
+            "min": 0.12941176470588237,
+            "max": 0.13333333333333333
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.8810809512396817,
+            "std": 3.3306690738754696e-16,
+            "p95": 0.881080951239682,
+            "min": 0.881080951239682,
+            "max": 0.881080951239682
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7999999999999998,
+            "std": 2.220446049250313e-16,
+            "p95": 0.8,
+            "min": 0.8,
+            "max": 0.8
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788888208.6003902,
+            "std": 0.8662108619463362,
+            "p95": 1788888209.9350476,
+            "min": 1788888207.1168292,
+            "max": 1788888210.0833628
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9997598271208615,
+            "std": 0.0010018976548490375,
+            "p95": 1.0,
+            "min": 0.9930591903147259,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 10.52808988764045,
+            "std": 44.02299957814198,
+            "p95": 10.0,
+            "min": 0.0,
+            "max": 305.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 10.07865168539326,
+            "std": 48.016435556747716,
+            "p95": 10.0,
+            "min": 0.0,
+            "max": 335.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.02247191011235955,
+            "std": 0.1482124264974485,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.006273408239700374,
+            "std": 0.005028150914338224,
+            "p95": 0.01599999999999999,
+            "min": 0.0,
+            "max": 0.02
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.01247191011235955,
+            "std": 0.010074975982383437,
+            "p95": 0.03199999999999998,
+            "min": 0.0,
+            "max": 0.04
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_straight_01",
+      "scenario": "straight_center",
+      "original": {
+        "score": 75.032449162978,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.8951993628353825,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9905082364265438,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999999999901694,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.776744206645299,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.75032449162978,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.988888888888889,
+            "std": 0.10482201257840673,
+            "p95": 5.0,
+            "min": 4.0,
+            "max": 5.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.988888888888889,
+            "std": 0.10482201257840673,
+            "p95": 4.0,
+            "min": 3.0,
+            "max": 4.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 5822.066666666667,
+            "std": 196.2805701597135,
+            "p95": 6055.4,
+            "min": 4988.0,
+            "max": 6254.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 10526.7,
+            "std": 208.74963473021933,
+            "p95": 10839.05,
+            "min": 10098.0,
+            "max": 11039.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.10480063716461745,
+            "std": 0.0020782481430655477,
+            "p95": 0.10791029916869926,
+            "min": 0.10053262979740152,
+            "max": 0.10990094081338042
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.8951993628353825,
+            "std": 0.0020782481430655477,
+            "p95": 0.8988939220468913,
+            "min": 0.8900990591866196,
+            "max": 0.8994673702025985
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.223255793354701,
+            "std": 0.004965653365696022,
+            "p95": 0.2322739089666056,
+            "min": 0.21412133746403408,
+            "max": 0.2357424478351445
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 39215.07777777778,
+            "std": 231.51828474839627,
+            "p95": 39562.85,
+            "min": 38693.0,
+            "max": 39765.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.16563834422657958,
+            "std": 0.0016530421229254393,
+            "p95": 0.16862745098039217,
+            "min": 0.16470588235294117,
+            "max": 0.16862745098039217
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9934766504368954,
+            "std": 0.0008857250150218602,
+            "p95": 0.9945737657505359,
+            "min": 0.9923324612598109,
+            "max": 1.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.9262525513294043,
+            "std": 0.0008016093368762442,
+            "p95": 0.9274565681803478,
+            "min": 0.9244477099246253,
+            "max": 0.927946739572298
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788889582.618079,
+            "std": 0.8659749696421333,
+            "p95": 1788889583.9542167,
+            "min": 1788889581.1351445,
+            "max": 1788889584.1023343
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9905082364265438,
+            "std": 0.0042540767223820915,
+            "p95": 0.9959525669141803,
+            "min": 0.978614746249601,
+            "max": 0.9967569320577266
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 354.55056179775283,
+            "std": 159.81548428277628,
+            "p95": 623.5999999999999,
+            "min": 120.0,
+            "max": 804.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 189.61797752808988,
+            "std": 161.85147204351026,
+            "p95": 520.5999999999999,
+            "min": 3.0,
+            "max": 660.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.02247191011235955,
+            "std": 0.1482124264974485,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.42617420622354624,
+            "std": 0.3816089704638028,
+            "p95": 1.1634149095729058,
+            "min": 0.05460422150881139,
+            "max": 1.3416341291465759
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.4897378277153558,
+            "std": 0.3714620789322504,
+            "p95": 1.2073333333333334,
+            "min": 0.09666666666666666,
+            "max": 1.5333333333333334
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 97.46064498951642,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9950017975564295,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9957211418779791,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999999999901694,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.977722210774614,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9746064498951642,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.9333333333333333,
+            "std": 0.24944382578492946,
+            "p95": 2.0,
+            "min": 1.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.9333333333333333,
+            "std": 0.24944382578492946,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 536.1222222222223,
+            "std": 184.68729293819732,
+            "p95": 782.1,
+            "min": 0.0,
+            "max": 814.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 502.0444444444444,
+            "std": 171.95153781814426,
+            "p95": 726.3,
+            "min": 0.0,
+            "max": 763.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.004998202443570556,
+            "std": 0.0017118974345974813,
+            "p95": 0.007230822838369255,
+            "min": 0.0,
+            "max": 0.007596196923689624
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9950017975564295,
+            "std": 0.0017118974345974813,
+            "p95": 1.0,
+            "min": 0.9924038030763104,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.02227778922538599,
+            "std": 0.00011117512169285243,
+            "p95": 0.022467590981635935,
+            "min": 0.022024302892280426,
+            "max": 0.02250462801867297
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 27979.5,
+            "std": 185.0464356136949,
+            "p95": 28227.65,
+            "min": 27439.0,
+            "max": 28256.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.16563834422657958,
+            "std": 0.0016530421229254393,
+            "p95": 0.16862745098039217,
+            "min": 0.16470588235294117,
+            "max": 0.16862745098039217
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.9597245033621227,
+            "std": 0.0011883771163339865,
+            "p95": 0.9613281758971803,
+            "min": 0.9580108009307882,
+            "max": 0.9617021276595745
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788889582.618079,
+            "std": 0.8659749696421333,
+            "p95": 1788889583.9542167,
+            "min": 1788889581.1351445,
+            "max": 1788889584.1023343
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9957211418779791,
+            "std": 0.0053464673714208955,
+            "p95": 0.9998877605960181,
+            "min": 0.976031463342238,
+            "max": 0.9999252112781393
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 115.08988764044943,
+            "std": 143.60500135647823,
+            "p95": 429.6,
+            "min": 2.0,
+            "max": 646.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 107.84269662921348,
+            "std": 153.15240986973717,
+            "p95": 441.0,
+            "min": 0.0,
+            "max": 676.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.10112359550561797,
+            "std": 0.3014923115730053,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.004176029962546816,
+            "std": 0.0032968376205434863,
+            "p95": 0.01099999999999999,
+            "min": 0.0,
+            "max": 0.013333333333333334
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.008352059925093632,
+            "std": 0.006593675241086973,
+            "p95": 0.02199999999999998,
+            "min": 0.0,
+            "max": 0.02666666666666667
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_gentle_curve_01",
+      "scenario": "gentle_curve",
+      "original": {
+        "score": 78.69623207735911,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9208579897372697,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9957633550560199,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9998693570927711,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.8149561367229252,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.7869623207735912,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.0,
+            "std": 0.0,
+            "p95": 4.0,
+            "min": 4.0,
+            "max": 4.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 2875.233333333333,
+            "std": 54.91792866531738,
+            "p95": 2978.85,
+            "min": 2727.0,
+            "max": 3035.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 7449.4,
+            "std": 69.80509373327358,
+            "p95": 7571.05,
+            "min": 7314.0,
+            "max": 7626.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.07914201026273013,
+            "std": 0.000741605423877038,
+            "p95": 0.08043441308020016,
+            "min": 0.07770352821188398,
+            "max": 0.08101819881649264
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9208579897372697,
+            "std": 0.000741605423877038,
+            "p95": 0.9220154684628215,
+            "min": 0.9189818011835074,
+            "max": 0.922296471788116
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.1850438632770748,
+            "std": 0.0014080808567343707,
+            "p95": 0.18729357124575075,
+            "min": 0.1807780652624786,
+            "max": 0.18922852409899446
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 40482.311111111114,
+            "std": 70.62524642150827,
+            "p95": 40607.95,
+            "min": 40338.0,
+            "max": 40653.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.13215686274509802,
+            "std": 0.0017970885078258132,
+            "p95": 0.13333333333333333,
+            "min": 0.12941176470588237,
+            "max": 0.13333333333333333
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9981089842228176,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.9981089842228177,
+            "min": 0.9981089842228177,
+            "max": 0.9981089842228177
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.776490913053007,
+            "std": 0.00039996400158067835,
+            "p95": 0.7771608249535925,
+            "min": 0.7752528715926624,
+            "max": 0.7775724595506925
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788890555.3754306,
+            "std": 0.8661569207552348,
+            "p95": 1788890556.71089,
+            "min": 1788890553.8920696,
+            "max": 1788890556.8596063
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9957633550560199,
+            "std": 0.001356778358725372,
+            "p95": 0.9979227480984874,
+            "min": 0.9924112293295732,
+            "max": 0.9986335980200062
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 164.57303370786516,
+            "std": 52.82489361256338,
+            "p95": 253.19999999999993,
+            "min": 53.0,
+            "max": 296.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 54.10112359550562,
+            "std": 39.69661490218769,
+            "p95": 134.39999999999998,
+            "min": 1.0,
+            "max": 153.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.1685162874905548,
+            "std": 0.0796377221451466,
+            "p95": 0.3108390442363913,
+            "min": 0.039130144385099846,
+            "max": 0.41161822139886806
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.24367041198501874,
+            "std": 0.08531508018703907,
+            "p95": 0.38666666666666655,
+            "min": 0.06666666666666667,
+            "max": 0.49
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 98.65947286973596,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9967987695111686,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9988837625902103,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9998693570927711,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9865947286973596,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9870290096698899,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.9444444444444444,
+            "std": 0.2290614236454256,
+            "p95": 2.0,
+            "min": 1.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.9444444444444444,
+            "std": 0.2290614236454256,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 316.5,
+            "std": 83.30696249413971,
+            "p95": 404.75,
+            "min": 0.0,
+            "max": 413.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 301.3222222222222,
+            "std": 77.88493332799466,
+            "p95": 375.0,
+            "min": 0.0,
+            "max": 389.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.0032012304888312847,
+            "std": 0.0008274451892442634,
+            "p95": 0.003983979092077705,
+            "min": 0.0,
+            "max": 0.004132714311515295
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9967987695111686,
+            "std": 0.0008274451892442633,
+            "p95": 0.9986326983755989,
+            "min": 0.9958672856884847,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.01340527130264039,
+            "std": 0.00010184175688795326,
+            "p95": 0.013609397813447357,
+            "min": 0.013260018931459778,
+            "max": 0.013645629697505325
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 32747.722222222223,
+            "std": 83.45711177708488,
+            "p95": 32836.3,
+            "min": 32429.0,
+            "max": 32847.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.13215686274509802,
+            "std": 0.0017970885078258132,
+            "p95": 0.13333333333333333,
+            "min": 0.12941176470588237,
+            "max": 0.13333333333333333
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.998090933851788,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.9980909338517879,
+            "min": 0.9980909338517879,
+            "max": 0.9980909338517879
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7999999999999998,
+            "std": 2.220446049250313e-16,
+            "p95": 0.8,
+            "min": 0.8,
+            "max": 0.8
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788890555.3754306,
+            "std": 0.8661569207552348,
+            "p95": 1788890556.71089,
+            "min": 1788890553.8920696,
+            "max": 1788890556.8596063
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9988837625902103,
+            "std": 0.0021767974931803406,
+            "p95": 0.9999360339787348,
+            "min": 0.9900863447393669,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 34.92134831460674,
+            "std": 68.06015592950357,
+            "p95": 214.7999999999988,
+            "min": 0.0,
+            "max": 310.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 33.71910112359551,
+            "std": 72.32464089154468,
+            "p95": 220.59999999999872,
+            "min": 0.0,
+            "max": 331.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.056179775280898875,
+            "std": 0.23026855653841793,
+            "p95": 0.5999999999999943,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.0049812734082397,
+            "std": 0.00421410731956111,
+            "p95": 0.011666666666666667,
+            "min": 0.0,
+            "max": 0.018333333333333333
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.0099625468164794,
+            "std": 0.00842821463912222,
+            "p95": 0.023333333333333334,
+            "min": 0.0,
+            "max": 0.03666666666666667
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_gap_01",
+      "scenario": "gap",
+      "original": {
+        "score": 0.0,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9135767986017612,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9882855794365899,
+          "trajectory_within_annotation_uncertainty": 0.0,
+          "contrast_auc": 1.0,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.3357159260432343,
+          "trajectory_confidence": 0.9845325842696628,
+          "trajectory_shift_stability": 0.665071493521082,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.828495009459195,
+          "reflection_specificity_worst_frame": 1.0,
+          "gap_background_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 5.0,
+            "std": 0.0,
+            "p95": 5.0,
+            "min": 5.0,
+            "max": 5.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 4853.155555555555,
+            "std": 68.03641363451571,
+            "p95": 4971.1,
+            "min": 4538.0,
+            "max": 5074.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 10334.4,
+            "std": 147.30156520251614,
+            "p95": 10581.2,
+            "min": 10131.0,
+            "max": 10714.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.08642320139823882,
+            "std": 0.0012318347301994148,
+            "p95": 0.088487108940533,
+            "min": 0.08472223383704502,
+            "max": 0.08959767183201062
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9135767986017612,
+            "std": 0.001231834730199415,
+            "p95": 0.9150118331814114,
+            "min": 0.9104023281679894,
+            "max": 0.915277766162955
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 0.5673962264150942,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.5673962264150944,
+            "min": 0.5673962264150944,
+            "max": 0.5673962264150944
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.6642840739567657,
+            "std": 0.012814234029267273,
+            "p95": 0.6856561733332617,
+            "min": 0.6478778915271342,
+            "max": 0.6897094112531338
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 21322.48888888889,
+            "std": 153.12705287109674,
+            "p95": 21575.55,
+            "min": 21094.0,
+            "max": 21708.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.21960784313725495,
+            "std": 5.551115123125783e-17,
+            "p95": 0.2196078431372549,
+            "min": 0.2196078431372549,
+            "max": 0.2196078431372549
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9303571428571432,
+            "std": 3.3306690738754696e-16,
+            "p95": 0.9303571428571429,
+            "min": 0.9303571428571429,
+            "max": 0.9303571428571429
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7611190953485737,
+            "std": 0.02494036503755354,
+            "p95": 0.806027582736188,
+            "min": 0.7426857882159368,
+            "max": 0.8161837029509114
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788891554.3816912,
+            "std": 0.8658637695482384,
+            "p95": 1788891555.7164814,
+            "min": 1788891552.8976917,
+            "max": 1788891555.8645222
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9882855794365899,
+            "std": 0.0064436784299082474,
+            "p95": 0.9953770828559109,
+            "min": 0.9709738764888399,
+            "max": 0.996061814556331
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 233.73033707865167,
+            "std": 129.55019538621113,
+            "p95": 475.39999999999986,
+            "min": 78.0,
+            "max": 580.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 119.04494382022472,
+            "std": 130.0302393622051,
+            "p95": 391.79999999999995,
+            "min": 0.0,
+            "max": 431.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.4993422227681929,
+            "std": 0.43549122412616964,
+            "p95": 1.3156759289031754,
+            "min": 0.01119363319741663,
+            "max": 1.6462917286163552
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 1.089635147077389,
+            "std": 0.8997785800934535,
+            "p95": 2.779775280898876,
+            "min": 0.0449438202247191,
+            "max": 3.4157303370786516
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 3.9935291088005034,
+            "std": 6.935176210983236,
+            "p95": 19.291881973185678,
+            "min": 0.0,
+            "max": 19.4164878389476
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 97.318807489073,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.990315003284672,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9958488288396304,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 1.0,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9932276186062214,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.97318807489073,
+          "reflection_specificity_worst_frame": 1.0,
+          "gap_background_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 1250.7333333333333,
+            "std": 39.658766720332814,
+            "p95": 1304.55,
+            "min": 1173.0,
+            "max": 1336.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 1158.1222222222223,
+            "std": 38.77021416207085,
+            "p95": 1212.55,
+            "min": 1071.0,
+            "max": 1233.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.009684996715328135,
+            "std": 0.00032422259896865743,
+            "p95": 0.010140158389014825,
+            "min": 0.00895642211425085,
+            "max": 0.01031117503909551
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.990315003284672,
+            "std": 0.00032422259896865743,
+            "p95": 0.990822385201415,
+            "min": 0.9896888249609045,
+            "max": 0.9910435778857491
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 0.5673962264150942,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.5673962264150944,
+            "min": 0.5673962264150944,
+            "max": 0.5673962264150944
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.0067723813937785446,
+            "std": 0.0003378727991521725,
+            "p95": 0.007262034497012494,
+            "min": 0.006284994926909911,
+            "max": 0.007385506530596887
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 11610.722222222223,
+            "std": 40.29006709069668,
+            "p95": 11666.1,
+            "min": 11531.0,
+            "max": 11698.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.21960784313725495,
+            "std": 5.551115123125783e-17,
+            "p95": 0.2196078431372549,
+            "min": 0.2196078431372549,
+            "max": 0.2196078431372549
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9303571428571432,
+            "std": 3.3306690738754696e-16,
+            "p95": 0.9303571428571429,
+            "min": 0.9303571428571429,
+            "max": 0.9303571428571429
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.397409768927858,
+            "std": 0.04047465896202552,
+            "p95": 0.4350592181019429,
+            "min": 0.28758726234381105,
+            "max": 0.44133375997511065
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788891554.3816912,
+            "std": 0.8658637695482384,
+            "p95": 1788891555.7164814,
+            "min": 1788891552.8976917,
+            "max": 1788891555.8645222
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9958488288396304,
+            "std": 0.003215170201925115,
+            "p95": 0.9994199405602012,
+            "min": 0.9868307219071422,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 43.04494382022472,
+            "std": 33.406219602686434,
+            "p95": 119.39999999999998,
+            "min": 0.0,
+            "max": 137.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 31.51685393258427,
+            "std": 29.91377585006409,
+            "p95": 96.59999999999997,
+            "min": 1.0,
+            "max": 127.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.013319025375583892,
+            "std": 0.014884800163349466,
+            "p95": 0.04269662921348311,
+            "min": 0.0,
+            "max": 0.05056179775280899
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.026638050751167784,
+            "std": 0.029769600326698932,
+            "p95": 0.08539325842696623,
+            "min": 0.0,
+            "max": 0.10112359550561797
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_intersection_01",
+      "scenario": "intersection",
+      "original": {
+        "score": 94.07916022576123,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9791933546150414,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9991848070043735,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9987935233303912,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9792777340584398,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9407916022576123,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "left_branch_recall_worst_frame": 1.0,
+          "left_branch_specificity_worst_frame": 1.0,
+          "right_branch_recall_worst_frame": 1.0,
+          "right_branch_specificity_worst_frame": 1.0,
+          "top_branch_recall_worst_frame": 1.0,
+          "top_branch_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 2.0,
+            "std": 0.0,
+            "p95": 2.0,
+            "min": 2.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 1475.588888888889,
+            "std": 55.463079700612944,
+            "p95": 1513.65,
+            "min": 1405.0,
+            "max": 1797.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 1347.0222222222221,
+            "std": 53.20045483886137,
+            "p95": 1384.65,
+            "min": 1276.0,
+            "max": 1647.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.02080664538495864,
+            "std": 0.000821755558215341,
+            "p95": 0.021387859128823006,
+            "min": 0.01970960766141494,
+            "max": 0.02544022242817423
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9791933546150414,
+            "std": 0.000821755558215341,
+            "p95": 0.9801977139326536,
+            "min": 0.9745597775718258,
+            "max": 0.9802903923385851
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.020722265941560288,
+            "std": 0.0001439689502902639,
+            "p95": 0.020899836305450337,
+            "min": 0.020480142498274505,
+            "max": 0.021150178449388733
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 61357.84444444445,
+            "std": 87.76507925024889,
+            "p95": 61464.1,
+            "min": 61237.0,
+            "max": 61752.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.15686274509803916,
+            "std": 5.551115123125783e-17,
+            "p95": 0.1568627450980392,
+            "min": 0.1568627450980392,
+            "max": 0.1568627450980392
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.979309473831679,
+            "std": 0.0006988161172007486,
+            "p95": 0.9799334474088006,
+            "min": 0.9784034136332168,
+            "max": 0.9799572658849273
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.9373017352052574,
+            "std": 5.5498717060747256e-05,
+            "p95": 0.9373385455421613,
+            "min": 0.9369646043656918,
+            "max": 0.937363921519132
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788891893.6169097,
+            "std": 0.8660752285755153,
+            "p95": 1788891894.9515927,
+            "min": 1788891892.13305,
+            "max": 1788891895.0995746
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9991848070043735,
+            "std": 0.0008907006304222605,
+            "p95": 0.9998824947191307,
+            "min": 0.9949376816921175,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 48.61797752808989,
+            "std": 53.26349712745762,
+            "p95": 173.0,
+            "min": 0.0,
+            "max": 303.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 45.20224719101124,
+            "std": 65.17154196879635,
+            "p95": 172.39999999999998,
+            "min": 0.0,
+            "max": 322.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.008522731894981539,
+            "std": 0.006834923589146837,
+            "p95": 0.0203857099189939,
+            "min": 0.0,
+            "max": 0.030072685936602377
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.013220973782771537,
+            "std": 0.012028362634456084,
+            "p95": 0.03333333333333333,
+            "min": 0.0,
+            "max": 0.05
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 97.82521227051349,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 1.0,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9999031216098476,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9987935233303912,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9782521227051348,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "left_branch_recall_worst_frame": 1.0,
+          "left_branch_specificity_worst_frame": 1.0,
+          "right_branch_recall_worst_frame": 1.0,
+          "right_branch_specificity_worst_frame": 1.0,
+          "top_branch_recall_worst_frame": 1.0,
+          "top_branch_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.021747877294865214,
+            "std": 8.845427136742293e-05,
+            "p95": 0.0218771508223614,
+            "min": 0.02157300609820595,
+            "max": 0.022112870205768236
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 59320.87777777778,
+            "std": 7.904749314709168,
+            "p95": 59336.55,
+            "min": 59305.0,
+            "max": 59344.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.15686274509803916,
+            "std": 5.551115123125783e-17,
+            "p95": 0.1568627450980392,
+            "min": 0.1568627450980392,
+            "max": 0.1568627450980392
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9823215878495603,
+            "std": 7.266917116993904e-05,
+            "p95": 0.9825317175701624,
+            "min": 0.9822451587916132,
+            "max": 0.9825693837351726
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.9368956619866787,
+            "std": 0.0010919222016934121,
+            "p95": 0.938130908593703,
+            "min": 0.9353402815764905,
+            "max": 0.9381336403584961
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788891893.6169097,
+            "std": 0.8660752285755153,
+            "p95": 1788891894.9515927,
+            "min": 1788891892.13305,
+            "max": 1788891895.0995746
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9999031216098476,
+            "std": 0.00011438456048699152,
+            "p95": 0.9999827229942926,
+            "min": 0.9993608015893582,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 5.606741573033708,
+            "std": 6.620733483124344,
+            "p95": 19.799999999999983,
+            "min": 0.0,
+            "max": 37.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 3.8876404494382024,
+            "std": 5.410016100512276,
+            "p95": 14.0,
+            "min": 0.0,
+            "max": 33.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.01059695862596572,
+            "std": 0.012420170289430198,
+            "p95": 0.03681946916710055,
+            "min": 0.0,
+            "max": 0.06000386941836941
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.018464419475655434,
+            "std": 0.021723815037168512,
+            "p95": 0.06599999999999995,
+            "min": 0.0,
+            "max": 0.12333333333333334
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_turn90_01",
+      "scenario": "turn90",
+      "original": {
+        "score": 89.15339180239843,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9569066531463016,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9944003111368414,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9972472824337171,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9422799104179389,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.8915339180239843,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "lateral_exit_recall_worst_frame": 1.0,
+          "lateral_exit_specificity_worst_frame": 0.9783432593394694
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 3.7555555555555555,
+            "std": 0.5013561854523768,
+            "p95": 4.0,
+            "min": 2.0,
+            "max": 5.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 2.7555555555555555,
+            "std": 0.5013561854523768,
+            "p95": 3.0,
+            "min": 1.0,
+            "max": 4.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 2689.5222222222224,
+            "std": 996.6844839854205,
+            "p95": 3535.1,
+            "min": 627.0,
+            "max": 3609.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 3569.766666666667,
+            "std": 244.3209660353455,
+            "p95": 3939.5499999999997,
+            "min": 3056.0,
+            "max": 4221.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.04309334685369838,
+            "std": 0.00294938272333163,
+            "p95": 0.04755728047514427,
+            "min": 0.03689128177889378,
+            "max": 0.05095487578164615
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9569066531463016,
+            "std": 0.00294938272333163,
+            "p95": 0.960872425698351,
+            "min": 0.9490451242183539,
+            "max": 0.9631087182211062
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.057720089582061145,
+            "std": 0.045759991376521564,
+            "p95": 0.13754762804872805,
+            "min": 0.027718804581937487,
+            "max": 0.14183004150477624
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 46797.1,
+            "std": 249.657990503453,
+            "p95": 47137.9,
+            "min": 46242.0,
+            "max": 47447.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.0705664488017429,
+            "std": 0.00020553335799687516,
+            "p95": 0.07058823529411765,
+            "min": 0.06862745098039216,
+            "max": 0.07058823529411765
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9288177344651116,
+            "std": 2.220446049250313e-16,
+            "p95": 0.9288177344651118,
+            "min": 0.9288177344651118,
+            "max": 0.9288177344651118
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.792176958275999,
+            "std": 0.0008576390564356336,
+            "p95": 0.7931385844199516,
+            "min": 0.7896210407239819,
+            "max": 0.7948799452295956
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892123.8102722,
+            "std": 0.866027188868132,
+            "p95": 1788892125.1448624,
+            "min": 1788892122.3272896,
+            "max": 1788892125.2928593
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9944003111368414,
+            "std": 0.003976151676575141,
+            "p95": 0.9990747834440266,
+            "min": 0.9820299859777801,
+            "max": 0.9994944277141539
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 256.9325842696629,
+            "std": 183.55091739172548,
+            "p95": 613.0,
+            "min": 23.0,
+            "max": 833.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 168.2921348314607,
+            "std": 160.47326090732068,
+            "p95": 395.59999999999997,
+            "min": 2.0,
+            "max": 740.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.2808988764044944,
+            "std": 0.4494382022471911,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 1.3126032511112649,
+            "std": 3.0173878458660663,
+            "p95": 8.626662991222124,
+            "min": 0.0,
+            "max": 8.757840528051517
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 1.475611880498214,
+            "std": 3.2694631792975746,
+            "p95": 9.406201550387598,
+            "min": 0.0,
+            "max": 9.60077519379845
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 98.91685166406697,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 1.0,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9999940807136717,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9972472824337171,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9891685166406696,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "lateral_exit_recall_worst_frame": 1.0,
+          "lateral_exit_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.010831483359330367,
+            "std": 9.485156044822818e-06,
+            "p95": 0.010832352241268198,
+            "min": 0.010789285919132106,
+            "max": 0.01088335183327146
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 42746.444444444445,
+            "std": 0.9673688382079518,
+            "p95": 42749.0,
+            "min": 42742.0,
+            "max": 42750.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.0705664488017429,
+            "std": 0.00020553335799687516,
+            "p95": 0.07058823529411765,
+            "min": 0.06862745098039216,
+            "max": 0.07058823529411765
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9288177344651116,
+            "std": 2.220446049250313e-16,
+            "p95": 0.9288177344651118,
+            "min": 0.9288177344651118,
+            "max": 0.9288177344651118
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7999999999999998,
+            "std": 2.220446049250313e-16,
+            "p95": 0.8,
+            "min": 0.8,
+            "max": 0.8
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892123.8102722,
+            "std": 0.866027188868132,
+            "p95": 1788892125.1448624,
+            "min": 1788892122.3272896,
+            "max": 1788892125.2928593
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9999940807136717,
+            "std": 1.840263049786063e-05,
+            "p95": 1.0,
+            "min": 0.9999042122656194,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 0.24719101123595505,
+            "std": 0.7684933293286109,
+            "p95": 2.0,
+            "min": 0.0,
+            "max": 4.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 0.34831460674157305,
+            "std": 0.8624647668492353,
+            "p95": 2.0,
+            "min": 0.0,
+            "max": 4.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.00018416010740580514,
+            "std": 0.0005888116652028504,
+            "p95": 0.001937984496124031,
+            "min": 0.0,
+            "max": 0.0023811712911862366
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.000609702987544639,
+            "std": 0.002458177125976846,
+            "p95": 0.003875968992248062,
+            "min": 0.0,
+            "max": 0.015503875968992248
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_green_01",
+      "scenario": "near_green",
+      "original": {
+        "score": 0.0,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9173856924191605,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9998110814299439,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9997410077449829,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.6713412267464973,
+          "trajectory_confidence": 0.9497988764044942,
+          "trajectory_shift_stability": 0.9305555555555556,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9981277138190654,
+          "reflection_recall_worst_frame": 1.0,
+          "green_patch_specificity_worst_frame": 0.0,
+          "left_branch_recall_worst_frame": 1.0,
+          "right_branch_recall_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 5739.133333333333,
+            "std": 3.239341496868357,
+            "p95": 5743.0,
+            "min": 5714.0,
+            "max": 5744.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.08261430758083944,
+            "std": 4.663002917658162e-05,
+            "p95": 0.08266996789935077,
+            "min": 0.08225251551051549,
+            "max": 0.08268436280931057
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9173856924191605,
+            "std": 4.66300291765816e-05,
+            "p95": 0.9174099238509263,
+            "min": 0.9173156371906894,
+            "max": 0.9177474844894845
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.3286587732535027,
+            "std": 0.000307937069929909,
+            "p95": 0.32910701492493105,
+            "min": 0.32765780545636536,
+            "max": 0.32933416156288653
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 63461.0,
+            "std": 8.082903768654761,
+            "p95": 63472.0,
+            "min": 63437.0,
+            "max": 63482.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.11372549019607844,
+            "std": 1.3877787807814457e-17,
+            "p95": 0.11372549019607843,
+            "min": 0.11372549019607843,
+            "max": 0.11372549019607843
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9116428577819689,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.9116428577819687,
+            "min": 0.9116428577819687,
+            "max": 0.9116428577819687
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.8571428564635292,
+            "std": 2.220446049250313e-16,
+            "p95": 0.8571428564635294,
+            "min": 0.8571428564635294,
+            "max": 0.8571428564635294
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892518.6013675,
+            "std": 0.8659161795381267,
+            "p95": 1788892519.93615,
+            "min": 1788892517.1178782,
+            "max": 1788892520.0846481
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9998110814299439,
+            "std": 0.00011657419590629565,
+            "p95": 0.9999510234466804,
+            "min": 0.9993307324398883,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 11.573033707865168,
+            "std": 7.142038295986356,
+            "p95": 24.599999999999994,
+            "min": 0.0,
+            "max": 41.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 7.921348314606742,
+            "std": 6.235499527850435,
+            "p95": 20.799999999999983,
+            "min": 0.0,
+            "max": 31.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.030133297696174715,
+            "std": 0.018201782891527817,
+            "p95": 0.060459167456176674,
+            "min": 0.0,
+            "max": 0.09370771551841892
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.0449438202247191,
+            "std": 0.027802254749001262,
+            "p95": 0.09919354838709675,
+            "min": 0.0,
+            "max": 0.16129032258064516
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 21.07900837838355,
+            "std": 91.1109405926186,
+            "p95": 4.0,
+            "min": 0.0,
+            "max": 441.0102039635818
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 97.73565362251844,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 1.0,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9998253912636673,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9997410077449829,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9773565362251844,
+          "trajectory_confidence": 0.9996314606741572,
+          "trajectory_shift_stability": 0.9826388888888888,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "green_patch_specificity_worst_frame": 1.0,
+          "left_branch_recall_worst_frame": 1.0,
+          "right_branch_recall_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.0226434637748156,
+            "std": 0.00037175599493916863,
+            "p95": 0.023190331656841864,
+            "min": 0.021716254101014278,
+            "max": 0.02324010824869683
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 56485.78888888889,
+            "std": 12.118392306686783,
+            "p95": 56503.0,
+            "min": 56454.0,
+            "max": 56506.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.11372549019607844,
+            "std": 1.3877787807814457e-17,
+            "p95": 0.11372549019607843,
+            "min": 0.11372549019607843,
+            "max": 0.11372549019607843
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9116428577819689,
+            "std": 1.1102230246251565e-16,
+            "p95": 0.9116428577819687,
+            "min": 0.9116428577819687,
+            "max": 0.9116428577819687
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.8439171885549489,
+            "std": 0.0037993265944533255,
+            "p95": 0.8476190478454902,
+            "min": 0.8388236438185548,
+            "max": 0.8476190478454902
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892518.6013675,
+            "std": 0.8659161795381267,
+            "p95": 1788892519.93615,
+            "min": 1788892517.1178782,
+            "max": 1788892520.0846481
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9998253912636673,
+            "std": 0.00014421103437688008,
+            "p95": 1.0,
+            "min": 0.999410876689127,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 9.48314606741573,
+            "std": 7.832677673724488,
+            "p95": 23.0,
+            "min": 0.0,
+            "max": 32.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 7.573033707865169,
+            "std": 6.366851726636654,
+            "p95": 20.0,
+            "min": 0.0,
+            "max": 25.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.03615462367643827,
+            "std": 0.03336038921587965,
+            "p95": 0.10416984114618955,
+            "min": 0.0,
+            "max": 0.11523724566195881
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.03687930409568685,
+            "std": 0.030401148868422084,
+            "p95": 0.09274193548387097,
+            "min": 0.0,
+            "max": 0.12903225806451613
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0898876404494382,
+            "std": 0.28602072047995186,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_white_floor_01",
+      "scenario": "white_floor",
+      "original": {
+        "score": 0.0,
+        "score_components": {
+          "background_specificity": 0.9295495655108412,
+          "trajectory_absence": 0.0,
+          "trajectory_confidence": 0.9933269662921349,
+          "trajectory_shift_stability": 0.8958333333333334,
+          "shadow_specificity_worst_frame": 0.7817767653758543,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 2.6444444444444444,
+            "std": 0.5639367795755342,
+            "p95": 3.0,
+            "min": 1.0,
+            "max": 3.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 2.6444444444444444,
+            "std": 0.5639367795755342,
+            "p95": 3.0,
+            "min": 1.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 9463.877777777778,
+            "std": 1817.9000695416419,
+            "p95": 10924.05,
+            "min": 6425.0,
+            "max": 11003.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 9278.322222222223,
+            "std": 1813.2778044670483,
+            "p95": 10733.05,
+            "min": 6284.0,
+            "max": 10809.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.07045043448915887,
+            "std": 0.013768244528982907,
+            "p95": 0.08149620349278666,
+            "min": 0.04771450265755506,
+            "max": 0.08207289293849662
+          },
+          "line_recall": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9295495655108412,
+            "std": 0.013768244528982907,
+            "p95": 0.9510884586180713,
+            "min": 0.9179271070615034,
+            "max": 0.9522854973424449
+          },
+          "line_continuity": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "largest_component_line_recall": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "width_relative_error": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 9463.877777777778,
+            "std": 1817.9000695416419,
+            "p95": 10924.05,
+            "min": 6425.0,
+            "max": 11003.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.6062525074822895,
+            "std": 0.0681384029349206,
+            "p95": 0.6772132069650367,
+            "min": 0.3432810458839824,
+            "max": 0.6967851801578546
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892900.3781826,
+            "std": 0.8648481812902803,
+            "p95": 1788892901.711029,
+            "min": 1788892898.895689,
+            "max": 1788892901.859496
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9661790251712579,
+            "std": 0.026300700918678463,
+            "p95": 0.9857587047944983,
+            "min": 0.8135041006628468,
+            "max": 0.9902152641878669
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 310.82022471910113,
+            "std": 245.8211445270295,
+            "p95": 564.1999999999998,
+            "min": 65.0,
+            "max": 1803.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 182.6067415730337,
+            "std": 244.61832769988027,
+            "p95": 359.6,
+            "min": 1.0,
+            "max": 1688.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.056179775280898875,
+            "std": 0.23026855653841793,
+            "p95": 0.5999999999999943,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "width_jitter_px": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 1.2808988764044944,
+            "std": 2.011141796804161,
+            "p95": 6.0,
+            "min": 0.0,
+            "max": 6.0
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 100.0,
+        "score_components": {
+          "background_specificity": 1.0,
+          "trajectory_absence": 1.0,
+          "shadow_specificity_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "line_recall": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "largest_component_line_recall": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "width_relative_error": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "trajectory_target_on_line": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788892900.3781826,
+            "std": 0.8648481812902803,
+            "p95": 1788892901.711029,
+            "min": 1788892898.895689,
+            "max": 1788892901.859496
+          },
+          "temporal_iou": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "width_jitter_px": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          },
+          "trajectory_jitter_px": {
+            "count": 0,
+            "mean": null,
+            "std": null,
+            "p95": null
+          }
+        }
+      }
+    },
+    {
+      "dataset": "validation_border_wire_01",
+      "scenario": "border_wire",
+      "original": {
+        "score": 0,
+        "score_components": {
+          "line_recall": 0.799652352826407,
+          "background_specificity": 0.9535751569538242,
+          "line_continuity": 0.8990849673202617,
+          "temporal_iou": 0.9778492416190271,
+          "trajectory_within_annotation_uncertainty": 0.07777777777777778,
+          "contrast_auc": 1.0,
+          "line_connectivity_worst_frame": 0.7590060128771351,
+          "width_fidelity": 0.6010527960608201,
+          "trajectory_confidence": 0.9462988764044944,
+          "trajectory_shift_stability": 0,
+          "shadow_recall_worst_frame": 0.7704856047102037,
+          "shadow_specificity_worst_frame": 0.7784530386740331,
+          "reflection_specificity_worst_frame": 1.0,
+          "wire_specificity_worst_frame": 1.0,
+          "lateral_exit_recall_worst_frame": 0.8895526737578319,
+          "lateral_exit_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 2.0,
+            "std": 0.0,
+            "p95": 2.0,
+            "min": 2.0,
+            "max": 2.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 2184.9222222222224,
+            "std": 172.16305112549412,
+            "p95": 2343.95,
+            "min": 1843.0,
+            "max": 2462.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 4990.577777777778,
+            "std": 109.06063326606473,
+            "p95": 5174.0,
+            "min": 4852.0,
+            "max": 5383.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.04642484304617555,
+            "std": 0.0010145363938497865,
+            "p95": 0.04813112802098643,
+            "min": 0.04513572345532013,
+            "max": 0.05007535023907417
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 0.799652352826407,
+            "std": 0.016734042621443707,
+            "p95": 0.824243069227904,
+            "min": 0.7590060128771351,
+            "max": 0.8317458628212633
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9535751569538242,
+            "std": 0.0010145363938497862,
+            "p95": 0.9547535768107314,
+            "min": 0.9499246497609258,
+            "max": 0.9548642765446799
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 0.8990849673202617,
+            "std": 0.010807857050245428,
+            "p95": 0.9058823529411765,
+            "min": 0.8588235294117647,
+            "max": 0.9176470588235294
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 0.799652352826407,
+            "std": 0.016734042621443707,
+            "p95": 0.824243069227904,
+            "min": 0.7590060128771351,
+            "max": 0.8317458628212633
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.3989472039391799,
+            "std": 0.01948424815159075,
+            "p95": 0.42797772241201076,
+            "min": 0.3501718905054866,
+            "max": 0.4312089312018139
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 20902.422222222223,
+            "std": 437.41244146756645,
+            "p95": 21657.25,
+            "min": 19917.0,
+            "max": 22052.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.3223093681917212,
+            "std": 0.0020161630154700264,
+            "p95": 0.3254901960784314,
+            "min": 0.3176470588235294,
+            "max": 0.3254901960784314
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 0.07777777777777778,
+            "std": 0.26782157318208777,
+            "p95": 1.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.8295390103538703,
+            "std": 0.013255139650341533,
+            "p95": 0.8424003472262102,
+            "min": 0.7957779336838483,
+            "max": 0.8471974628147572
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788893753.997648,
+            "std": 0.8657234995645641,
+            "p95": 1788893755.3321848,
+            "min": 1788893752.514209,
+            "max": 1788893755.481222
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9778492416190271,
+            "std": 0.01801508708220506,
+            "p95": 0.993220160213158,
+            "min": 0.9252731441931568,
+            "max": 0.9958297791678514
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 469.96629213483146,
+            "std": 389.0230763334735,
+            "p95": 1226.1999999999998,
+            "min": 88.0,
+            "max": 1662.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 268.44943820224717,
+            "std": 373.1207296629052,
+            "p95": 1049.7999999999997,
+            "min": 4.0,
+            "max": 1230.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 1.8047303238574965,
+            "std": 1.0887018217556856,
+            "p95": 3.7845735226729,
+            "min": 0.45528033084215336,
+            "max": 5.101965785803454
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 4.483542630535361,
+            "std": 4.3437877519017905,
+            "p95": 13.103529411764706,
+            "min": 0.7294117647058823,
+            "max": 14.788235294117648
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 14.042516630444547,
+            "std": 36.63621461157949,
+            "p95": 144.21856384358824,
+            "min": 0.0,
+            "max": 152.21038072352357
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 98.0732044198895,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.9999711622541815,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9996060507289805,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 1.0,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9937649254401479,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.980732044198895,
+          "reflection_specificity_worst_frame": 1.0,
+          "wire_specificity_worst_frame": 1.0,
+          "lateral_exit_recall_worst_frame": 1.0,
+          "lateral_exit_specificity_worst_frame": 1.0
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 1.011111111111111,
+            "std": 0.10482201257840673,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 2.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 0.011111111111111112,
+            "std": 0.10482201257840673,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 3.1,
+            "std": 29.245341509375468,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 279.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 3.1,
+            "std": 29.245341509375468,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 279.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 2.8837745818526765e-05,
+            "std": 0.00027205474994302574,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.002595397123667409
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.9999711622541815,
+            "std": 0.00027205474994302574,
+            "p95": 1.0,
+            "min": 0.9974046028763326,
+            "max": 1.0
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.00623507455985206,
+            "std": 9.12736676244443e-05,
+            "p95": 0.0063760729509994216,
+            "min": 0.006059328192063993,
+            "max": 0.006456053216738199
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 22199.077777777777,
+            "std": 29.371273864016555,
+            "p95": 22201.0,
+            "min": 22191.0,
+            "max": 22475.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.3223093681917212,
+            "std": 0.0020161630154700264,
+            "p95": 0.3254901960784314,
+            "min": 0.3176470588235294,
+            "max": 0.3254901960784314
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7822511913302473,
+            "std": 0.0014036301427835054,
+            "p95": 0.7854770040166897,
+            "min": 0.7816060287929588,
+            "max": 0.7854770040166897
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788893753.997648,
+            "std": 0.8657234995645641,
+            "p95": 1788893755.3321848,
+            "min": 1788893752.514209,
+            "max": 1788893755.481222
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9996060507289805,
+            "std": 0.001861551925410785,
+            "p95": 1.0,
+            "min": 0.9873190035075097,
+            "max": 1.0
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 8.730337078651685,
+            "std": 41.40069044773649,
+            "p95": 8.0,
+            "min": 0.0,
+            "max": 282.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 7.898876404494382,
+            "std": 41.51053607795382,
+            "p95": 5.599999999999994,
+            "min": 0.0,
+            "max": 282.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.02247191011235955,
+            "std": 0.1482124264974485,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 1.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.005948446794448116,
+            "std": 0.007136299976804895,
+            "p95": 0.01764705882352941,
+            "min": 0.0,
+            "max": 0.041176470588235294
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.011896893588896233,
+            "std": 0.01427259995360979,
+            "p95": 0.03529411764705882,
+            "min": 0.0,
+            "max": 0.08235294117647059
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    },
+    {
+      "dataset": "baseline_external_shadow_01",
+      "scenario": "external_shadow",
+      "original": {
+        "score": 73.02382511184999,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.8661768278276379,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9942324019941297,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999411273581196,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.7302382511184999,
+          "trajectory_confidence": 0.997552808988764,
+          "trajectory_shift_stability": 0.9611793753906286,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.8618135351256376,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 0.995056952503761,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.8214699074074074
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 5.0,
+            "std": 0.0,
+            "p95": 5.0,
+            "min": 5.0,
+            "max": 5.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.933333333333333,
+            "std": 0.24944382578492943,
+            "p95": 4.0,
+            "min": 3.0,
+            "max": 4.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 10754.988888888889,
+            "std": 462.7951429315001,
+            "p95": 11103.0,
+            "min": 8996.0,
+            "max": 11183.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 13404.933333333332,
+            "std": 114.99292731874135,
+            "p95": 13617.3,
+            "min": 13133.0,
+            "max": 13842.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.13382317217236206,
+            "std": 0.0011479891714876005,
+            "p95": 0.13594325589753317,
+            "min": 0.13110842675877765,
+            "max": 0.13818646487436237
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.8661768278276379,
+            "std": 0.0011479891714876005,
+            "p95": 0.8675448492048439,
+            "min": 0.8618135351256376,
+            "max": 0.8688915732412223
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.26976174888150006,
+            "std": 0.001587808218057808,
+            "p95": 0.27191850182534727,
+            "min": 0.2659556893829,
+            "max": 0.27550502134515326
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 45139.51111111111,
+            "std": 126.10147980843264,
+            "p95": 45362.75,
+            "min": 44857.0,
+            "max": 45626.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.14901960784313723,
+            "std": 2.7755575615628914e-17,
+            "p95": 0.14901960784313725,
+            "min": 0.14901960784313725,
+            "max": 0.14901960784313725
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.7581803640529196,
+            "std": 0.001328778770279271,
+            "p95": 0.7598243947067279,
+            "min": 0.7563385971355123,
+            "max": 0.7624335902829887
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.7763285506940701,
+            "std": 0.017409422862158914,
+            "p95": 0.7905772471311401,
+            "min": 0.7447383763299811,
+            "max": 0.8000535626249066
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788894296.4017036,
+            "std": 0.8658514791918333,
+            "p95": 1788894297.73571,
+            "min": 1788894294.9176116,
+            "max": 1788894297.884699
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9942324019941297,
+            "std": 0.001860135405448242,
+            "p95": 0.9968002141934469,
+            "min": 0.9896956087824351,
+            "max": 0.9978304239401496
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 231.04494382022472,
+            "std": 74.7258525293141,
+            "p95": 371.9999999999999,
+            "min": 87.0,
+            "max": 413.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 87.24719101123596,
+            "std": 80.54997484273824,
+            "p95": 235.39999999999992,
+            "min": 0.0,
+            "max": 382.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.36648693518896003,
+            "std": 0.3378996028139421,
+            "p95": 1.0180222788163347,
+            "min": 0.03417317023969938,
+            "max": 1.2358803253191988
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.35119850187265916,
+            "std": 0.1662070420341017,
+            "p95": 0.6059999999999999,
+            "min": 0.09,
+            "max": 0.78
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.5449436921123771,
+            "std": 1.0031984643846823,
+            "p95": 2.23606797749979,
+            "min": 0.0,
+            "max": 3.1622776601683795
+          },
+          "saved_mask_difference_px": {
+            "count": 90,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      },
+      "candidate": {
+        "score": 96.12991898148148,
+        "score_components": {
+          "line_recall": 1.0,
+          "background_specificity": 0.976318577160155,
+          "line_continuity": 1.0,
+          "temporal_iou": 0.9971661382262521,
+          "trajectory_within_annotation_uncertainty": 1.0,
+          "contrast_auc": 0.9999411273581196,
+          "line_connectivity_worst_frame": 1.0,
+          "width_fidelity": 0.9690053244556501,
+          "trajectory_confidence": 1.0,
+          "trajectory_shift_stability": 1.0,
+          "shadow_recall_worst_frame": 1.0,
+          "shadow_specificity_worst_frame": 0.9750421787179666,
+          "upper_shadow_recall_worst_frame": 1.0,
+          "upper_shadow_specificity_worst_frame": 1.0,
+          "reflection_recall_worst_frame": 1.0,
+          "reflection_specificity_worst_frame": 1.0,
+          "natural_particles_specificity_worst_frame": 0.9612991898148148
+        },
+        "summary": {
+          "component_count": {
+            "count": 90,
+            "mean": 4.0,
+            "std": 0.0,
+            "p95": 4.0,
+            "min": 4.0,
+            "max": 4.0
+          },
+          "false_component_count": {
+            "count": 90,
+            "mean": 3.0,
+            "std": 0.0,
+            "p95": 3.0,
+            "min": 3.0,
+            "max": 3.0
+          },
+          "false_component_total_area_px": {
+            "count": 90,
+            "mean": 2567.3555555555554,
+            "std": 56.306958541968086,
+            "p95": 2642.5,
+            "min": 2388.0,
+            "max": 2709.0
+          },
+          "false_positive_area_px": {
+            "count": 90,
+            "mean": 2372.1444444444446,
+            "std": 55.083887765462094,
+            "p95": 2445.0,
+            "min": 2193.0,
+            "max": 2500.0
+          },
+          "false_positive_fraction": {
+            "count": 90,
+            "mean": 0.02368142283984511,
+            "std": 0.0005499095305479942,
+            "p95": 0.02440874921382863,
+            "min": 0.021893000828599685,
+            "max": 0.024957821282033388
+          },
+          "line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "background_specificity": {
+            "count": 90,
+            "mean": 0.976318577160155,
+            "std": 0.0005499095305479941,
+            "p95": 0.9773807265720932,
+            "min": 0.9750421787179666,
+            "max": 0.9781069991714003
+          },
+          "line_continuity": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "largest_component_line_recall": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "width_relative_error": {
+            "count": 90,
+            "mean": 0.030994675544349853,
+            "std": 6.214745929561012e-05,
+            "p95": 0.03107556499752395,
+            "min": 0.03085203852399748,
+            "max": 0.03111260203456099
+          },
+          "area_px": {
+            "count": 90,
+            "mean": 29930.455555555556,
+            "std": 56.139144812215605,
+            "p95": 30006.4,
+            "min": 29749.0,
+            "max": 30072.0
+          },
+          "contrast_margin_8bit_normalized": {
+            "count": 90,
+            "mean": 0.14901960784313723,
+            "std": 2.7755575615628914e-17,
+            "p95": 0.14901960784313725,
+            "min": 0.14901960784313725,
+            "max": 0.14901960784313725
+          },
+          "trajectory_valid": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "trajectory_target_on_line": {
+            "count": 90,
+            "mean": 1.0,
+            "std": 0.0,
+            "p95": 1.0,
+            "min": 1.0,
+            "max": 1.0
+          },
+          "far_line_confidence": {
+            "count": 90,
+            "mean": 0.9084579562276655,
+            "std": 0.010784827606831112,
+            "p95": 0.9188169505385966,
+            "min": 0.8784225556103985,
+            "max": 0.9188169505385966
+          },
+          "medium_line_confidence": {
+            "count": 90,
+            "mean": 0.8310637335795394,
+            "std": 0.00039600545615992613,
+            "p95": 0.8317629433498901,
+            "min": 0.8302036731533644,
+            "max": 0.8324186343036317
+          },
+          "timestamp": {
+            "count": 90,
+            "mean": 1788894296.4017036,
+            "std": 0.8658514791918333,
+            "p95": 1788894297.73571,
+            "min": 1788894294.9176116,
+            "max": 1788894297.884699
+          },
+          "temporal_iou": {
+            "count": 89,
+            "mean": 0.9971661382262521,
+            "std": 0.0018713885343440593,
+            "p95": 0.9991112609215238,
+            "min": 0.9900772926676416,
+            "max": 0.9992994746059545
+          },
+          "changed_pixels": {
+            "count": 89,
+            "mean": 81.0561797752809,
+            "std": 53.6453940660986,
+            "p95": 186.99999999999986,
+            "min": 20.0,
+            "max": 285.0
+          },
+          "area_delta_px": {
+            "count": 89,
+            "mean": 47.764044943820224,
+            "std": 41.28280717088038,
+            "p95": 128.39999999999998,
+            "min": 0.0,
+            "max": 215.0
+          },
+          "component_count_delta": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          },
+          "center_jitter_px": {
+            "count": 89,
+            "mean": 0.002640449438202247,
+            "std": 0.002594156844830962,
+            "p95": 0.007666666666666658,
+            "min": 0.0,
+            "max": 0.011666666666666667
+          },
+          "width_jitter_px": {
+            "count": 89,
+            "mean": 0.005280898876404494,
+            "std": 0.005188313689661924,
+            "p95": 0.015333333333333315,
+            "min": 0.0,
+            "max": 0.023333333333333334
+          },
+          "trajectory_jitter_px": {
+            "count": 89,
+            "mean": 0.0,
+            "std": 0.0,
+            "p95": 0.0,
+            "min": 0.0,
+            "max": 0.0
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,251 @@
+{
+  "checked_at_unix_seconds": 1788895736.8954854,
+  "datasets": [
+    {
+      "dataset": "calibration\\baseline\\current_pose_01",
+      "frames": 60,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_border_wire_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_external_shadow_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_gap_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_gentle_curve_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_green_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_intersection_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_straight_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_turn90_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\baseline_white_floor_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\fixed_ae_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\fixed_all_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\fixed_awb_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\holdout_shadow_removed_candidate_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\holdout_shadow_removed_original_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_border_minimum_40_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_external_shadow_candidate_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_gap_55_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_gentle_curve_55_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_green_61_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_green_control_61_02",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_green_exclusion_61_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_turn90_60_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\live_white_floor_61_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\original_live_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\short_exposure_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_border_wire_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_gap_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_gentle_curve_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_green_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_intersection_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_same_pose_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_straight_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_turn90_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    },
+    {
+      "dataset": "calibration\\captures\\validation_white_floor_01",
+      "frames": 90,
+      "raw_hashes_verified": true,
+      "paired_shapes_and_binary_masks_verified": true,
+      "current_pipeline_reproduces_saved_masks": true
+    }
+  ],
+  "total_real_frames": 3120
+}

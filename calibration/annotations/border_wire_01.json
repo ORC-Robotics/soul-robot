@@ -1,0 +1,16 @@
+{
+  "shape": [360, 480],
+  "scenario": "border_wire",
+  "annotation_origin": "Manual trace from baseline_border_wire_01/raw/0000.png; operator placed tape at the edge with a left exit and a loose black wire on the floor.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[24, 279], [259, 267], [287, 359], [24, 359]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "non_floor_polygons": [[[278, 70], [387, 70], [387, 195], [278, 195]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 280], [465, 280], [465, 359], [27, 359]]],
+    "reflection": [[[95, 115], [400, 115], [400, 220], [95, 220]]],
+    "wire": [[[275, 65], [390, 65], [390, 200], [275, 200]]],
+    "lateral_exit": [[[27, 250], [120, 250], [120, 359], [27, 359]]]
+  },
+  "limitations": "Visible tape is clipped by left and bottom FOV boundaries. Wire is a known negative for line segmentation and excluded from white-floor intensity statistics. Chassis at x<27 is outside evaluation."
+}

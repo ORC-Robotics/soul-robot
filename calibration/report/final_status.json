@@ -1,0 +1,75 @@
+{
+  "checked_at_unix_seconds": 1788895851.5491,
+  "candidate_id": "relative61_min40_green_v1",
+  "permanent_configuration_applied": true,
+  "robot_telemetry": {
+    "mode": "emergency",
+    "emergency": true,
+    "esp32EmergencyStop": true,
+    "esp32SensorFresh": true,
+    "appliedLeft": 0.0,
+    "appliedRight": 0.0,
+    "leftEncoderRate": 0.0,
+    "rightEncoderRate": 0.0
+  },
+  "configured_line_ratio": 61,
+  "configured_min_threshold": 40,
+  "configured_green_exclusion": true,
+  "camera_profile": {
+    "role": "down",
+    "rotation_degrees": 180,
+    "main_size": [
+      480,
+      360
+    ],
+    "sensor_size": [
+      1640,
+      1232
+    ],
+    "sensor_bit_depth": 10,
+    "target_fps": 30,
+    "vision": {
+      "line_roi_start_ratio": 0.0,
+      "line_background_kernel_size": 201,
+      "line_max_background_ratio_percent": 61,
+      "line_min_threshold": 40,
+      "line_exclude_green": true,
+      "line_max_brightness": 190,
+      "open_kernel_shape": "ellipse",
+      "open_kernel_size": 17,
+      "close_kernel_size": 11,
+      "full_line_min_short_side_ratio": 0.041666666666666664,
+      "full_line_max_area_ratio": 1.0,
+      "geometry_reference": {
+        "frame_height": 480,
+        "structural_end_y": 480,
+        "green_end_y": 400
+      },
+      "green_detection_enabled": true,
+      "overlay_line_thickness": 2,
+      "overlay_thin_line_thickness": 1,
+      "debug_text_overlay": false
+    }
+  },
+  "robot_pid_before": "153890",
+  "robot_pid_after": "153890",
+  "camera_pid_before": "260285",
+  "camera_pid_after": "338590",
+  "other_vision_sources_preserved": true,
+  "pending_request": false,
+  "camera_fps": 0.44,
+  "services": [
+    "active",
+    "active"
+  ],
+  "source_sha256": {
+    "scripts/vision/camera_config.py": "a92da80ea6a1992ed0b47dcf7536dcdad10f5051d67163254e97b2bcf61ca0d5",
+    "scripts/vision/application.py": "8d9345c6ac75072a63b3af82c9de5a83e26fd54e61f13e2c8eb973b6e5d3492d",
+    "scripts/vision/line_masks.py": "17fb22074701863533d7a5cf565d899a8cbb838931915c31abefc982a0356fa5",
+    "scripts/vision/calibration_capture.py": "c7e9c5b77b6f6bb9f93bfdbb822c1ec846d3bc46dc199693ac3d31c6abe086a5",
+    "scripts/request_line_calibration.py": "ef046ff08e4158484d6fce124073f5039974233ccb1d0b52099ef03958d78383"
+  },
+  "backup_config": "/home/raspberry/OBR2026K/calibration/camera_config_before_final.py",
+  "camera_fps_after_settling": 30.3,
+  "checked_after_settling_unix_seconds": 1788895915.649679
+}

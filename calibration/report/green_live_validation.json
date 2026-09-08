@@ -1,0 +1,53 @@
+{
+  "datasets": [
+    {
+      "dataset": "live_green_control_61_02",
+      "frames": 90,
+      "green_status_distributions": {
+        "greenInterpretation": {
+          "DIREITA": 90
+        },
+        "greenRawInterpretation": {
+          "DIREITA": 90
+        },
+        "greenConfirmed": {
+          "True": 90
+        },
+        "greenPathBlackValid": {
+          "True": 90
+        },
+        "greenCandidateCount": {
+          "1": 90
+        },
+        "greenRejectedCount": {
+          "0": 90
+        }
+      }
+    },
+    {
+      "dataset": "live_green_exclusion_61_01",
+      "frames": 90,
+      "green_status_distributions": {
+        "greenInterpretation": {
+          "DIREITA": 90
+        },
+        "greenRawInterpretation": {
+          "DIREITA": 90
+        },
+        "greenConfirmed": {
+          "True": 90
+        },
+        "greenPathBlackValid": {
+          "True": 90
+        },
+        "greenCandidateCount": {
+          "1": 90
+        },
+        "greenRejectedCount": {
+          "0": 90
+        }
+      }
+    }
+  ],
+  "scope": "Same static green marker. No green maneuver executed; motor emergency remained active."
+}

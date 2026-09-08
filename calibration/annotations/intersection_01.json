@@ -1,0 +1,16 @@
+{
+  "shape": [360, 480],
+  "scenario": "intersection",
+  "annotation_origin": "Manual trace from baseline_intersection_01/raw/0000.png before candidate masks; operator confirmed intersection.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[215, 39], [304, 39], [300, 72], [305, 74], [291, 167], [466, 185], [464, 275], [279, 255], [269, 359], [177, 359], [191, 243], [24, 227], [24, 142], [203, 158]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 275], [465, 275], [465, 359], [27, 359]]],
+    "reflection": [[[85, 90], [386, 90], [386, 238], [85, 238]]],
+    "left_branch": [[[27, 125], [155, 125], [155, 248], [27, 248]]],
+    "right_branch": [[[325, 160], [465, 160], [465, 295], [325, 295]]],
+    "top_branch": [[[180, 60], [325, 60], [325, 135], [180, 135]]]
+  },
+  "limitations": "All four arms are genuine tape; horizontal width sums reflect intersection geometry rather than physical tape thickness. Static test only; seven-pixel uncertain boundaries excluded."
+}

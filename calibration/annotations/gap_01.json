@@ -1,0 +1,14 @@
+{
+  "shape": [360, 480],
+  "scenario": "gap",
+  "annotation_origin": "Manual trace from baseline_gap_01/raw/0000.png, before examining candidate masks; operator confirmed gap.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[217, 39], [307, 39], [306, 103], [216, 104]], [[208, 307], [298, 301], [299, 359], [208, 359]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 240], [465, 240], [465, 359], [27, 359]]],
+    "reflection": [[[80, 115], [385, 115], [385, 220], [80, 220]]],
+    "gap_background": [[[185, 120], [327, 120], [327, 285], [185, 285]]]
+  },
+  "limitations": "Two disconnected tape ends are intentional; do not reward filling the white gap. Static segmentation test only, without executing the gap state machine. Seven-pixel uncertain boundary excluded."
+}
