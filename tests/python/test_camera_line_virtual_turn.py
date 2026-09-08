@@ -2,6 +2,7 @@
 
 import importlib.util
 import math
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,9 @@ from unittest.mock import patch
 import numpy as np
 
 
-MODULE_PATH = Path(__file__).with_name("camera_line_frame.py")
+SCRIPTS_DIRECTORY = Path(__file__).resolve().parents[2] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIRECTORY))
+MODULE_PATH = SCRIPTS_DIRECTORY / "camera_line_frame.py"
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "camera_line_frame_virtual_turn_test",
     MODULE_PATH,
@@ -72,6 +75,7 @@ def calculate_command(
     sensor_recovery_requested=False,
     mask=None,
     fusion_style_line=None,
+    blind_search_preferred_direction=None,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
@@ -94,6 +98,9 @@ def calculate_command(
             blind_search_requested=blind_search_requested,
             sensor_recovery_requested=sensor_recovery_requested,
             fusion_style_line=fusion_style_line,
+            blind_search_preferred_direction=(
+                blind_search_preferred_direction
+            ),
         )
 
 
@@ -327,6 +334,26 @@ class NormalTrajectoryExtractionTests(unittest.TestCase):
 
 
 class FusionStyleLineExtractionTests(unittest.TestCase):
+    @staticmethod
+    def directional_intersection_mask(direction):
+        """Cria uma interseção com continuação frontal e um ramo lateral."""
+
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
+        edge_x = 0 if direction == "LEFT" else mask.shape[1] - 1
+        camera_line_frame.cv2.line(mask, (240, 180), (edge_x, 180), 255, 22)
+        return mask
+
+    @staticmethod
+    def lateral_only_mask(direction):
+        """Cria um ramo lateral sem trecho que alcance a topBand."""
+
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 180), 255, 22)
+        edge_x = 0 if direction == "LEFT" else mask.shape[1] - 1
+        camera_line_frame.cv2.line(mask, (240, 180), (edge_x, 180), 255, 22)
+        return mask
+
     def test_straight_contour_produces_ninety_degree_angle(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
         camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
@@ -338,6 +365,89 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertAlmostEqual(fusion_line["angleDeg"], 90.0, delta=1.0)
         self.assertEqual(fusion_line["nearPoint"], {"x": 240, "y": 359})
         self.assertLess(fusion_line["farPoint"]["y"], 70)
+
+    def test_green_left_prefers_valid_left_edge_over_straight_top_band(self):
+        mask = self.directional_intersection_mask("LEFT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="LEFT",
+        )
+
+        self.assertEqual(normal["referenceSource"], "topBand")
+        self.assertEqual(preferred["referenceSource"], "leftEdge")
+        self.assertEqual(preferred["preferredDirection"], "LEFT")
+        self.assertLess(preferred["angleDeg"], 90.0)
+
+    def test_green_right_prefers_valid_right_edge_over_straight_top_band(self):
+        mask = self.directional_intersection_mask("RIGHT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="RIGHT",
+        )
+
+        self.assertEqual(normal["referenceSource"], "topBand")
+        self.assertEqual(preferred["referenceSource"], "rightEdge")
+        self.assertEqual(preferred["preferredDirection"], "RIGHT")
+        self.assertGreater(preferred["angleDeg"], 90.0)
+
+    def test_missing_preferred_edge_uses_existing_fusion_fallback(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (240, 47), 255, 22)
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="LEFT",
+        )
+
+        self.assertEqual(preferred["referenceSource"], normal["referenceSource"])
+        self.assertEqual(preferred["farPoint"], normal["farPoint"])
+        self.assertEqual(preferred["angleDeg"], normal["angleDeg"])
+
+    def test_green_right_never_falls_back_to_left_edge(self):
+        mask = self.lateral_only_mask("LEFT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="RIGHT",
+        )
+
+        self.assertTrue(normal["valid"])
+        self.assertEqual(normal["referenceSource"], "leftEdge")
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
+
+    def test_green_left_never_falls_back_to_right_edge(self):
+        mask = self.lateral_only_mask("RIGHT")
+
+        normal = camera_line_frame.extract_fusion_style_line(mask)
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="LEFT",
+        )
+
+        self.assertTrue(normal["valid"])
+        self.assertEqual(normal["referenceSource"], "rightEdge")
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
+
+    def test_none_preference_preserves_current_fusion_selection(self):
+        mask = self.directional_intersection_mask("LEFT")
+
+        implicit = camera_line_frame.extract_fusion_style_line(mask)
+        explicit = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction=None,
+        )
+
+        self.assertEqual(explicit["referenceSource"], implicit["referenceSource"])
+        self.assertEqual(explicit["farPoint"], implicit["farPoint"])
+        self.assertEqual(explicit["angleDeg"], implicit["angleDeg"])
 
     def test_angle_convention_distinguishes_left_and_right(self):
         left_mask = np.zeros((360, 480), dtype=np.uint8)
@@ -691,7 +801,7 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertEqual(forward_again["pivotDirectionGuard"], "NONE")
         self.assertEqual(forward_again["angleDeg"], 90.0)
 
-    def test_extreme_pivot_guard_releases_without_top_band(self):
+    def test_extreme_pivot_guard_releases_and_rearms_without_top_band(self):
         envelope = camera_line_frame.resolve_normal_trajectory_envelope(
             (360, 480)
         )
@@ -742,12 +852,61 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
             envelope,
         )
 
-        self.assertFalse(valid_left["pivotDirectionGuardActive"])
+        self.assertTrue(valid_left["pivotDirectionGuardActive"])
+        self.assertEqual(valid_left["pivotDirectionGuard"], "LEFT")
         self.assertFalse(
             valid_left["pivotDirectionGuardRejectedOpposite"]
         )
         self.assertEqual(valid_left["angleDeg"], 21.3)
         self.assertEqual(valid_left["farPoint"], {"x": 30, "y": 300})
+
+    def test_new_green_can_start_without_previous_extreme_pivot_guard(self):
+        mask = self.directional_intersection_mask("LEFT")
+        previous_extreme_right = camera_line_frame.empty_fusion_style_line()
+        previous_extreme_right.update({
+            "valid": True,
+            "angleDeg": 166.4,
+            "nearPoint": {"x": 240, "y": 359},
+            "farPoint": {"x": 450, "y": 300},
+            "referenceSource": "rightEdge",
+            "selection": "nearCenter",
+            "pivotDirectionGuard": "RIGHT",
+            "pivotDirectionGuardActive": True,
+            "missedFrames": 0,
+        })
+
+        blocked = camera_line_frame.extract_fusion_style_line(
+            mask,
+            previous_fusion_line=previous_extreme_right,
+            preferred_direction="LEFT",
+        )
+        neutralized_history = dict(previous_extreme_right)
+        neutralized_history["pivotDirectionGuard"] = "NONE"
+        neutralized_history["pivotDirectionGuardActive"] = False
+        neutralized_history["pivotDirectionGuardRejectedOpposite"] = False
+        accepted_after_neutralizing_guard = (
+            camera_line_frame.extract_fusion_style_line(
+                mask,
+                previous_fusion_line=neutralized_history,
+                preferred_direction="LEFT",
+            )
+        )
+
+        self.assertTrue(blocked["pivotDirectionGuardRejectedOpposite"])
+        self.assertEqual(blocked["angleDeg"], 166.4)
+        self.assertFalse(
+            accepted_after_neutralizing_guard[
+                "pivotDirectionGuardRejectedOpposite"
+            ]
+        )
+        self.assertEqual(
+            accepted_after_neutralizing_guard["referenceSource"],
+            "leftEdge",
+        )
+        self.assertLess(
+            accepted_after_neutralizing_guard["angleDeg"],
+            90.0,
+        )
 
     def test_empty_mask_keeps_experimental_result_invalid(self):
         mask = np.zeros((360, 480), dtype=np.uint8)
@@ -852,7 +1011,7 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
     def test_angle_mapping_uses_small_deadband_and_safe_clamp(self):
         expected_magnitudes = (
             (2.0, 0.0),
-            (5.0, 0.11390625),
+            (5.0, 0.04866636322257624),
             (10.0, camera_line_frame.NORMAL_FULL_STEERING_ERROR),
             (15.0, 0.3725925925925926),
             (20.0, 0.4074074074074074),
@@ -954,6 +1113,56 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
                         invalid_angle
                     )
                 )
+
+    def test_green_uses_directed_fusion_angle_and_unchanged_power_mapper(self):
+        for green_direction, preferred_direction, fusion_angle in (
+            ("ESQUERDA", "LEFT", 75.0),
+            ("DIREITA", "RIGHT", 105.0),
+        ):
+            with self.subTest(green_direction=green_direction):
+                fusion_line = self.valid_fusion_line(fusion_angle)
+                fusion_line["preferredDirection"] = preferred_direction
+                fusion_line["fusionSpeedScale"] = 1.0
+                sensors = sensor_values(
+                    steering_error=(
+                        0.55 if green_direction == "ESQUERDA" else -0.55
+                    )
+                )
+                sensors["headingAngle"] = (
+                    30.0 if green_direction == "ESQUERDA" else -30.0
+                )
+
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                    fusion_style_line=fusion_line,
+                )
+                expected_powers = (
+                    camera_line_frame.map_fusion_angle_to_motor_powers(
+                        fusion_angle
+                    )
+                )
+
+                self.assertEqual(result["controlSource"], "fusion-green")
+                self.assertTrue(result["fusionControlActive"])
+                self.assertEqual(
+                    result["fusionPreferredDirection"],
+                    preferred_direction,
+                )
+                self.assertTrue(math.isclose(
+                    result["finalSteering"],
+                    camera_line_frame.map_fusion_angle_to_steering_error(
+                        fusion_angle
+                    ),
+                ))
+                self.assertTrue(math.isclose(
+                    result["left_power"],
+                    expected_powers["left_power"],
+                ))
+                self.assertTrue(math.isclose(
+                    result["right_power"],
+                    expected_powers["right_power"],
+                ))
 
     def test_fusion_power_curve_is_continuous_at_calibration_points(self):
         boundary_errors_deg = (2.0, 10.0, 25.0, 40.0, 55.0, 70.0)
@@ -1225,9 +1434,146 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
 
         self.assertEqual(first["controlSource"], "virtual-search-wait")
         self.assertEqual((first["left_power"], first["right_power"]), (0.0, 0.0))
-        self.assertEqual(second["controlSource"], "virtual-blind-search")
+        self.assertEqual(
+            second["controlSource"],
+            "virtual-blind-search-backup",
+        )
         self.assertTrue(search_tracker.active)
-        self.assertLess(second["left_power"], second["right_power"])
+        self.assertEqual(
+            (second["left_power"], second["right_power"]),
+            (
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_POWER,
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_POWER,
+            ),
+        )
+
+        backup_results = [second]
+        for _ in range(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES - 1
+        ):
+            backup_results.append(
+                calculate_command(
+                    sensors,
+                    line_search_tracker=search_tracker,
+                )
+            )
+        self.assertTrue(
+            all(
+                result["controlSource"]
+                == "virtual-blind-search-backup"
+                for result in backup_results
+            )
+        )
+
+        search = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+        )
+        self.assertEqual(search["controlSource"], "virtual-blind-search")
+        self.assertLess(search["left_power"], search["right_power"])
+
+    def test_recent_fusion_direction_overrides_stale_virtual_search_side(self):
+        fusion_history = self.valid_fusion_line(150.0)
+        fusion_history["missedFrames"] = 2
+        preferred_direction = (
+            camera_line_frame.fusion_style_blind_search_direction(
+                fusion_history
+            )
+        )
+        self.assertEqual(preferred_direction, "RIGHT")
+
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        search_tracker.last_direction = "LEFT"
+        sensors = sensor_values(None, None, None)
+        sensors["farTrusted"] = False
+        sensors["mediumTrusted"] = False
+        sensors["farPosition"] = None
+
+        first = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+        second = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+
+        self.assertEqual(first["controlSource"], "virtual-search-wait")
+        self.assertEqual(
+            second["controlSource"],
+            "virtual-blind-search-backup",
+        )
+        self.assertEqual(search_tracker.initial_direction, "RIGHT")
+
+        for _ in range(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES - 1
+        ):
+            calculate_command(
+                sensors,
+                line_search_tracker=search_tracker,
+                blind_search_preferred_direction=preferred_direction,
+            )
+        search = calculate_command(
+            sensors,
+            line_search_tracker=search_tracker,
+            blind_search_preferred_direction=preferred_direction,
+        )
+
+        self.assertEqual(search["controlSource"], "virtual-blind-search")
+        self.assertGreater(search["left_power"], search["right_power"])
+
+    def test_straight_or_stale_fusion_does_not_override_virtual_side(self):
+        straight_history = self.valid_fusion_line(
+            90.0 + camera_line_frame.FUSION_STEERING_DEADBAND_DEG
+        )
+        stale_history = self.valid_fusion_line(150.0)
+        stale_history["missedFrames"] = (
+            camera_line_frame.FUSION_TARGET_HISTORY_MAX_MISSED_FRAMES + 1
+        )
+
+        self.assertIsNone(
+            camera_line_frame.fusion_style_blind_search_direction(
+                straight_history
+            )
+        )
+        self.assertIsNone(
+            camera_line_frame.fusion_style_blind_search_direction(
+                stale_history
+            )
+        )
+
+    def test_line_reacquisition_interrupts_automatic_search_backup(self):
+        search_tracker = camera_line_frame.VirtualLineSearchTracker()
+        missing_sensors = sensor_values(None, None, None)
+        missing_sensors["farTrusted"] = False
+        missing_sensors["mediumTrusted"] = False
+
+        calculate_command(
+            missing_sensors,
+            line_search_tracker=search_tracker,
+        )
+        backup = calculate_command(
+            missing_sensors,
+            line_search_tracker=search_tracker,
+        )
+        self.assertEqual(
+            backup["controlSource"],
+            "virtual-blind-search-backup",
+        )
+
+        recovered = calculate_command(
+            sensor_values(None, 0.0, None),
+            line_search_tracker=search_tracker,
+        )
+        self.assertFalse(search_tracker.active)
+        self.assertNotEqual(
+            recovered["controlSource"],
+            "virtual-blind-search-backup",
+        )
+        self.assertGreaterEqual(recovered["left_power"], 0.0)
+        self.assertGreaterEqual(recovered["right_power"], 0.0)
 
     def test_missing_target_uses_virtual_fallback(self):
         sensors = sensor_values(steering_error=-0.20)
@@ -1277,30 +1623,26 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
         self.assertFalse(result["fusionControlActive"])
         self.assertEqual(result["steeringError"], -1.0)
 
-    def test_green_and_gap_ignore_valid_fusion_control(self):
+    def test_gap_ignores_valid_fusion_control(self):
         sensors = sensor_values(steering_error=0.12)
         fusion_line = self.valid_fusion_line(130.0)
 
-        for mode_name, mode_arguments in (
-            ("GREEN", {"green_direction": "DIREITA"}),
-            ("GAP", {"gap_active": True}),
-        ):
-            with self.subTest(mode=mode_name):
-                baseline = calculate_command(sensors, **mode_arguments)
-                result = calculate_command(
-                    sensors,
-                    fusion_style_line=fusion_line,
-                    **mode_arguments,
-                )
-                self.assertEqual(
-                    (result["left_power"], result["right_power"]),
-                    (baseline["left_power"], baseline["right_power"]),
-                )
-                self.assertEqual(
-                    result["controlSource"],
-                    baseline["controlSource"],
-                )
-                self.assertFalse(result["fusionControlActive"])
+        baseline = calculate_command(sensors, gap_active=True)
+        result = calculate_command(
+            sensors,
+            fusion_style_line=fusion_line,
+            gap_active=True,
+        )
+
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (baseline["left_power"], baseline["right_power"]),
+        )
+        self.assertEqual(
+            result["controlSource"],
+            baseline["controlSource"],
+        )
+        self.assertFalse(result["fusionControlActive"])
 
     def test_existing_hard_corner_keeps_priority_over_fusion(self):
         tracker = camera_line_frame.VirtualMediumSpinTracker()
@@ -1333,6 +1675,39 @@ class FusionNormalSteeringControlTests(unittest.TestCase):
 
 
 class VirtualSensorRegressionTests(unittest.TestCase):
+    @staticmethod
+    def read_directional_green_stripe(
+        green_direction,
+        far_center_x,
+        medium_center_x,
+    ):
+        """Cria uma faixa trusted dentro do lado selecionado pelo GREEN."""
+
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        selected_side = (
+            "left" if green_direction == "ESQUERDA" else "right"
+        )
+        for row_name, center_x in (
+            ("far", far_center_x),
+            ("medium", medium_center_x),
+        ):
+            for region in camera_line_frame.virtual_sensor_regions(
+                geometry[row_name][selected_side]
+            ):
+                stripe_x0 = max(region["x0"], center_x - 15)
+                stripe_x1 = min(region["x1"], center_x + 15)
+                mask[
+                    region["y0"]:region["y1"],
+                    stripe_x0:stripe_x1,
+                ] = 255
+
+        return camera_line_frame.read_virtual_line_sensors(
+            mask,
+            green_direction,
+            curva_verde_iniciada=False,
+        )
+
     def test_near_fine_position_is_centered(self):
         mask = np.zeros((101, 101), dtype=np.uint8)
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(
@@ -1737,7 +2112,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             1.0,
         )
 
-    def test_fine_centering_correction_is_limited(self):
+    def test_fine_centering_gain_is_applied_before_normal_clamp(self):
         sensors = sensor_values(
             steering_error=0.25,
             medium_position=None,
@@ -1752,7 +2127,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
         self.assertTrue(math.isclose(
             result["fineCorrection"],
-            camera_line_frame.VIRTUAL_FINE_CENTER_MAX_CORRECTION,
+            camera_line_frame.VIRTUAL_FINE_CENTER_GAIN,
         ))
         self.assertTrue(math.isclose(
             result["finalSteering"],
@@ -1766,12 +2141,22 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         )
         self.assertGreater(result["right_power"], 0.0)
 
-    def test_fine_centering_requires_near_center_and_weak_steering(self):
+    def test_fine_centering_requires_near_center_and_normal_steering(self):
         cases = (
-            (0.20, 0.0),
-            (0.31, 0.20),
+            (0.20, 0.0, 0.0, 0.20),
+            (
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR + 0.01,
+                0.20,
+                0.0,
+                camera_line_frame.NORMAL_FULL_STEERING_ERROR,
+            ),
         )
-        for protected_steering, near_center in cases:
+        for (
+            protected_steering,
+            near_center,
+            expected_correction,
+            expected_steering,
+        ) in cases:
             with self.subTest(
                 protected_steering=protected_steering,
                 near_center=near_center,
@@ -1782,11 +2167,14 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 )
                 sensors["nearCenter"] = near_center
                 result = calculate_command(sensors)
-                self.assertEqual(result["fineCorrection"], 0.0)
-                self.assertEqual(
+                self.assertTrue(math.isclose(
+                    result["fineCorrection"],
+                    expected_correction,
+                ))
+                self.assertTrue(math.isclose(
                     result["finalSteering"],
-                    protected_steering,
-                )
+                    expected_steering,
+                ))
 
     def test_fine_centering_does_not_change_green_or_gap(self):
         sensors = sensor_values(
@@ -1796,7 +2184,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             near_fine_position=1.0,
         )
         for green_direction, gap_active, expected_source in (
-            ("DIREITA", False, "virtual-green"),
+            ("DIREITA", False, "fusion-green-no-target"),
             ("NENHUMA", True, "gap-forward"),
         ):
             with self.subTest(expected_source=expected_source):
@@ -2175,7 +2563,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     rectangles,
                 )
 
-    def test_forward_heading_reaches_mapper_without_near_direction_veto(self):
+    def test_forward_heading_combines_with_fine_centering_before_mapper(self):
         forward_steering = -0.26
         sensors = sensor_values(forward_steering, -0.06, 0.0)
         sensors["nearFinePosition"] = 0.23
@@ -2185,12 +2573,17 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             sensors,
             camera_line_frame.VirtualTurnStateTracker(),
         )
-        expected_left, expected_right = expected_normal_motor_powers(
+        expected_steering = (
             forward_steering
+            + camera_line_frame.apply_virtual_fine_center_deadband(0.23)
+            * camera_line_frame.VIRTUAL_FINE_CENTER_GAIN
+        )
+        expected_left, expected_right = expected_normal_motor_powers(
+            expected_steering
         )
         self.assertTrue(math.isclose(
             result["finalSteering"],
-            forward_steering,
+            expected_steering,
         ))
         self.assertTrue(math.isclose(result["left_power"], expected_left))
         self.assertTrue(math.isclose(result["right_power"], expected_right))
@@ -2358,7 +2751,9 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         ).astype(np.uint8) * 255
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
 
-        for green_direction in ("NENHUMA", "ESQUERDA", "DIREITA"):
+        # O GREEN possui testes próprios para os pontos físicos. Esta
+        # referência preserva a equivalência do caminho virtual NORMAL.
+        for green_direction in ("NENHUMA",):
             actual = camera_line_frame.read_virtual_line_sensors(
                 mask,
                 green_direction,
@@ -2489,7 +2884,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                         field_name,
                     )
 
-    def test_green_masks_medium_and_uses_it_when_far_is_missing(self):
+    def test_green_with_only_medium_does_not_replace_missing_fusion(self):
         mask = np.zeros((100, 200), dtype=np.uint8)
         geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
         for side in ("left", "right"):
@@ -2501,9 +2896,9 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     region["x0"]:region["x1"],
                 ] = 255
 
-        for green_direction, expected_position, expected_powers in (
-            ("ESQUERDA", -1.0, (-0.72, 0.78)),
-            ("DIREITA", 1.0, (0.78, -0.72)),
+        for green_direction, expected_sign in (
+            ("ESQUERDA", -1.0),
+            ("DIREITA", 1.0),
         ):
             with self.subTest(green_direction=green_direction):
                 sensors = camera_line_frame.read_virtual_line_sensors(
@@ -2515,14 +2910,21 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     green_direction=green_direction,
                 )
 
-                self.assertTrue(math.isclose(
-                    sensors["mediumPosition"],
-                    expected_position,
-                ))
+                self.assertGreater(
+                    expected_sign * sensors["mediumPosition"],
+                    0.0,
+                )
+                self.assertLess(abs(sensors["mediumPosition"]), 1.0)
                 self.assertIsNone(sensors["farPosition"])
+                self.assertIsNone(sensors["headingAngle"])
+                self.assertIsNone(result["finalSteering"])
+                self.assertEqual(
+                    result["controlSource"],
+                    "fusion-green-no-target",
+                )
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    expected_powers,
+                    (0.0, 0.0),
                 )
 
     def test_green_trust_is_measured_only_on_selected_right_branch(self):
@@ -2559,14 +2961,317 @@ class VirtualSensorRegressionTests(unittest.TestCase):
         self.assertEqual(measured_geometries, [("right",), ("right",)])
         self.assertTrue(sensors["farTrusted"])
         self.assertTrue(sensors["mediumTrusted"])
-        self.assertEqual(sensors["farPosition"], 1.0)
-        self.assertEqual(sensors["mediumPosition"], 1.0)
+        self.assertGreater(sensors["farPosition"], 0.0)
+        self.assertGreater(sensors["mediumPosition"], 0.0)
+        self.assertLess(sensors["farPosition"], 1.0)
+        self.assertLess(sensors["mediumPosition"], 1.0)
+        self.assertIsNotNone(sensors["greenFarPoint"])
+        self.assertIsNotNone(sensors["greenMediumPoint"])
 
-    def test_green_without_trusted_branch_keeps_pivoting_in_its_direction(self):
-        for green_direction, expected_powers in (
-            ("ESQUERDA", (-0.72, 0.78)),
-            ("DIREITA", (0.78, -0.72)),
+    def test_green_left_expands_trust_and_positions_after_curve_starts(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        for row_name in ("far", "medium"):
+            for side in ("left", "center", "right"):
+                for region in camera_line_frame.virtual_sensor_regions(
+                    geometry[row_name][side]
+                ):
+                    mask[
+                        region["y0"]:region["y1"],
+                        region["x0"]:region["x1"],
+                    ] = 255
+
+        measured_geometries = []
+        trusted_measurement = {
+            "lineConfidence": 1.0,
+            "robustThicknessPx": 30.0,
+            "thicknessScore": 1.0,
+            "thicknessConsistency": 1.0,
+            "continuityScore": 1.0,
+            "areaScore": 1.0,
+            "componentCenterX": 60.0,
+        }
+
+        def measure_selected_branch(_processed_mask, row_geometry):
+            measured_geometries.append(tuple(row_geometry))
+            return trusted_measurement
+
+        with patch.object(
+            camera_line_frame,
+            "measure_virtual_row_line_confidence",
+            side_effect=measure_selected_branch,
         ):
+            before = camera_line_frame.read_virtual_line_sensors(
+                mask,
+                "ESQUERDA",
+                curva_verde_iniciada=False,
+            )
+            after = camera_line_frame.read_virtual_line_sensors(
+                mask,
+                "ESQUERDA",
+                curva_verde_iniciada=True,
+            )
+
+        self.assertEqual(
+            measured_geometries,
+            [("left",), ("left",), ("left", "center"), ("left", "center")],
+        )
+        self.assertEqual(
+            (
+                before["controlFarLeft"],
+                before["controlFarCenter"],
+                before["controlFarRight"],
+            ),
+            (1.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            (
+                after["controlFarLeft"],
+                after["controlFarCenter"],
+                after["controlFarRight"],
+            ),
+            (1.0, 1.0, 0.0),
+        )
+        self.assertEqual(
+            (
+                before["controlMediumLeft"],
+                before["controlMediumCenter"],
+                before["controlMediumRight"],
+            ),
+            (1.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            (
+                after["controlMediumLeft"],
+                after["controlMediumCenter"],
+                after["controlMediumRight"],
+            ),
+            (1.0, 1.0, 0.0),
+        )
+        self.assertEqual(before["greenFarPoint"][0], 60.0)
+        self.assertEqual(before["greenMediumPoint"][0], 60.0)
+        self.assertEqual(after["greenFarPoint"][0], 60.0)
+        self.assertEqual(after["greenMediumPoint"][0], 60.0)
+
+    def test_green_right_expands_trust_and_positions_after_curve_starts(self):
+        mask = np.zeros((100, 200), dtype=np.uint8)
+        geometry = camera_line_frame.resolve_virtual_sensor_geometry(mask.shape)
+        for row_name in ("far", "medium"):
+            for side in ("left", "center", "right"):
+                for region in camera_line_frame.virtual_sensor_regions(
+                    geometry[row_name][side]
+                ):
+                    mask[
+                        region["y0"]:region["y1"],
+                        region["x0"]:region["x1"],
+                    ] = 255
+
+        measured_geometries = []
+        trusted_measurement = {
+            "lineConfidence": 1.0,
+            "robustThicknessPx": 30.0,
+            "thicknessScore": 1.0,
+            "thicknessConsistency": 1.0,
+            "continuityScore": 1.0,
+            "areaScore": 1.0,
+            "componentCenterX": 140.0,
+        }
+
+        def measure_selected_branch(_processed_mask, row_geometry):
+            measured_geometries.append(tuple(row_geometry))
+            return trusted_measurement
+
+        with patch.object(
+            camera_line_frame,
+            "measure_virtual_row_line_confidence",
+            side_effect=measure_selected_branch,
+        ):
+            before = camera_line_frame.read_virtual_line_sensors(
+                mask,
+                "DIREITA",
+                curva_verde_iniciada=False,
+            )
+            after = camera_line_frame.read_virtual_line_sensors(
+                mask,
+                "DIREITA",
+                curva_verde_iniciada=True,
+            )
+
+        self.assertEqual(
+            measured_geometries,
+            [("right",), ("right",), ("center", "right"), ("center", "right")],
+        )
+        self.assertEqual(
+            (
+                before["controlFarLeft"],
+                before["controlFarCenter"],
+                before["controlFarRight"],
+            ),
+            (0.0, 0.0, 1.0),
+        )
+        self.assertEqual(
+            (
+                after["controlFarLeft"],
+                after["controlFarCenter"],
+                after["controlFarRight"],
+            ),
+            (0.0, 1.0, 1.0),
+        )
+        self.assertEqual(
+            (
+                before["controlMediumLeft"],
+                before["controlMediumCenter"],
+                before["controlMediumRight"],
+            ),
+            (0.0, 0.0, 1.0),
+        )
+        self.assertEqual(
+            (
+                after["controlMediumLeft"],
+                after["controlMediumCenter"],
+                after["controlMediumRight"],
+            ),
+            (0.0, 1.0, 1.0),
+        )
+        self.assertEqual(before["greenFarPoint"][0], 140.0)
+        self.assertEqual(before["greenMediumPoint"][0], 140.0)
+        self.assertEqual(after["greenFarPoint"][0], 140.0)
+        self.assertEqual(after["greenMediumPoint"][0], 140.0)
+
+    def test_green_left_uses_real_component_x_and_heading(self):
+        strong_curve = self.read_directional_green_stripe(
+            "ESQUERDA",
+            far_center_x=70,
+            medium_center_x=150,
+        )
+        mild_curve = self.read_directional_green_stripe(
+            "ESQUERDA",
+            far_center_x=125,
+            medium_center_x=155,
+        )
+
+        self.assertTrue(strong_curve["farTrusted"])
+        self.assertTrue(strong_curve["mediumTrusted"])
+        self.assertLess(strong_curve["farPosition"], 0.0)
+        self.assertGreater(strong_curve["farPosition"], -1.0)
+        self.assertTrue(math.isclose(
+            strong_curve["greenFarPoint"][0],
+            69.5,
+        ))
+        self.assertTrue(math.isclose(
+            strong_curve["greenMediumPoint"][0],
+            149.5,
+        ))
+        self.assertNotEqual(
+            strong_curve["greenFarPoint"][0],
+            mild_curve["greenFarPoint"][0],
+        )
+        self.assertLess(strong_curve["headingAngle"], 0.0)
+        self.assertLess(mild_curve["headingAngle"], 0.0)
+        self.assertGreater(
+            abs(strong_curve["headingAngle"]),
+            abs(mild_curve["headingAngle"]),
+        )
+
+    def test_green_right_mirrors_real_component_x_and_heading(self):
+        left = self.read_directional_green_stripe(
+            "ESQUERDA",
+            far_center_x=70,
+            medium_center_x=150,
+        )
+        right = self.read_directional_green_stripe(
+            "DIREITA",
+            far_center_x=410,
+            medium_center_x=330,
+        )
+
+        self.assertTrue(right["farTrusted"])
+        self.assertTrue(right["mediumTrusted"])
+        self.assertGreater(right["farPosition"], 0.0)
+        self.assertLess(right["farPosition"], 1.0)
+        self.assertTrue(math.isclose(
+            right["greenFarPoint"][0],
+            409.5,
+        ))
+        self.assertTrue(math.isclose(
+            right["greenMediumPoint"][0],
+            329.5,
+        ))
+        self.assertGreater(right["headingAngle"], 0.0)
+        self.assertTrue(math.isclose(
+            right["headingAngle"],
+            -left["headingAngle"],
+            rel_tol=0.02,
+        ))
+
+    def test_green_heading_uses_real_points_in_required_priority(self):
+        near_point = (240.0, 330.0)
+        medium_point = (200.0, 220.0)
+        far_point = (160.0, 100.0)
+
+        with_near_and_far = camera_line_frame.calculate_green_heading_angle(
+            near_point,
+            medium_point,
+            far_point,
+        )
+        with_near_and_medium = camera_line_frame.calculate_green_heading_angle(
+            near_point,
+            medium_point,
+            None,
+        )
+        without_near = camera_line_frame.calculate_green_heading_angle(
+            None,
+            medium_point,
+            far_point,
+        )
+
+        self.assertTrue(math.isclose(
+            with_near_and_far,
+            math.degrees(math.atan2(160.0 - 240.0, 330.0 - 100.0)),
+        ))
+        self.assertTrue(math.isclose(
+            with_near_and_medium,
+            math.degrees(math.atan2(200.0 - 240.0, 330.0 - 220.0)),
+        ))
+        self.assertTrue(math.isclose(
+            without_near,
+            math.degrees(math.atan2(160.0 - 200.0, 220.0 - 100.0)),
+        ))
+
+    def test_green_heading_has_no_motor_authority_without_fusion(self):
+        for green_direction, steering_error in (
+            ("ESQUERDA", -0.55),
+            ("DIREITA", 0.55),
+        ):
+            with self.subTest(green_direction=green_direction):
+                sensors = sensor_values(
+                    steering_error,
+                    medium_position=(
+                        -0.50 if steering_error < 0.0 else 0.50
+                    ),
+                    far_band_position=None,
+                )
+                sensors["headingAngle"] = (
+                    -30.0 if steering_error < 0.0 else 30.0
+                )
+                result = calculate_command(
+                    sensors,
+                    green_direction=green_direction,
+                )
+
+                self.assertEqual(
+                    result["controlSource"],
+                    "fusion-green-no-target",
+                )
+                self.assertIsNone(result["finalSteering"])
+                self.assertFalse(result["fusionControlActive"])
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    (0.0, 0.0),
+                )
+
+    def test_green_without_trusted_branch_waits_for_fusion(self):
+        for green_direction in ("ESQUERDA", "DIREITA"):
             with self.subTest(green_direction=green_direction):
                 sensors = sensor_values(None, None, None)
                 sensors["farTrusted"] = False
@@ -2576,17 +3281,21 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     green_direction=green_direction,
                 )
 
-                self.assertEqual(result["controlSource"], "virtual-green")
+                self.assertEqual(
+                    result["controlSource"],
+                    "fusion-green-no-target",
+                )
                 self.assertEqual(result["lineState"], "GREEN")
+                self.assertIsNone(result["finalSteering"])
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    expected_powers,
+                    (0.0, 0.0),
                 )
 
-    def test_green_with_only_far_branch_keeps_pivoting_in_its_direction(self):
-        for green_direction, far_position, expected_powers in (
-            ("ESQUERDA", -1.0, (-0.72, 0.78)),
-            ("DIREITA", 1.0, (0.78, -0.72)),
+    def test_green_with_only_far_branch_waits_for_fusion(self):
+        for green_direction, far_position in (
+            ("ESQUERDA", -0.70),
+            ("DIREITA", 0.70),
         ):
             with self.subTest(green_direction=green_direction):
                 sensors = sensor_values(None, None, None)
@@ -2597,10 +3306,14 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                     green_direction=green_direction,
                 )
 
-                self.assertEqual(result["controlSource"], "virtual-green")
+                self.assertEqual(
+                    result["controlSource"],
+                    "fusion-green-no-target",
+                )
+                self.assertIsNone(result["finalSteering"])
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    expected_powers,
+                    (0.0, 0.0),
                 )
 
 
@@ -2682,7 +3395,7 @@ class VirtualRecoveryTests(unittest.TestCase):
 
     def test_gap_geometry_preserves_real_near_path(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
-        mask[:85, 47:53] = 255
+        mask[:, 47:53] = 255
 
         guidance = camera_line_frame.extract_geometric_line_path(mask)
 
@@ -2809,7 +3522,10 @@ class VirtualRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["lineState"], "GAP")
         self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
 
     def test_recent_near_loss_uses_far_right_gap_recovery(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
@@ -2834,7 +3550,10 @@ class VirtualRecoveryTests(unittest.TestCase):
 
         self.assertEqual(result["lineState"], "GAP")
         self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+        )
 
     def test_gap_near_history_expires_without_being_renewed(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
@@ -2886,7 +3605,14 @@ class VirtualRecoveryTests(unittest.TestCase):
             gap_active=gap_active,
         )
         self.assertEqual(result["lineState"], "GREEN")
-        self.assertEqual(result["controlSource"], "virtual-green")
+        self.assertEqual(
+            result["controlSource"],
+            "fusion-green-no-target",
+        )
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, 0.0),
+        )
 
     def enter_reorient(self, direction):
         sign = -1.0 if direction == "LEFT" else 1.0
@@ -2918,14 +3644,20 @@ class VirtualRecoveryTests(unittest.TestCase):
         tracker = camera_line_frame.VirtualTurnStateTracker()
         result = calculate_command(sensor_values(None, -0.80, None), tracker)
         self.assertIsNone(result["finalSteering"])
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
         self.assertEqual(result["controlSource"], "virtual-medium-scan")
 
     def test_invalid_steering_uses_right_medium_scan(self):
         tracker = camera_line_frame.VirtualTurnStateTracker()
         result = calculate_command(sensor_values(None, 0.80, None), tracker)
         self.assertIsNone(result["finalSteering"])
-        self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+        )
         self.assertEqual(result["controlSource"], "virtual-medium-scan")
 
     def test_medium_scan_disappears_when_normal_steering_returns(self):
@@ -2941,7 +3673,10 @@ class VirtualRecoveryTests(unittest.TestCase):
         for _ in range(camera_line_frame.VIRTUAL_MEDIUM_SCAN_MAX_FRAMES):
             result = calculate_command(sensors, tracker)
             self.assertEqual(result["controlSource"], "virtual-medium-scan")
-            self.assertEqual((result["left_power"], result["right_power"]), (0.69, 0.0))
+            self.assertEqual(
+                (result["left_power"], result["right_power"]),
+                (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+            )
 
         result = calculate_command(sensors, tracker)
         self.assertEqual(result["controlSource"], "virtual-no-line")
@@ -2951,13 +3686,25 @@ class VirtualRecoveryTests(unittest.TestCase):
         tracker, result = self.enter_reorient("LEFT")
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_REORIENT_LEFT)
         self.assertEqual(result["finalSteering"], -1.0)
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.75))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (
+                camera_line_frame.PIVOT_INNER_POWER,
+                camera_line_frame.PIVOT_OUTER_POWER,
+            ),
+        )
 
     def test_matching_right_recovery_enters_reorient(self):
         tracker, result = self.enter_reorient("RIGHT")
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_REORIENT_RIGHT)
         self.assertEqual(result["finalSteering"], 1.0)
-        self.assertEqual((result["left_power"], result["right_power"]), (0.75, 0.0))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (
+                camera_line_frame.PIVOT_OUTER_POWER,
+                camera_line_frame.PIVOT_INNER_POWER,
+            ),
+        )
 
     def test_medium_far_disagreement_never_enters_reorient(self):
         tracker = camera_line_frame.VirtualTurnStateTracker()
@@ -2988,13 +3735,28 @@ class VirtualRecoveryTests(unittest.TestCase):
         )
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_NORMAL)
         self.assertIsNone(result["finalSteering"])
-        self.assertEqual(result["controlSource"], "virtual-green")
+        self.assertEqual(
+            result["controlSource"],
+            "fusion-green-no-target",
+        )
         self.assertEqual(result["greenDirection"], "DIREITA")
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, 0.0),
+        )
 
     def test_gap_uses_medium_and_far_band_lateral_recovery(self):
         cases = (
-            (sensor_values(None, -0.80, None), "LEFT", (0.0, 0.69)),
-            (sensor_values(None, None, 0.80), "RIGHT", (0.69, 0.0)),
+            (
+                sensor_values(None, -0.80, None),
+                "LEFT",
+                (0.0, camera_line_frame.NORMAL_BASE_POWER),
+            ),
+            (
+                sensor_values(None, None, 0.80),
+                "RIGHT",
+                (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+            ),
         )
         for sensors, _direction, expected_powers in cases:
             with self.subTest(direction=_direction):
@@ -3255,20 +4017,18 @@ class VirtualRecoveryTests(unittest.TestCase):
             (0.82, 0.66),
         )
 
-    def test_green_keeps_previous_normal_curve_scale(self):
+    def test_green_does_not_use_virtual_mapper_without_fusion_target(self):
         result = calculate_command(
             sensor_values(0.30, None, None),
             green_direction="DIREITA",
         )
-        steering_strength = 0.30 / 0.40
-        self.assertTrue(math.isclose(
-            result["left_power"],
-            0.75 + steering_strength * (0.82 - 0.75),
-        ))
-        self.assertTrue(math.isclose(
-            result["right_power"],
-            0.75 - steering_strength * (0.75 - 0.66),
-        ))
+
+        self.assertEqual(result["controlSource"], "fusion-green-no-target")
+        self.assertIsNone(result["finalSteering"])
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, 0.0),
+        )
 
 
 class VirtualMediumUrgencyTests(unittest.TestCase):
@@ -3321,7 +4081,8 @@ class VirtualMediumUrgencyTests(unittest.TestCase):
             sensor_values(None, None, None),
             sensor_values(0.0, 0.60, None, near_fine_position=0.38),
         )
-        transient_sensors[2]["farPosition"] = None
+        for transient_sensor in transient_sensors:
+            transient_sensor["farPosition"] = None
         for sensors in transient_sensors:
             held = calculate_command(
                 sensors,
@@ -3881,7 +4642,527 @@ class VirtualMediumUrgencyTests(unittest.TestCase):
         )
 
 
+class GreenRearmTests(unittest.TestCase):
+    def test_green_absence_during_active_maneuver_does_not_rearm(self):
+        armed = False
+        clear_frames = 0
+
+        for _frame_index in range(10):
+            armed, clear_frames = (
+                camera_line_frame.update_green_rearm_state(
+                    armed,
+                    clear_frames,
+                    active_direction="ESQUERDA",
+                    candidate_count=0,
+                )
+            )
+
+        self.assertFalse(armed)
+        self.assertEqual(clear_frames, 0)
+
+    def test_green_rearms_only_on_fifth_clean_frame_after_maneuver(self):
+        armed = False
+        clear_frames = 0
+
+        for expected_frames in range(1, 5):
+            armed, clear_frames = (
+                camera_line_frame.update_green_rearm_state(
+                    armed,
+                    clear_frames,
+                    active_direction="NENHUMA",
+                    candidate_count=0,
+                )
+            )
+            self.assertFalse(armed)
+            self.assertEqual(clear_frames, expected_frames)
+
+        armed, clear_frames = camera_line_frame.update_green_rearm_state(
+            armed,
+            clear_frames,
+            active_direction="NENHUMA",
+            candidate_count=0,
+        )
+
+        self.assertTrue(armed)
+        self.assertEqual(clear_frames, 0)
+        self.assertEqual(camera_line_frame.QUADROS_PARA_REARMAR_VERDE, 5)
+
+    def test_any_green_candidate_resets_rearm_window(self):
+        armed = False
+        clear_frames = 0
+
+        for _frame_index in range(3):
+            armed, clear_frames = (
+                camera_line_frame.update_green_rearm_state(
+                    armed,
+                    clear_frames,
+                    active_direction="NENHUMA",
+                    candidate_count=0,
+                )
+            )
+        self.assertEqual(clear_frames, 3)
+
+        armed, clear_frames = camera_line_frame.update_green_rearm_state(
+            armed,
+            clear_frames,
+            active_direction="NENHUMA",
+            candidate_count=1,
+        )
+        self.assertFalse(armed)
+        self.assertEqual(clear_frames, 0)
+
+        for expected_frames in range(1, 5):
+            armed, clear_frames = (
+                camera_line_frame.update_green_rearm_state(
+                    armed,
+                    clear_frames,
+                    active_direction="NENHUMA",
+                    candidate_count=0,
+                )
+            )
+            self.assertFalse(armed)
+            self.assertEqual(clear_frames, expected_frames)
+
+    def test_rearmed_control_accepts_new_confirmed_green(self):
+        armed = False
+        clear_frames = 0
+        for _frame_index in range(
+            camera_line_frame.QUADROS_PARA_REARMAR_VERDE
+        ):
+            armed, clear_frames = (
+                camera_line_frame.update_green_rearm_state(
+                    armed,
+                    clear_frames,
+                    active_direction="NENHUMA",
+                    candidate_count=0,
+                )
+            )
+
+        green_status = camera_line_frame.empty_green_status()
+        green_status["greenConfirmed"] = True
+        green_status["greenInterpretation"] = "ESQUERDA"
+
+        self.assertEqual(
+            camera_line_frame.select_confirmed_green_direction(
+                armed,
+                "NENHUMA",
+                green_status,
+            ),
+            "ESQUERDA",
+        )
+
+    def test_green_telemetry_distinguishes_detected_from_active(self):
+        green_status = camera_line_frame.empty_green_status()
+        green_status["greenConfirmed"] = True
+        green_status["greenInterpretation"] = "ESQUERDA"
+        green_status["greenRawInterpretation"] = "ESQUERDA"
+
+        camera_line_frame.update_green_control_telemetry(
+            green_status,
+            active_direction="NENHUMA",
+            armed=False,
+            rearm_clear_frames=2,
+        )
+        self.assertEqual(green_status["greenDecisionState"], "detected")
+        self.assertFalse(green_status["greenControlActive"])
+        self.assertEqual(green_status["greenControlDirection"], "NENHUMA")
+        self.assertFalse(green_status["greenArmed"])
+        self.assertEqual(green_status["greenRearmClearFrames"], 2)
+
+        camera_line_frame.update_green_control_telemetry(
+            green_status,
+            active_direction="ESQUERDA",
+            armed=False,
+            rearm_clear_frames=0,
+        )
+        self.assertEqual(green_status["greenDecisionState"], "active")
+        self.assertTrue(green_status["greenControlActive"])
+        self.assertEqual(green_status["greenControlDirection"], "ESQUERDA")
+
+
+class GreenCandidateHoldTests(unittest.TestCase):
+    @staticmethod
+    def fusion_command(left_power, right_power, angle):
+        steering_error = (
+            camera_line_frame.map_fusion_angle_to_steering_error(angle)
+        )
+        return {
+            "left_power": left_power,
+            "right_power": right_power,
+            "controlSource": "fusion",
+            "fusionControlActive": True,
+            "fusionAngle": angle,
+            "filteredFusionAngle": angle,
+            "fusionSteeringError": steering_error,
+            "steeringError": steering_error,
+            "finalSteering": steering_error,
+            "fusionSpeedScale": 1.0,
+        }
+
+    @staticmethod
+    def pending_status():
+        status = camera_line_frame.empty_green_status()
+        status["greenCandidateCount"] = 1
+        status["greenRawInterpretation"] = "ESQUERDA"
+        status["greenObservationState"] = "UM_CANDIDATO"
+        status["greenPathBlackValid"] = True
+        return status
+
+    def test_candidate_first_frame_holds_previous_fusion_command(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        current = self.fusion_command(0.85, -0.40, 145.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            current,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+
+        self.assertTrue(result["active"])
+        self.assertEqual(result["frames"], 1)
+        self.assertEqual(
+            (result["command"]["left_power"], result["command"]["right_power"]),
+            (0.72, 0.78),
+        )
+        self.assertEqual(result["command"]["fusionAngle"], 86.0)
+
+    def test_confirmation_on_second_frame_bypasses_hold_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        confirmed_status = self.pending_status()
+        confirmed_status["greenConfirmed"] = True
+        green_command = self.fusion_command(-0.30, 0.85, 155.0)
+        green_command["controlSource"] = "fusion-green"
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            green_command,
+            previous,
+            armed=False,
+            active_direction="ESQUERDA",
+            green_status=confirmed_status,
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], green_command)
+        self.assertEqual(result["command"]["controlSource"], "fusion-green")
+
+    def test_candidate_disappearance_restores_current_fusion_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        resumed_command = self.fusion_command(0.82, 0.66, 105.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            resumed_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=camera_line_frame.empty_green_status(),
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], resumed_command)
+
+    def test_explicitly_rejected_candidate_exits_hold_immediately(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        first = camera_line_frame.apply_green_candidate_fusion_hold(
+            self.fusion_command(0.85, -0.40, 145.0),
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=self.pending_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        rejected_status = self.pending_status()
+        rejected_status["greenRawInterpretation"] = "VERDE_FALSO"
+        resumed_command = self.fusion_command(0.82, 0.66, 105.0)
+
+        result = camera_line_frame.apply_green_candidate_fusion_hold(
+            resumed_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=rejected_status,
+            hold_frames=first["frames"],
+            hold_blocked=first["blocked"],
+        )
+
+        self.assertFalse(result["active"])
+        self.assertFalse(result["blocked"])
+        self.assertEqual(result["frames"], 0)
+        self.assertEqual(result["command"], resumed_command)
+
+    def test_persistent_candidate_expires_after_two_frames_without_restart(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        hold_frames = 0
+        hold_blocked = False
+        activity = []
+
+        for frame_index in range(1, 5):
+            current = self.fusion_command(
+                0.80 + frame_index * 0.01,
+                0.70 - frame_index * 0.01,
+                90.0 + frame_index,
+            )
+            result = camera_line_frame.apply_green_candidate_fusion_hold(
+                current,
+                previous,
+                armed=True,
+                active_direction="NENHUMA",
+                green_status=self.pending_status(),
+                hold_frames=hold_frames,
+                hold_blocked=hold_blocked,
+            )
+            activity.append(result["active"])
+            hold_frames = result["frames"]
+            hold_blocked = result["blocked"]
+            if frame_index >= 3:
+                self.assertEqual(result["command"], current)
+
+        self.assertEqual(activity, [True, True, False, False])
+        self.assertEqual(hold_frames, 2)
+        self.assertTrue(hold_blocked)
+
+    def test_without_candidate_or_with_active_green_command_is_unchanged(self):
+        previous = camera_line_frame.capture_valid_fusion_command(
+            self.fusion_command(0.72, 0.78, 86.0)
+        )
+        normal_command = self.fusion_command(0.82, 0.66, 105.0)
+        without_candidate = camera_line_frame.apply_green_candidate_fusion_hold(
+            normal_command,
+            previous,
+            armed=True,
+            active_direction="NENHUMA",
+            green_status=camera_line_frame.empty_green_status(),
+            hold_frames=0,
+            hold_blocked=False,
+        )
+        confirmed_status = self.pending_status()
+        confirmed_status["greenConfirmed"] = True
+        green_command = self.fusion_command(-0.30, 0.85, 155.0)
+        green_command["controlSource"] = "fusion-green"
+        active_green = camera_line_frame.apply_green_candidate_fusion_hold(
+            green_command,
+            previous,
+            armed=False,
+            active_direction="ESQUERDA",
+            green_status=confirmed_status,
+            hold_frames=0,
+            hold_blocked=False,
+        )
+
+        self.assertEqual(without_candidate["command"], normal_command)
+        self.assertFalse(without_candidate["active"])
+        self.assertEqual(active_green["command"], green_command)
+        self.assertFalse(active_green["active"])
+
+
+class GreenFusionTargetHoldTests(unittest.TestCase):
+    @staticmethod
+    def valid_fusion_line(direction):
+        line = camera_line_frame.empty_fusion_style_line()
+        line.update({
+            "valid": True,
+            "selection": "nearCenter",
+            "referenceSource": (
+                "leftEdge" if direction == "ESQUERDA" else "rightEdge"
+            ),
+            "preferredDirection": (
+                "LEFT" if direction == "ESQUERDA" else "RIGHT"
+            ),
+            "angleDeg": 30.0 if direction == "ESQUERDA" else 150.0,
+            "nearPoint": {"x": 240, "y": 359},
+            "farPoint": {
+                "x": 0 if direction == "ESQUERDA" else 479,
+                "y": 180,
+            },
+            "fusionSpeedScale": 1.0,
+        })
+        return line
+
+    def test_last_green_target_is_held_for_only_two_missing_frames(self):
+        valid_line = self.valid_fusion_line("DIREITA")
+        state = camera_line_frame.update_green_fusion_target_hold(
+            "DIREITA",
+            valid_line,
+            previous_valid_fusion_line=None,
+            missing_frames=0,
+        )
+        self.assertFalse(state["holdActive"])
+
+        expected_command = calculate_command(
+            sensor_values(),
+            green_direction="DIREITA",
+            fusion_style_line=valid_line,
+        )
+        for expected_missing_frames in (1, 2):
+            state = camera_line_frame.update_green_fusion_target_hold(
+                "DIREITA",
+                camera_line_frame.empty_fusion_style_line(),
+                state["previousValidFusionLine"],
+                state["missingFrames"],
+            )
+            self.assertTrue(state["holdActive"])
+            self.assertEqual(
+                state["missingFrames"],
+                expected_missing_frames,
+            )
+            held_command = calculate_command(
+                sensor_values(),
+                green_direction="DIREITA",
+                fusion_style_line=state["fusionLine"],
+            )
+            self.assertEqual(
+                (held_command["left_power"], held_command["right_power"]),
+                (
+                    expected_command["left_power"],
+                    expected_command["right_power"],
+                ),
+            )
+
+        state = camera_line_frame.update_green_fusion_target_hold(
+            "DIREITA",
+            camera_line_frame.empty_fusion_style_line(),
+            state["previousValidFusionLine"],
+            state["missingFrames"],
+        )
+        self.assertFalse(state["holdActive"])
+        self.assertEqual(state["recoveryDirection"], "RIGHT")
+        self.assertIsNone(state["previousValidFusionLine"])
+        self.assertEqual(state["missingFrames"], 0)
+
+    def test_target_recovery_resets_short_loss_window(self):
+        previous = self.valid_fusion_line("ESQUERDA")
+        missing = camera_line_frame.update_green_fusion_target_hold(
+            "ESQUERDA",
+            camera_line_frame.empty_fusion_style_line(),
+            previous,
+            missing_frames=0,
+        )
+        recovered = camera_line_frame.update_green_fusion_target_hold(
+            "ESQUERDA",
+            previous,
+            missing["previousValidFusionLine"],
+            missing["missingFrames"],
+        )
+
+        self.assertFalse(recovered["holdActive"])
+        self.assertEqual(recovered["missingFrames"], 0)
+        self.assertIsNone(recovered["recoveryDirection"])
+
+    def test_inactive_green_clears_held_target(self):
+        result = camera_line_frame.update_green_fusion_target_hold(
+            "NENHUMA",
+            camera_line_frame.empty_fusion_style_line(),
+            self.valid_fusion_line("DIREITA"),
+            missing_frames=2,
+        )
+
+        self.assertIsNone(result["previousValidFusionLine"])
+        self.assertEqual(result["missingFrames"], 0)
+        self.assertIsNone(result["recoveryDirection"])
+
+
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
+    def test_green_geometric_completion_requires_three_consecutive_frames(self):
+        completion_frames = 0
+        for _frame_index in range(
+            camera_line_frame.QUADROS_CENTRALIZADO_PARA_CONCLUIR
+        ):
+            geometrically_complete = (
+                camera_line_frame.green_maneuver_is_geometrically_complete(
+                    True,
+                    near_fine_position=0.10,
+                    medium_trusted=True,
+                    medium_position=0.20,
+                    far_trusted=False,
+                    far_position=None,
+                )
+            )
+            completion_frames = (
+                completion_frames + 1
+                if geometrically_complete
+                else 0
+            )
+
+        self.assertEqual(
+            camera_line_frame.QUADROS_CENTRALIZADO_PARA_CONCLUIR,
+            3,
+        )
+        self.assertEqual(completion_frames, 3)
+        completed = camera_line_frame.update_green_maneuver_state(
+            "ESQUERDA",
+            active_frames=10,
+            raw_line_visible=True,
+            completed=(
+                completion_frames
+                >= camera_line_frame.QUADROS_CENTRALIZADO_PARA_CONCLUIR
+            ),
+        )
+        self.assertEqual(completed["direction"], "NENHUMA")
+        self.assertFalse(completed["timedOut"])
+
+    def test_green_geometric_completion_accepts_far_when_medium_is_untrusted(self):
+        self.assertTrue(
+            camera_line_frame.green_maneuver_is_geometrically_complete(
+                True,
+                near_fine_position=-0.10,
+                medium_trusted=False,
+                medium_position=None,
+                far_trusted=True,
+                far_position=-0.30,
+            )
+        )
+
+    def test_green_near_alone_does_not_complete_maneuver(self):
+        self.assertFalse(
+            camera_line_frame.green_maneuver_is_geometrically_complete(
+                True,
+                near_fine_position=0.0,
+                medium_trusted=False,
+                medium_position=None,
+                far_trusted=False,
+                far_position=None,
+            )
+        )
+
     def test_green_still_finishes_normally(self):
         result = camera_line_frame.update_green_maneuver_state(
             "ESQUERDA",
@@ -3892,6 +5173,30 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
         self.assertEqual(result["direction"], "NENHUMA")
         self.assertFalse(result["timedOut"])
         self.assertIsNone(result["searchDirection"])
+
+    def test_green_timeout_is_only_applied_at_45_frame_safety_limit(self):
+        self.assertEqual(
+            camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES,
+            45,
+        )
+        active = camera_line_frame.update_green_maneuver_state(
+            "DIREITA",
+            active_frames=43,
+            raw_line_visible=False,
+        )
+        self.assertEqual(active["direction"], "DIREITA")
+        self.assertEqual(active["activeFrames"], 44)
+        self.assertFalse(active["timedOut"])
+
+        timed_out = camera_line_frame.update_green_maneuver_state(
+            active["direction"],
+            active_frames=active["activeFrames"],
+            raw_line_visible=False,
+        )
+        self.assertEqual(timed_out["direction"], "NENHUMA")
+        self.assertEqual(timed_out["activeFrames"], 0)
+        self.assertTrue(timed_out["timedOut"])
+        self.assertEqual(timed_out["searchDirection"], "RIGHT")
 
     def test_green_timeout_with_raw_line_releases_to_recovery(self):
         timeout = camera_line_frame.update_green_maneuver_state(
@@ -3909,12 +5214,31 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
             sensor_recovery_requested=True,
         )
         self.assertEqual(result["controlSource"], "virtual-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.0, 0.69))
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+        )
 
     def test_green_timeout_without_line_starts_in_green_direction(self):
         cases = (
-            ("ESQUERDA", "LEFT", -1.0, (0.0, 0.75)),
-            ("DIREITA", "RIGHT", 1.0, (0.75, 0.0)),
+            (
+                "ESQUERDA",
+                "LEFT",
+                -1.0,
+                (
+                    camera_line_frame.PIVOT_INNER_POWER,
+                    camera_line_frame.PIVOT_OUTER_POWER,
+                ),
+            ),
+            (
+                "DIREITA",
+                "RIGHT",
+                1.0,
+                (
+                    camera_line_frame.PIVOT_OUTER_POWER,
+                    camera_line_frame.PIVOT_INNER_POWER,
+                ),
+            ),
         )
         for (
             green_direction,
@@ -3952,6 +5276,14 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
                 )
 
     def test_blind_search_reverses_after_short_initial_window(self):
+        self.assertEqual(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
+            35,
+        )
+        self.assertEqual(
+            camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
+            50,
+        )
         search_tracker = camera_line_frame.VirtualLineSearchTracker()
         search_tracker.start("LEFT")
         initial_directions = [
@@ -3962,7 +5294,18 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
             initial_directions,
             ["LEFT"] * camera_line_frame.VIRTUAL_BLIND_SEARCH_INITIAL_FRAMES,
         )
-        self.assertEqual(search_tracker.next_direction(), "RIGHT")
+        reverse_directions = [
+            search_tracker.next_direction()
+            for _ in range(
+                camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES
+            )
+        ]
+        self.assertEqual(
+            reverse_directions,
+            ["RIGHT"]
+            * camera_line_frame.VIRTUAL_BLIND_SEARCH_REVERSE_FRAMES,
+        )
+        self.assertEqual(search_tracker.next_direction(), "LEFT")
 
     def test_any_sensor_interrupts_blind_search(self):
         cases = []

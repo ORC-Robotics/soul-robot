@@ -79,8 +79,86 @@ constexpr uint32_t kRemoteOledMaximumDurationMs = 30000;
 constexpr uint32_t kRaspberrySystemReadyTimeoutMs = 3000;
 
 // Frequência inicial segura do PCA9685 para servos. Todos os 16 canais
-// permanecem desligados até que uma função futura defina seus movimentos.
+// permanecem desligados até que um comando válido defina seus movimentos.
 constexpr float kPca9685FrequencyHz = 50.0f;
+
+// Canais do PCA9685 reservados para os três mecanismos do robô.
+// Se a fiação mudar, ajuste somente estes valores e mantenha cada servo em um
+// canal exclusivo.
+constexpr uint8_t kArmServoChannel = 0;
+constexpr uint8_t kWristServoChannel = 1;
+constexpr uint8_t kGripperServoChannel = 2;
+
+// Faixa angular exposta à Raspberry e ao dashboard, em graus.
+// Os comandos fora dessa faixa são rejeitados antes de chegar ao PCA9685.
+constexpr float kServoMinimumAngleDegrees = 0.0f;
+constexpr float kServoMaximumAngleDegrees = 180.0f;
+
+// Valores de recuperação confirmados em bancada para os três servos. Perfis
+// válidos salvos pela calibração na NVS ainda podem substituir estes padrões.
+constexpr uint16_t kArmServoMinimumPulseUs = 500;
+constexpr uint16_t kArmServoMaximumPulseUs = 2500;
+constexpr uint16_t kWristServoMinimumPulseUs = 500;
+constexpr uint16_t kWristServoMaximumPulseUs = 2500;
+constexpr uint16_t kGripperServoMinimumPulseUs = 500;
+constexpr uint16_t kGripperServoMaximumPulseUs = 2500;
+
+// Limites absolutos aceitos no ajuste de bancada. A interface pode explorar
+// essa faixa em passos pequenos, mas o firmware nunca gera pulsos além dela.
+constexpr uint16_t kServoCalibrationAbsoluteMinimumPulseUs = 500;
+constexpr uint16_t kServoCalibrationAbsoluteMaximumPulseUs = 2500;
+
+// Evita salvar dois extremos quase iguais, o que deixaria a conversão de
+// ângulo muito sensível a poucos microssegundos de diferença.
+constexpr uint16_t kServoCalibrationMinimumSpanUs = 200;
+
+// O pulso bruto precisa ser renovado pelo dashboard. Se a aba fechar ou a
+// conexão cair, o PCA9685 remove o sinal mesmo que a Raspberry continue ligada.
+constexpr uint32_t kServoCalibrationCommandTimeoutMs = 2000;
+
+// Namespace e versão usados pela Preferences, que faz parte do core ESP32.
+// Uma gravação normal preserva esses dados enquanto "Erase All Flash" não for usado.
+constexpr const char* kServoPreferencesNamespace = "obr-servos";
+constexpr uint16_t kServoCalibrationStorageVersion = 1;
+
+// Permite inverter individualmente o sentido lógico de cada mecanismo sem
+// trocar a convenção de 0° a 180° usada pelo dashboard e pelas missões.
+constexpr bool kArmServoInverted = false;
+constexpr bool kWristServoInverted = false;
+constexpr bool kGripperServoInverted = false;
+
+// Erros nesta configuração devem interromper a compilação antes de gerar um
+// firmware capaz de comandar o canal errado ou uma faixa de pulso invertida.
+static_assert(kArmServoChannel < 16 && kWristServoChannel < 16 &&
+                  kGripperServoChannel < 16,
+              "Servo channels must be inside the PCA9685 range");
+static_assert(kArmServoChannel != kWristServoChannel &&
+                  kArmServoChannel != kGripperServoChannel &&
+                  kWristServoChannel != kGripperServoChannel,
+              "Every servo must use an exclusive PCA9685 channel");
+static_assert(kArmServoMinimumPulseUs < kArmServoMaximumPulseUs &&
+                  kWristServoMinimumPulseUs < kWristServoMaximumPulseUs &&
+                  kGripperServoMinimumPulseUs < kGripperServoMaximumPulseUs,
+              "Servo minimum pulses must be lower than maximum pulses");
+static_assert(kServoCalibrationAbsoluteMinimumPulseUs <=
+                   kArmServoMinimumPulseUs &&
+                  kArmServoMaximumPulseUs <=
+                      kServoCalibrationAbsoluteMaximumPulseUs &&
+                  kServoCalibrationAbsoluteMinimumPulseUs <=
+                      kWristServoMinimumPulseUs &&
+                  kWristServoMaximumPulseUs <=
+                      kServoCalibrationAbsoluteMaximumPulseUs &&
+                  kServoCalibrationAbsoluteMinimumPulseUs <=
+                      kGripperServoMinimumPulseUs &&
+                  kGripperServoMaximumPulseUs <=
+                      kServoCalibrationAbsoluteMaximumPulseUs,
+              "Default servo pulses must stay within calibration limits");
+static_assert(kServoCalibrationMinimumSpanUs > 0 &&
+                  kServoCalibrationMinimumSpanUs <
+                      kServoCalibrationAbsoluteMaximumPulseUs -
+                          kServoCalibrationAbsoluteMinimumPulseUs &&
+                  kServoCalibrationCommandTimeoutMs > 0,
+              "Servo calibration safety limits must be valid");
 
 // PWM do DRV8833. A frequência de 20 kHz fica acima da faixa audível comum.
 constexpr uint32_t kMotorPwmFrequencyHz = 20000;
@@ -123,6 +201,16 @@ constexpr uint32_t kBatteryReadIntervalMs = 250;
 constexpr uint32_t kEncoderRateIntervalMs = kTelemetryIntervalMs;
 constexpr uint32_t kUltrasonicIntervalMs = 100;
 constexpr uint32_t kOledRefreshIntervalMs = 100;
+
+// O alerta grande pulsa lentamente sem apagar por completo. O período de 1,6 s
+// deixa cada palavra legível, enquanto o contraste mínimo evita um flash seco.
+constexpr uint32_t kOledAlertPulsePeriodMs = 1600;
+constexpr uint8_t kOledAlertMinimumContrast = 64;
+constexpr uint8_t kOledAlertMaximumContrast = 255;
+static_assert(kOledAlertPulsePeriodMs > 0,
+              "OLED alert pulse period must be greater than zero");
+static_assert(kOledAlertMinimumContrast < kOledAlertMaximumContrast,
+              "OLED alert contrast limits must be ordered");
 
 // Tempo, em milissegundos, que o resultado da calibração permanece na OLED.
 // Depois desse período, a tela volta automaticamente à bateria e aos ângulos.

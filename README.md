@@ -1,5 +1,8 @@
 # OBR2026K
 
+Para fotografar as classes de faixa prata e preparar o treinamento por câmera,
+consulte [Coleta e treinamento do dataset](docs/SILVER_DATASET.md).
+
 > Para conhecer arquitetura, eletrônica, protocolos, operação, segurança,
 > limitações e informações que ainda precisam ser preenchidas pela equipe, leia
 > o [Guia completo do projeto](docs/GUIA_COMPLETO_DO_PROJETO.md).
@@ -29,13 +32,16 @@ sistema e modos manual/autônomo quando ela for integrada novamente.
 
 ```txt
 src/main.cpp
-  Conecta os módulos e executa o loop principal.
+  Instala os sinais de encerramento e inicia RobotApplication.
+
+src/application/
+  Possui os módulos de runtime e executa o ciclo de vida da aplicação.
 
 src/dashboard/
   Dashboard HTTP/WebSocket e comandos vindos do navegador.
 
 src/robot/
-  Estado do robô e controle dos motores.
+  Estado do robô e controle dos motores e servos.
 
 src/hal/
   Acesso baixo nível aos GPIOs da Raspberry Pi e ponte UART com a ESP32.
@@ -64,6 +70,9 @@ placa ESP32 compatível e instale:
 - `Adafruit PWM Servo Driver Library`;
 - `Adafruit GFX Library`;
 - `Adafruit SSD1306`.
+
+A biblioteca `Preferences` usada pela calibração persistente já faz parte do
+core ESP32 da Espressif; não é necessário instalá-la pelo Library Manager.
 
 Depois de gravar o sketch:
 
@@ -150,17 +159,83 @@ As constantes ficam em `esp32/obr_esp32_bridge/robot_config.h`.
   gravar a ESP32.
 
 O PCA9685 é detectado em `0x40`, configurado em 50 Hz e inicia com os 16 canais
-desligados. Ainda não há movimento de servo porque os atuadores e limites de
-pulso não foram informados. O MPU6050 é procurado em `0x68` e `0x69`. O OLED
+desligados. Braço, pulso e garra usam inicialmente os canais 0, 1 e 2. O
+dashboard principal permite comandar cada mecanismo de 0° a 180° depois de
+ativar o modo Manual. Os padrões compilados, confirmados em bancada, são
+500–2500 µs, e o painel
+possui uma calibração de bancada entre 500 e 2500 µs que salva limites
+independentes na NVS da ESP32. Depois de gravar esse firmware uma vez, os pulsos
+podem ser ajustados e persistidos sem nova gravação. O MPU6050 é procurado em
+`0x68` e `0x69`. O OLED
 SSD1306 128×64 é procurado em `0x3C` e `0x3D` e mostra tensão da bateria,
 ângulo de giro e inclinação frontal da rampa. A inclinação usa um filtro
 complementar que combina acelerômetro e giroscópio; o giro usa calibração no
 boot, filtro passa-baixas e zona morta para reduzir variações quando parado.
 A bateria ocupa a área principal do OLED, com tensão grande e uma barra visual;
 giro e rampa permanecem em uma faixa compacta na parte inferior.
+
+Quando a câmera inferior confirma um verde associado à faixa preta, a Raspberry
+envia um alerta temporário: `VERDE` ocupa o maior tamanho que cabe inteiramente
+na região azul, acompanhado por `ESQUERDA`, `DIREITA` ou `180 GRAUS`. Resultados
+ambíguos, antigos ou sem associação válida com a faixa não geram a mensagem. O
+latch envia uma vez por confirmação em vez de repetir o comando a cada frame. O
+alerta pulsa suavemente entre dois níveis de contraste em um ciclo de 1,6 s, sem
+apagar o texto, e a tela normal recupera o contraste padrão ao final. O layout
+reserva no mínimo 4 pixels nas laterais e 2 pixels nos limites verticais da
+região azul; ambos os textos são centralizados pelas dimensões reais da fonte.
+
+O desvio de obstáculo integrado alimenta o mesmo módulo com
+`oledEvents.updateObstacleDetour(obstacleDetourActive, oledEventDisplayAvailable)`.
+Quando duas leituras ultrassônicas confirmam um obstáculo e a manobra começa, a
+OLED mostra apenas `DESVIO`. Em displays bicolores, a cor é determinada
+fisicamente pela linha:
+o software posiciona os textos entre as linhas 16 e 63, mas não escolhe azul por
+comando.
+
+Depois de gravar uma vez o firmware que entende `OLED_BIG`, textos, duração e
+novos gatilhos podem ser alterados somente no C++ da Raspberry por meio de
+`sendOledLargeMessage()`, sem regravar a ESP32. Uma nova gravação só é necessária
+para mudar o desenho, a animação ou o protocolo executado dentro da ESP32.
+No dashboard, **Diagnóstico → OLED · estados e mensagens** permite repetir os
+alertas automáticos de verde e desvio, simular as cinco fases da missão principal
+e enviar tanto a página comum quanto um texto grande com detalhe opcional.
 A barra usa 10,5 V como vazio e 14,0 V como cheio para a bateria de níquel de
 12 V instalada no robô. Ela é uma referência visual e não uma estimativa exata
 de capacidade restante sob todas as condições de carga.
+
+Os canais, pulsos e inversões dos servos ficam em
+`esp32/obr_esp32_bridge/robot_config.h`. Na partida, no E-Stop, no botão Parar,
+durante a calibração e quando o heartbeat da Raspberry expira, a ESP32 remove os
+sinais dos três canais. Remover o sinal não corta a alimentação V+ dos servos.
+No modo Manual, o painel renova uma autorização exclusiva para os servos a cada
+500 ms; se ela não chegar por 2 s, os sinais são removidos sem alterar o watchdog
+independente dos motores.
+
+Para calibrar, abra **Diagnóstico → Braço, pulso e garra → Calibrar pulsos sem
+regravar**. Entre no modo, selecione o servo, comece em 1500 µs e use passos de
+10 µs perto de cada extremo. Registre o pulso da posição física que será tratada
+como 0°, registre o pulso da posição 180° e salve. A ordem dos dois valores
+define automaticamente o sentido. O botão **Parar** encerra imediatamente a
+calibração e remove todos os sinais; fechar a aba ou perder a comunicação faz o
+pulso bruto expirar em 2 s. Evite a opção **Erase All Flash Before Sketch
+Upload**, pois ela também pode apagar os perfis persistidos.
+
+Programações predefinidas publicam uma pose validada no `RobotState`; o
+`ServoController` envia essa pose para a ESP32:
+
+```cpp
+ServoPose pickupPose;
+pickupPose.armDegrees = 120.0;
+pickupPose.wristDegrees = 45.0;
+pickupPose.gripperDegrees = 20.0;
+robotState.setAutonomousServoPose(pickupPose);
+```
+
+Ao iniciar o modo Manual ou Autônomo, a primeira pose enviada é `{0°, 0°, 0°}`.
+No modo Parado, os três canais permanecem sem pulso.
+
+Esses valores são alvos de comando. Como servos comuns não devolvem posição ao
+PCA9685, a telemetria confirma o pulso aplicado, não mede o ângulo físico do eixo.
 Durante a calibração, a OLED substitui temporariamente essa tela por um indicador
 animado e uma barra baseada nas amostras reais do MPU6050. Ao terminar, mostra
 `PRONTO` ou `FALHOU` por aproximadamente 900 ms e volta automaticamente à tensão
@@ -241,7 +316,7 @@ Para abrir a mesma interface da Raspberry Pi no computador, sem conectar o robô
 execute na pasta do projeto:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run-local-dashboard.ps1
+powershell -ExecutionPolicy Bypass -File tools/dashboard/run-local-dashboard.ps1
 ```
 
 Depois abra:
@@ -298,7 +373,8 @@ pede a senha SSH da Raspberry uma vez e a senha de `sudo` uma vez. Nenhuma senha
 ou chave privada é salva no repositório. Os deploys seguintes não fazem perguntas
 interativas.
 
-Se quiser executar somente a preparação, use `scripts/install-service.ps1`.
+Se quiser executar somente a preparação, use
+`deployment/install-service.ps1`.
 
 O deploy copia o código para `/home/raspberry/OBR2026K`, para o serviço e compila em
 `.build-staging`. O executável em uso só é substituído depois que o novo build
@@ -324,7 +400,7 @@ powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1 -NoRun
 Também é necessário preparar cada computador uma vez:
 
 ```sh
-bash scripts/install-service.sh --host obr.local
+bash deployment/install-service.sh --host obr.local
 ```
 
 Depois da preparação, o deploy é não interativo:
@@ -344,7 +420,7 @@ bash scripts/deploy.sh --no-run
 Para abrir um painel local com botão de deploy automático:
 
 ```sh
-python3 scripts/deploy_panel.py
+python3 deployment/deploy_panel.py
 ```
 
 Depois abra:
@@ -367,13 +443,13 @@ Execute o mesmo comando novamente quando um arquivo `.service` for alterado.
 No Windows:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install-service.ps1
+powershell -ExecutionPolicy Bypass -File deployment/install-service.ps1
 ```
 
 No Linux/macOS:
 
 ```sh
-bash scripts/install-service.sh
+bash deployment/install-service.sh
 ```
 
 Depois disso, a Raspberry inicia dois serviços automaticamente no boot:
@@ -518,6 +594,24 @@ capturando e publicando sua leitura leve em
 Ela não executa sensores FAR/MEDIUM/NEAR, GREEN, GAP, recovery nem comandos de
 motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
+O mesmo processo contém o detector de vítimas pretas e prateadas, mas o trecho
+pesado de HSV, contornos e Hough permanece desligado por padrão. Ele só é executado
+durante o modo isolado `rescue_area` ou quando a Missão Principal entra na fase de
+resgate. Parar, acionar o E-Stop, trocar de missão, concluir a aproximação no modo
+isolado ou atingir uma falha fecha o gate e limpa a vítima anterior. Os percursos
+de linha, portanto, não pagam continuamente o custo desse detector.
+
+Quando habilitado, o detector pesado é limitado a 15 análises por segundo sem
+reduzir os 30 FPS do assistente frontal. Frames intermediários continuam servindo
+à linha e ao stream, preservando o comportamento desta branch.
+
+Durante o resgate, o rastreador escolhe a vítima de maior área visível, exige três
+frames para travá-la e associa o alvo à sequência da execução autônoma. O C++ usa
+o `tx` para alinhar, aguarda o robô parar antes de confirmar o centro e aproxima
+até 5 cm. IPC ausente por mais de 500 ms zera os motores; perder o alvo já travado
+por 1 s encerra a missão. O HUD da câmera frontal expõe tipo, posição, distância,
+ângulo e custo de processamento para calibração.
+
 O código também pode solicitar que o stream frontal já fique disponível no início:
 
 ```sh
@@ -575,13 +669,13 @@ Depois de atualizar os arquivos de serviço, reinstale uma vez pelo computador d
 desenvolvimento:
 
 ```sh
-bash scripts/install-service.sh
+bash deployment/install-service.sh
 ```
 
 Se você já estiver no terminal da Raspberry, dentro de `/home/raspberry/OBR2026K`, use:
 
 ```sh
-sudo cp scripts/obr-robot.service scripts/obr-line-camera.service /etc/systemd/system/
+sudo cp deployment/systemd/obr-robot.service deployment/systemd/obr-line-camera.service /etc/systemd/system/
 chmod +x scripts/run_robot.sh scripts/run_line_camera.sh
 sudo systemctl daemon-reload
 sudo systemctl enable --now obr-robot obr-line-camera

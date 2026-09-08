@@ -90,12 +90,28 @@ DriveDistanceCommand calculateDriveDistanceCommand(
 }
 }
 
+bool MissionController::requiresForwardBallDetection(
+    const RobotSnapshot& snapshot) const
+{
+    if (snapshot.mode != "autonomous" || snapshot.emergencyStop)
+    {
+        return false;
+    }
+    if (snapshot.autonomousMission == AutonomousMission::RescueArea)
+    {
+        return true;
+    }
+    return snapshot.autonomousMission == AutonomousMission::MainMission &&
+           mainMission_.requiresRescueVision();
+}
+
 void MissionController::update(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
     const CameraLineSnapshot& cameraLineSnapshot,
-    const ForwardLineSnapshot& forwardLineSnapshot)
+    const ForwardLineSnapshot& forwardLineSnapshot,
+    const ForwardBallSnapshot& forwardBallSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -121,20 +137,91 @@ void MissionController::update(
         return;
     case AutonomousMission::DriveDistance:
         testTurnController_.reset();
+        rescueAreaMission_.reset();
+        obstacleAvoidanceTest_.reset();
         updateDriveDistance(
             robotState, esp32Telemetry, snapshot.driveDistanceTargetCm);
+        return;
+    case AutonomousMission::RescueArea:
+        testTurnController_.reset();
+        obstacleAvoidanceTest_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateRescueArea(
+            robotState, esp32Telemetry, forwardBallSnapshot);
+        return;
+    case AutonomousMission::ObstacleAvoidance:
+        testTurnController_.reset();
+        rescueAreaMission_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateObstacleAvoidance(robotState, esp32Telemetry);
         return;
     case AutonomousMission::MainMission:
     default:
         testTurnController_.reset();
+        rescueAreaMission_.reset();
+        obstacleAvoidanceTest_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.update(
             robotState,
             esp32Telemetry,
             cameraReady,
             cameraLineSnapshot,
-            forwardLineSnapshot);
+            forwardLineSnapshot,
+            forwardBallSnapshot,
+            activeAutonomousRunSequence_);
         return;
+    }
+}
+
+void MissionController::updateRescueArea(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const ForwardBallSnapshot& forwardBallSnapshot)
+{
+    const RescueAreaOutput output = rescueAreaMission_.update(
+        forwardBallSnapshot,
+        esp32Telemetry,
+        activeAutonomousRunSequence_,
+        false,
+        true);
+    // A ausência ou expiração da visão produz zero neste mesmo ciclo.
+    // O RobotState ainda aplica clamp, E-Stop e timeout antes dos motores.
+    robotState.driveAutonomous(output.leftPower, output.rightPower);
+    if (output.completed || output.failed)
+    {
+        // Conclusão e falha são estados terminais: parar encerra a missão e
+        // impede que a visão pesada continue consumindo CPU sem necessidade.
+        robotState.stop();
+    }
+    robotState.updateAutonomousStatus(output.status);
+}
+
+void MissionController::updateObstacleAvoidance(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry)
+{
+    const ObstacleAvoidanceOutput output = obstacleAvoidanceTest_.update(
+        esp32Telemetry,
+        true);
+    robotState.driveAutonomous(output.leftPower, output.rightPower);
+
+    AutonomousStatus status = makeAutonomousStatus(
+        output.phase,
+        output.action,
+        output.progressPercent);
+    status.targetDistanceCm = output.targetDistanceCm;
+    status.leftDistanceCm = output.leftDistanceCm;
+    status.rightDistanceCm = output.rightDistanceCm;
+    status.averageDistanceCm =
+        (output.leftDistanceCm + output.rightDistanceCm) * 0.5;
+    robotState.updateAutonomousStatus(status);
+
+    if (output.completed || output.failed)
+    {
+        // O modo isolado termina parado como as demais ferramentas de teste.
+        robotState.stop();
     }
 }
 
@@ -438,6 +525,8 @@ void MissionController::updateDriveDistance(
 void MissionController::resetMissionState()
 {
     mainMission_.reset();
+    rescueAreaMission_.reset();
+    obstacleAvoidanceTest_.reset();
     testTurnController_.reset();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/config.h"
+#include "obr/servo_types.h"
 
 #include <chrono>
 #include <mutex>
@@ -10,7 +11,9 @@ enum class AutonomousMission
 {
     MainMission,
     TurnRight90,
-    DriveDistance
+    DriveDistance,
+    RescueArea,
+    ObstacleAvoidance
 };
 
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
@@ -50,10 +53,19 @@ struct RobotSnapshot
     double left = 0.0;
     double right = 0.0;
     bool rawMotorCommand = false;
+    // Mantém o sincronismo disponível por padrão. O segue-faixa NORMAL
+    // desativa apenas essa etapa, sem contornar os pisos START/RUN.
+    bool encoderSynchronizationAllowed = true;
     long long commandAgeMs = 0;
     bool commandTimedOut = false;
     unsigned long long autonomousRunSequence = 0;
     double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
+    ServoPose servoPose;
+    bool armServoRequested = false;
+    bool wristServoRequested = false;
+    bool gripperServoRequested = false;
+    unsigned long long servoCommandSequence = 0;
+    bool servoCalibrationActive = false;
     AutonomousStatus autonomousStatus;
 };
 
@@ -73,12 +85,26 @@ public:
     void emergencyStop();
     void drive(double left, double right);
     void driveRawDiagnostic(double left, double right);
-    void driveAutonomous(double left, double right);
+    void driveAutonomous(
+        double left,
+        double right,
+        bool encoderSynchronizationAllowed = true);
+    bool setManualServoAngle(ServoId servo, double angleDegrees);
+    bool setAutonomousServoPose(const ServoPose& pose);
+    void disableServos();
+    bool beginServoCalibration();
+    void endServoCalibration();
     void updateAutonomousStatus(const AutonomousStatus& status);
     void enforceCommandTimeout(std::chrono::milliseconds timeout);
+    void enforceManualServoTimeout(std::chrono::milliseconds timeout);
 
 private:
     mutable std::mutex mutex_;
     RobotSnapshot state_;
     std::chrono::steady_clock::time_point lastCommand_ = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point lastManualServoCommand_ =
+        std::chrono::steady_clock::now();
+
+    void requestInitialServoPoseLocked();
+    void disableServosLocked();
 };

@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import json
 import os
+import re
 import time
 
 
@@ -42,6 +43,9 @@ def write_control(camera, session, label, fps, active):
 
 
 def prepare_session(camera, session):
+    # O mesmo formato aceito pelo recorder impede caminhos fora do dataset.
+    if camera not in ("down", "forward") or not re.fullmatch(r"[A-Za-z0-9_-]+", session):
+        raise ValueError("Câmera ou nome de sessão inválido; use letras, números, _ e -.")
     session_dir = DATASET_ROOT / camera / session
 
     for class_name in CLASS_NAMES:

@@ -5,7 +5,9 @@ import json
 import random
 
 import numpy as np
-import tensorflow as tf
+
+# TensorFlow só é necessário durante o treinamento; a conferência usa arquivos locais.
+tf = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +44,7 @@ def parse_arguments():
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT, help="Diretório contendo forward/ e down/.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed usada para dividir as sessões.")
     parser.add_argument("--fine-tune", action="store_true", help="Executa uma segunda fase descongelando parte da MobileNet.")
+    parser.add_argument("--validate-only", action="store_true", help="Confere classes e sessões sem treinar nem exigir TensorFlow.")
     parser.add_argument(
         "--roi",
         nargs=4,
@@ -350,6 +353,7 @@ def print_split(name, sessions, samples):
 
 
 def main():
+    global tf
     args = parse_arguments()
 
     roi = tuple(args.roi)
@@ -357,7 +361,6 @@ def main():
 
     camera_dir = args.dataset_root / args.camera
     output_dir = OUTPUTS_DIR / f"silver_{args.camera}"
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     sessions = discover_sessions(camera_dir)
     train_sessions, validation_sessions, test_sessions = split_sessions(sessions, args.seed)
@@ -373,6 +376,14 @@ def main():
     print_split("TREINO", train_sessions, train_samples)
     print_split("VALIDAÇÃO", validation_sessions, validation_samples)
     print_split("TESTE", test_sessions, test_samples)
+
+    if args.validate_only:
+        print("\nDataset válido para a divisão por sessões informada.")
+        return
+
+    import tensorflow as tf
+    tf.keras.utils.set_random_seed(args.seed)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     save_split_manifest(
         output_dir / "split.json",

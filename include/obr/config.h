@@ -74,6 +74,29 @@ constexpr const char* kForwardCameraStatusPath =
 constexpr const char* kForwardLineStatusPath =
     "/dev/shm/obr_forward_line_status.json";
 
+// Gate explícito do detector de vítimas da câmera frontal. O processo da CAM1
+// continua entregando o assistente leve de linha, mas só executa HSV e Hough
+// quando a missão Área de Resgate está realmente ativa.
+constexpr const char* kForwardBallDetectionControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled";
+constexpr const char* kForwardBallDetectionTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_detection_enabled.tmp";
+
+// Identifica a execução autônoma dona do alvo. A troca atômica impede que uma
+// vítima rastreada antes de Stop seja reutilizada depois de uma nova partida.
+constexpr const char* kForwardBallTargetSequenceControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence";
+constexpr const char* kForwardBallTargetSequenceTemporaryControlPath =
+    "/dev/shm/obr_forward_ball_target_sequence.tmp";
+
+// Resultado rápido do detector de vítimas, publicado somente durante o resgate.
+constexpr const char* kForwardBallStatusPath =
+    "/dev/shm/obr_forward_ball_status.json";
+
+// Idade máxima, em milissegundos, aceita para alinhar com uma vítima.
+// A expiração zera os motores no mesmo ciclo do controlador.
+constexpr int kForwardBallStatusTimeoutMs = 500;
+
 // Idade máxima, em milissegundos, aceita para a leitura frontal.
 // Uma amostra mais antiga perde autoridade imediatamente e não pode manter
 // nem o seguimento frontal nem uma decisão de linha encontrada.
@@ -151,6 +174,11 @@ constexpr int kTelemetryLogEverySamples = 20;
 // Isso impede que o robô continue andando com um comando antigo.
 constexpr int kCommandTimeoutMs = 2000;
 
+// Tempo máximo, em milissegundos, sem renovação do painel antes de remover os
+// sinais dos servos no modo Manual. Este watchdog é separado dos motores para
+// que ajustar braço, pulso ou garra nunca mantenha um comando de tração antigo.
+constexpr int kManualServoCommandTimeoutMs = 2000;
+
 // Intervalo, em milissegundos, do loop principal que aplica os comandos aos motores.
 constexpr int kMainLoopPeriodMs = 20;
 
@@ -158,6 +186,20 @@ constexpr int kMainLoopPeriodMs = 20;
 // Esses limites impedem que comandos inválidos cheguem ao PWM da ESP32.
 constexpr double kMinMotorOutput = -1.0;
 constexpr double kMaxMotorOutput = 1.0;
+
+// Compensa somente o seguimento NORMAL quando a inclinação recente da IMU
+// indica subida ou descida. Pela convenção operacional atual, valores positivos
+// representam a frente do robô levantada; a faixa intermediária não altera a potência.
+constexpr double kLineFollowingUphillThresholdDeg = 9.0;
+constexpr double kLineFollowingDownhillThresholdDeg = -6.0;
+constexpr double kLineFollowingUphillPowerOffset = 0.15;
+constexpr double kLineFollowingDownhillPowerOffset = -0.05;
+
+static_assert(kLineFollowingUphillThresholdDeg > 0.0 &&
+                  kLineFollowingDownhillThresholdDeg < 0.0 &&
+                  kLineFollowingUphillPowerOffset > 0.0 &&
+                  kLineFollowingDownhillPowerOffset < 0.0,
+              "A compensação de rampa deve respeitar os sentidos de subida e descida.");
 
 // Potência mínima para iniciar uma roda que estava parada.
 // Este valor foi validado fisicamente; reduzi-lo pode impedir a partida do motor.
@@ -171,6 +213,79 @@ constexpr double kMotorRunMinimumPower = 0.61;
 // Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
 constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
+
+// Margem angular, em graus, aceita para considerar a vítima centralizada.
+constexpr double kBallAlignmentDeadbandDegrees = 1.0;
+
+// Tempo, em milissegundos, com PWM zerado antes de verificar novamente o tx.
+// A pausa evita decidir enquanto a inércia ainda cruza o centro da imagem.
+constexpr int kBallAlignmentCrossingBrakeMs = 160;
+
+// Erros até este valor usam pulsos curtos em vez de um pivot contínuo.
+constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 3.0;
+
+// Duração, em milissegundos, de uma correção angular fina.
+constexpr int kBallAlignmentFineCorrectionPulseMs = 80;
+
+// Quantidade de frames novos e alinhados exigida antes da aproximação.
+constexpr int kBallAlignmentStableFrames = 3;
+
+// Taxa máxima dos encoders, em contagens por segundo, aceita como parada.
+constexpr double kBallAlignmentStationaryRateCountsPerSecond = 20.0;
+
+// Tempo máximo, em milissegundos, para o alvo travado reaparecer.
+// Durante toda a perda, a saída dos motores permanece zerada.
+constexpr int kBallAlignmentTargetLossTimeoutMs = 1000;
+
+// Potência inicial do pivot usada para vencer a inércia dos motores.
+constexpr double kBallAlignmentStartPower = 0.70;
+
+// Faixa proporcional do pivot depois que os encoders confirmam movimento.
+constexpr double kBallAlignmentMinimumRunPower = kMotorRunMinimumPower;
+constexpr double kBallAlignmentMaximumRunPower = 0.68;
+
+// Erro angular, em graus, que libera a potência máxima do alinhamento.
+constexpr double kBallAlignmentFullPowerErrorDegrees = 12.0;
+
+// Distância frontal, em centímetros, que conclui a aproximação da vítima.
+constexpr double kBallApproachStopDistanceCm = 5.0;
+
+// Potência base e correção diferencial usadas durante a aproximação.
+constexpr double kBallApproachBasePower = 0.70;
+constexpr double kBallApproachMaximumSteeringCorrection = 0.09;
+
+// Erro angular, em graus, que aplica a correção diferencial máxima.
+constexpr double kBallApproachFullSteeringErrorDegrees = 10.0;
+
+static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
+                  kBallAlignmentFullPowerErrorDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentStartPower >=
+                      kBallAlignmentMaximumRunPower &&
+                  kBallAlignmentMaximumRunPower >=
+                      kBallAlignmentMinimumRunPower &&
+                  kBallAlignmentMinimumRunPower >=
+                      kMotorRunMinimumPower &&
+                  kBallAlignmentStartPower <= kMaxMotorOutput &&
+                  kBallAlignmentCrossingBrakeMs > 0 &&
+                  kBallAlignmentFineCorrectionThresholdDegrees >
+                      kBallAlignmentDeadbandDegrees &&
+                  kBallAlignmentFineCorrectionPulseMs > 0 &&
+                  kBallAlignmentStableFrames > 0 &&
+                  kBallAlignmentStationaryRateCountsPerSecond >= 0.0 &&
+                  kBallAlignmentTargetLossTimeoutMs > 0 &&
+                  kBallApproachStopDistanceCm > 0.0 &&
+                  kBallApproachBasePower >= kMotorStartMinimumPower &&
+                  kBallApproachBasePower +
+                          kBallApproachMaximumSteeringCorrection <=
+                      kMaxMotorOutput &&
+                  kBallApproachBasePower -
+                          kBallApproachMaximumSteeringCorrection >=
+                      kMotorRunMinimumPower &&
+                  kBallApproachMaximumSteeringCorrection > 0.0 &&
+                  kBallApproachFullSteeringErrorDegrees >
+                      kBallAlignmentDeadbandDegrees,
+              "Os limites do alinhamento de vítimas devem permanecer seguros.");
 
 // Quantidade de amostras novas e válidas dos encoders para trocar STARTING por RUNNING.
 // A confirmação evita liberar 0,61 por um pico isolado ou ruído de telemetria.
@@ -282,6 +397,65 @@ constexpr double kEncoderCalibrationDistanceCm = 18.7;
 constexpr double kEncoderCountsPerCentimeter =
     kEncoderCalibrationCounts / kEncoderCalibrationDistanceCm;
 
+// Duas leituras ultrassônicas dentro deste limite, em centímetros, confirmam
+// um obstáculo. A histerese exige afastamento antes de armar uma nova manobra.
+constexpr double kObstacleDetectionDistanceCm = 8.0;
+constexpr int kObstacleDetectionConfirmationSamples = 2;
+constexpr double kObstacleRearmDistanceCm = 15.0;
+constexpr int kObstacleRearmConfirmationSamples = 3;
+
+// Ângulos, em graus, executados na ordem da máquina de desvio.
+constexpr double kObstacleFirstRightTurnDegrees = 45.0;
+constexpr double kObstacleFirstLeftTurnDegrees = 45.0;
+constexpr double kObstacleSecondLeftTurnDegrees = 90.0;
+constexpr double kObstacleFinalRightTurnDegrees = 90.0;
+constexpr double kObstacleTurnToleranceDegrees = 4.0;
+
+// Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
+constexpr double kObstacleFirstForwardDistanceCm = 25.0;
+constexpr double kObstacleSecondForwardDistanceCm = 30.0;
+constexpr double kObstacleThirdForwardDistanceCm = 21.5;
+constexpr double kObstacleReverseDistanceCm = 5.0;
+
+// Potências normalizadas dos deslocamentos para frente e em ré.
+constexpr double kObstacleForwardPower = 0.75;
+constexpr double kObstacleReversePower = 0.75;
+
+// Pausa entre etapas e limites de segurança da odometria do desvio.
+constexpr int kObstacleStageSettleMs = 250;
+constexpr int kObstacleEncoderFreshnessMs = 300;
+constexpr int kObstacleDistanceSafetyTimeoutMs = 12000;
+
+// Horizonte, em segundos, usado para antecipar a inércia antes da distância-alvo.
+constexpr double kObstacleBrakePredictionSeconds = 0.14;
+
+static_assert(kObstacleDetectionDistanceCm > 0.0 &&
+                  kObstacleRearmDistanceCm > kObstacleDetectionDistanceCm &&
+                  kObstacleDetectionConfirmationSamples > 0 &&
+                  kObstacleRearmConfirmationSamples > 0,
+              "A detecção de obstáculo deve possuir histerese válida.");
+static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
+                  kObstacleFirstLeftTurnDegrees > 0.0 &&
+                  kObstacleSecondLeftTurnDegrees > 0.0 &&
+                  kObstacleSecondLeftTurnDegrees <= 180.0 &&
+                  kObstacleFinalRightTurnDegrees > 0.0 &&
+                  kObstacleFinalRightTurnDegrees <= 180.0 &&
+                  kObstacleTurnToleranceDegrees > 0.0,
+              "Os ângulos do desvio devem permanecer válidos.");
+static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
+                  kObstacleSecondForwardDistanceCm > 0.0 &&
+                  kObstacleThirdForwardDistanceCm > 0.0 &&
+                  kObstacleReverseDistanceCm > 0.0 &&
+                  kObstacleForwardPower > 0.0 &&
+                  kObstacleForwardPower <= kMaxMotorOutput &&
+                  kObstacleReversePower > 0.0 &&
+                  kObstacleReversePower <= kMaxMotorOutput &&
+                  kObstacleStageSettleMs >= 0 &&
+                  kObstacleEncoderFreshnessMs > 0 &&
+                  kObstacleDistanceSafetyTimeoutMs > 0 &&
+                  kObstacleBrakePredictionSeconds >= 0.0,
+              "Os deslocamentos do desvio devem permanecer seguros.");
+
 // Distância inicial e faixa aceitas pelo modo de percurso por encoder.
 // O limite evita comandos acidentais excessivamente longos pelo dashboard.
 constexpr double kDriveDistanceDefaultTargetCm = 20.0;
@@ -367,11 +541,11 @@ constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
 // Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
 constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
-constexpr double kGreenTurnAroundForwardDistanceCm = 13.0;
+constexpr double kGreenTurnAroundForwardDistanceCm = 15.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
 // retorno de 180°.
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
-constexpr double kGreenTurnAroundForwardPower = 0.69;
+constexpr double kGreenTurnAroundForwardPower = 0.73;
 // Tempo parado, em milissegundos, entre o avanço e o início do giro.
 constexpr int kGreenTurnAroundForwardSettleMs = 250;
 // Idade máxima, em milissegundos, aceita para os dados dos encoders.
@@ -392,9 +566,10 @@ constexpr bool kGreenTurnAroundTurnsRight = true;
 constexpr double kGreenTurnAroundLineSearchPower = kTurn90CommandPower;
 // Giro adicional máximo, em graus, permitido durante a busca visual da linha.
 // Com o alvo atual, ele limita o retorno a aproximadamente 195° se a câmera
-// não reconhecer o NEAR, em vez de permitir uma volta quase completa.
+// não recuperar a linha pelo NEAR ou Fusion, evitando uma volta quase completa.
 constexpr double kGreenTurnAroundLineSearchMaximumDegrees = 45.0;
-// Quantidade de frames consecutivos com NEAR válido para retomar o seguidor.
+// Quantidade de confirmações consecutivas com NEAR ou Fusion válido para
+// retomar o seguidor depois do giro.
 constexpr int kGreenTurnAroundLineReacquireFrames = 2;
 // Tempo máximo, em milissegundos, da busca visual após o giro pelo IMU.
 constexpr int kGreenTurnAroundLineSearchTimeoutMs = 6000;
@@ -439,6 +614,26 @@ constexpr const char* kEsp32SerialPort = "/dev/serial0";
 // O sketch da ESP32 deve usar o mesmo valor para evitar comandos corrompidos.
 constexpr int kEsp32SerialBaudRate = 115200;
 
+// Faixa angular aceita para braço, pulso e garra.
+// A ESP32 repete esta validação antes de converter o ângulo em pulso do PCA9685.
+constexpr double kServoMinimumAngleDegrees = 0.0;
+constexpr double kServoMaximumAngleDegrees = 180.0;
+
+// Pose aplicada aos três servos quando o robô entra em Manual ou Autônomo.
+// No modo Parado, os pulsos continuam desligados e esta pose não é aplicada.
+constexpr double kServoInitialAngleDegrees = 0.0;
+
+// Faixa absoluta, em microssegundos, permitida somente na calibração de
+// bancada. Ela é mais ampla que a faixa operacional e nunca é ultrapassada,
+// mesmo que o dashboard envie um valor inválido.
+constexpr int kServoCalibrationAbsoluteMinimumPulseUs = 500;
+constexpr int kServoCalibrationAbsoluteMaximumPulseUs = 2500;
+
+// Diferença mínima, em microssegundos, entre os pulsos associados a 0° e 180°.
+// Uma faixa menor provavelmente representa captura acidental de dois pontos
+// quase iguais e tornaria o controle angular excessivamente sensível.
+constexpr int kServoCalibrationMinimumSpanUs = 200;
+
 // Tempo máximo, em milissegundos, para considerar recente a telemetria da ESP32.
 // Se esse tempo estourar, o dashboard mostra os sensores como desatualizados.
 constexpr int kEsp32TelemetryTimeoutMs = 1000;
@@ -449,6 +644,10 @@ constexpr int kRemoteOledTitleMaxLength = 12;
 constexpr int kRemoteOledLineMaxLength = 20;
 constexpr int kRemoteOledMinimumDurationMs = 500;
 constexpr int kRemoteOledMaximumDurationMs = 30000;
+
+// Tempo, em milissegundos, que alertas confirmados de navegação permanecem na
+// OLED. A mensagem é temporária e não bloqueia o laço de controle do robô.
+constexpr int kOledNavigationAlertDurationMs = 2500;
 
 // Intervalo do heartbeat que mantém a OLED fora da animação de inicialização.
 // A ESP32 tolera três períodos antes de considerar a Raspberry indisponível.

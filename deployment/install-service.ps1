@@ -50,11 +50,12 @@ if ($ServiceName -notmatch '^[a-zA-Z0-9_.@-]+$') {
 }
 
 $workspace = Split-Path -Parent $PSScriptRoot
-$serviceFile = Join-Path $workspace "scripts\$ServiceName.service"
+$systemdDirectory = Join-Path $PSScriptRoot "systemd"
+$serviceFile = Join-Path $systemdDirectory "$ServiceName.service"
 $lineCameraServiceName = "obr-line-camera"
-$lineCameraServiceFile = Join-Path $workspace "scripts\$lineCameraServiceName.service"
-$sudoersTemplateFile = Join-Path $workspace "scripts\obr-deploy.sudoers"
-$remoteInstallerFile = Join-Path $workspace "scripts\install-service-remote.sh"
+$lineCameraServiceFile = Join-Path $systemdDirectory "$lineCameraServiceName.service"
+$sudoersTemplateFile = Join-Path $systemdDirectory "obr-deploy.sudoers"
+$remoteInstallerFile = Join-Path $PSScriptRoot "install-service-remote.sh"
 $remote = "$User@$HostName"
 
 if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) {

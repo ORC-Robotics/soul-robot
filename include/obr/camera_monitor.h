@@ -14,6 +14,13 @@ enum class GreenInterpretation
     TurnAround180
 };
 
+enum class CourseMarker
+{
+    None,
+    Gray,
+    Red
+};
+
 // Transporta o baseline do controle inferior para diagnóstico assíncrono.
 // As posições FAR/MEDIUM só participam do controle quando o respectivo gate
 // trusted do CameraLineSnapshot confirma que a leitura é válida.
@@ -29,8 +36,8 @@ struct CameraCurveDiagnostics
     std::string lineState = "INVALID";
 };
 
-// Resultado tipado do IPC visual. A classificação verde é somente percepção
-// e não oferece nenhum campo que possa ser convertido em comando de motor.
+// Resultado tipado do IPC visual. Consumidores devem validar a classificação
+// verde antes de usá-la em alertas ou em uma decisão segura de movimento.
 struct CameraLineSnapshot
 {
     bool sourceFresh = false;
@@ -46,6 +53,12 @@ struct CameraLineSnapshot
     std::uint64_t greenCandidateCount = 0;
     bool greenConfirmed = false;
     GreenInterpretation greenInterpretation = GreenInterpretation::None;
+
+    // Marcadores de transição só têm efeito depois da confirmação temporal
+    // feita pela visão. A ausência destes campos preserva o percurso atual.
+    bool courseMarkerConfirmed = false;
+    CourseMarker courseMarker = CourseMarker::None;
+    bool rescueExitConfirmed = false;
 
     double lineTimestamp = 0.0;
     std::uint64_t lineSequence = 0;
@@ -79,6 +92,23 @@ struct ForwardLineSnapshot
     bool normalCommandValid() const;
 };
 
+// Leitura da vítima travada publicada pelo processo da câmera frontal.
+// tx é negativo à esquerda e positivo à direita do centro da imagem.
+struct ForwardBallSnapshot
+{
+    bool sourceFresh = false;
+    bool detected = false;
+    std::string type;
+    double txDegrees = std::numeric_limits<double>::quiet_NaN();
+    double distanceCm = std::numeric_limits<double>::quiet_NaN();
+    double radiusPixels = std::numeric_limits<double>::quiet_NaN();
+    double visibleAreaPixels = std::numeric_limits<double>::quiet_NaN();
+    std::uint64_t targetSequence = 0;
+    bool targetLocked = false;
+    double timestamp = 0.0;
+    double ageMs = 0.0;
+};
+
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.
 class CameraMonitor
 {
@@ -86,6 +116,9 @@ public:
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
+    ForwardBallSnapshot forwardBallSnapshot() const;
+    bool setForwardBallDetectionEnabled(bool enabled) const;
+    bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
 
 private:
     CameraLineSnapshot cachedLineSnapshot_;

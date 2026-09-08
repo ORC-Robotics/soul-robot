@@ -24,6 +24,7 @@ except ModuleNotFoundError as error:
 
     def read_dataset_status():
         return {}
+from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
@@ -32,9 +33,19 @@ STATUS_PATH = "/tmp/obr_forward_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_forward_camera_status.tmp.json"
 FORWARD_LINE_STATUS_PATH = "/dev/shm/obr_forward_line_status.json"
 TEMP_FORWARD_LINE_STATUS_PATH = "/dev/shm/obr_forward_line_status.tmp.json"
+BALL_DETECTION_CONTROL_PATH = "/dev/shm/obr_forward_ball_detection_enabled"
+TEMP_BALL_DETECTION_CONTROL_PATH = (
+    "/dev/shm/obr_forward_ball_detection_enabled.tmp"
+)
+BALL_TARGET_SEQUENCE_CONTROL_PATH = (
+    "/dev/shm/obr_forward_ball_target_sequence"
+)
+BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.json"
+TEMP_BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.tmp.json"
 STREAM_PORT = 8091
 STREAM_PATH = "/stream.mjpg"
 STATUS_FPS = 5
+BALL_DETECTION_FPS = 15
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
 
@@ -60,6 +71,114 @@ latest_jpeg = None
 latest_jpeg_sequence = 0
 active_stream_clients = 0
 frame_condition = threading.Condition()
+ball_vision_pipeline = BallVisionPipeline()
+active_ball_target_sequence = 0
+
+
+def empty_ball_status(processing_ms=0.0, detection_enabled=False):
+    """Remove qualquer detecção antiga quando o frame atual não tem vítima."""
+
+    return {
+        "ballDetectionEnabled": bool(detection_enabled),
+        "ballDetected": False,
+        "ballType": "",
+        "ballCenterX": None,
+        "ballCenterY": None,
+        "ballRadiusPixels": None,
+        "ballDiameterPixels": None,
+        "ballDistanceCm": None,
+        "ballDistanceExtrapolated": False,
+        "ballAngleDegrees": None,
+        "ballTxDegrees": None,
+        "visibleAreaPixels": None,
+        "targetSequence": active_ball_target_sequence,
+        "targetLocked": ball_vision_pipeline.target_locked,
+        "ballPosition": "nenhuma",
+        "ballCircularity": None,
+        "ballTopClipped": False,
+        "ballDetectionMethod": "",
+        "ballProcessingMs": round(float(processing_ms), 2),
+        "ballPayload": None,
+    }
+
+
+def build_ball_status(observation, processing_ms):
+    """Converte a vítima observada em valores simples para controle e painel."""
+
+    if observation is None:
+        return empty_ball_status(processing_ms, detection_enabled=True)
+    candidate = observation.candidate
+    return {
+        "ballDetectionEnabled": True,
+        "ballDetected": True,
+        "ballType": candidate.ball_type,
+        "ballCenterX": round(float(candidate.center_x), 2),
+        "ballCenterY": round(float(candidate.center_y), 2),
+        "ballRadiusPixels": round(float(candidate.radius_pixels), 2),
+        "ballDiameterPixels": round(float(candidate.diameter_pixels), 2),
+        "ballDistanceCm": round(float(observation.distance.distance_cm), 2),
+        "ballDistanceExtrapolated": bool(observation.distance.extrapolated),
+        "ballAngleDegrees": round(float(observation.angle_degrees), 2),
+        "ballTxDegrees": round(float(observation.angle_degrees), 2),
+        "visibleAreaPixels": round(float(candidate.visible_area_pixels), 2),
+        "targetSequence": active_ball_target_sequence,
+        "targetLocked": ball_vision_pipeline.target_locked,
+        "ballPosition": observation.position,
+        "ballCircularity": round(float(candidate.circularity), 3),
+        "ballTopClipped": bool(candidate.top_clipped),
+        "ballDetectionMethod": candidate.detection_method,
+        "ballProcessingMs": round(float(processing_ms), 2),
+        "ballPayload": build_esp32_payload(
+            candidate.ball_type,
+            observation.distance.distance_cm,
+            observation.angle_degrees,
+        ),
+    }
+
+
+def save_ball_control_status(active, ball_status=None):
+    """Publica em RAM somente os campos usados pelo alinhamento da vítima."""
+
+    current_ball = ball_status or empty_ball_status()
+    status = {
+        "active": bool(active),
+        "timestamp": time.time(),
+        "ballDetected": bool(current_ball["ballDetected"]),
+        "ballType": current_ball["ballType"],
+        "ballTxDegrees": current_ball["ballTxDegrees"],
+        "visibleAreaPixels": current_ball["visibleAreaPixels"],
+        "targetSequence": current_ball["targetSequence"],
+        "targetLocked": current_ball["targetLocked"],
+        "ballDistanceCm": current_ball["ballDistanceCm"],
+        "ballRadiusPixels": current_ball["ballRadiusPixels"],
+    }
+    with open(TEMP_BALL_STATUS_PATH, "w", encoding="utf-8") as status_file:
+        json.dump(status, status_file, allow_nan=False)
+    os.replace(TEMP_BALL_STATUS_PATH, BALL_STATUS_PATH)
+
+
+def analyze_requested_ball_frame(frame, detection_enabled):
+    """Executa o detector pesado somente dentro da etapa Área de Resgate."""
+
+    if not detection_enabled:
+        return None, (), empty_ball_status(detection_enabled=False)
+    processing_started = time.perf_counter()
+    result = ball_vision_pipeline.analyze(frame)
+    processing_ms = (time.perf_counter() - processing_started) * 1000.0
+    return (
+        result.observation,
+        result.candidates,
+        build_ball_status(result.observation, processing_ms),
+    )
+
+
+def ball_analysis_due(current_time, last_analysis_time):
+    """Limita somente a visão pesada sem reduzir os 30 FPS do assistente frontal."""
+
+    return (
+        last_analysis_time <= 0.0
+        or current_time - last_analysis_time >= 1.0 / BALL_DETECTION_FPS
+    )
 
 
 def environment_enabled():
@@ -98,8 +217,64 @@ def requested_enabled():
         return False
 
 
+def write_requested_ball_detection_enabled(enabled):
+    """Publica atomicamente se a etapa de resgate autoriza o detector."""
+
+    with open(
+        TEMP_BALL_DETECTION_CONTROL_PATH,
+        "w",
+        encoding="utf-8",
+    ) as control_file:
+        control_file.write("1\n" if enabled else "0\n")
+    os.replace(
+        TEMP_BALL_DETECTION_CONTROL_PATH,
+        BALL_DETECTION_CONTROL_PATH,
+    )
+
+
+def requested_ball_detection_enabled():
+    """Mantém o detector desligado quando o gate está ausente ou inválido."""
+
+    try:
+        with open(
+            BALL_DETECTION_CONTROL_PATH,
+            "r",
+            encoding="utf-8",
+        ) as control_file:
+            return control_file.read().strip() == "1"
+    except OSError:
+        return False
+
+
+def requested_ball_target_sequence():
+    """Lê a execução autônoma que deve possuir o próximo alvo travado."""
+
+    try:
+        with open(
+            BALL_TARGET_SEQUENCE_CONTROL_PATH,
+            "r",
+            encoding="utf-8",
+        ) as control_file:
+            value = int(control_file.read().strip())
+            return max(0, value)
+    except (OSError, ValueError):
+        return 0
+
+
+def synchronize_ball_target_sequence(target_sequence):
+    """Descarta o alvo quando uma nova execução de resgate começa."""
+
+    global active_ball_target_sequence
+    target_sequence = max(0, int(target_sequence))
+    if target_sequence == active_ball_target_sequence:
+        return False
+    ball_vision_pipeline.reset()
+    active_ball_target_sequence = target_sequence
+    return True
+
+
 def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
-                error_message="", processing_active=None):
+                error_message="", processing_active=None, ball_status=None):
     """Expõe saúde da captura sem misturar o novo IPC com o segue-faixa."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
@@ -139,12 +314,17 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         ),
         "transform": "opencv-rotate-180",
         "targetCameraFps": profile["target_fps"],
+        "ballDetectionTargetFps": BALL_DETECTION_FPS,
         "streamPort": STREAM_PORT,
         "streamPath": STREAM_PATH,
+        "silverProcessingScale": ball_vision_pipeline.silver_processing_scale,
         "error": error_message,
         "timestamp": time.time(),
     }
     status.update(read_dataset_status())
+    status.update(ball_status or empty_ball_status(
+        detection_enabled=requested_ball_detection_enabled()
+    ))
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -564,11 +744,15 @@ def close_forward_camera(camera):
 
 
 def main():
-    global stream_active
+    global stream_active, active_ball_target_sequence
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
     clear_forward_line_status()
+    # O boot nunca herda a autorização de resgate deixada em /dev/shm.
+    # O processo C++ precisa renovar o gate durante a execução correta.
+    write_requested_ball_detection_enabled(False)
+    save_ball_control_status(False)
     if camera_line_frame.Picamera2 is None:
         save_status(
             False,
@@ -591,6 +775,12 @@ def main():
     camera = None
     camera_format = ""
     details = {}
+    ball_detection_active = False
+    active_ball_target_sequence = requested_ball_target_sequence()
+    ball_status = empty_ball_status(detection_enabled=False)
+    observation = None
+    candidates = ()
+    last_ball_analysis_time = 0.0
     previous_time = 0.0
     smoothed_fps = 0.0
     last_status_time = 0.0
@@ -667,11 +857,49 @@ def main():
                 line_timestamp = time.time()
                 line_sequence += 1
                 save_forward_line_status(reading, line_timestamp, line_sequence)
+
+                detection_requested = requested_ball_detection_enabled()
+                target_sequence = requested_ball_target_sequence()
+                target_changed = synchronize_ball_target_sequence(target_sequence)
+                if detection_requested != ball_detection_active:
+                    ball_vision_pipeline.reset()
+                    ball_detection_active = detection_requested
+                    target_changed = True
+                if target_changed:
+                    observation = None
+                    candidates = ()
+                    ball_status = empty_ball_status(
+                        detection_enabled=ball_detection_active
+                    )
+                    last_ball_analysis_time = 0.0
+
+                # O segue-faixa frontal continua leve em todos os frames. HSV,
+                # Hough e tracking só entram quando o resgate está autorizado e
+                # no máximo 15 vezes por segundo, preservando os 30 FPS da linha.
+                ball_time = time.monotonic()
+                if not ball_detection_active:
+                    observation, candidates, ball_status = (
+                        analyze_requested_ball_frame(frame, False)
+                    )
+                    save_ball_control_status(False, ball_status)
+                elif ball_analysis_due(ball_time, last_ball_analysis_time):
+                    observation, candidates, ball_status = (
+                        analyze_requested_ball_frame(frame, True)
+                    )
+                    last_ball_analysis_time = ball_time
+                    save_ball_control_status(True, ball_status)
             except Exception as error:
                 stream_active = False
                 clear_frame()
                 close_forward_camera(camera)
                 camera = None
+                ball_detection_active = False
+                ball_status = empty_ball_status(detection_enabled=False)
+                observation = None
+                candidates = ()
+                last_ball_analysis_time = 0.0
+                ball_vision_pipeline.reset()
+                save_ball_control_status(False, ball_status)
                 next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                 save_status(
                     enabled,
@@ -690,6 +918,11 @@ def main():
             if enabled and stream_has_clients():
                 display_frame = frame.copy()
                 draw_forward_assist_overlay(display_frame, reading)
+                if ball_detection_active:
+                    display_frame = ball_vision_pipeline.draw(
+                        display_frame,
+                        BallVisionResult(observation, tuple(candidates)),
+                    )
                 jpeg = camera_line_frame.encode_frame(display_frame)
                 if jpeg is not None:
                     publish_frame(jpeg)
@@ -712,6 +945,7 @@ def main():
                     camera_format,
                     details,
                     processing_active=True,
+                    ball_status=ball_status,
                 )
                 last_status_time = current_time
     finally:
@@ -719,7 +953,16 @@ def main():
         close_forward_camera(camera)
         clear_frame()
         clear_forward_line_status()
-        save_status(False, False, "stopped", processing_active=False)
+        ball_status = empty_ball_status(detection_enabled=False)
+        save_ball_control_status(False, ball_status)
+        write_requested_ball_detection_enabled(False)
+        save_status(
+            False,
+            False,
+            "stopped",
+            processing_active=False,
+            ball_status=ball_status,
+        )
         stream_server.shutdown()
         stream_server.server_close()
 

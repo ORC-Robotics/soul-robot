@@ -113,13 +113,15 @@ flowchart LR
 ### Fluxo autônomo principal
 
 1. `MissionController` identifica a missão autônoma selecionada.
-2. `MainMission` coordena os comportamentos que forem adicionados futuramente.
-3. Cada comportamento deverá atualizar `RobotState`, sem acessar GPIO ou dashboard.
-4. `MotorController` aplicará os limites antes de enviar comandos à ESP32.
-5. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
+2. `MainMission` coordena segue-faixa, retorno verde e desvio de obstáculo.
+3. A missão isolada `rescue_area` liga o detector de vítimas somente durante sua execução.
+4. Cada comportamento atualiza `RobotState`, sem acessar GPIO ou dashboard.
+5. `MotorController` aplica os limites antes de enviar comandos à ESP32.
+6. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
 
-No estado atual, a Missão Principal não possui comportamentos instalados e
-mantém os dois motores zerados. A câmera publica apenas a imagem ao vivo.
+A Missão Principal preserva o segue-faixa geométrico atual e entrega autoridade
+temporária ao desvio quando o ultrassônico confirma um obstáculo. A visão de
+vítimas é uma etapa separada e não consome CPU enquanto o robô segue a linha.
 
 ## 4. Hardware conhecido
 
@@ -131,7 +133,7 @@ mantém os dois motores zerados. A câmera publica apenas a imagem ao vivo.
 | Tração | Quatro motores, agrupados em lado esquerdo e lado direito; dianteiros e traseiros possuem comportamentos/modelos diferentes |
 | Drivers | DRV8833 com PWM e nSLEEP |
 | IMU | MPU6050 |
-| Expansor PWM | PCA9685 em `0x40`, ainda sem atuadores definidos |
+| Expansor PWM | PCA9685 em `0x40`, com braço, pulso e garra nos canais 0, 1 e 2 |
 | Display | SSD1306 128×64, procurado em `0x3C` e `0x3D` |
 | Distância frontal | Sensor ultrassônico; **PREENCHER modelo exato** |
 | Encoders | Um conjunto quadrature por lado; **PREENCHER modelo e resolução** |
@@ -251,10 +253,22 @@ esp32/obr_esp32_bridge/
   Núcleo compartilhado e firmware de bancada com dashboard local.
 
 scripts/camera_line_frame.py
-  Captura inferior, processamento visual, IPC fresco do segue-faixa e stream MJPEG.
+  Entrypoint e fachada compatível da visão inferior.
+
+scripts/vision/
+  Configuração, percepção, guidance, controle, status e lifecycle da câmera inferior.
+
+scripts/forward_camera_stream.py e scripts/ball_vision/
+  Captura frontal, assistente leve de linha e detector condicionado de vítimas.
+
+include/obr/obstacle_avoidance.h e src/robot/obstacle_avoidance.cpp
+  Interface e implementação da máquina de estados do desvio de obstáculo.
 
 scripts/deploy.ps1 e scripts/deploy.sh
-  Deploy atômico para a Raspberry.
+  Entrypoints compatíveis do deploy atômico para a Raspberry.
+
+deployment/
+  Implementação do deploy, instalação, unidades systemd e sudoers.
 
 scripts/run_robot.sh
   Supervisor do programa C++ e do gerenciador ocioso da câmera frontal.
@@ -263,24 +277,35 @@ scripts/run_line_camera.sh
   Supervisor exclusivo da câmera inferior: remove IPC antigo, publica o estado
   do serviço e inicia uma única instância da visão.
 
-scripts/obr-robot.service
+deployment/systemd/obr-robot.service
   Unidade systemd do programa C++, dashboard e ESP32.
 
-scripts/obr-line-camera.service
+deployment/systemd/obr-line-camera.service
   Unidade systemd independente da captura e visão da câmera inferior.
+
+tests/python/
+  Regressão Python da visão inferior, câmera frontal e detecção de bolas.
+
+tools/camera/ e tools/diagnostics/
+  Diagnósticos manuais de câmera e performance.
 ```
 
 ### Responsabilidade dos módulos C++
 
 | Módulo | Responsabilidade |
 | --- | --- |
-| `main.cpp` | Liga os módulos, executa o loop de 20 ms e coordena prontidão |
+| `main.cpp` | Instala os sinais de encerramento e inicia a aplicação |
+| `RobotApplication` | Possui os módulos de runtime e coordena inicialização, loop de 20 ms e desligamento |
 | `RobotState` | Guarda modo, missão, E-Stop, potências e idade do comando |
 | `DashboardServer` | HTTP, WebSocket, interface, câmera e telemetria para navegador |
 | `Esp32Bridge` | UART, parser de sensores e envio de comandos |
 | `MotorController` | Aplica START/RUN por roda no autônomo, sincroniza somente a reta pelos encoders e envia comandos seguros para a ESP32 |
 | `MissionController` | Seleciona a missão e reinicia o estado interno a cada nova execução |
-| `MainMission` | Coordena o segue-faixa, seus fallbacks e os demais comportamentos autônomos |
+| `MainMission` | Coordena percurso inicial, resgate, percurso final e conclusão |
+| `LineCourseMission` | Reúne segue-faixa, GREEN, GAP, SEARCH, assistência frontal, rampa e obstáculo |
+| `RescueAreaMission` | Reutiliza o alinhamento de vítima e possui o ciclo de vida do resgate |
+| `BallAlignmentMission` | Alinha pelo `tx` da vítima travada e aproxima até a distância segura configurada |
+| `ObstacleAvoidance` | Confirma o ultrassônico e executa o desvio completo com IMU e encoders |
 | `CameraMonitor` | Valida captura e telemetria visual antes de liberar prévias para a missão |
 | `Telemetry` | CPU, temperatura e RAM da Raspberry |
 | `GpioPin` | Acesso simples ao GPIO Linux por `/sys/class/gpio` |
@@ -439,7 +464,9 @@ continuar segura mesmo se navegador, Wi-Fi, Raspberry ou UART falharem.
 - Pulso TRIG de 10 µs.
 - Timeout de ECHO de 25 ms.
 - Faixa aceita pelo software: 2 cm a 400 cm.
-- Atualmente é exibido na telemetria, mas não participa da lógica autônoma.
+- Na Missão Principal, duas leituras de até 8 cm iniciam o desvio de obstáculo.
+- Depois do desvio, três leituras a partir de 15 cm rearmam a detecção para um
+  novo obstáculo.
 
 > **PREENCHER:** modelo, tensão, divisor do ECHO, posição, ângulo e distância
 > entre o sensor e a frente real do robô.
@@ -469,10 +496,24 @@ continuar segura mesmo se navegador, Wi-Fi, Raspberry ou UART falharem.
 - Endereço esperado: `0x40`.
 - Frequência inicial: 50 Hz.
 - Todos os 16 canais iniciam desligados.
-- Nenhum servo ou mecanismo está implementado.
+- Canal 0: braço.
+- Canal 1: pulso.
+- Canal 2: garra.
+- Faixa lógica exposta ao software: 0° a 180°.
+- Faixa padrão compilada e validada em bancada: 500–2500 µs por servo.
+- Faixa absoluta disponível somente na calibração de bancada: 500–2500 µs.
+- Os pulsos associados a 0° e 180° são salvos separadamente para cada servo na
+  NVS da ESP32; a ordem dos extremos define automaticamente a inversão.
+- E-Stop, `STOP`, calibração, reinício ou perda do heartbeat da Raspberry removem
+  os sinais dos três canais.
+- O dashboard permite ajuste livre somente no modo Manual.
+- No modo Manual, a falta de renovação do dashboard por 2 s remove os sinais dos
+  servos sem renovar ou interferir no timeout dos motores.
 
-> **PREENCHER:** finalidade do PCA9685, canais, atuadores, limites de pulso,
-> posições seguras, corrente da fonte e comportamento em E-Stop.
+> **CONFIRMAR NA BANCADA:** medir e registrar no painel os extremos finais do
+> MG995 do braço e dos dois MG90S. Os padrões de recuperação ficam em
+> `esp32/obr_esp32_bridge/robot_config.h`, mas a operação usa primeiro os perfis
+> válidos carregados da NVS.
 
 ### OLED SSD1306
 
@@ -546,15 +587,76 @@ RESET_ENCODERS
 CALIBRATE_SENSORS
 SYSTEM_STARTING
 SYSTEM_READY
+SERVO,<ARM|WRIST|GRIPPER>,<angleDegrees>
+SERVO_POSE,<armDegrees>,<wristDegrees>,<gripperDegrees>
+SERVO_DISABLE_ALL
+SERVO_CAL_BEGIN
+SERVO_CAL_PULSE,<ARM|WRIST|GRIPPER>,<pulseUs>
+SERVO_CAL_DISABLE
+SERVO_CAL_SAVE,<ARM|WRIST|GRIPPER>,<pulseAtZeroUs>,<pulseAt180Us>
+SERVO_CAL_END
 OLED,<durationMs>,<titleHex>,<line1Hex>,<line2Hex>
+OLED_BIG,<durationMs>,<primaryTextHex>,<secondaryTextHex>
 OLED_CLEAR
 PING
 ```
+
+### Calibração persistente dos servos
+
+O painel da Raspberry oferece a seção **Calibrar pulsos sem regravar**. Entrar
+nesse modo zera a tração e não aplica pulso automaticamente. O operador escolhe
+um servo, parte de 1500 µs, aproxima-se dos extremos em passos pequenos e usa o
+pulso atual como posição lógica 0° ou 180°. Ao salvar, a ESP32 valida uma faixa
+de 500–2500 µs, exige pelo menos 200 µs entre os extremos, deduz o sentido e
+grava somente o perfil daquele servo com a biblioteca `Preferences` do próprio
+core ESP32.
+
+Durante o ajuste, somente um canal pode ficar ativo. O navegador renova o pulso
+a cada 500 ms e o firmware o desliga após 2 s sem renovação. O botão **Parar**, o
+comando `STOP`, a perda do heartbeat da Raspberry e qualquer trava de segurança
+encerram a calibração e removem os três sinais. Uma gravação normal do sketch
+preserva a NVS; uma gravação configurada para apagar toda a flash pode remover
+os perfis e fazer o firmware voltar aos padrões compilados.
+
+Procedimento recomendado:
+
+1. Deixe o servo desacoplado da mecânica e alimente o PCA9685 corretamente.
+2. Selecione o servo e entre na calibração; confirme que nada se move sozinho.
+3. Aplique 1500 µs e procure cada extremo aos poucos, recuando ao notar ruído,
+   vibração, aquecimento ou batente.
+4. Capture o pulso da posição que o software chamará de 0° e depois o de 180°.
+5. Salve o perfil e repita nos outros servos.
+6. Encerre com **Parar** e confirme no controle normal os comandos 0°, 90° e
+   180° antes de acoplar a mecânica.
+
+Ao entrar em Manual ou Autônomo, o `RobotState` solicita a pose inicial
+`{0°, 0°, 0°}`. O firmware converte cada ângulo linearmente para a faixa
+500–2500 µs. No modo Parado, os três canais permanecem sem pulso.
 
 O comando `OLED` aceita título de até 12 caracteres, duas linhas de até 20
 caracteres ASCII e duração entre 500 e 30.000 ms. Os campos de texto são
 codificados em hexadecimal e `-` representa texto vazio. `OLED_CLEAR` restaura
 a página padrão sem esperar o timeout.
+
+`OLED_BIG` aceita um texto principal e um detalhe de até 20 caracteres. A ESP32
+calcula o maior tamanho da fonte que cabe na largura e mantém os dois textos nas
+linhas 16 a 63, região fisicamente azul do OLED bicolor. A cor não é selecionável
+por software; em um painel monocromático, o mesmo conteúdo aparecerá na cor única
+do módulo. O alerta pulsa suavemente entre os contrastes configurados, sem ficar
+completamente apagado, e restaura o contraste normal ao terminar.
+
+Depois que o suporte a `OLED_BIG` estiver gravado, a Raspberry pode alterar o
+texto, o detalhe, a duração e os gatilhos sem regravar a ESP32. Somente mudanças
+no desenho, na animação ou no protocolo exigem uma nova gravação do firmware.
+O dashboard principal reúne essas opções em **Diagnóstico → OLED · estados e
+mensagens**. A seção mostra o estado físico atual, oferece os alertas automáticos
+de verde e desvio, atalhos visuais para as cinco fases da missão principal e os
+editores dos layouts comum e grande.
+
+Um verde confirmado, recente e associado à faixa preta gera `VERDE` com o
+detalhe `ESQUERDA`, `DIREITA` ou `180 GRAUS`. O evento possui latch para não ser
+reenviado a cada frame. O desvio integrado produz apenas `DESVIO` quando a
+manobra confirmada assume o controle do percurso.
 
 `SYSTEM_READY` é renovado pela Raspberry a cada segundo depois da primeira
 inicialização completa. Sem renovação por três segundos, a OLED retorna ao boot.
@@ -610,9 +712,17 @@ mudam o modo por conta própria.
 
 #### `main_mission` — padrão
 
-É o encapsulamento da estratégia completa da prova. Atualmente executa o
-segue-faixa por trajetória visual e seus fallbacks seguros; futuros comportamentos
-devem ser chamados explicitamente por este módulo conforme cada situação exigir.
+É o coordenador da estratégia normal da prova. Seu fluxo é:
+
+```txt
+percurso inicial -> faixa cinza confirmada -> área de resgate
+-> saída do resgate confirmada -> percurso final -> faixa vermelha confirmada
+-> missão concluída
+```
+
+Os dois percursos usam a mesma `LineCourseMission`, portanto preservam
+segue-faixa, GREEN, GAP, SEARCH, assistência frontal, rampa e desvio de
+obstáculo. A `MainMission` apenas troca de fase e zera os motores nas transições.
 
 #### `turn_right_90`
 
@@ -651,6 +761,37 @@ devem ser chamados explicitamente por este módulo conforme cada situação exig
 > **Em validação:** confirme a distância no piso em vários alvos e tensões de
 > bateria. Ajuste `kEncoderCalibrationCounts`, `kEncoderCalibrationDistanceCm` e
 > a previsão de frenagem em `include/obr/config.h` com novas medições.
+
+#### `rescue_area`
+
+- É uma etapa explícita: selecionar a missão não liga a visão pesada; pressionar
+  Auto ou o botão físico abre o gate do detector.
+- Detecta vítimas pretas por HSV/contornos e prateadas por Hough, brilho e textura.
+- Mantém o assistente frontal a 30 FPS e limita o detector pesado a 15 análises
+  por segundo enquanto o gate estiver aberto.
+- Escolhe inicialmente a maior área visível, confirma por três frames e mantém o
+  mesmo alvo travado durante toda a execução.
+- Alinha pelo `tx`, com frenagem antes da confirmação, e aproxima até 5 cm.
+- IPC frontal com mais de 500 ms ou medição inválida mantém os motores zerados.
+- Depois da primeira aquisição, perder o alvo por 1 s encerra a missão.
+- Stop, E-Stop, troca de missão, conclusão e falha desligam o detector e impedem
+  reutilizar o alvo de uma execução anterior.
+
+O modo isolado encerra depois da aproximação da vítima. Na Missão Principal, o
+mesmo módulo permanece parado depois dessa etapa até a estratégia validada de
+procura da saída confirmar `rescueExitConfirmed`.
+
+#### `obstacle_avoidance`
+
+Executa isoladamente a mesma instância lógica de `ObstacleAvoidance` usada pela
+`LineCourseMission`. O teste depende somente do ultrassom, MPU6050 e encoders;
+conclusão ou falha encerram o modo com os motores zerados.
+
+Os contratos `courseMarker` (`GRAY`/`RED`), `courseMarkerConfirmed` e
+`rescueExitConfirmed` já são aceitos pelo C++ como campos opcionais do IPC. Eles
+permanecem inativos enquanto a visão Python não publicar uma confirmação
+calibrada; por isso um processo de câmera antigo conserva exatamente o fluxo de
+linha anterior e nunca troca de fase por ausência desses campos.
 
 ## 16. Câmera ao vivo
 
@@ -695,16 +836,19 @@ o IPC de visão. `ONLINE` só aparece depois de uma publicação nova da visão;
 
 ## 17. Estrutura autônoma atual
 
-`MissionController` possui uma responsabilidade simples: selecionar a missão e
-reiniciar seu estado quando uma nova execução começar. Ele preserva duas missões
-isoladas de teste, `turn_right_90` e `drive_distance`, e delega a estratégia da
-prova para `MainMission`.
+`MissionController` seleciona a missão e reinicia seu estado quando uma nova
+execução começa. `turn_right_90`, `drive_distance`, `rescue_area` e
+`obstacle_avoidance` são ferramentas isoladas de teste. `MainMission` coordena
+as fases da prova e delega os dois percursos para `LineCourseMission` e o resgate
+para `RescueAreaMission`.
 
-`MainMission` mantém a composição dos comportamentos da prova, mas o segue-faixa
-normal está deliberadamente vazio. `calculate_line_follower_command` recebe a
-máscara binária processada e o resultado verde e retorna os dois motores zerados.
-A classificação verde termina no overlay e na telemetria: ela não altera os
-comandos do seguidor nem inicia qualquer comportamento de movimento.
+`LineCourseMission` compõe os comportamentos do percurso. O desvio de obstáculo
+possui prioridade sobre o segue-faixa depois de duas leituras de até 8 cm; uma
+vez iniciado, mantém autoridade até concluir a ré final ou falhar. A
+classificação verde também alimenta a OLED depois de passar pelas validações de atualização,
+confirmação e associação com a faixa preta. O retorno de 180° já possui uma
+manobra própria; verde à esquerda e à direita ainda não iniciam movimento nesta
+branch e continuam disponíveis como percepção, telemetria e alerta visual.
 
 A classificação verde usa somente ROIs locais ao redor dos marcadores para medir
 a presença da faixa preta à frente, à esquerda e à direita. Essa percepção
@@ -726,12 +870,13 @@ Regras para os próximos comportamentos:
 
 ### Recursos ainda não usados pela missão principal
 
-- Ultrassônico não interrompe movimento nem desvia de obstáculos.
 - Inclinação de rampa é apenas telemetria/OLED.
 - Encoders não fecham velocidade, mas confirmam START/RUN por roda e sincronizam
   eficiência exclusivamente nos deslocamentos retos.
-- PCA9685 não aciona mecanismos.
-- Não existe lógica documentada para área de resgate, vítimas ou kit.
+- PCA9685 aciona braço, pulso e garra, mas a Missão Principal ainda não possui
+  uma sequência autônoma definida para esses mecanismos.
+- A área de resgate possui detecção, alinhamento e aproximação da vítima, mas
+  ainda não possui entrada automática, coleta, entrega nem lógica do kit.
 
 > **PREENCHER:** estratégia completa exigida pela modalidade da equipe e status
 > de cada desafio do regulamento 2026.
@@ -848,6 +993,9 @@ Bibliotecas Arduino necessárias:
 - Adafruit PWM Servo Driver Library;
 - Adafruit GFX Library;
 - Adafruit SSD1306.
+
+`Preferences`, usada para salvar a calibração dos servos na NVS, já acompanha o
+core **esp32 by Espressif Systems** e não exige instalação separada.
 
 Firmware principal para o robô:
 
@@ -1092,21 +1240,22 @@ Confirme:
 
 ## 25. Limitações e dívidas técnicas conhecidas
 
-- Não há testes automatizados de C++.
 - Dashboard não possui autenticação ou HTTPS.
 - Credencial do Wi-Fi de bancada está no firmware.
 - `robot_test` é um nome provisório para o binário principal.
 - Parser JSON do C++ é manual e simples, sem biblioteca dedicada.
-- A Missão Principal ainda não possui comportamentos autônomos instalados.
-- Ultrassônico ainda não influencia a estratégia.
+- O desvio de obstáculo e a missão de resgate possuem testes automatizados, mas
+  ainda precisam de validação física completa no robô e na iluminação da arena.
 - Bateria baixa não gera parada automática.
 - Não há detecção explícita de travamento simultâneo dos dois lados.
 - Não há controle fechado de velocidade por encoder.
 - A distância física usa uma calibração empírica única; ainda não existe odometria
   2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
-- PCA9685 ainda não controla mecanismos.
-- Obstáculos, rampas, verdes, resgate e outras situações ainda não são classificados.
+- Braço, pulso e garra já possuem controle manual e protocolo, mas as poses da
+  estratégia final ainda precisam ser definidas pela equipe.
+- Rampas, entrada automática no resgate, coleta, kit e outras situações da prova
+  ainda não possuem estratégia completa.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
   em kernels Linux recentes; funciona na configuração atual, mas deve ser
@@ -1124,8 +1273,11 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Especificar e testar cada novo comportamento antes de integrá-lo à Missão Principal.
 - [ ] Implementar detecção de travamento dos dois lados.
 - [ ] Definir limite de bateria baixa e política segura.
-- [ ] Integrar ultrassônico à estratégia quando a regra exigir.
-- [ ] Definir mecanismos e limites do PCA9685.
+- [x] Integrar o ultrassônico ao desvio de obstáculo da Missão Principal.
+- [ ] Validar fisicamente as distâncias e os ângulos do desvio de obstáculo.
+- [ ] Classificar automaticamente a entrada da área de resgate.
+- [ ] Calibrar e validar vítimas pretas e prateadas na iluminação da arena.
+- [ ] Confirmar no robô os canais e pulsos finais dos três servos do PCA9685.
 - [ ] Documentar estratégia completa da modalidade OBR.
 - [ ] Renomear `robot_test` quando a equipe decidir o nome final.
 - [ ] Remover credencial do firmware antes de tornar o repositório público.
@@ -1157,7 +1309,8 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 2. Qual é o modelo do ultrassônico?
 3. Como o MPU6050 está orientado fisicamente?
 4. O OLED é realmente bicolor amarelo/azul em todas as unidades?
-5. Quais atuadores serão ligados ao PCA9685?
+5. Quais são os pulsos finais, as posições seguras e as poses de prova do braço,
+   do pulso e da garra?
 
 ### Software e prova
 
@@ -1213,10 +1366,14 @@ curl http://127.0.0.1:8080/camera-status.json
 | Estados e modos | `src/robot/robot_state.cpp` |
 | Seleção de missões | `src/robot/mission_controller.cpp` |
 | Orquestração da Missão Principal | `src/robot/main_mission.cpp` |
+| Percurso de linha reutilizável | `src/robot/line_course_mission.cpp` |
+| Ciclo de vida da aplicação | `src/application/robot_application.cpp` |
+| Desvio de obstáculo | `include/obr/obstacle_avoidance.h` / `src/robot/obstacle_avoidance.cpp` |
+| Resgate e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/rescue_area_mission.cpp` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
-| Captura da câmera | `scripts/camera_line_frame.py` |
-| Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh` |
-| Startup | `scripts/run_robot.sh` / `scripts/obr-robot.service` |
+| Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |
+| Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh`; implementação em `deployment/` |
+| Startup | `scripts/run_robot.sh` / `deployment/systemd/obr-robot.service` |
 
 ## 30. Regra de manutenção deste guia
 

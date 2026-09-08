@@ -124,10 +124,10 @@ o ponto de extensão atual, que publica potência zero.
 Os itens abaixo não entram diretamente no executável principal, mas possuem uma
 função válida e, portanto, não foram classificados como código morto:
 
-- `camera_fov_test/direct_picamera2_mode_test.py`: diagnóstico direto de modos
+- `tools/camera/direct_picamera2_mode_test.py`: diagnóstico direto de modos
   da câmera.
-- `scripts/deploy_panel.py`: interface local opcional para o deploy documentado.
-- `scripts/obr-robot.service.d/camera-role.conf.example`: exemplo de override do
+- `deployment/deploy_panel.py`: interface local opcional para o deploy documentado.
+- `deployment/systemd/obr-robot.service.d/camera-role.conf.example`: exemplo de override do
   serviço.
 - `esp32/obr_esp32_main` e `esp32/obr_esp32_bridge`: o firmware principal inclui
   a implementação compartilhada do bridge com o dashboard Wi-Fi desabilitado.
@@ -185,7 +185,7 @@ Em 17 de agosto de 2026, foram executadas estas verificações:
 
 - build CMake totalmente novo em diretório temporário, com Ninja e MinGW
   15.2.0: `robot_test` compilado e vinculado, 13 de 13 etapas concluídas;
-- `python -m unittest discover -s scripts -p "test_*.py"`: 72 testes
+- suíte Python atualmente em `tests/python/`: 72 testes
   concluídos, com resultado `OK`; dez testes foram ignorados porque o OpenCV
   não está instalado no ambiente Windows usado na auditoria;
 - `git diff --check`: nenhuma falha de espaços ou formatação no diff;
@@ -198,7 +198,7 @@ foram executados nesta auditoria local. Para repetir as verificações de softwa
 ```sh
 cmake -S . -B build
 cmake --build build
-python3 -m unittest discover -s scripts -p "test_*.py"
+python3 -m unittest discover -s tests/python -p "test_*.py"
 ```
 
 Na Raspberry Pi, valide o fluxo completo com:

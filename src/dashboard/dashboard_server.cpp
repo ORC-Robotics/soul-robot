@@ -5,12 +5,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <exception>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <thread>
 
@@ -27,12 +29,33 @@ std::string lowerCopy(std::string text)
     });
     return text;
 }
+
+bool parseServoName(const std::string& name, ServoId& servo)
+{
+    if (name == "arm")
+    {
+        servo = ServoId::Arm;
+        return true;
+    }
+    if (name == "wrist")
+    {
+        servo = ServoId::Wrist;
+        return true;
+    }
+    if (name == "gripper")
+    {
+        servo = ServoId::Gripper;
+        return true;
+    }
+    return false;
+}
 }
 
 DashboardServer::DashboardServer(RobotState& robotState, Telemetry& telemetry, Esp32Bridge& esp32,
-                                 MotorController& motors, StatusLed& readyLed)
+                                 MotorController& motors, ServoController& servos,
+                                 StatusLed& readyLed)
     : robotState_(robotState), telemetry_(telemetry), esp32_(esp32),
-      motors_(motors), readyLed_(readyLed)
+      motors_(motors), servos_(servos), readyLed_(readyLed)
 {
 }
 
@@ -411,27 +434,47 @@ void DashboardServer::broadcast(const std::string& message)
     }
 }
 
+void DashboardServer::endServoCalibrationIfActive()
+{
+    const RobotSnapshot state = robotState_.snapshot();
+    const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+    if (state.servoCalibrationActive || esp32.servoCalibrationActive)
+    {
+        // O encerramento é enviado antes da próxima troca de modo para remover
+        // o pulso imediatamente. O STOP subsequente permanece como segunda trava.
+        if (!servos_.endCalibration())
+        {
+            std::cerr << "Servo calibration end command was not sent to ESP32\n";
+        }
+    }
+    robotState_.endServoCalibration();
+}
+
 void DashboardServer::handleCommand(const std::string& message)
 {
     if (message.find("\"command\":\"estop\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         robotState_.emergencyStop();
         std::cout << "Emergency stop received\n";
     }
     else if (message.find("\"command\":\"start\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         esp32_.sendClearEmergencyStop();
         robotState_.start();
         std::cout << "Start received\n";
     }
     else if (message.find("\"command\":\"auto\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         esp32_.sendClearEmergencyStop();
         robotState_.startAutonomous();
         std::cout << "Autonomous start received\n";
     }
     else if (message.find("\"command\":\"set_autonomous_mission\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         if (message.find("\"mission\":\"main_mission\"") != std::string::npos)
         {
             robotState_.setAutonomousMission(AutonomousMission::MainMission);
@@ -458,6 +501,19 @@ void DashboardServer::handleCommand(const std::string& message)
                 std::cerr << "Invalid drive-distance target ignored\n";
             }
         }
+        else if (message.find("\"mission\":\"rescue_area\"") != std::string::npos)
+        {
+            // Selecionar a etapa não liga o detector. O gate só abre depois
+            // que o modo autônomo inicia, e fecha novamente em Stop ou E-Stop.
+            robotState_.setAutonomousMission(AutonomousMission::RescueArea);
+            std::cout << "Autonomous mission selected: rescue_area\n";
+        }
+        else if (message.find("\"mission\":\"obstacle_avoidance\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::ObstacleAvoidance);
+            std::cout << "Autonomous mission selected: obstacle_avoidance\n";
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
@@ -467,13 +523,16 @@ void DashboardServer::handleCommand(const std::string& message)
     }
     else if (message.find("\"command\":\"stop\"") != std::string::npos)
     {
+        endServoCalibrationIfActive();
         robotState_.stop();
+        motors_.stop();
         std::cout << "Stop received\n";
     }
     else if (message.find("\"command\":\"calibrate\"") != std::string::npos)
     {
         // A calibração nunca preserva um comando de movimento anterior.
-        // A ESP32 também trava os motores até uma nova partida explícita.
+        // A ESP32 também trava motores e servos até uma nova partida explícita.
+        endServoCalibrationIfActive();
         robotState_.stop();
         if (!esp32_.sendCalibrateSensors())
         {
@@ -482,6 +541,24 @@ void DashboardServer::handleCommand(const std::string& message)
         else
         {
             std::cout << "Sensor calibration requested\n";
+        }
+    }
+    else if (message.find("\"command\":\"oled_large_message\"") != std::string::npos)
+    {
+        const std::string primaryText = getJsonString(message, "primaryText", "");
+        const std::string secondaryText = getJsonString(message, "secondaryText", "");
+        const double requestedDurationMs = getJsonNumber(
+            message, "durationMs", config::kRemoteOledMaximumDurationMs);
+        const int durationMs = static_cast<int>(std::clamp(
+            requestedDurationMs,
+            static_cast<double>(config::kRemoteOledMinimumDurationMs),
+            static_cast<double>(config::kRemoteOledMaximumDurationMs)));
+        // O layout grande usa o mesmo caminho dos alertas automáticos. Assim,
+        // o painel testa exatamente a fonte adaptativa e o pulso gravados na ESP32.
+        if (!esp32_.sendOledLargeMessage(
+                primaryText, secondaryText, durationMs))
+        {
+            std::cerr << "Large OLED message was not sent to ESP32\n";
         }
     }
     else if (message.find("\"command\":\"oled_message\"") != std::string::npos)
@@ -505,6 +582,154 @@ void DashboardServer::handleCommand(const std::string& message)
         if (!esp32_.clearOledMessage())
         {
             std::cerr << "OLED clear command was not sent to ESP32\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_disable_all\"") != std::string::npos)
+    {
+        robotState_.disableServos();
+    }
+    else if (message.find("\"command\":\"servo_calibration_begin\"") != std::string::npos)
+    {
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationAllowed =
+            (state.mode == "stopped" || state.mode == "manual") &&
+            !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady &&
+            esp32.servoCalibrationSupported &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive &&
+            !esp32.servoCalibrationActive;
+        if (!calibrationAllowed)
+        {
+            std::cerr << "Servo calibration begin ignored: system is not in a safe state\n";
+        }
+        else
+        {
+            // A transição local ocorre primeiro para que o laço principal passe
+            // a renovar somente MOTOR 0,0 antes de qualquer pulso de bancada.
+            robotState_.stop();
+            if (!robotState_.beginServoCalibration() ||
+                !servos_.beginCalibration())
+            {
+                robotState_.endServoCalibration();
+                motors_.stop();
+                std::cerr << "Servo calibration could not be started\n";
+            }
+            else
+            {
+                std::cout << "Servo calibration started\n";
+            }
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_end\"") != std::string::npos)
+    {
+        endServoCalibrationIfActive();
+        robotState_.stop();
+        motors_.stop();
+        std::cout << "Servo calibration stopped\n";
+    }
+    else if (message.find("\"command\":\"servo_calibration_disable\"") != std::string::npos)
+    {
+        const RobotSnapshot state = robotState_.snapshot();
+        if (state.servoCalibrationActive &&
+            !servos_.disableCalibrationOutput())
+        {
+            std::cerr << "Servo calibration output could not be disabled\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_pulse\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double requestedPulseUs = getJsonNumber(
+            message, "pulseUs", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool pulseIsInteger = std::isfinite(requestedPulseUs) &&
+                                    std::floor(requestedPulseUs) == requestedPulseUs;
+        const bool valueFitsInt = pulseIsInteger &&
+                                  requestedPulseUs >= std::numeric_limits<int>::min() &&
+                                  requestedPulseUs <= std::numeric_limits<int>::max();
+        const int pulseUs = valueFitsInt ? static_cast<int>(requestedPulseUs) : 0;
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationControlAllowed =
+            state.servoCalibrationActive && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && esp32.servoCalibrationActive &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive;
+        if (!parseServoName(servoName, servo) || !valueFitsInt ||
+            !ServoController::isValidCalibrationPulse(pulseUs) ||
+            !calibrationControlAllowed ||
+            !servos_.setCalibrationPulse(servo, pulseUs))
+        {
+            std::cerr << "Servo calibration pulse ignored\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_calibration_save\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double requestedZeroUs = getJsonNumber(
+            message, "pulseAtZeroUs", std::numeric_limits<double>::quiet_NaN());
+        const double requested180Us = getJsonNumber(
+            message, "pulseAt180Us", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool valuesAreIntegers =
+            std::isfinite(requestedZeroUs) && std::isfinite(requested180Us) &&
+            std::floor(requestedZeroUs) == requestedZeroUs &&
+            std::floor(requested180Us) == requested180Us;
+        const bool valuesFitInt =
+            valuesAreIntegers &&
+            requestedZeroUs >= std::numeric_limits<int>::min() &&
+            requestedZeroUs <= std::numeric_limits<int>::max() &&
+            requested180Us >= std::numeric_limits<int>::min() &&
+            requested180Us <= std::numeric_limits<int>::max();
+        const int pulseAtZeroUs = valuesFitInt ? static_cast<int>(requestedZeroUs) : 0;
+        const int pulseAt180Us = valuesFitInt ? static_cast<int>(requested180Us) : 0;
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool calibrationControlAllowed =
+            state.servoCalibrationActive && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && esp32.servoCalibrationActive &&
+            !esp32.emergencyStopActive && !esp32.calibrationActive;
+        if (!parseServoName(servoName, servo) || !valuesFitInt ||
+            !ServoController::isValidCalibrationEndpoints(
+                pulseAtZeroUs, pulseAt180Us) ||
+            !calibrationControlAllowed ||
+            !servos_.saveCalibration(servo, pulseAtZeroUs, pulseAt180Us))
+        {
+            std::cerr << "Servo calibration save ignored\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_angle\"") != std::string::npos)
+    {
+        const std::string servoName = getJsonString(message, "servo", "");
+        const double angleDegrees = getJsonNumber(
+            message, "angleDegrees", std::numeric_limits<double>::quiet_NaN());
+        ServoId servo = ServoId::Arm;
+        const bool knownServo = parseServoName(servoName, servo);
+
+        const RobotSnapshot state = robotState_.snapshot();
+        const Esp32TelemetrySnapshot esp32 = esp32_.telemetrySnapshot();
+        const bool manualControlAllowed =
+            state.mode == "manual" && !state.emergencyStop &&
+            esp32.sensorFresh && esp32.pca9685Ok &&
+            esp32.raspberrySystemReady && !esp32.emergencyStopActive &&
+            !esp32.calibrationActive && !esp32.servoCalibrationActive &&
+            !state.servoCalibrationActive;
+        if (!knownServo)
+        {
+            std::cerr << "Servo command ignored: invalid name\n";
+        }
+        else if (!manualControlAllowed)
+        {
+            // O painel só movimenta mecanismos no modo Manual. As rotinas
+            // autônomas publicam poses validadas no RobotState.
+            std::cerr << "Servo command ignored: manual control is not available\n";
+        }
+        else if (!robotState_.setManualServoAngle(servo, angleDegrees))
+        {
+            std::cerr << "Servo command ignored: invalid angle or state\n";
         }
     }
     else if (message.find("\"command\":\"set_forward_camera\"") != std::string::npos)
@@ -666,9 +891,43 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"motorSyncCorrectedRightPower\":" << motorSync.correctedRightPower
          << ",\"startButtonPressed\":" << (esp32.startButtonPressed ? "true" : "false")
          << ",\"pca9685Ok\":" << (esp32.pca9685Ok ? "true" : "false")
+         << ",\"armServoAngleDegrees\":" << esp32.armServoAngleDegrees
+         << ",\"armServoPulseUs\":" << esp32.armServoPulseUs
+         << ",\"armServoEnabled\":" << (esp32.armServoEnabled ? "true" : "false")
+         << ",\"wristServoAngleDegrees\":" << esp32.wristServoAngleDegrees
+         << ",\"wristServoPulseUs\":" << esp32.wristServoPulseUs
+         << ",\"wristServoEnabled\":" << (esp32.wristServoEnabled ? "true" : "false")
+         << ",\"gripperServoAngleDegrees\":" << esp32.gripperServoAngleDegrees
+         << ",\"gripperServoPulseUs\":" << esp32.gripperServoPulseUs
+         << ",\"gripperServoEnabled\":" << (esp32.gripperServoEnabled ? "true" : "false")
+         << ",\"servoCalibrationRequested\":"
+         << (state.servoCalibrationActive ? "true" : "false")
+         << ",\"servoCalibrationSupported\":"
+         << (esp32.servoCalibrationSupported ? "true" : "false")
+         << ",\"servoCalibrationActive\":"
+         << (esp32.servoCalibrationActive ? "true" : "false")
+         << ",\"servoCalibrationSelectedIndex\":"
+         << esp32.servoCalibrationSelectedIndex
+         << ",\"armServoMinimumPulseUs\":" << esp32.armServoMinimumPulseUs
+         << ",\"armServoMaximumPulseUs\":" << esp32.armServoMaximumPulseUs
+         << ",\"armServoInverted\":" << (esp32.armServoInverted ? "true" : "false")
+         << ",\"wristServoMinimumPulseUs\":" << esp32.wristServoMinimumPulseUs
+         << ",\"wristServoMaximumPulseUs\":" << esp32.wristServoMaximumPulseUs
+         << ",\"wristServoInverted\":" << (esp32.wristServoInverted ? "true" : "false")
+         << ",\"gripperServoMinimumPulseUs\":" << esp32.gripperServoMinimumPulseUs
+         << ",\"gripperServoMaximumPulseUs\":" << esp32.gripperServoMaximumPulseUs
+         << ",\"gripperServoInverted\":" << (esp32.gripperServoInverted ? "true" : "false")
+         << ",\"servoCalibrationAbsoluteMinimumPulseUs\":"
+         << config::kServoCalibrationAbsoluteMinimumPulseUs
+         << ",\"servoCalibrationAbsoluteMaximumPulseUs\":"
+         << config::kServoCalibrationAbsoluteMaximumPulseUs
+         << ",\"servoCalibrationMinimumSpanUs\":"
+         << config::kServoCalibrationMinimumSpanUs
          << ",\"oledOk\":" << (esp32.oledOk ? "true" : "false")
          << ",\"esp32RemoteOledActive\":" << (esp32.remoteOledActive ? "true" : "false")
          << ",\"esp32RaspberrySystemReady\":" << (esp32.raspberrySystemReady ? "true" : "false")
+         << ",\"oledNavigationAlertDurationMs\":"
+         << config::kOledNavigationAlertDurationMs
          << ",\"motorSleepPinHigh\":" << (esp32.motorSleepPinHigh ? "true" : "false")
          << ",\"esp32EmergencyStop\":" << (esp32.emergencyStopActive ? "true" : "false")
          << ",\"esp32CalibrationActive\":" << (esp32.calibrationActive ? "true" : "false")
@@ -943,6 +1202,7 @@ std::string DashboardServer::dashboardHtml()
     .camera-hud-header > * { padding: 5px 8px; border: 1px solid var(--border-primary); border-radius: 6px; color: var(--text); background: var(--bg-overlay); font-size: .62rem; font-weight: 900; letter-spacing: .07em; }
     .camera-hud-line.valid { color: var(--green); border-color: var(--green); }
     .camera-hud-line.invalid { color: var(--danger); border-color: var(--danger); }
+    .camera-hud-line.searching { color: var(--yellow); border-color: var(--yellow); }
     .camera-hud-values { display: grid; grid-template-columns: .8fr .8fr repeat(3, 1fr) 1.45fr; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-overlay); overflow: hidden; }
     .camera-hud-value { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-right: 1px solid var(--border-subtle); }
     .camera-hud-value:last-child { border-right: 0; }
@@ -1022,14 +1282,34 @@ std::string DashboardServer::dashboardHtml()
     .oled-editor summary::-webkit-details-marker { display: none; }
     .oled-editor summary::after { content: "+"; color: var(--text-secondary); font-size: 1.1rem; line-height: 1; }
     .oled-editor[open] summary::after { content: "−"; }
-    .oled-editor-body { display: grid; gap: var(--space-2); padding: 0 var(--space-3) var(--space-3); border-top: 1px solid var(--line-soft); }
-    .oled-editor-state { margin: var(--space-3) 0 0; color: var(--muted); font-size: .65rem; line-height: 1.35; }
+    .oled-summary-state { margin-left: auto; padding: 3px 6px; border: 1px solid var(--border-primary); border-radius: 99px; color: var(--muted); background: var(--bg-primary); font-size: .54rem; letter-spacing: .06em; }
+    .oled-editor-body { display: grid; gap: var(--space-3); padding: 0 var(--space-3) var(--space-3); border-top: 1px solid var(--line-soft); }
+    .oled-live-state { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
+    .oled-live-state div { flex: 0 0 auto; }
+    .oled-live-state span { display: block; color: var(--muted); font-size: .57rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .oled-live-state strong { display: block; margin-top: 4px; color: var(--text); font-size: .82rem; letter-spacing: .04em; }
+    .oled-editor-state { margin: 0; color: var(--muted); font-size: .65rem; line-height: 1.4; text-align: right; }
+    .oled-section { display: grid; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--line-soft); }
+    .oled-section-heading { display: flex; align-items: end; justify-content: space-between; gap: var(--space-3); }
+    .oled-section-heading strong { color: var(--text-secondary); font-size: .68rem; letter-spacing: .08em; text-transform: uppercase; }
+    .oled-section-heading span { color: var(--muted); font-size: .61rem; line-height: 1.35; text-align: right; }
+    .oled-preset-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-2); }
+    .oled-preset-grid.mission-states { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .oled-preset { min-height: 58px; display: grid; align-content: center; gap: 3px; padding: var(--space-2); border-color: var(--border-primary); background: var(--bg-control); color: var(--text-primary); text-align: left; }
+    .oled-preset:hover:not(:disabled) { border-color: var(--focus-ring); background: var(--interactive-hover); }
+    .oled-preset strong { font-size: .72rem; letter-spacing: .06em; }
+    .oled-preset span { color: var(--muted); font-size: .58rem; font-weight: 750; line-height: 1.25; }
+    .oled-layout-selector { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px; padding: 2px; border: 1px solid var(--border-primary); border-radius: 9px; background: var(--bg-primary); }
+    .oled-layout-button { min-height: 34px; border: 0; background: transparent; color: var(--muted); font-size: .66rem; }
+    .oled-layout-button.active { color: var(--bg-primary); background: var(--text-primary); }
     .oled-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .oled-fields[hidden] { display: none; }
     .oled-field { min-width: 0; }
     .oled-field.wide { grid-column: 1 / -1; }
     .oled-field label { display: block; margin-bottom: var(--space-1); color: var(--muted); font-size: .59rem; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
     .oled-field input { width: 100%; min-width: 0; min-height: var(--control-height); padding: var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; outline: none; color: var(--text); background: var(--bg-control); font: inherit; font-size: .78rem; }
     .oled-field input:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--focus-ring); }
+    .oled-layout-hint { margin: 0; color: var(--muted); font-size: .62rem; line-height: 1.4; }
     .oled-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .oled-actions button { min-height: var(--control-height); font-size: .72rem; }
     .oled-actions .oled-clear { border-color: var(--border-primary); background: var(--bg-control); color: var(--text-primary); }
@@ -1059,6 +1339,39 @@ std::string DashboardServer::dashboardHtml()
     .manual-speed-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .manual-speed-grid .drive-control { border-color: var(--border-primary); background: var(--bg-primary); }
     .manual-test-note { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.45; }
+    .servo-control-card { display: grid; gap: var(--space-3); }
+    .servo-control-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+    .servo-control { min-width: 0; padding: var(--space-3); border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-primary); }
+    .servo-control label { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); color: var(--text-secondary); font-size: .72rem; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+    .servo-control label output { color: var(--text); font-size: .9rem; font-variant-numeric: tabular-nums; }
+    .servo-control input[type="range"] { margin: var(--space-3) 0; }
+    .servo-angle-entry { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-2); }
+    .servo-angle-entry input { width: 100%; min-width: 0; min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; outline: none; color: var(--text); background: var(--bg-control); font: inherit; font-variant-numeric: tabular-nums; }
+    .servo-angle-entry input:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 2px var(--focus-ring); }
+    .servo-angle-entry span { color: var(--muted); font-size: .8rem; font-weight: 800; }
+    .servo-output-state { display: block; min-height: 1.2em; margin-top: var(--space-2); color: var(--muted); font-size: .66rem; line-height: 1.35; }
+    .servo-actions { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+    .servo-actions p { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.4; }
+    .servo-actions button { flex: 0 0 auto; min-height: var(--control-height); }
+    .servo-calibration { border-top: 1px solid var(--line-soft); }
+    .servo-calibration summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding-top: var(--space-3); color: var(--text-secondary); cursor: pointer; font-size: .72rem; font-weight: 850; letter-spacing: .07em; text-transform: uppercase; }
+    .servo-calibration-body { display: grid; gap: var(--space-3); padding-top: var(--space-3); }
+    .servo-calibration-warning { margin: 0; padding: var(--space-3); border: 1px solid var(--yellow); border-radius: 10px; color: var(--text-secondary); background: var(--bg-primary); font-size: .7rem; line-height: 1.45; }
+    .servo-calibration-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2); }
+    .servo-calibration-toolbar label, .servo-calibration-endpoint label { display: grid; gap: var(--space-1); color: var(--muted); font-size: .66rem; font-weight: 800; }
+    .servo-calibration-toolbar select, .servo-calibration-endpoint input { min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; color: var(--text); background: var(--bg-control); }
+    .servo-calibration-workspace { display: grid; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border-primary); border-radius: 12px; background: var(--bg-primary); }
+    .servo-calibration-workspace[hidden] { display: none; }
+    .servo-calibration-readout { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+    .servo-calibration-readout strong { font-size: 1.25rem; font-variant-numeric: tabular-nums; }
+    .servo-calibration-adjustments { display: grid; grid-template-columns: repeat(4, auto) minmax(90px, 1fr) auto; gap: var(--space-1); }
+    .servo-calibration-adjustments input { width: 100%; min-width: 0; min-height: var(--control-height); padding: 0 var(--space-2); border: 1px solid var(--border-primary); border-radius: 8px; color: var(--text); background: var(--bg-control); text-align: center; font-variant-numeric: tabular-nums; }
+    .servo-calibration-endpoints { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+    .servo-calibration-endpoint { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-1); }
+    .servo-calibration-endpoint label { min-width: 0; }
+    .servo-calibration-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+    .servo-calibration-actions button { min-height: var(--control-height); }
+    .servo-calibration-note { margin: 0; color: var(--muted); font-size: .67rem; line-height: 1.4; }
     .requested-drive { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
     .request-value { padding: var(--space-3); border: 1px solid var(--line-soft); border-radius: 10px; background: var(--bg-primary); }
     .request-value span { display: block; color: var(--muted); font-size: .67rem; text-transform: uppercase; }
@@ -1114,6 +1427,7 @@ std::string DashboardServer::dashboardHtml()
       .diagnostic-tools { grid-template-columns: 1fr; }
       .telemetry-card, .telemetry-card.wide,
       .diagnostic-third { grid-column: span 12; }
+      .oled-preset-grid, .oled-preset-grid.mission-states { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 680px) {
       html, body { overflow-x: hidden; }
@@ -1146,6 +1460,15 @@ std::string DashboardServer::dashboardHtml()
       .camera-message, .safety-note { overflow-wrap: anywhere; }
       .keyboard-copy span { max-width: none; }
       .manual-speed-grid { grid-template-columns: 1fr; }
+      .servo-control-grid { grid-template-columns: 1fr; }
+      .servo-actions { align-items: stretch; flex-direction: column; }
+      .servo-calibration-adjustments { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .servo-calibration-adjustments input { grid-column: 1 / 4; }
+      .servo-calibration-endpoints { grid-template-columns: 1fr; }
+      .oled-live-state, .oled-section-heading { align-items: flex-start; flex-direction: column; }
+      .oled-editor-state, .oled-section-heading span { text-align: left; }
+      .oled-preset-grid, .oled-preset-grid.mission-states, .oled-fields, .oled-actions { grid-template-columns: 1fr; }
+      .oled-field.wide { grid-column: auto; }
       .telemetry-row { align-items: flex-start; flex-wrap: wrap; padding: var(--space-2) 0; }
       footer { flex-direction: column; }
     }
@@ -1237,6 +1560,20 @@ std::string DashboardServer::dashboardHtml()
               <div class="camera-hud-value pipeline"><span>Pipeline</span><strong id="operationPipelinePrimary">BIN — · SPEC — ms</strong><small id="operationPipelineSecondary">MORPH — · CONT — ms</small></div>
             </div>
           </div>
+          <div id="forwardBallTelemetry" class="camera-hud" aria-label="Detecção de vítimas da câmera frontal" hidden>
+            <div class="camera-hud-header">
+              <strong id="forwardBallState" class="camera-hud-line searching">DETECÇÃO INATIVA FORA DO RESGATE</strong>
+              <span id="forwardBallProcessing">-- ms</span>
+            </div>
+            <div class="camera-hud-values">
+              <div class="camera-hud-value green-status"><span>Posição</span><strong id="forwardBallPosition">NENHUMA</strong><small id="forwardBallType">PRETA / PRATEADA</small></div>
+              <div class="camera-hud-value"><span>Distância</span><strong id="forwardBallDistance">-- cm</strong><small id="forwardBallCalibration">CALIBRAÇÃO 960×540</small></div>
+              <div class="camera-hud-value"><span>Ângulo</span><strong id="forwardBallAngle">-- °</strong></div>
+              <div class="camera-hud-value"><span>Centro X / Y</span><strong id="forwardBallCenter">-- / -- px</strong></div>
+              <div class="camera-hud-value"><span>Raio / diâmetro</span><strong id="forwardBallSize">-- / -- px</strong></div>
+              <div class="camera-hud-value"><span>Geometria</span><strong id="forwardBallCircularity">CIRC --</strong><small id="forwardBallGeometry">Maior candidata circular</small></div>
+            </div>
+          </div>
         </section>
 
         <aside id="missionStateCard" class="card operation-control-panel mission-state-card" data-tone="idle">
@@ -1269,8 +1606,10 @@ std::string DashboardServer::dashboardHtml()
                 <option value="main_mission" selected>MISSÃO PRINCIPAL</option>
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
+                <option value="rescue_area">ÁREA DE RESGATE · VÍTIMA MAIS PRÓXIMA</option>
+                <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
               </select>
-              <span id="missionHint" class="mission-hint">Orquestrador da prova; comportamentos ainda não instalados.</span>
+              <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
                 <span class="distance-input-label">Distância alvo</span>
                 <div class="distance-input">
@@ -1446,19 +1785,134 @@ std::string DashboardServer::dashboardHtml()
           <div class="safety-note">Ative o modo Manual antes do teste e mantenha as rodas suspensas. Cada lado usa PWM direto; clamp, E-Stop e timeouts continuam ativos.</div>
         </article>
 
+        <article id="servoControl" class="card section-card servo-control-card">
+          <div class="section-header"><h3 class="section-title">Braço, pulso e garra</h3><span id="servoControlStatus" class="subsystem-status">bloqueado</span></div>
+          <div class="servo-control-grid">
+            <div class="servo-control">
+              <label for="armServoSlider"><span>Braço · canal 0</span><output id="armServoValue">0°</output></label>
+              <input id="armServoSlider" data-servo-slider="arm" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="armServoInput" data-servo-input="arm" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato do braço" disabled><span>graus</span></div>
+              <small id="armServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+            <div class="servo-control">
+              <label for="wristServoSlider"><span>Pulso · canal 1</span><output id="wristServoValue">0°</output></label>
+              <input id="wristServoSlider" data-servo-slider="wrist" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="wristServoInput" data-servo-input="wrist" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato do pulso" disabled><span>graus</span></div>
+              <small id="wristServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+            <div class="servo-control">
+              <label for="gripperServoSlider"><span>Garra · canal 2</span><output id="gripperServoValue">0°</output></label>
+              <input id="gripperServoSlider" data-servo-slider="gripper" type="range" min="0" max="180" step="1" value="0" disabled>
+              <div class="servo-angle-entry"><input id="gripperServoInput" data-servo-input="gripper" type="number" min="0" max="180" step="1" value="0" inputmode="numeric" aria-label="Ângulo exato da garra" disabled><span>graus</span></div>
+              <small id="gripperServoState" class="servo-output-state">Sem sinal confirmado.</small>
+            </div>
+          </div>
+          <div class="servo-actions">
+            <p>Ative o modo Manual. O botão Parar e a perda da Raspberry removem os três sinais; a trava de emergência do software permanece como redundância.</p>
+            <button id="disableServosButton" type="button" class="warning" onclick="disableAllServos()" disabled>Desligar sinais</button>
+          </div>
+          <details id="servoCalibrationPanel" class="servo-calibration">
+            <summary><span>Calibrar pulsos sem regravar</span><span id="servoCalibrationStatus" class="subsystem-status">aguardando firmware</span></summary>
+            <div class="servo-calibration-body">
+              <p class="servo-calibration-warning">O botão Parar sempre encerra este modo e desliga todos os pulsos. Comece em 1500 µs, avance em passos pequenos e pare antes de ruído, vibração, aquecimento ou batente mecânico.</p>
+              <div class="servo-calibration-toolbar">
+                <label for="servoCalibrationTarget">Servo em teste
+                  <select id="servoCalibrationTarget" disabled>
+                    <option value="arm">Braço · MG995 · canal 0</option>
+                    <option value="wrist">Pulso · MG90S · canal 1</option>
+                    <option value="gripper">Garra · MG90S · canal 2</option>
+                  </select>
+                </label>
+                <button id="servoCalibrationBeginButton" type="button" class="warning" disabled>Entrar na calibração</button>
+                <button id="servoCalibrationEndButton" type="button" class="danger" disabled>Parar calibração</button>
+              </div>
+              <div id="servoCalibrationWorkspace" class="servo-calibration-workspace" hidden>
+                <div class="servo-calibration-readout"><span>Pulso bruto solicitado</span><strong id="servoCalibrationPulseValue">1500 µs</strong></div>
+                <input id="servoCalibrationPulseSlider" type="range" min="500" max="2500" step="10" value="1500" disabled>
+                <div class="servo-calibration-adjustments">
+                  <button type="button" data-servo-pulse-delta="-100" disabled>−100</button>
+                  <button type="button" data-servo-pulse-delta="-10" disabled>−10</button>
+                  <button type="button" data-servo-pulse-delta="10" disabled>+10</button>
+                  <button type="button" data-servo-pulse-delta="100" disabled>+100</button>
+                  <input id="servoCalibrationPulseInput" type="number" min="500" max="2500" step="10" value="1500" inputmode="numeric" aria-label="Pulso bruto do servo em microssegundos" disabled>
+                  <button id="servoCalibrationApplyButton" type="button" disabled>Aplicar pulso</button>
+                </div>
+                <div class="servo-calibration-endpoints">
+                  <div class="servo-calibration-endpoint">
+                    <label for="servoPulseAtZeroInput">Posição lógica 0°
+                      <input id="servoPulseAtZeroInput" type="number" min="500" max="2500" step="10" value="500" inputmode="numeric" disabled>
+                    </label>
+                    <button id="captureServoZeroButton" type="button" disabled>Usar atual</button>
+                  </div>
+                  <div class="servo-calibration-endpoint">
+                    <label for="servoPulseAt180Input">Posição lógica 180°
+                      <input id="servoPulseAt180Input" type="number" min="500" max="2500" step="10" value="2500" inputmode="numeric" disabled>
+                    </label>
+                    <button id="captureServo180Button" type="button" disabled>Usar atual</button>
+                  </div>
+                </div>
+                <div class="servo-calibration-actions">
+                  <button id="servoCalibrationDisableButton" type="button" class="warning" disabled>Desligar pulso</button>
+                  <button id="servoCalibrationSaveButton" type="button" disabled>Salvar neste servo</button>
+                </div>
+                <p id="servoCalibrationMessage" class="servo-calibration-note">Entrar na calibração não movimenta o servo. O primeiro pulso só sai ao usar Aplicar.</p>
+              </div>
+            </div>
+          </details>
+        </article>
+
         <article class="card section-card diagnostic-oled-card">
           <details class="oled-editor">
-            <summary>Personalizar OLED pela Raspberry</summary>
+            <summary><span>OLED · estados e mensagens</span><span id="oledEditorSummaryState" class="oled-summary-state">SEM TELEMETRIA</span></summary>
             <div class="oled-editor-body">
-              <p id="oledRemoteStatus" class="oled-editor-state">Aguardando telemetria da OLED.</p>
-              <div class="oled-fields">
-                <div class="oled-field wide"><label for="oledTitle">Título · até 12 caracteres</label><input id="oledTitle" maxlength="12" value="OBR 2026" placeholder="OBR 2026"></div>
-                <div class="oled-field"><label for="oledFirstLine">Linha 1 · até 20</label><input id="oledFirstLine" maxlength="20" value="ROBO PRONTO" placeholder="ROBO PRONTO"></div>
-                <div class="oled-field"><label for="oledSecondLine">Linha 2 · até 20</label><input id="oledSecondLine" maxlength="20" value="AGUARDANDO" placeholder="AGUARDANDO"></div>
-                <div class="oled-field wide"><label for="oledDurationSeconds">Duração · 0,5 a 30 segundos</label><input id="oledDurationSeconds" type="number" min="0.5" max="30" step="0.5" value="10" inputmode="decimal"></div>
+              <div class="oled-live-state">
+                <div><span>Estado físico atual</span><strong id="oledCurrentState">AGUARDANDO TELEMETRIA</strong></div>
+                <p id="oledRemoteStatus" class="oled-editor-state">Aguardando telemetria da OLED.</p>
               </div>
+
+              <section class="oled-section" aria-labelledby="oledAutomaticAlertsTitle">
+                <div class="oled-section-heading"><strong id="oledAutomaticAlertsTitle">Alertas automáticos atuais</strong><span>Envia o mesmo layout grande e pulsante usado durante a missão.</span></div>
+                <div class="oled-preset-grid">
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="ESQUERDA" data-preset-label="Verde · esquerda" disabled><strong>VERDE</strong><span>ESQUERDA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="DIREITA" data-preset-label="Verde · direita" disabled><strong>VERDE</strong><span>DIREITA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="180 GRAUS" data-preset-label="Verde · retorno de 180 graus" disabled><strong>VERDE</strong><span>180 GRAUS</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="DESVIO" data-secondary="" data-preset-label="Desvio de obstáculo" disabled><strong>DESVIO</strong><span>SEM DETALHE</span></button>
+                </div>
+              </section>
+
+              <section class="oled-section" aria-labelledby="oledMissionStatesTitle">
+                <div class="oled-section-heading"><strong id="oledMissionStatesTitle">Estados da missão principal</strong><span>Atalhos para simular visualmente as cinco fases atuais; não são alertas automáticos.</span></div>
+                <div class="oled-preset-grid mission-states">
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="LINHA" data-secondary="PERCURSO INICIAL" data-preset-label="Percurso inicial" disabled><strong>LINHA</strong><span>PERCURSO INICIAL</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="RESGATE" data-secondary="AREA DE RESGATE" data-preset-label="Área de resgate" disabled><strong>RESGATE</strong><span>ÁREA DE RESGATE</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="LINHA" data-secondary="PERCURSO FINAL" data-preset-label="Percurso final" disabled><strong>LINHA</strong><span>PERCURSO FINAL</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="MISSAO" data-secondary="CONCLUIDA" data-preset-label="Missão concluída" disabled><strong>MISSÃO</strong><span>CONCLUÍDA</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="MISSAO" data-secondary="INTERROMPIDA" data-preset-label="Missão interrompida" disabled><strong>MISSÃO</strong><span>INTERROMPIDA</span></button>
+                </div>
+              </section>
+
+              <section class="oled-section" aria-labelledby="oledCustomMessageTitle">
+                <div class="oled-section-heading"><strong id="oledCustomMessageTitle">Mensagem personalizada</strong><span>Escolha entre a página comum e o texto grande adaptativo.</span></div>
+                <div class="oled-layout-selector" role="group" aria-label="Layout da mensagem OLED">
+                  <button type="button" class="oled-layout-button active" data-oled-layout="standard" aria-pressed="true">Título + duas linhas</button>
+                  <button type="button" class="oled-layout-button" data-oled-layout="large" aria-pressed="false">Texto grande + detalhe</button>
+                </div>
+                <div id="oledStandardFields" class="oled-fields">
+                  <div class="oled-field wide"><label for="oledTitle">Título · até 12 caracteres</label><input id="oledTitle" maxlength="12" value="OBR 2026" placeholder="OBR 2026"></div>
+                  <div class="oled-field"><label for="oledFirstLine">Linha 1 · até 20</label><input id="oledFirstLine" maxlength="20" value="ROBO PRONTO" placeholder="ROBO PRONTO"></div>
+                  <div class="oled-field"><label for="oledSecondLine">Linha 2 · até 20</label><input id="oledSecondLine" maxlength="20" value="AGUARDANDO" placeholder="AGUARDANDO"></div>
+                </div>
+                <div id="oledLargeFields" class="oled-fields" hidden>
+                  <div class="oled-field"><label for="oledPrimaryText">Texto principal · até 20</label><input id="oledPrimaryText" maxlength="20" value="VERDE" placeholder="VERDE"></div>
+                  <div class="oled-field"><label for="oledSecondaryText">Detalhe opcional · até 20</label><input id="oledSecondaryText" maxlength="20" value="ESQUERDA" placeholder="ESQUERDA"></div>
+                </div>
+                <div class="oled-fields">
+                  <div class="oled-field wide"><label for="oledDurationSeconds">Duração · 0,5 a 30 segundos</label><input id="oledDurationSeconds" type="number" min="0.5" max="30" step="0.5" value="10" inputmode="decimal"></div>
+                </div>
+                <p id="oledLayoutHint" class="oled-layout-hint">A página comum mostra título, duas linhas e o tempo restante.</p>
+              </section>
               <div class="oled-actions">
-                <button id="oledShowButton" type="button" onclick="showOledMessage()" disabled>Mostrar na OLED</button>
+                <button id="oledShowButton" type="button" data-oled-send onclick="showOledMessage()" disabled>Mostrar página comum</button>
                 <button id="oledClearButton" type="button" class="oled-clear" onclick="clearOledMessage()" disabled>Tela padrão</button>
               </div>
             </div>
@@ -1508,7 +1962,8 @@ std::string DashboardServer::dashboardHtml()
         requestedEnabled: true,
         transitionDeadlineMs: 0,
         error: "",
-        metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" }
+        metadata: { fps: "0.0", resolution: "960×540", sensor: "1920×1080 10-bit", crop: "--", format: "--" },
+        ball: { enabled: false, detected: false, type: "", position: "nenhuma", distanceCm: null, extrapolated: false, angleDegrees: null, centerX: null, centerY: null, radiusPixels: null, diameterPixels: null, circularity: null, topClipped: false, detectionMethod: "", processingMs: null }
       }
     };
     const connection = element("connection");
@@ -1526,6 +1981,20 @@ std::string DashboardServer::dashboardHtml()
     const datasetCaptureDetails = element("datasetCaptureDetails");
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
+    const forwardBallTelemetry = element("forwardBallTelemetry");
+    const forwardBallFields = {
+      state: element("forwardBallState"),
+      processing: element("forwardBallProcessing"),
+      position: element("forwardBallPosition"),
+      type: element("forwardBallType"),
+      distance: element("forwardBallDistance"),
+      calibration: element("forwardBallCalibration"),
+      angle: element("forwardBallAngle"),
+      center: element("forwardBallCenter"),
+      size: element("forwardBallSize"),
+      circularity: element("forwardBallCircularity"),
+      geometry: element("forwardBallGeometry")
+    };
     const forwardAssistDiagnostic = element("forwardAssistDiagnostic");
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
     const operationCameraDiagnosticFields = {
@@ -1543,7 +2012,61 @@ std::string DashboardServer::dashboardHtml()
     const oledTitle = element("oledTitle");
     const oledFirstLine = element("oledFirstLine");
     const oledSecondLine = element("oledSecondLine");
+    const oledPrimaryText = element("oledPrimaryText");
+    const oledSecondaryText = element("oledSecondaryText");
     const oledDurationSeconds = element("oledDurationSeconds");
+    const oledStandardFields = element("oledStandardFields");
+    const oledLargeFields = element("oledLargeFields");
+    const oledLayoutButtons = Array.from(
+      document.querySelectorAll("[data-oled-layout]"));
+    const oledSendButtons = Array.from(
+      document.querySelectorAll("[data-oled-send]"));
+    const oledPresetButtons = Array.from(
+      document.querySelectorAll("[data-oled-preset]"));
+    let selectedOledLayout = "standard";
+    let oledAutomaticAlertDurationMs = 2500;
+    const servoControls = {
+      arm: {
+        slider: element("armServoSlider"), input: element("armServoInput"),
+        value: element("armServoValue"), state: element("armServoState"),
+        angleField: "armServoAngleDegrees", pulseField: "armServoPulseUs",
+        enabledField: "armServoEnabled", minimumField: "armServoMinimumPulseUs",
+        maximumField: "armServoMaximumPulseUs", invertedField: "armServoInverted",
+        index: 0
+      },
+      wrist: {
+        slider: element("wristServoSlider"), input: element("wristServoInput"),
+        value: element("wristServoValue"), state: element("wristServoState"),
+        angleField: "wristServoAngleDegrees", pulseField: "wristServoPulseUs",
+        enabledField: "wristServoEnabled", minimumField: "wristServoMinimumPulseUs",
+        maximumField: "wristServoMaximumPulseUs", invertedField: "wristServoInverted",
+        index: 1
+      },
+      gripper: {
+        slider: element("gripperServoSlider"), input: element("gripperServoInput"),
+        value: element("gripperServoValue"), state: element("gripperServoState"),
+        angleField: "gripperServoAngleDegrees", pulseField: "gripperServoPulseUs",
+        enabledField: "gripperServoEnabled", minimumField: "gripperServoMinimumPulseUs",
+        maximumField: "gripperServoMaximumPulseUs", invertedField: "gripperServoInverted",
+        index: 2
+      }
+    };
+    const servoCalibrationTarget = element("servoCalibrationTarget");
+    const servoCalibrationWorkspace = element("servoCalibrationWorkspace");
+    const servoCalibrationPulseSlider = element("servoCalibrationPulseSlider");
+    const servoCalibrationPulseInput = element("servoCalibrationPulseInput");
+    const servoPulseAtZeroInput = element("servoPulseAtZeroInput");
+    const servoPulseAt180Input = element("servoPulseAt180Input");
+    const servoCalibrationAdjustmentButtons = Array.from(
+      document.querySelectorAll("[data-servo-pulse-delta]"));
+    const servoKeepAlivePeriodMs = 500;
+    const servoSendTimers = new Map();
+    let servoControlAllowed = false;
+    let servoCalibrationControlAllowed = false;
+    let servoCalibrationOutputEnabled = false;
+    let servoCalibrationPulseTimer = null;
+    let latestServoTelemetry = null;
+    let loadedServoCalibrationProfile = "";
     let requestedLeft = 0;
     let requestedRight = 0;
     let rawDiagnosticDrive = false;
@@ -1636,7 +2159,7 @@ std::string DashboardServer::dashboardHtml()
 
     function updateMode(data) {
       const mode = String(data.mode || "stopped");
-      const labels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
+      const labels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA", servo_calibration: "CALIBRAÇÃO DE SERVO" };
       const modeDisplay = element("mode");
       modeDisplay.textContent = labels[mode] || mode.toUpperCase();
       modeDisplay.dataset.mode = mode;
@@ -1645,8 +2168,12 @@ std::string DashboardServer::dashboardHtml()
         ? "Executando giro de 90° à direita"
         : selectedMission === "drive_distance"
           ? "Percorrendo a distância selecionada pelos encoders"
+          : selectedMission === "rescue_area"
+            ? "Detectando, alinhando e aproximando da vítima mais próxima"
+          : selectedMission === "obstacle_avoidance"
+            ? "Executando o desvio ultrassônico de obstáculo"
           : "Missão principal em execução";
-      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "emergency" ? "Movimento bloqueado pelo E-Stop" : "Saídas de motor zeradas";
+      element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "servo_calibration" ? "Motores zerados · Parar desliga os pulsos" : mode === "emergency" ? "Movimento bloqueado pela trava de segurança" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
       if (mode === "manual") element("manualButton").classList.add("active");
       if (mode === "autonomous") element("autoButton").classList.add("active");
@@ -1670,7 +2197,11 @@ std::string DashboardServer::dashboardHtml()
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
-          : "Orquestrador da prova; comportamentos ainda não instalados.";
+          : mission === "rescue_area"
+            ? "Gate de resgate: o detector de vítimas só consome CPU enquanto esta etapa estiver em execução."
+          : mission === "obstacle_avoidance"
+            ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
+          : "Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.";
     }
 
     function updateStateMachine(data) {
@@ -1681,6 +2212,7 @@ std::string DashboardServer::dashboardHtml()
         starting: ["INICIALIZANDO", "warn", "machineStepPerception"],
         emergency: ["EMERGÊNCIA", "danger", "machineStepFeedback"],
         calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
+        servo_calibration: ["CALIBRANDO SERVO", "warn", "machineStepFeedback"],
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
@@ -1712,7 +2244,41 @@ std::string DashboardServer::dashboardHtml()
         distance_encoder_stall: ["SEM AVANÇO", "danger", "machineStepFeedback"],
         distance_encoder_mismatch: ["LADOS DESBALANCEADOS", "danger", "machineStepFeedback"],
         distance_correction_failed: ["CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
-        distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"]
+        distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"],
+        obstacle_detected: ["OBSTÁCULO CONFIRMADO", "warn", "machineStepFeedback"],
+        obstacle_waiting_sensors: ["DESVIO: SENSORES", "warn", "machineStepPerception"],
+        obstacle_settling: ["DESVIO: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        obstacle_turning: ["DESVIO: GIRANDO", "active", "machineStepMotion"],
+        obstacle_turn_settling: ["DESVIO: ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
+        obstacle_turn_correction: ["DESVIO: CORRIGINDO GIRO", "active", "machineStepMotion"],
+        obstacle_first_forward_start: ["DESVIO: RETA 1", "active", "machineStepMotion"],
+        obstacle_first_forward: ["DESVIO: RETA 1", "active", "machineStepMotion"],
+        obstacle_second_forward_start: ["DESVIO: RETA 2", "active", "machineStepMotion"],
+        obstacle_second_forward: ["DESVIO: RETA 2", "active", "machineStepMotion"],
+        obstacle_third_forward_start: ["DESVIO: RETA 3", "active", "machineStepMotion"],
+        obstacle_third_forward: ["DESVIO: RETA 3", "active", "machineStepMotion"],
+        obstacle_reverse_start: ["DESVIO: RÉ", "active", "machineStepMotion"],
+        obstacle_reversing: ["DESVIO: RÉ", "active", "machineStepMotion"],
+        obstacle_stage_completed: ["DESVIO: ETAPA CONCLUÍDA", "warn", "machineStepFeedback"],
+        obstacle_completed: ["DESVIO CONCLUÍDO", "active", "machineStepFeedback"],
+        obstacle_encoder_lost: ["DESVIO: ENCODERS OFFLINE", "danger", "machineStepFeedback"],
+        obstacle_distance_timeout: ["DESVIO: TIMEOUT", "danger", "machineStepFeedback"],
+        obstacle_turn_start_failed: ["DESVIO: FALHA NO GIRO", "danger", "machineStepFeedback"],
+        obstacle_turn_timeout: ["DESVIO: TIMEOUT DO GIRO", "danger", "machineStepFeedback"],
+        obstacle_turn_imu_lost: ["DESVIO: IMU PERDIDA", "danger", "machineStepFeedback"],
+        obstacle_turn_correction_failed: ["DESVIO: CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
+        rescue_esp32_not_ready: ["RESGATE: ESP32 OFFLINE", "danger", "machineStepFeedback"],
+        ball_alignment_waiting_target: ["RESGATE: PROCURANDO VÍTIMA", "warn", "machineStepPerception"],
+        ball_alignment_camera_stale: ["RESGATE: VISÃO OFFLINE", "danger", "machineStepFeedback"],
+        ball_alignment_target_lost: ["RESGATE: ALVO PERDIDO", "warn", "machineStepPerception"],
+        ball_alignment_target_lost_timeout: ["RESGATE: TIMEOUT DO ALVO", "danger", "machineStepFeedback"],
+        ball_alignment_turning: ["RESGATE: ALINHANDO", "active", "machineStepMotion"],
+        ball_alignment_braking: ["RESGATE: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        ball_alignment_verifying: ["RESGATE: CONFIRMANDO", "warn", "machineStepPerception"],
+        ball_alignment_fine_correction: ["RESGATE: CORREÇÃO FINA", "active", "machineStepMotion"],
+        ball_approach_waiting_distance: ["RESGATE: SEM DISTÂNCIA", "warn", "machineStepPerception"],
+        ball_approaching: ["RESGATE: APROXIMANDO", "active", "machineStepMotion"],
+        ball_reached: ["RESGATE: VÍTIMA ALCANÇADA", "active", "machineStepFeedback"]
       };
       let phase = String(data.autonomousPhase || "stopped");
       let action = String(data.autonomousAction || "Aguardando estado da missão");
@@ -1722,6 +2288,9 @@ std::string DashboardServer::dashboardHtml()
       } else if (data.esp32CalibrationActive === true) {
         phase = "calibrating";
         action = "Calibrando sensores: mantenha o robô parado";
+      } else if (data.servoCalibrationRequested === true || data.servoCalibrationActive === true) {
+        phase = "servo_calibration";
+        action = "Ajustando pulsos de servo: motores parados; Parar desliga a saída";
       } else if (data.mode === "autonomous" && data.esp32SerialOpen !== true) {
         phase = "waiting_esp32";
         action = "Missão sem comunicação com a ESP32: motores protegidos";
@@ -1742,12 +2311,22 @@ std::string DashboardServer::dashboardHtml()
       const mission = String(data.autonomousMission || "main_mission");
       element("machineMission").textContent = mission === "turn_right_90"
         ? "Giro 90° à direita"
-        : mission === "drive_distance" ? "Percorrer distância" : "Missão principal";
+        : mission === "drive_distance"
+          ? "Percorrer distância"
+          : mission === "rescue_area" ? "Área de resgate"
+          : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
+          : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
+      const obstacleActive = phase.startsWith("obstacle_");
       element("machineBehavior").textContent = mission === "turn_right_90"
         ? "TESTE DE GIRO"
         : mission === "drive_distance"
           ? "TESTE DE DISTÂNCIA"
+          : mission === "rescue_area"
+            ? "DETECTOR DE VÍTIMAS"
+          : mission === "obstacle_avoidance"
+            ? "TESTE DE OBSTÁCULO"
+          : obstacleActive ? "DESVIO DE OBSTÁCULO"
           : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
       const fresh = data.esp32SensorFresh === true;
@@ -1767,7 +2346,7 @@ std::string DashboardServer::dashboardHtml()
         : "-- / -- cm";
       element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
       element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
-      const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA" };
+      const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA", servo_calibration: "CALIBRAÇÃO DE SERVO" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }
 
@@ -1843,6 +2422,8 @@ std::string DashboardServer::dashboardHtml()
       const fresh = data.esp32SensorFresh === true;
       const serialOpen = data.esp32SerialOpen === true;
       const calibrating = data.esp32CalibrationActive === true;
+      const servoCalibrating = data.servoCalibrationRequested === true ||
+        data.servoCalibrationActive === true;
       const mpuOk = fresh && !calibrating && data.mpuOk === true;
       const localEmergency = data.esp32EmergencyStop === true;
       const systemEmergency = data.emergency === true || localEmergency;
@@ -1852,11 +2433,11 @@ std::string DashboardServer::dashboardHtml()
 
       updateDiagnosticCommunicationState(data, fresh, serialOpen, calibrating, mpuOk, localEmergency, age);
 
-      setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE"), calibrating ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
-      setPill(element("safetyStatus"), systemEmergency ? "E-STOP ATIVO" : (calibrating ? "CALIBRANDO" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO")), systemEmergency ? "danger" : ((calibrating || data.mode === "stopped") ? "warn" : "ok"));
+      setPill(element("esp32Link"), calibrating ? "ESP32 CALIBRANDO SENSORES" : (servoCalibrating ? "ESP32 CALIBRANDO SERVO" : (serialOpen ? (fresh ? "ESP32 SINCRONIZADA" : "ESP32 SEM TELEMETRIA") : "ESP32 OFFLINE")), (calibrating || servoCalibrating) ? "warn" : (fresh ? "ok" : (serialOpen ? "warn" : "danger")));
+      setPill(element("safetyStatus"), systemEmergency ? "TRAVA DE SEGURANÇA ATIVA" : ((calibrating || servoCalibrating) ? "CALIBRAÇÃO · MOTORES PARADOS" : (data.mode === "stopped" ? "ROBÔ PARADO" : "MOVIMENTO AUTORIZADO")), systemEmergency ? "danger" : ((calibrating || servoCalibrating || data.mode === "stopped") ? "warn" : "ok"));
       const esp32Status = element("esp32Status");
-      esp32Status.textContent = calibrating ? "CALIBRANDO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE"));
-      esp32Status.className = calibrating ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"));
+      esp32Status.textContent = calibrating ? "CALIBRANDO SENSORES" : (servoCalibrating ? "CALIBRANDO SERVO" : (fresh ? "ONLINE" : (serialOpen ? "SEM DADOS" : "OFFLINE")));
+      esp32Status.className = (calibrating || servoCalibrating) ? "status-warn" : (fresh ? "status-good" : (serialOpen ? "status-warn" : "status-bad"));
       element("telemetryAge").textContent = age >= 0 ? `${formatNumber(age, 0)} ms` : "-- ms";
       element("serialState").textContent = serialOpen ? "aberta" : "fechada";
       element("serialState").className = serialOpen ? "state-good" : "state-bad";
@@ -1937,7 +2518,7 @@ std::string DashboardServer::dashboardHtml()
         setNeutralState("startButtonState");
       }
       const calibrationButton = element("calibrationButton");
-      calibrationButton.disabled = !fresh || calibrating;
+      calibrationButton.disabled = !fresh || calibrating || servoCalibrating;
       calibrationButton.textContent = calibrating ? "Calibrando…" : "Calibrar";
       if (calibrating) {
         element("calibrationState").textContent = "em andamento";
@@ -1964,21 +2545,59 @@ std::string DashboardServer::dashboardHtml()
         setNeutralState("pcaState");
         setNeutralState("oledState");
       }
+      updateServoControls(data, fresh, calibrating, systemEmergency);
+      updateServoCalibration(data, fresh, calibrating, systemEmergency);
       const oledAvailable = fresh && data.oledOk === true;
       const oledBootReady = oledAvailable && data.esp32RaspberrySystemReady === true;
       const remoteOledActive = oledBootReady && data.esp32RemoteOledActive === true;
-      element("oledShowButton").disabled = !oledBootReady;
+      const receivedOledAlertDurationMs = Number(
+        data.oledNavigationAlertDurationMs);
+      if (Number.isFinite(receivedOledAlertDurationMs) &&
+          receivedOledAlertDurationMs >= 500 &&
+          receivedOledAlertDurationMs <= 30000) {
+        oledAutomaticAlertDurationMs = receivedOledAlertDurationMs;
+      }
+      const oledCanReceive = oledBootReady && !systemEmergency && !calibrating;
+      const oledStateLabel = !fresh
+        ? "SEM TELEMETRIA"
+        : !oledAvailable
+          ? "INDISPONÍVEL"
+          : systemEmergency
+            ? "EMERGÊNCIA"
+            : calibrating
+              ? "CALIBRANDO"
+              : !oledBootReady
+                ? "INICIALIZANDO"
+                : remoteOledActive ? "MENSAGEM REMOTA" : "TELA PADRÃO";
+      const oledStateClass = !fresh
+        ? "state-neutral"
+        : !oledAvailable || systemEmergency
+          ? "state-bad"
+          : calibrating || !oledBootReady
+            ? "state-warn"
+            : "state-good";
+      const oledCurrentState = element("oledCurrentState");
+      const oledEditorSummaryState = element("oledEditorSummaryState");
+      oledCurrentState.textContent = oledStateLabel;
+      oledCurrentState.className = oledStateClass;
+      oledEditorSummaryState.textContent = oledStateLabel;
+      oledEditorSummaryState.className = `oled-summary-state ${oledStateClass}`;
+      oledSendButtons.forEach(button => { button.disabled = !oledCanReceive; });
       element("oledClearButton").disabled = !oledAvailable || !remoteOledActive;
       element("oledRemoteStatus").textContent = !fresh
         ? "Sem telemetria da ESP32."
         : !oledAvailable
         ? "OLED indisponível."
+        : systemEmergency
+          ? "A página local de emergência tem prioridade sobre qualquer mensagem remota."
+        : calibrating
+          ? "A calibração dos sensores controla a OLED até terminar."
         : !oledBootReady
           ? "Inicializando Raspberry, câmera e serviços do robô."
         : remoteOledActive
           ? "Mensagem da Raspberry em exibição; depois do prazo, a tela padrão retorna."
           : "Tela padrão ativa: bateria, giro e inclinação.";
-      element("oledRemoteStatus").className = `oled-editor-state ${!fresh ? "state-neutral" : remoteOledActive ? "state-good" : (oledBootReady ? "" : "state-warn")}`.trim();
+      element("oledRemoteStatus").className = `oled-editor-state ${oledStateClass}`;
       element("oledBootState").textContent = !fresh
         ? "sem telemetria"
         : !oledAvailable ? "indisponível"
@@ -1995,7 +2614,7 @@ std::string DashboardServer::dashboardHtml()
     function connect() {
       ws = new WebSocket(`ws://${location.host}/ws`);
       ws.onopen = () => setPill(connection, "PAINEL ONLINE", "ok");
-      ws.onclose = () => { manualEnabled = false; resetKeyboardState(); resetDrive(); setPill(connection, "PAINEL OFFLINE", "danger"); window.setTimeout(connect, 1000); };
+      ws.onclose = () => { manualEnabled = false; resetKeyboardState(); resetDrive(); disableServoControlsLocally(); stopServoCalibrationLocally(); setPill(connection, "PAINEL OFFLINE", "danger"); window.setTimeout(connect, 1000); };
       ws.onmessage = event => {
         const data = JSON.parse(event.data);
         updateMode(data);
@@ -2018,7 +2637,276 @@ std::string DashboardServer::dashboardHtml()
       return true;
     }
 
+    function clampServoAngle(value) {
+      return Math.round(Math.max(0, Math.min(180, Number(value) || 0)));
+    }
+
+    function showRequestedServoAngle(servoName, value) {
+      const control = servoControls[servoName];
+      if (!control) return 0;
+      const angleDegrees = clampServoAngle(value);
+      control.slider.value = String(angleDegrees);
+      control.input.value = String(angleDegrees);
+      control.value.textContent = `${angleDegrees}°`;
+      return angleDegrees;
+    }
+
+    function sendServoAngle(servoName, value, immediate = false) {
+      const angleDegrees = showRequestedServoAngle(servoName, value);
+      if (!servoControlAllowed) return;
+
+      const pendingTimer = servoSendTimers.get(servoName);
+      if (pendingTimer) window.clearTimeout(pendingTimer);
+      const transmit = () => {
+        servoSendTimers.delete(servoName);
+        send({ command: "servo_angle", servo: servoName, angleDegrees });
+      };
+      if (immediate) transmit();
+      else servoSendTimers.set(servoName, window.setTimeout(transmit, 50));
+    }
+
+    function disableAllServos() {
+      servoSendTimers.forEach(timer => window.clearTimeout(timer));
+      servoSendTimers.clear();
+      send({ command: "servo_disable_all" });
+    }
+
+    function disableServoControlsLocally() {
+      servoControlAllowed = false;
+      Object.values(servoControls).forEach(control => {
+        control.slider.disabled = true;
+        control.input.disabled = true;
+      });
+      element("disableServosButton").disabled = true;
+      setSubsystemStatus("servoControlStatus", "bloqueado", "warn");
+    }
+
+    function updateServoControls(data, fresh, calibrating, systemEmergency) {
+      const pcaReady = fresh && data.pca9685Ok === true;
+      const raspberryReady = data.esp32RaspberrySystemReady === true;
+      const servoCalibrating = data.servoCalibrationRequested === true ||
+        data.servoCalibrationActive === true;
+      servoControlAllowed = pcaReady && raspberryReady &&
+        data.mode === "manual" && !calibrating && !servoCalibrating &&
+        !systemEmergency;
+      Object.entries(servoControls).forEach(([servoName, control]) => {
+        control.slider.disabled = !servoControlAllowed;
+        control.input.disabled = !servoControlAllowed;
+        const angleDegrees = clampServoAngle(data[control.angleField]);
+        const userEditing = document.activeElement === control.slider ||
+          document.activeElement === control.input || servoSendTimers.has(servoName);
+        if (!userEditing) showRequestedServoAngle(servoName, angleDegrees);
+        const enabled = fresh && data[control.enabledField] === true;
+        control.outputEnabled = enabled;
+        const pulseUs = Math.max(0, Number(data[control.pulseField]) || 0);
+        control.state.textContent = enabled
+          ? `Saída ativa · alvo ${angleDegrees}° · ${pulseUs.toFixed(0)} µs.`
+          : `Sinal desligado · último alvo ${angleDegrees}°.`;
+        control.state.className = `servo-output-state ${enabled ? "state-good" : "state-neutral"}`;
+      });
+      element("disableServosButton").disabled = !pcaReady || servoCalibrating;
+
+      if (!fresh) setSubsystemStatus("servoControlStatus", "sem telemetria", "warn");
+      else if (!pcaReady) setSubsystemStatus("servoControlStatus", "PCA indisponível", "danger");
+      else if (systemEmergency) setSubsystemStatus("servoControlStatus", "E-STOP ativo", "danger");
+      else if (calibrating) setSubsystemStatus("servoControlStatus", "calibrando", "warn");
+      else if (servoCalibrating) setSubsystemStatus("servoControlStatus", "calibração de pulso", "warn");
+      else if (!raspberryReady) setSubsystemStatus("servoControlStatus", "aguardando sistema", "warn");
+      else if (data.mode !== "manual") setSubsystemStatus("servoControlStatus", "ative Manual", "warn");
+      else setSubsystemStatus("servoControlStatus", "controle liberado", "ok");
+    }
+
+    function servoCalibrationPulseBounds() {
+      const minimum = Number(latestServoTelemetry?.servoCalibrationAbsoluteMinimumPulseUs);
+      const maximum = Number(latestServoTelemetry?.servoCalibrationAbsoluteMaximumPulseUs);
+      return {
+        minimum: Number.isFinite(minimum) ? minimum : 500,
+        maximum: Number.isFinite(maximum) ? maximum : 2500
+      };
+    }
+
+    function clampServoCalibrationPulse(value) {
+      const bounds = servoCalibrationPulseBounds();
+      return Math.round(Math.max(bounds.minimum, Math.min(bounds.maximum, Number(value) || 1500)));
+    }
+
+    function showServoCalibrationPulse(value) {
+      const pulseUs = clampServoCalibrationPulse(value);
+      servoCalibrationPulseSlider.value = String(pulseUs);
+      servoCalibrationPulseInput.value = String(pulseUs);
+      element("servoCalibrationPulseValue").textContent = `${pulseUs} µs`;
+      return pulseUs;
+    }
+
+    function selectedServoCalibrationControl() {
+      return servoControls[servoCalibrationTarget.value] || servoControls.arm;
+    }
+
+    function loadSelectedServoCalibration(force = false) {
+      if (!latestServoTelemetry) return;
+      const control = selectedServoCalibrationControl();
+      const minimumPulseUs = Number(latestServoTelemetry[control.minimumField]);
+      const maximumPulseUs = Number(latestServoTelemetry[control.maximumField]);
+      if (!Number.isFinite(minimumPulseUs) || !Number.isFinite(maximumPulseUs) ||
+          maximumPulseUs <= minimumPulseUs) return;
+
+      const inverted = latestServoTelemetry[control.invertedField] === true;
+      const pulseAtZeroUs = inverted ? maximumPulseUs : minimumPulseUs;
+      const pulseAt180Us = inverted ? minimumPulseUs : maximumPulseUs;
+      const profileSignature = `${servoCalibrationTarget.value}:${pulseAtZeroUs}:${pulseAt180Us}`;
+      if (!force && profileSignature === loadedServoCalibrationProfile) return;
+      const editingEndpoints = document.activeElement === servoPulseAtZeroInput ||
+        document.activeElement === servoPulseAt180Input;
+      if (force || !editingEndpoints) {
+        servoPulseAtZeroInput.value = String(Math.round(pulseAtZeroUs));
+        servoPulseAt180Input.value = String(Math.round(pulseAt180Us));
+      }
+      if (force || !servoCalibrationOutputEnabled) {
+        showServoCalibrationPulse((pulseAtZeroUs + pulseAt180Us) / 2);
+      }
+      if (!force && loadedServoCalibrationProfile &&
+          loadedServoCalibrationProfile.startsWith(`${servoCalibrationTarget.value}:`)) {
+        element("servoCalibrationMessage").textContent =
+          `Perfil confirmado na ESP32: 0° = ${Math.round(pulseAtZeroUs)} µs · 180° = ${Math.round(pulseAt180Us)} µs.`;
+      }
+      loadedServoCalibrationProfile = profileSignature;
+    }
+
+    function clearServoCalibrationPulseTimer() {
+      if (servoCalibrationPulseTimer) window.clearTimeout(servoCalibrationPulseTimer);
+      servoCalibrationPulseTimer = null;
+    }
+
+    function sendServoCalibrationPulse(value, immediate = false) {
+      const pulseUs = showServoCalibrationPulse(value);
+      clearServoCalibrationPulseTimer();
+      if (!servoCalibrationControlAllowed) return;
+      if (!servoCalibrationOutputEnabled && !immediate) return;
+
+      const transmit = () => {
+        servoCalibrationPulseTimer = null;
+        servoCalibrationOutputEnabled = true;
+        send({
+          command: "servo_calibration_pulse",
+          servo: servoCalibrationTarget.value,
+          pulseUs
+        });
+      };
+      if (immediate) transmit();
+      else servoCalibrationPulseTimer = window.setTimeout(transmit, 60);
+    }
+
+    function disableServoCalibrationOutput() {
+      clearServoCalibrationPulseTimer();
+      servoCalibrationOutputEnabled = false;
+      send({ command: "servo_calibration_disable" });
+      element("servoCalibrationMessage").textContent = "Pulso desligado; a calibração continua aberta.";
+    }
+
+    function stopServoCalibrationLocally() {
+      clearServoCalibrationPulseTimer();
+      servoCalibrationControlAllowed = false;
+      servoCalibrationOutputEnabled = false;
+    }
+
+    function beginServoCalibration() {
+      stopServoCalibrationLocally();
+      element("servoCalibrationMessage").textContent = "Entrada solicitada. Nenhum pulso será aplicado automaticamente.";
+      send({ command: "servo_calibration_begin" });
+    }
+
+    function endServoCalibration() {
+      stopServoCalibrationLocally();
+      send({ command: "servo_calibration_end" });
+      element("servoCalibrationMessage").textContent = "Parada solicitada; todos os pulsos serão desligados.";
+    }
+
+    function captureServoCalibrationEndpoint(input) {
+      input.value = String(showServoCalibrationPulse(servoCalibrationPulseInput.value));
+    }
+
+    function saveServoCalibration() {
+      if (!servoCalibrationControlAllowed) return;
+      const pulseAtZeroUs = clampServoCalibrationPulse(servoPulseAtZeroInput.value);
+      const pulseAt180Us = clampServoCalibrationPulse(servoPulseAt180Input.value);
+      servoPulseAtZeroInput.value = String(pulseAtZeroUs);
+      servoPulseAt180Input.value = String(pulseAt180Us);
+      const minimumSpanUs = Number(latestServoTelemetry?.servoCalibrationMinimumSpanUs) || 200;
+      if (Math.abs(pulseAt180Us - pulseAtZeroUs) < minimumSpanUs) {
+        element("servoCalibrationMessage").textContent = `Os extremos precisam diferir pelo menos ${minimumSpanUs} µs.`;
+        return;
+      }
+      send({
+        command: "servo_calibration_save",
+        servo: servoCalibrationTarget.value,
+        pulseAtZeroUs,
+        pulseAt180Us
+      });
+      servoCalibrationOutputEnabled = false;
+      element("servoCalibrationMessage").textContent = "Salvamento solicitado. O ESP32 desligará o pulso e confirmará os novos limites na telemetria.";
+    }
+
+    function updateServoCalibration(data, fresh, calibrating, systemEmergency) {
+      latestServoTelemetry = data;
+      const supported = fresh && data.servoCalibrationSupported === true;
+      const active = supported && data.servoCalibrationActive === true &&
+        data.servoCalibrationRequested === true;
+      const starting = supported && data.servoCalibrationRequested === true && !active;
+      const pcaReady = data.pca9685Ok === true;
+      const raspberryReady = data.esp32RaspberrySystemReady === true;
+      const beginAllowed = supported && pcaReady && raspberryReady &&
+        !calibrating && !systemEmergency &&
+        (data.mode === "stopped" || data.mode === "manual") &&
+        !active && !starting;
+
+      element("servoCalibrationBeginButton").disabled = !beginAllowed;
+      element("servoCalibrationEndButton").disabled = !active && !starting;
+      servoCalibrationTarget.disabled = !supported || calibrating || systemEmergency;
+      servoCalibrationWorkspace.hidden = !active;
+      servoCalibrationControlAllowed = active && pcaReady && raspberryReady &&
+        !calibrating && !systemEmergency;
+
+      const workspaceControls = [
+        servoCalibrationPulseSlider, servoCalibrationPulseInput,
+        servoPulseAtZeroInput, servoPulseAt180Input,
+        element("servoCalibrationApplyButton"),
+        element("captureServoZeroButton"), element("captureServo180Button"),
+        element("servoCalibrationDisableButton"),
+        element("servoCalibrationSaveButton"),
+        ...servoCalibrationAdjustmentButtons
+      ];
+      workspaceControls.forEach(control => {
+        control.disabled = !servoCalibrationControlAllowed;
+      });
+
+      if (active) {
+        const selectedControl = selectedServoCalibrationControl();
+        const selectedByEsp = Number(data.servoCalibrationSelectedIndex) === selectedControl.index;
+        servoCalibrationOutputEnabled = selectedByEsp && data[selectedControl.enabledField] === true;
+        const userEditingPulse = document.activeElement === servoCalibrationPulseSlider ||
+          document.activeElement === servoCalibrationPulseInput || servoCalibrationPulseTimer;
+        if (servoCalibrationOutputEnabled && !userEditingPulse) {
+          showServoCalibrationPulse(data[selectedControl.pulseField]);
+        }
+        loadSelectedServoCalibration(false);
+      } else {
+        stopServoCalibrationLocally();
+      }
+
+      if (!fresh) setSubsystemStatus("servoCalibrationStatus", "sem telemetria", "warn");
+      else if (!supported) setSubsystemStatus("servoCalibrationStatus", "grave o firmware novo", "danger");
+      else if (systemEmergency) setSubsystemStatus("servoCalibrationStatus", "bloqueada", "danger");
+      else if (calibrating) setSubsystemStatus("servoCalibrationStatus", "sensores calibrando", "warn");
+      else if (!pcaReady) setSubsystemStatus("servoCalibrationStatus", "PCA indisponível", "danger");
+      else if (starting) setSubsystemStatus("servoCalibrationStatus", "iniciando", "warn");
+      else if (active) setSubsystemStatus("servoCalibrationStatus", "ativa · Parar desliga", "warn");
+      else setSubsystemStatus("servoCalibrationStatus", "pronta", "ok");
+    }
+
     function sendCommand(command) {
+      if (["start", "auto", "stop", "calibrate"].includes(command)) {
+        stopServoCalibrationLocally();
+      }
       if (manualEnabled) resetDrive();
       manualEnabled = false;
       resetKeyboardState();
@@ -2036,29 +2924,115 @@ std::string DashboardServer::dashboardHtml()
         .slice(0, maximumLength);
     }
 
+    function oledDurationMilliseconds() {
+      const durationSeconds = Math.max(0.5, Math.min(30, Number(oledDurationSeconds.value) || 10));
+      oledDurationSeconds.value = durationSeconds.toFixed(1);
+      return Math.round(durationSeconds * 1000);
+    }
+
+    function setOledEditorFeedback(message, tone = "warn") {
+      element("oledRemoteStatus").textContent = message;
+      element("oledRemoteStatus").className = `oled-editor-state state-${tone}`;
+    }
+
+    function selectOledLayout(layout) {
+      if (!["standard", "large"].includes(layout)) return;
+      selectedOledLayout = layout;
+      const large = layout === "large";
+      oledStandardFields.hidden = large;
+      oledLargeFields.hidden = !large;
+      oledLayoutButtons.forEach(button => {
+        const selected = button.dataset.oledLayout === layout;
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-pressed", selected ? "true" : "false");
+      });
+      element("oledShowButton").textContent = large
+        ? "Mostrar texto grande"
+        : "Mostrar página comum";
+      element("oledLayoutHint").textContent = large
+        ? "A ESP32 escolhe a maior fonte que cabe, mantém o detalhe abaixo e pulsa o contraste."
+        : "A página comum mostra título, duas linhas e o tempo restante.";
+    }
+
+    function sendOledLargeMessage(primaryText, secondaryText, durationMs, feedback) {
+      const primary = sanitizeOledText(primaryText, 20);
+      const secondary = sanitizeOledText(secondaryText, 20);
+      oledPrimaryText.value = primary;
+      oledSecondaryText.value = secondary;
+      if (!primary.trim()) {
+        setOledEditorFeedback("Digite o texto principal antes de enviar.");
+        return false;
+      }
+      const sent = send({
+        command: "oled_large_message",
+        primaryText: primary,
+        secondaryText: secondary,
+        durationMs
+      });
+      setOledEditorFeedback(
+        sent ? feedback : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
+      return sent;
+    }
+
+    function simulateOledPreset(button) {
+      selectOledLayout("large");
+      const durationMs = oledAutomaticAlertDurationMs;
+      oledDurationSeconds.value = (durationMs / 1000).toFixed(1);
+      sendOledLargeMessage(
+        button.dataset.primary,
+        button.dataset.secondary,
+        durationMs,
+        `Simulação enviada: ${button.dataset.presetLabel}.`
+      );
+    }
+
     function showOledMessage() {
+      const durationMs = oledDurationMilliseconds();
+      if (selectedOledLayout === "large") {
+        sendOledLargeMessage(
+          oledPrimaryText.value,
+          oledSecondaryText.value,
+          durationMs,
+          "Texto grande enviado; aguardando confirmação na telemetria."
+        );
+        return;
+      }
+
       const title = sanitizeOledText(oledTitle.value, 12);
       const firstLine = sanitizeOledText(oledFirstLine.value, 20);
       const secondLine = sanitizeOledText(oledSecondLine.value, 20);
-      const durationSeconds = Math.max(0.5, Math.min(30, Number(oledDurationSeconds.value) || 10));
       oledTitle.value = title;
       oledFirstLine.value = firstLine;
       oledSecondLine.value = secondLine;
-      oledDurationSeconds.value = durationSeconds.toFixed(1);
       if (!title.trim() && !firstLine.trim() && !secondLine.trim()) {
-        element("oledRemoteStatus").textContent = "Digite pelo menos um texto antes de enviar.";
-        element("oledRemoteStatus").className = "oled-editor-state state-warn";
+        setOledEditorFeedback("Digite pelo menos um texto antes de enviar.");
         return;
       }
-      send({ command: "oled_message", title, firstLine, secondLine, durationMs: Math.round(durationSeconds * 1000) });
-      element("oledRemoteStatus").textContent = "Mensagem enviada; aguardando confirmação na telemetria.";
-      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+      const sent = send({
+        command: "oled_message",
+        title,
+        firstLine,
+        secondLine,
+        durationMs
+      });
+      setOledEditorFeedback(
+        sent
+          ? "Página comum enviada; aguardando confirmação na telemetria."
+          : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
     }
 
     function clearOledMessage() {
-      send({ command: "oled_clear" });
-      element("oledRemoteStatus").textContent = "Retorno à tela padrão solicitado.";
-      element("oledRemoteStatus").className = "oled-editor-state state-warn";
+      const sent = send({ command: "oled_clear" });
+      setOledEditorFeedback(
+        sent
+          ? "Retorno à tela padrão solicitado."
+          : "Dashboard sem conexão com o robô.",
+        sent ? "warn" : "bad"
+      );
     }
 
     function selectAutonomousMission() {
@@ -2303,6 +3277,79 @@ std::string DashboardServer::dashboardHtml()
         : cameraFpsText(cameras[activeCameraView]);
       setTextIfChanged(operationCameraFps, selectedFps);
       setTextIfChanged(cameraHudFps, cameraFpsText(cameras.downward));
+    }
+
+    function renderForwardBallTelemetry() {
+      const ball = cameras.forward.ball;
+      const detectionEnabled = ball.enabled === true;
+      const detected = ball.detected === true;
+      const ballName = ball.type === "silver_ball" ? "VÍTIMA PRATEADA" : "VÍTIMA PRETA";
+      setTextIfChanged(
+        forwardBallFields.state,
+        !detectionEnabled
+          ? "DETECÇÃO INATIVA FORA DO RESGATE"
+          : detected ? `${ballName} DETECTADA` : "PROCURANDO VÍTIMAS"
+      );
+      forwardBallFields.state.className =
+        `camera-hud-line ${detected ? "valid" : "searching"}`;
+      setTextIfChanged(
+        forwardBallFields.processing,
+        Number.isFinite(ball.processingMs)
+          ? `${ball.processingMs.toFixed(1)} ms`
+          : "-- ms"
+      );
+      setTextIfChanged(
+        forwardBallFields.position,
+        detected ? String(ball.position || "nenhuma").toUpperCase() : "NENHUMA"
+      );
+      setTextIfChanged(
+        forwardBallFields.type,
+        detected ? String(ball.type || "black_ball").toUpperCase() : "PRETA / PRATEADA"
+      );
+      setTextIfChanged(
+        forwardBallFields.distance,
+        detected && Number.isFinite(ball.distanceCm)
+          ? `${ball.distanceCm.toFixed(1)} cm`
+          : "-- cm"
+      );
+      setTextIfChanged(
+        forwardBallFields.calibration,
+        detected && ball.extrapolated
+          ? "DISTÂNCIA EXTRAPOLADA"
+          : "CALIBRAÇÃO 960×540"
+      );
+      setTextIfChanged(
+        forwardBallFields.angle,
+        detected && Number.isFinite(ball.angleDegrees)
+          ? `${ball.angleDegrees >= 0 ? "+" : ""}${ball.angleDegrees.toFixed(1)} °`
+          : "-- °"
+      );
+      setTextIfChanged(
+        forwardBallFields.center,
+        detected && Number.isFinite(ball.centerX) && Number.isFinite(ball.centerY)
+          ? `${ball.centerX.toFixed(0)} / ${ball.centerY.toFixed(0)} px`
+          : "-- / -- px"
+      );
+      setTextIfChanged(
+        forwardBallFields.size,
+        detected && Number.isFinite(ball.radiusPixels) && Number.isFinite(ball.diameterPixels)
+          ? `${ball.radiusPixels.toFixed(1)} / ${ball.diameterPixels.toFixed(1)} px`
+          : "-- / -- px"
+      );
+      setTextIfChanged(
+        forwardBallFields.circularity,
+        detected && ball.detectionMethod === "hough"
+          ? "HOUGH + TRACK"
+          : detected && Number.isFinite(ball.circularity)
+            ? `CIRC ${ball.circularity.toFixed(3)}`
+            : "CIRC --"
+      );
+      const geometryText = detected && ball.topClipped
+        ? "CÍRCULO CORTADO NO TOPO"
+        : detected && ball.detectionMethod === "hough"
+          ? "BORDA + TEXTURA METÁLICA"
+          : "Maior candidata circular";
+      setTextIfChanged(forwardBallFields.geometry, geometryText);
     }
 
     function renderCameraMetadata() {
@@ -2596,6 +3643,7 @@ std::string DashboardServer::dashboardHtml()
       if (shouldMountStream) mountCameraStream(camera, frame, generation);
       else buildCameraPlaceholder(camera, frame);
       if (camera.id === "downward") frame.appendChild(downwardCameraTelemetry);
+      if (camera.id === "forward") frame.appendChild(forwardBallTelemetry);
       feed.append(header, frame);
       updateForwardCameraButtons();
       updateLineCameraButtons();
@@ -2633,6 +3681,8 @@ std::string DashboardServer::dashboardHtml()
         cameraFeeds.appendChild(buildCameraFeed(cameraId, generation));
       });
       downwardCameraTelemetry.hidden = view === "forward";
+      forwardBallTelemetry.hidden = view === "downward";
+      renderForwardBallTelemetry();
       renderCameraMetadata();
       if (cameraIsVisible("downward")) refreshCameraStatus();
       if (cameraIsVisible("forward")) refreshForwardCameraStatus();
@@ -2871,6 +3921,28 @@ std::string DashboardServer::dashboardHtml()
         camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "1920×1080 10-bit";
         camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
         camera.metadata.format = data.cameraFormat || "--";
+        const finiteBallValue = value =>
+          value !== null && value !== "" && Number.isFinite(Number(value))
+            ? Number(value)
+            : null;
+        camera.ball = {
+          enabled: data.ballDetectionEnabled === true,
+          detected: data.ballDetected === true,
+          type: String(data.ballType || ""),
+          position: String(data.ballPosition || "nenhuma"),
+          distanceCm: finiteBallValue(data.ballDistanceCm),
+          extrapolated: data.ballDistanceExtrapolated === true,
+          angleDegrees: finiteBallValue(data.ballAngleDegrees),
+          centerX: finiteBallValue(data.ballCenterX),
+          centerY: finiteBallValue(data.ballCenterY),
+          radiusPixels: finiteBallValue(data.ballRadiusPixels),
+          diameterPixels: finiteBallValue(data.ballDiameterPixels),
+          circularity: finiteBallValue(data.ballCircularity),
+          topClipped: data.ballTopClipped === true,
+          detectionMethod: String(data.ballDetectionMethod || ""),
+          processingMs: finiteBallValue(data.ballProcessingMs)
+        };
+        renderForwardBallTelemetry();
 
         let status = "INICIANDO";
         if (!camera.enabled) status = "DESLIGADA";
@@ -2907,8 +3979,65 @@ std::string DashboardServer::dashboardHtml()
     manualTurnPower.addEventListener("input", updateManualPowerSettings);
     leftValue.addEventListener("change", updateDriveFromExactInputs);
     rightValue.addEventListener("change", updateDriveFromExactInputs);
+    Object.entries(servoControls).forEach(([servoName, control]) => {
+      control.slider.addEventListener("input", () => sendServoAngle(servoName, control.slider.value));
+      control.slider.addEventListener("change", () => sendServoAngle(servoName, control.slider.value, true));
+      control.input.addEventListener("change", () => sendServoAngle(servoName, control.input.value, true));
+    });
+    element("servoCalibrationBeginButton").addEventListener("click", beginServoCalibration);
+    element("servoCalibrationEndButton").addEventListener("click", endServoCalibration);
+    element("servoCalibrationApplyButton").addEventListener("click", () => {
+      sendServoCalibrationPulse(servoCalibrationPulseInput.value, true);
+    });
+    element("servoCalibrationDisableButton").addEventListener("click", disableServoCalibrationOutput);
+    element("servoCalibrationSaveButton").addEventListener("click", saveServoCalibration);
+    element("captureServoZeroButton").addEventListener("click", () => {
+      captureServoCalibrationEndpoint(servoPulseAtZeroInput);
+    });
+    element("captureServo180Button").addEventListener("click", () => {
+      captureServoCalibrationEndpoint(servoPulseAt180Input);
+    });
+    servoCalibrationTarget.addEventListener("change", () => {
+      if (servoCalibrationControlAllowed) disableServoCalibrationOutput();
+      loadedServoCalibrationProfile = "";
+      loadSelectedServoCalibration(true);
+      element("servoCalibrationMessage").textContent = "Servo trocado. O pulso anterior foi desligado; use Aplicar para iniciar o novo teste.";
+    });
+    servoCalibrationPulseSlider.addEventListener("input", () => {
+      sendServoCalibrationPulse(servoCalibrationPulseSlider.value);
+    });
+    servoCalibrationPulseSlider.addEventListener("change", () => {
+      if (servoCalibrationOutputEnabled) {
+        sendServoCalibrationPulse(servoCalibrationPulseSlider.value, true);
+      }
+    });
+    servoCalibrationPulseInput.addEventListener("change", () => {
+      showServoCalibrationPulse(servoCalibrationPulseInput.value);
+    });
+    servoCalibrationAdjustmentButtons.forEach(button => {
+      button.addEventListener("click", () => {
+        const nextPulseUs = Number(servoCalibrationPulseInput.value) +
+          Number(button.dataset.servoPulseDelta);
+        sendServoCalibrationPulse(nextPulseUs, true);
+      });
+    });
+    window.setInterval(() => {
+      if (servoCalibrationControlAllowed && servoCalibrationOutputEnabled) {
+        sendServoCalibrationPulse(servoCalibrationPulseInput.value, true);
+      } else if (servoControlAllowed) {
+        Object.entries(servoControls).forEach(([servoName, control]) => {
+          if (control.outputEnabled) sendServoAngle(servoName, control.input.value, true);
+        });
+      }
+    }, servoKeepAlivePeriodMs);
     document.querySelectorAll("#independentMotorControl [data-side][data-delta]").forEach(button => {
       button.addEventListener("click", () => adjustExactSide(button.dataset.side, Number(button.dataset.delta)));
+    });
+    oledLayoutButtons.forEach(button => {
+      button.addEventListener("click", () => selectOledLayout(button.dataset.oledLayout));
+    });
+    oledPresetButtons.forEach(button => {
+      button.addEventListener("click", () => simulateOledPreset(button));
     });
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
@@ -2938,6 +4067,7 @@ std::string DashboardServer::dashboardHtml()
     window.setInterval(refreshCameraStatus, 200);
     window.setInterval(refreshForwardCameraStatus, 500);
     selectDashboardMode("operation");
+    selectOledLayout("standard");
     renderCameraView("downward");
     restoreManualPowerSettings();
     updateKeyboardIndicators();

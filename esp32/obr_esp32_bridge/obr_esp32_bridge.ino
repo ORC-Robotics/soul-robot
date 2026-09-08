@@ -4,6 +4,7 @@
 #include <Adafruit_PWMServoDriver.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_SSD1306.h>
+#include <Preferences.h>
 #ifndef OBR_ESP32_RASPBERRY_MODE
 #include <WebServer.h>
 #include <WiFi.h>
@@ -32,6 +33,62 @@ enum class ControlSource
   Dashboard,
   Raspberry
 };
+
+enum class ServoId : uint8_t
+{
+  Arm = 0,
+  Wrist = 1,
+  Gripper = 2
+};
+
+struct ServoOutputConfig
+{
+  const char* protocolName;
+  const char* preferencesKey;
+  uint8_t channel;
+  uint16_t defaultMinimumPulseUs;
+  uint16_t defaultMaximumPulseUs;
+  bool defaultInverted;
+};
+
+struct ServoCalibration
+{
+  uint16_t minimumPulseUs;
+  uint16_t maximumPulseUs;
+  bool inverted;
+};
+
+struct StoredServoCalibration
+{
+  uint16_t version;
+  uint16_t minimumPulseUs;
+  uint16_t maximumPulseUs;
+  uint8_t inverted;
+  uint8_t reserved;
+};
+
+static_assert(sizeof(StoredServoCalibration) == 8,
+              "Stored servo calibration layout changed");
+
+struct ServoOutputState
+{
+  float angleDegrees = 0.0f;
+  uint16_t pulseUs = 0;
+  bool enabled = false;
+};
+
+// A ordem desta tabela deve permanecer igual à ordem de ServoId.
+// Cada entrada concentra canal, calibração e sentido de um mecanismo.
+constexpr ServoOutputConfig kServoOutputConfigs[] = {
+    {"ARM", "arm", kArmServoChannel, kArmServoMinimumPulseUs,
+     kArmServoMaximumPulseUs, kArmServoInverted},
+    {"WRIST", "wrist", kWristServoChannel, kWristServoMinimumPulseUs,
+     kWristServoMaximumPulseUs, kWristServoInverted},
+    {"GRIPPER", "gripper", kGripperServoChannel, kGripperServoMinimumPulseUs,
+     kGripperServoMaximumPulseUs, kGripperServoInverted}};
+
+constexpr size_t kServoOutputCount =
+    sizeof(kServoOutputConfigs) / sizeof(kServoOutputConfigs[0]);
 
 void forceMotorPinsLowImmediately()
 {
@@ -96,6 +153,13 @@ struct SensorState
 };
 
 SensorState sensors;
+ServoOutputState servoOutputStates[kServoOutputCount];
+ServoCalibration servoCalibrations[kServoOutputCount] = {
+    {kArmServoMinimumPulseUs, kArmServoMaximumPulseUs, kArmServoInverted},
+    {kWristServoMinimumPulseUs, kWristServoMaximumPulseUs,
+     kWristServoInverted},
+    {kGripperServoMinimumPulseUs, kGripperServoMaximumPulseUs,
+     kGripperServoInverted}};
 bool mpuReady = false;
 bool pca9685Ready = false;
 bool oledReady = false;
@@ -105,6 +169,8 @@ uint8_t oledAddress = 0;
 bool startButtonPressed = false;
 bool calibrationActive = false;
 bool calibrationStopLatched = false;
+bool servoCalibrationActive = false;
+int8_t servoCalibrationSelectedIndex = -1;
 bool dashboardArmed = false;
 bool emergencyStopActive = false;
 float currentLeftPower = 0.0f;
@@ -128,6 +194,9 @@ uint32_t lastMpuIntegrationUs = 0;
 uint32_t lastOledRefreshMs = 0;
 bool startButtonLongPressHandled = false;
 bool remoteOledActive = false;
+bool remoteOledLargeLayout = false;
+bool oledAlertContrastModified = false;
+uint32_t remoteOledStartedAtMs = 0;
 uint32_t remoteOledExpiresAtMs = 0;
 char remoteOledTitle[kRemoteOledTitleMaxLength + 1] = {};
 char remoteOledFirstLine[kRemoteOledLineMaxLength + 1] = {};
@@ -139,6 +208,7 @@ bool raspberrySystemReady = false;
 bool raspberrySystemReady = true;
 #endif
 uint32_t lastRaspberrySystemReadyMs = 0;
+uint32_t lastServoCalibrationCommandMs = 0;
 
 portMUX_TYPE encoderMux = portMUX_INITIALIZER_UNLOCKED;
 volatile int32_t leftEncoderCount = 0;
@@ -242,6 +312,225 @@ float safeMotorCommand(float command)
   return constrain(command, -kMaximumMotorPower, kMaximumMotorPower);
 }
 
+size_t servoIndex(ServoId servo)
+{
+  return static_cast<size_t>(servo);
+}
+
+const ServoOutputConfig& servoConfig(ServoId servo)
+{
+  return kServoOutputConfigs[servoIndex(servo)];
+}
+
+ServoCalibration& servoCalibration(ServoId servo)
+{
+  return servoCalibrations[servoIndex(servo)];
+}
+
+ServoOutputState& servoState(ServoId servo)
+{
+  return servoOutputStates[servoIndex(servo)];
+}
+
+bool parseServoId(const char* text, ServoId& servo)
+{
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    if (strcmp(text, kServoOutputConfigs[index].protocolName) == 0)
+    {
+      servo = static_cast<ServoId>(index);
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isValidServoAngle(float angleDegrees)
+{
+  return isfinite(angleDegrees) &&
+         angleDegrees >= kServoMinimumAngleDegrees &&
+         angleDegrees <= kServoMaximumAngleDegrees;
+}
+
+bool isValidServoCalibration(const ServoCalibration& calibration)
+{
+  return calibration.minimumPulseUs >=
+             kServoCalibrationAbsoluteMinimumPulseUs &&
+         calibration.maximumPulseUs <=
+             kServoCalibrationAbsoluteMaximumPulseUs &&
+         calibration.maximumPulseUs > calibration.minimumPulseUs &&
+         calibration.maximumPulseUs - calibration.minimumPulseUs >=
+             kServoCalibrationMinimumSpanUs;
+}
+
+ServoCalibration defaultServoCalibration(ServoId servo)
+{
+  const ServoOutputConfig& config = servoConfig(servo);
+  return {config.defaultMinimumPulseUs, config.defaultMaximumPulseUs,
+          config.defaultInverted};
+}
+
+void loadServoCalibrations()
+{
+  Preferences preferences;
+  if (!preferences.begin(kServoPreferencesNamespace, true))
+  {
+    return;
+  }
+
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    const ServoId servo = static_cast<ServoId>(index);
+    servoCalibrations[index] = defaultServoCalibration(servo);
+    const ServoOutputConfig& config = servoConfig(servo);
+    if (preferences.getBytesLength(config.preferencesKey) !=
+        sizeof(StoredServoCalibration))
+    {
+      continue;
+    }
+
+    StoredServoCalibration stored = {};
+    if (preferences.getBytes(
+            config.preferencesKey, &stored, sizeof(stored)) != sizeof(stored))
+    {
+      continue;
+    }
+
+    const ServoCalibration loaded = {
+        stored.minimumPulseUs, stored.maximumPulseUs, stored.inverted != 0};
+    if (stored.version == kServoCalibrationStorageVersion &&
+        stored.inverted <= 1 && isValidServoCalibration(loaded))
+    {
+      servoCalibrations[index] = loaded;
+    }
+  }
+  preferences.end();
+}
+
+bool persistServoCalibration(ServoId servo,
+                             const ServoCalibration& calibration)
+{
+  if (!isValidServoCalibration(calibration))
+  {
+    return false;
+  }
+
+  Preferences preferences;
+  if (!preferences.begin(kServoPreferencesNamespace, false))
+  {
+    return false;
+  }
+
+  const StoredServoCalibration stored = {
+      kServoCalibrationStorageVersion,
+      calibration.minimumPulseUs,
+      calibration.maximumPulseUs,
+      calibration.inverted ? static_cast<uint8_t>(1) : static_cast<uint8_t>(0),
+      0};
+  const size_t written = preferences.putBytes(
+      servoConfig(servo).preferencesKey, &stored, sizeof(stored));
+  preferences.end();
+  return written == sizeof(stored);
+}
+
+uint16_t servoPulseForAngle(const ServoCalibration& calibration,
+                            float angleDegrees)
+{
+  // Conversão linear usada pelas poses: pulso = mínimo +
+  // (ângulo / 180°) × (máximo - mínimo), com inversão quando configurada.
+  const float normalizedAngle =
+      (angleDegrees - kServoMinimumAngleDegrees) /
+      (kServoMaximumAngleDegrees - kServoMinimumAngleDegrees);
+  const float directedPosition = calibration.inverted
+                                     ? 1.0f - normalizedAngle
+                                     : normalizedAngle;
+  const float pulseUs = calibration.minimumPulseUs +
+                        directedPosition *
+                            (calibration.maximumPulseUs -
+                             calibration.minimumPulseUs);
+  return static_cast<uint16_t>(lroundf(pulseUs));
+}
+
+uint16_t pca9685TicksForPulse(uint16_t pulseUs)
+{
+  // O PCA9685 divide o período de 50 Hz em 4096 passos. A conversão mantém a
+  // unidade de calibração em microssegundos, que é mais fácil de conferir no
+  // programador e no osciloscópio.
+  const float ticks = static_cast<float>(pulseUs) *
+                      kPca9685FrequencyHz * 4096.0f / 1000000.0f;
+  return static_cast<uint16_t>(constrain(lroundf(ticks), 1L, 4095L));
+}
+
+void disableServoOutput(ServoId servo)
+{
+  ServoOutputState& state = servoState(servo);
+  if (pca9685Ready && state.enabled)
+  {
+    // O valor 4096 ativa o bit FULL_OFF do canal e torna o desligamento
+    // explícito, sem depender de ON e OFF coincidirem no mesmo contador.
+    pca9685.setPWM(servoConfig(servo).channel, 0, 4096);
+  }
+  state.enabled = false;
+  state.pulseUs = 0;
+}
+
+void disableAllServoOutputs()
+{
+  // Remover o sinal evita manter um comando antigo durante parada, E-Stop,
+  // calibração ou perda da Raspberry. Isso não corta a alimentação V+.
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    disableServoOutput(static_cast<ServoId>(index));
+  }
+  servoCalibrationSelectedIndex = -1;
+}
+
+bool applyServoAngle(ServoId servo, float angleDegrees)
+{
+  if (!pca9685Ready || !isValidServoAngle(angleDegrees) ||
+      emergencyStopActive || calibrationActive || calibrationStopLatched ||
+      servoCalibrationActive)
+  {
+    return false;
+  }
+
+#ifdef OBR_ESP32_RASPBERRY_MODE
+  const uint32_t nowMs = millis();
+  if (!raspberrySystemReady ||
+      nowMs - lastRaspberrySystemReadyMs > kRaspberrySystemReadyTimeoutMs)
+  {
+    return false;
+  }
+#endif
+
+  const ServoOutputConfig& config = servoConfig(servo);
+  ServoOutputState& state = servoState(servo);
+  const uint16_t pulseUs = servoPulseForAngle(
+      servoCalibration(servo), angleDegrees);
+  pca9685.setPWM(config.channel, 0, pca9685TicksForPulse(pulseUs));
+  state.angleDegrees = angleDegrees;
+  state.pulseUs = pulseUs;
+  state.enabled = true;
+  return true;
+}
+
+bool applyServoPose(float armDegrees, float wristDegrees,
+                    float gripperDegrees)
+{
+  // Valida a pose inteira antes de movimentar o primeiro mecanismo. Assim, um
+  // campo inválido nunca deixa uma programação predefinida aplicada pela metade.
+  if (!isValidServoAngle(armDegrees) ||
+      !isValidServoAngle(wristDegrees) ||
+      !isValidServoAngle(gripperDegrees))
+  {
+    return false;
+  }
+
+  return applyServoAngle(ServoId::Arm, armDegrees) &&
+         applyServoAngle(ServoId::Wrist, wristDegrees) &&
+         applyServoAngle(ServoId::Gripper, gripperDegrees);
+}
+
 void zeroMotorPwmOutputs()
 {
   writeMotorPwm(kLeftMotorIn1Pin, kLeftMotorIn1Channel, 0);
@@ -260,6 +549,101 @@ void stopMotorOutputs()
   // repetir o tempo de inicialização do driver a cada novo movimento.
   keepMotorDriverEnabled();
   zeroMotorPwmOutputs();
+}
+
+bool beginServoCalibrationMode()
+{
+  if (!pca9685Ready || emergencyStopActive || calibrationActive)
+  {
+    return false;
+  }
+
+#ifdef OBR_ESP32_RASPBERRY_MODE
+  const uint32_t nowMs = millis();
+  if (!raspberrySystemReady ||
+      nowMs - lastRaspberrySystemReadyMs > kRaspberrySystemReadyTimeoutMs)
+  {
+    return false;
+  }
+#endif
+
+  // Entrar neste modo sempre zera a tração e começa sem sinal de servo. O
+  // operador precisa acionar explicitamente o primeiro pulso pelo dashboard.
+  stopMotorOutputs();
+  dashboardArmed = false;
+  disableAllServoOutputs();
+  servoCalibrationActive = true;
+  lastServoCalibrationCommandMs = millis();
+  return true;
+}
+
+void endServoCalibrationMode()
+{
+  disableAllServoOutputs();
+  servoCalibrationActive = false;
+}
+
+bool applyServoCalibrationPulse(ServoId servo, uint16_t pulseUs)
+{
+  if (!servoCalibrationActive || !pca9685Ready || emergencyStopActive ||
+      calibrationActive ||
+      pulseUs < kServoCalibrationAbsoluteMinimumPulseUs ||
+      pulseUs > kServoCalibrationAbsoluteMaximumPulseUs)
+  {
+    return false;
+  }
+
+#ifdef OBR_ESP32_RASPBERRY_MODE
+  const uint32_t nowMs = millis();
+  if (!raspberrySystemReady ||
+      nowMs - lastRaspberrySystemReadyMs > kRaspberrySystemReadyTimeoutMs)
+  {
+    return false;
+  }
+#endif
+
+  // Somente um canal recebe pulso bruto por vez. Isso evita que outro
+  // mecanismo permaneça exercendo força enquanto o operador observa o atual.
+  disableAllServoOutputs();
+  const ServoOutputConfig& config = servoConfig(servo);
+  ServoOutputState& state = servoState(servo);
+  pca9685.setPWM(config.channel, 0, pca9685TicksForPulse(pulseUs));
+  state.angleDegrees = -1.0f;
+  state.pulseUs = pulseUs;
+  state.enabled = true;
+  servoCalibrationSelectedIndex = static_cast<int8_t>(servoIndex(servo));
+  lastServoCalibrationCommandMs = millis();
+  return true;
+}
+
+bool saveServoCalibration(ServoId servo, uint16_t pulseAtZeroUs,
+                          uint16_t pulseAt180Us)
+{
+  if (!servoCalibrationActive ||
+      pulseAtZeroUs < kServoCalibrationAbsoluteMinimumPulseUs ||
+      pulseAtZeroUs > kServoCalibrationAbsoluteMaximumPulseUs ||
+      pulseAt180Us < kServoCalibrationAbsoluteMinimumPulseUs ||
+      pulseAt180Us > kServoCalibrationAbsoluteMaximumPulseUs)
+  {
+    return false;
+  }
+
+  const uint16_t minimumPulseUs = min(pulseAtZeroUs, pulseAt180Us);
+  const uint16_t maximumPulseUs = max(pulseAtZeroUs, pulseAt180Us);
+  const ServoCalibration calibration = {
+      minimumPulseUs, maximumPulseUs, pulseAtZeroUs > pulseAt180Us};
+  if (!isValidServoCalibration(calibration) ||
+      !persistServoCalibration(servo, calibration))
+  {
+    return false;
+  }
+
+  // A RAM só muda depois da confirmação de escrita na NVS. O canal é desligado
+  // para o valor bruto usado na busca não permanecer aplicado após salvar.
+  servoCalibration(servo) = calibration;
+  disableAllServoOutputs();
+  lastServoCalibrationCommandMs = millis();
+  return true;
 }
 
 void keepMotorDriverEnabled()
@@ -320,8 +704,11 @@ void applyMotorPowers(float leftPower, float rightPower)
 void applyMotorCommand(float leftPower, float rightPower, ControlSource source)
 {
   if (emergencyStopActive || calibrationActive || calibrationStopLatched ||
+      servoCalibrationActive ||
       (source == ControlSource::Dashboard && !dashboardArmed))
   {
+    // A calibração dos servos nunca aceita tração, mesmo que uma origem envie
+    // por engano um comando de motor diferente de zero durante o ajuste.
     stopMotorOutputs();
     return;
   }
@@ -563,14 +950,23 @@ void resetSensorMeasurements()
 
 void runSensorCalibration()
 {
-  // A calibração sempre começa com os motores parados e desabilita o controle
-  // de bancada. O E-Stop existente é preservado e nunca é liberado aqui.
+  // A calibração sempre começa com motores e servos parados e desabilita o
+  // controle de bancada. O E-Stop existente é preservado e nunca é liberado aqui.
   dashboardArmed = false;
   stopMotorOutputs();
+  endServoCalibrationMode();
   controlSource = ControlSource::None;
   calibrationActive = true;
   calibrationStopLatched = true;
   Serial.println("CALIBRATION,START");
+
+  if (oledReady && oledAlertContrastModified)
+  {
+    // A calibração desenha a própria página dentro de um trecho bloqueante.
+    // Por isso, restaura o brilho antes de iniciar as amostras do MPU6050.
+    oled.dim(false);
+    oledAlertContrastModified = false;
+  }
 
   resetSensorMeasurements();
   if (mpuReady)
@@ -626,9 +1022,9 @@ void setupI2cDevices()
     pca9685.setPWMFreq(kPca9685FrequencyHz);
     for (uint8_t channel = 0; channel < 16; ++channel)
     {
-      // Nenhum atuador do PCA9685 foi definido ainda. Manter todos os canais
-      // desligados evita movimento de servo inesperado durante a partida.
-      pca9685.setPWM(channel, 0, 0);
+      // Todos os canais começam em FULL_OFF. Braço, pulso e garra só recebem
+      // sinal após um comando válido, evitando movimento inesperado na partida.
+      pca9685.setPWM(channel, 0, 4096);
     }
   }
 }
@@ -657,8 +1053,9 @@ bool isRaspberrySystemReady(uint32_t nowMs)
       nowMs - lastRaspberrySystemReadyMs > kRaspberrySystemReadyTimeoutMs)
   {
     // A ausência do heartbeat indica que o serviço da Raspberry reiniciou ou
-    // caiu. A OLED volta ao boot, mas a segurança dos motores segue independente.
+    // caiu. A OLED volta ao boot e os servos deixam de repetir comandos antigos.
     raspberrySystemReady = false;
+    endServoCalibrationMode();
   }
 #else
   (void)nowMs;
@@ -776,6 +1173,105 @@ void drawRemoteOledPage(uint32_t nowMs)
   oled.display();
 }
 
+uint8_t largestOledTextSize(const char* text, uint8_t maximumSize)
+{
+  // Quatro pixels de cada lado são a menor margem visual do alerta. Para
+  // "VERDE", isso ainda permite usar tamanho 4 em uma tela de 128 pixels.
+  constexpr int16_t kHorizontalMargin = 4;
+  constexpr int16_t kAvailableWidth =
+      kOledWidth - 2 * kHorizontalMargin;
+
+  // A fonte nativa ocupa aproximadamente 6 pixels por caractere em cada nível.
+  // getTextBounds() confirma a largura real para nunca cortar o alerta.
+  for (uint8_t textSize = maximumSize; textSize > 1; --textSize)
+  {
+    int16_t textX;
+    int16_t textY;
+    uint16_t textWidth;
+    uint16_t textHeight;
+    oled.setTextSize(textSize);
+    oled.getTextBounds(text, 0, 0, &textX, &textY, &textWidth, &textHeight);
+    if (textWidth <= kAvailableWidth)
+    {
+      return textSize;
+    }
+  }
+  return 1;
+}
+
+uint8_t oledAlertContrast(uint32_t nowMs)
+{
+  constexpr float kFullCycleRadians = 6.28318530718f;
+  const uint32_t elapsedMs = nowMs - remoteOledStartedAtMs;
+  const float phase = static_cast<float>(
+                            elapsedMs % kOledAlertPulsePeriodMs) /
+                      static_cast<float>(kOledAlertPulsePeriodMs);
+  // O cosseno começa no brilho máximo e cria uma transição contínua. O valor
+  // mínimo permanece visível para o alerta poder ser lido durante todo o pulso.
+  const float wave = 0.5f + 0.5f * cosf(phase * kFullCycleRadians);
+  const float contrast = kOledAlertMinimumContrast +
+                         wave * (kOledAlertMaximumContrast -
+                                 kOledAlertMinimumContrast);
+  return static_cast<uint8_t>(lroundf(contrast));
+}
+
+void applyOledAlertContrast(uint32_t nowMs)
+{
+  oled.ssd1306_command(SSD1306_SETCONTRAST);
+  oled.ssd1306_command(oledAlertContrast(nowMs));
+  oledAlertContrastModified = true;
+}
+
+void restoreNormalOledContrast()
+{
+  if (!oledAlertContrastModified)
+  {
+    return;
+  }
+
+  // A biblioteca restaura o contraste padrão correto para o tipo de alimentação
+  // usado no begin(), evitando manter a tela normal artificialmente escura.
+  oled.dim(false);
+  oledAlertContrastModified = false;
+}
+
+void drawLargeRemoteOledPage(uint32_t nowMs)
+{
+  applyOledAlertContrast(nowMs);
+  oled.clearDisplay();
+  oled.setTextColor(SSD1306_WHITE);
+
+  // Em módulos bicolores, as linhas 16 a 63 são fisicamente azuis. O texto
+  // principal e o detalhe ficam inteiros nessa região; a cor não é programável.
+  constexpr int16_t kBlueRegionTop = 16;
+  constexpr int16_t kVerticalMargin = 2;
+  constexpr int16_t kSecondaryTextY = 54;
+  const bool hasSecondaryText = remoteOledSecondLine[0] != '\0';
+  const int16_t primaryRegionTop = kBlueRegionTop + kVerticalMargin;
+  const int16_t primaryRegionBottom = hasSecondaryText
+                                          ? kSecondaryTextY - kVerticalMargin
+                                          : kOledHeight - kVerticalMargin;
+  const uint8_t primaryTextSize = largestOledTextSize(remoteOledFirstLine, 4);
+
+  int16_t textX;
+  int16_t textY;
+  uint16_t textWidth;
+  uint16_t textHeight;
+  oled.setTextSize(primaryTextSize);
+  oled.getTextBounds(remoteOledFirstLine, 0, 0, &textX, &textY,
+                     &textWidth, &textHeight);
+  const int16_t primaryY = primaryRegionTop +
+      (primaryRegionBottom - primaryRegionTop -
+       static_cast<int16_t>(textHeight)) / 2;
+  drawCenteredOledText(remoteOledFirstLine, primaryY, primaryTextSize);
+
+  if (hasSecondaryText)
+  {
+    drawCenteredOledText(remoteOledSecondLine, kSecondaryTextY, 1);
+  }
+  oled.display();
+}
+
 void updateOledIfDue()
 {
   const uint32_t nowMs = millis();
@@ -788,23 +1284,36 @@ void updateOledIfDue()
   // Estados locais críticos sempre têm prioridade sobre mensagens da Raspberry.
   if (emergencyStopActive)
   {
+    restoreNormalOledContrast();
     drawEmergencyOledPage();
     return;
   }
   if (calibrationActive)
   {
+    restoreNormalOledContrast();
     return;
   }
   if (!isRaspberrySystemReady(nowMs))
   {
+    restoreNormalOledContrast();
     drawSystemStartingOledPage(nowMs);
     return;
   }
   if (isRemoteOledPageActive(nowMs))
   {
-    drawRemoteOledPage(nowMs);
+    if (remoteOledLargeLayout)
+    {
+      drawLargeRemoteOledPage(nowMs);
+    }
+    else
+    {
+      restoreNormalOledContrast();
+      drawRemoteOledPage(nowMs);
+    }
     return;
   }
+
+  restoreNormalOledContrast();
 
   char batteryText[10] = "--.--V";
   char yawText[8] = "  --";
@@ -1225,12 +1734,14 @@ void setupDashboardRoutes()
             {
               dashboardArmed = false;
               stopMotorOutputs();
+              endServoCalibrationMode();
               sendJsonResponse(200, "{\"ok\":true}"); });
   server.on("/api/estop", HTTP_POST, []()
             {
               emergencyStopActive = true;
               dashboardArmed = false;
               stopMotorOutputs();
+              endServoCalibrationMode();
               sendJsonResponse(200, "{\"ok\":true}"); });
   server.on("/api/clear-estop", HTTP_POST, []()
             {
@@ -1368,7 +1879,49 @@ bool applyRemoteOledCommand(const char* line)
   memcpy(remoteOledTitle, title, sizeof(remoteOledTitle));
   memcpy(remoteOledFirstLine, firstLine, sizeof(remoteOledFirstLine));
   memcpy(remoteOledSecondLine, secondLine, sizeof(remoteOledSecondLine));
-  remoteOledExpiresAtMs = millis() + static_cast<uint32_t>(durationMs);
+  remoteOledStartedAtMs = millis();
+  remoteOledExpiresAtMs = remoteOledStartedAtMs +
+                          static_cast<uint32_t>(durationMs);
+  remoteOledLargeLayout = false;
+  remoteOledActive = true;
+  return true;
+}
+
+bool applyLargeRemoteOledCommand(const char* line)
+{
+  unsigned long durationMs = 0;
+  char encodedPrimaryText[kRemoteOledLineMaxLength * 2 + 1] = {};
+  char encodedSecondaryText[kRemoteOledLineMaxLength * 2 + 1] = {};
+  int consumedCharacters = 0;
+  const int parsedFields = sscanf(
+      line, "OLED_BIG,%lu,%40[^,],%40s%n", &durationMs, encodedPrimaryText,
+      encodedSecondaryText, &consumedCharacters);
+  if (parsedFields != 3 ||
+      consumedCharacters != static_cast<int>(strlen(line)) ||
+      durationMs < kRemoteOledMinimumDurationMs ||
+      durationMs > kRemoteOledMaximumDurationMs)
+  {
+    return false;
+  }
+
+  char primaryText[kRemoteOledLineMaxLength + 1] = {};
+  char secondaryText[kRemoteOledLineMaxLength + 1] = {};
+  if (!decodeRemoteOledText(
+          encodedPrimaryText, primaryText, sizeof(primaryText)) ||
+      !decodeRemoteOledText(
+          encodedSecondaryText, secondaryText, sizeof(secondaryText)) ||
+      primaryText[0] == '\0')
+  {
+    return false;
+  }
+
+  remoteOledTitle[0] = '\0';
+  memcpy(remoteOledFirstLine, primaryText, sizeof(remoteOledFirstLine));
+  memcpy(remoteOledSecondLine, secondaryText, sizeof(remoteOledSecondLine));
+  remoteOledStartedAtMs = millis();
+  remoteOledExpiresAtMs = remoteOledStartedAtMs +
+                          static_cast<uint32_t>(durationMs);
+  remoteOledLargeLayout = true;
   remoteOledActive = true;
   return true;
 }
@@ -1383,6 +1936,7 @@ void handleUartCommand(const char* line)
   if (strcmp(line, "STOP") == 0)
   {
     stopMotorOutputs();
+    endServoCalibrationMode();
     controlSource = ControlSource::Raspberry;
     lastMotorCommandMs = millis();
     return;
@@ -1392,6 +1946,7 @@ void handleUartCommand(const char* line)
     emergencyStopActive = true;
     dashboardArmed = false;
     stopMotorOutputs();
+    endServoCalibrationMode();
     return;
   }
   if (strcmp(line, "CLEAR_ESTOP") == 0)
@@ -1415,6 +1970,7 @@ void handleUartCommand(const char* line)
   {
     raspberrySystemReady = false;
     remoteOledActive = false;
+    endServoCalibrationMode();
     return;
   }
   if (strcmp(line, "SYSTEM_READY") == 0)
@@ -1426,7 +1982,20 @@ void handleUartCommand(const char* line)
   if (strcmp(line, "OLED_CLEAR") == 0)
   {
     remoteOledActive = false;
+    remoteOledLargeLayout = false;
     Serial.println("OLED,CLEARED");
+    return;
+  }
+  if (strncmp(line, "OLED_BIG,", 9) == 0)
+  {
+    if (applyLargeRemoteOledCommand(line))
+    {
+      Serial.println("OLED,OK");
+    }
+    else
+    {
+      sendUartError("invalid_large_oled_message");
+    }
     return;
   }
   if (strncmp(line, "OLED,", 5) == 0)
@@ -1438,6 +2007,135 @@ void handleUartCommand(const char* line)
     else
     {
       sendUartError("invalid_oled_message");
+    }
+    return;
+  }
+
+  if (strcmp(line, "SERVO_CAL_BEGIN") == 0)
+  {
+    if (beginServoCalibrationMode())
+    {
+      Serial.println("SERVO_CAL,START");
+    }
+    else
+    {
+      sendUartError("servo_calibration_unavailable");
+    }
+    return;
+  }
+
+  if (strcmp(line, "SERVO_CAL_END") == 0)
+  {
+    endServoCalibrationMode();
+    Serial.println("SERVO_CAL,END");
+    return;
+  }
+
+  if (strcmp(line, "SERVO_CAL_DISABLE") == 0)
+  {
+    if (!servoCalibrationActive)
+    {
+      sendUartError("servo_calibration_not_active");
+    }
+    else
+    {
+      disableAllServoOutputs();
+    }
+    return;
+  }
+
+  if (strncmp(line, "SERVO_CAL_PULSE,", 16) == 0)
+  {
+    char servoName[16] = {};
+    unsigned int pulseUs = 0;
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO_CAL_PULSE,%15[^,],%u%n", servoName, &pulseUs,
+        &consumedCharacters);
+    ServoId servo = ServoId::Arm;
+    if (parsedFields != 2 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !parseServoId(servoName, servo) ||
+        pulseUs > UINT16_MAX ||
+        !applyServoCalibrationPulse(servo, static_cast<uint16_t>(pulseUs)))
+    {
+      disableAllServoOutputs();
+      sendUartError("invalid_servo_calibration_pulse");
+    }
+    return;
+  }
+
+  if (strncmp(line, "SERVO_CAL_SAVE,", 15) == 0)
+  {
+    char servoName[16] = {};
+    unsigned int pulseAtZeroUs = 0;
+    unsigned int pulseAt180Us = 0;
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO_CAL_SAVE,%15[^,],%u,%u%n", servoName,
+        &pulseAtZeroUs, &pulseAt180Us, &consumedCharacters);
+    ServoId servo = ServoId::Arm;
+    if (parsedFields != 3 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !parseServoId(servoName, servo) ||
+        pulseAtZeroUs > UINT16_MAX || pulseAt180Us > UINT16_MAX ||
+        !saveServoCalibration(servo,
+                              static_cast<uint16_t>(pulseAtZeroUs),
+                              static_cast<uint16_t>(pulseAt180Us)))
+    {
+      disableAllServoOutputs();
+      sendUartError("servo_calibration_save_failed");
+    }
+    else
+    {
+      Serial.print("SERVO_CAL,SAVED,");
+      Serial.println(servoConfig(servo).protocolName);
+    }
+    return;
+  }
+
+  if (strcmp(line, "SERVO_DISABLE_ALL") == 0)
+  {
+    disableAllServoOutputs();
+    return;
+  }
+
+  if (strncmp(line, "SERVO_POSE,", 11) == 0)
+  {
+    float armDegrees = 0.0f;
+    float wristDegrees = 0.0f;
+    float gripperDegrees = 0.0f;
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO_POSE,%f,%f,%f%n", &armDegrees, &wristDegrees,
+        &gripperDegrees, &consumedCharacters);
+    if (parsedFields != 3 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !applyServoPose(armDegrees, wristDegrees, gripperDegrees))
+    {
+      disableAllServoOutputs();
+      sendUartError("invalid_servo_pose");
+      return;
+    }
+    return;
+  }
+
+  if (strncmp(line, "SERVO,", 6) == 0)
+  {
+    char servoName[16] = {};
+    float angleDegrees = 0.0f;
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO,%15[^,],%f%n", servoName, &angleDegrees,
+        &consumedCharacters);
+    ServoId servo = ServoId::Arm;
+    if (parsedFields != 2 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !parseServoId(servoName, servo) ||
+        !applyServoAngle(servo, angleDegrees))
+    {
+      sendUartError("invalid_servo_command");
+      return;
     }
     return;
   }
@@ -1454,6 +2152,7 @@ void handleUartCommand(const char* line)
       emergencyStopActive = true;
       dashboardArmed = false;
       stopMotorOutputs();
+      endServoCalibrationMode();
       return;
     }
     if (!isfinite(leftPower) || !isfinite(rightPower) ||
@@ -1582,7 +2281,36 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(motorCommandAgeMs > kMotorCommandTimeoutMs ? 1 : 0);
   Serial.print(',');
-  Serial.println(static_cast<int>(controlSource));
+  Serial.print(static_cast<int>(controlSource));
+
+  // Os ângulos são os últimos alvos aceitos. O campo enabled informa se o
+  // PCA9685 ainda está emitindo o pulso correspondente para cada mecanismo.
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].angleDegrees, 1);
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].pulseUs);
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].enabled ? 1 : 0);
+  }
+
+  Serial.print(',');
+  Serial.print(servoCalibrationActive ? 1 : 0);
+  Serial.print(',');
+  Serial.print(servoCalibrationSelectedIndex);
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    // A Raspberry recebe a calibração realmente carregada da NVS, não apenas
+    // os valores padrão compilados. Isso permite conferir o que será usado.
+    Serial.print(',');
+    Serial.print(servoCalibrations[index].minimumPulseUs);
+    Serial.print(',');
+    Serial.print(servoCalibrations[index].maximumPulseUs);
+    Serial.print(',');
+    Serial.print(servoCalibrations[index].inverted ? 1 : 0);
+  }
+  Serial.println();
 }
 
 void enforceMotorTimeout()
@@ -1601,6 +2329,40 @@ void enforceMotorTimeout()
   }
 }
 
+void enforceServoSafety()
+{
+  if (emergencyStopActive || calibrationActive)
+  {
+    endServoCalibrationMode();
+    return;
+  }
+
+  if (calibrationStopLatched && !servoCalibrationActive)
+  {
+    disableAllServoOutputs();
+    return;
+  }
+
+
+  if (servoCalibrationActive && servoCalibrationSelectedIndex >= 0 &&
+      millis() - lastServoCalibrationCommandMs >
+          kServoCalibrationCommandTimeoutMs)
+  {
+    // A calibração continua aberta para permitir nova tentativa, mas o pulso
+    // bruto expira sozinho quando a aba deixa de renová-lo.
+    disableAllServoOutputs();
+  }
+
+#ifdef OBR_ESP32_RASPBERRY_MODE
+  // Os servos posicionais podem manter esforço indefinidamente. Se o processo
+  // principal cair, o heartbeat expirado remove os sinais em até três segundos.
+  if (!isRaspberrySystemReady(millis()))
+  {
+    endServoCalibrationMode();
+  }
+#endif
+}
+
 void setup()
 {
   // Os motores são a primeira parte configurada pelo setup(). Sensores, UART
@@ -1610,6 +2372,10 @@ void setup()
   // A UART0 usa exatamente GPIO1/GPIO3, conforme a fiação com a Raspberry.
   // Mensagens de depuração não são enviadas para evitar corromper o protocolo.
   Serial.begin(kRaspberryBaudRate, SERIAL_8N1, kRaspberryRxPin, kRaspberryTxPin);
+
+  // Carrega os limites antes de inicializar o PCA9685. Nenhum pulso é emitido
+  // nesta etapa; valores ausentes ou inválidos mantêm os padrões compilados.
+  loadServoCalibrations();
 
   pinMode(kStartButtonPin, INPUT_PULLUP);
   setupEncoders();
@@ -1644,6 +2410,7 @@ void loop()
   triggerUltrasonicIfDue();
   consumeUltrasonicSample();
   enforceMotorTimeout();
+  enforceServoSafety();
   sendUartTelemetryIfDue();
   delay(1);
 }
