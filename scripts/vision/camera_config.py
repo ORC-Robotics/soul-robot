@@ -373,8 +373,8 @@ VISIBLE_GREEN_INTERPRETATIONS = {
 # Manter a transformação no Picamera2 evita rotacionar cada frame no OpenCV.
 CAMERA_ROTATION_DEGREES = 180
 
-# Ajustes básicos de imagem. Eles afetam somente a visualização e não geram
-# qualquer decisão de movimento.
+# Ajustes básicos da imagem recebida pela segmentação e pela visualização.
+# Alterá-los muda o contraste e as cores usados pelos detectores.
 CAMERA_SHARPNESS = 1.2
 CAMERA_CONTRAST = 1.05
 CAMERA_SATURATION = 1.0
@@ -415,33 +415,40 @@ CAMERA_PROFILES = {
         "target_fps": 30,
         "vision": {
             "line_roi_start_ratio": 0.0,
-            # A câmera inferior perdeu a iluminação dedicada. O fechamento
-            # grande estima a claridade do piso ao redor da fita e evita que
-            # papel branco sombreado seja classificado como linha preta.
+            # O fechamento grande estima a claridade do piso ao redor da fita
+            # sob os LEDs. A comparação local reduz a aceitação de sombras.
             # Valor de referência em 640×480. A criação da máscara escala para
             # a altura recebida: em 480×360, 201 vira 151.
             "line_background_kernel_size": 201,
-            # Um pixel precisa estar pelo menos 32% abaixo do fundo local.
+            # O limiar relativo fica 39% abaixo do fundo local, respeitando
+            # os limites de cinza abaixo. Calibração: calibration/report/RESULTS.md.
             # Aumentar este valor aceita linhas com menos contraste, mas também
             # aumenta o risco de aceitar sombras como parte da linha.
-            "line_max_background_ratio_percent": 70,
+            "line_max_background_ratio_percent": 61,
+            # Piso do limiar em cinza de 8 bits. Preserva a fita escura quando
+            # ela ocupa a borda do campo e contamina a estimativa do fundo.
+            # Aumentar demais aceita sujeira; zero desativa essa proteção.
+            "line_min_threshold": 40,
+            # Retira o verde já detectado antes de filtrar componentes pretos.
+            # A máscara estrutural original e o detector de verde são preservados.
+            "line_exclude_green": True,
             # Mesmo com contraste local, tons acima deste limite não são pretos.
             # A unidade é o nível de cinza de 8 bits, entre 0 e 255. Aumentar o
             # limite aceita sombras; reduzir demais pode perder uma fita clara.
             "line_max_brightness": 190,
             # Valores de referência em 640×480; são sempre escalados para
-            # kernels ímpares antes da morfologia (17 vira 13 e 7 vira 5).
+            # kernels ímpares antes da morfologia (17 vira 13 e 11 vira 9).
             "open_kernel_shape": "ellipse",
             "open_kernel_size": 17,
-            # O fechamento 7×7 preenche pequenas falhas sem unir objetos
-            # separados à linha de 2 cm.
+            # O fechamento efetivo 9×9 preenche pequenas falhas. Aumentá-lo
+            # pode unir sujeira à fita ou apagar a separação de um gap.
             "close_kernel_size": 11,
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
-            # Uma linha ou cruzamento normal não deve ocupar mais de 30% da
-            # máscara. Componentes maiores indicam sombra ou obstrução e
-            # são rejeitados para o robô não seguir um falso contorno.
+            # Fração máxima da imagem ocupada por um componente aceito.
+            # O valor 1,0 mantém esse limite desativado; reduzi-lo pode rejeitar
+            # interseções ou a fita muito próxima da câmera.
             "full_line_max_area_ratio": 1.0,
             # As coordenadas usam o frame de referência 640×480 validado.
             # A conversão centralizada mantém a mesma geometria proporcional se

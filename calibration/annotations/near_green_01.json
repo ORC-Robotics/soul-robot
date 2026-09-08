@@ -1,0 +1,17 @@
+{
+  "shape": [360, 480],
+  "scenario": "near_green",
+  "annotation_origin": "Manual trace from baseline_green_01/raw/0000.png before candidate masks; operator confirmed green marking.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[0, 107], [479, 105], [479, 196], [302, 196], [306, 359], [216, 359], [216, 216], [220, 196], [0, 196]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "non_floor_polygons": [[[292, 190], [395, 190], [397, 286], [292, 284]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 285], [465, 285], [465, 359], [27, 359]]],
+    "reflection": [[[105, 100], [395, 100], [395, 195], [105, 195]]],
+    "green_patch": [[[315, 210], [380, 210], [380, 270], [315, 270]]],
+    "left_branch": [[[27, 115], [160, 115], [160, 187], [27, 187]]],
+    "right_branch": [[[330, 115], [465, 115], [465, 187], [330, 187]]]
+  },
+  "limitations": "Green is a negative class for black-line segmentation, but excluded from white-floor contrast. Static T intersection with one green marking and natural dirt; green maneuver behavior is not executed."
+}

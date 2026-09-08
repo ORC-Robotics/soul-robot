@@ -1,0 +1,2 @@
+# O diff arquivado preserva o espaço que identifica linhas vazias de contexto.
+deploy_interruption_diff.txt whitespace=-blank-at-eol

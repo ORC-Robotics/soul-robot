@@ -1,0 +1,15 @@
+{
+  "shape": [360, 480],
+  "scenario": "external_shadow",
+  "annotation_origin": "Manual trace from baseline_external_shadow_01/raw/0000.png before candidate masks; operator confirmed an added moderate external shadow with LEDs on.",
+  "boundary_uncertainty_px": 7,
+  "line_polygons": [[[202, 39], [293, 39], [319, 359], [232, 359]]],
+  "evaluation_polygons": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+  "diagnostic_regions": {
+    "shadow": [[[27, 60], [465, 60], [465, 359], [27, 359]]],
+    "upper_shadow": [[[27, 60], [465, 60], [465, 115], [27, 115]]],
+    "reflection": [[[100, 110], [390, 110], [390, 225], [100, 225]]],
+    "natural_particles": [[[27, 245], [170, 245], [170, 340], [27, 340]]]
+  },
+  "limitations": "Shadow location and strength are operator controlled, not a calibrated light source. A second capture with the shadow removed and robot unmoved is needed for direct sensitivity comparison. Seven-pixel boundary uncertainty excluded."
+}
