@@ -5,6 +5,8 @@ Foram auditados 3.120 frames reais. O perfil inferior agora usa razão relativa
 61%, limiar mínimo 40 e exclusão do verde da máscara preta; AE/AWB e morfologia
 foram mantidos. As seções abaixo preservam o diagnóstico feito antes dos ajustes.
 
+Para voltar a este assunto depois: [roteiro de retomada e melhorias possíveis](RESUME.md).
+
 ## Diagnóstico antes dos experimentos
 
 O código do Raspberry é a referência do baseline. Após a troca de branch feita

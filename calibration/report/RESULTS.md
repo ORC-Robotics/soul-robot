@@ -283,6 +283,10 @@ git diff --check
 
 ## Limitações remanescentes
 
+O [roteiro de retomada](../RESUME.md) relaciona essas limitações aos arquivos,
+experimentos sugeridos, tentativas descartadas e critérios para manter um ajuste.
+Ele permite retomar por uma falha concreta, aproveitando os dados existentes.
+
 Ainda existem manchas sob sombra forte e algum ruído no gap/reta. A tentativa
 de eliminar tudo com limiar mais restritivo prejudicou fita real sob reflexo;
 a configuração final prioriza preservação e estabilidade da trajetória.
