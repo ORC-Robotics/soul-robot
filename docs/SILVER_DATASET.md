@@ -58,13 +58,22 @@ python3 training/training_silver_classifier.py --camera forward
 O treinamento usa MobileNetV3Small com pesos ImageNet (o primeiro uso precisa
 baixá-los). `--fine-tune` habilita a segunda fase. `--roi LEFT TOP RIGHT BOTTOM`
 define um recorte normalizado; se utilizado, a inferência futura deverá aplicar
-o mesmo recorte. O padrão é a imagem inteira. Os modelos existentes de teste
-em `assets/models/` não demonstram qualidade de classificação na pista.
+o mesmo recorte no `SilverLineDetector`. O padrão é a imagem inteira. Os modelos
+existentes de teste em `assets/models/` não demonstram qualidade de classificação
+na pista.
 
 Saídas: `training_outputs/silver_<camera>/` contém divisão das sessões, modelo
 Keras, métricas, histórico e falsos positivos; `assets/models/silver_<camera>.tflite`
 recebe o modelo exportado. Reexecutar o treinamento substitui essas saídas da
 mesma câmera. Preserve uma cópia quando quiser comparar experimentos.
+
+Depois do treinamento, `vision.silver_detection.SilverLineDetector` carrega o
+modelo correspondente com `from_camera_model("down")` ou
+`from_camera_model("forward")`. `detect(frame)` retorna `detected`, a classe
+vencedora, as probabilidades e a margem da faixa prata sobre a concorrente mais
+forte. Os limites iniciais são 70% de confiança e 15 pontos percentuais de
+margem; calibre ambos com as métricas e falsos positivos do dataset real antes
+de conectar a decisão à missão.
 
 ## Validação antes de operar
 
