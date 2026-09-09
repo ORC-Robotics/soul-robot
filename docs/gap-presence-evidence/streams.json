@@ -1,0 +1,16 @@
+[
+  {
+    "name": "down",
+    "url": "http://obr.local:8080/camera-stream.mjpg",
+    "read_at": 1788906759.3181944,
+    "started_at": 1788906756.9174151,
+    "origin": "published JPEG with overlay; not raw"
+  },
+  {
+    "name": "forward",
+    "url": "http://obr.local:8080/forward-camera-stream.mjpg",
+    "read_at": 1788906759.334649,
+    "started_at": 1788906756.920415,
+    "origin": "published JPEG with overlay; not raw"
+  }
+]

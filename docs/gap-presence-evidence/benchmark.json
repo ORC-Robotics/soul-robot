@@ -1,0 +1,236 @@
+{
+  "synthetic": true,
+  "platform": "Windows-11-10.0.26200-SP0",
+  "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+  "python": "3.12.10",
+  "opencv": "5.0.0",
+  "opencv_threads": 1,
+  "resolution": [
+    960,
+    540
+  ],
+  "frames_per_scenario": 100,
+  "forward_config": {
+    "bands": 7,
+    "min_bands": 3,
+    "max_missing_bands": 1,
+    "min_width": 0.008,
+    "max_width": 0.15,
+    "min_extent": 0.07,
+    "min_elongation": 1.4,
+    "clipped_elongation": 0.75,
+    "max_slope": 3.0,
+    "min_area": 0.00013020833333333333,
+    "max_components": 16,
+    "uncertain_threshold": 0.6,
+    "near_fraction": 0.6,
+    "near_bands": 2
+  },
+  "near_config": {
+    "roi_y0": 0.6,
+    "roi_y1": 1.0,
+    "roi_x0": 0.02,
+    "roi_x1": 0.98,
+    "bands": 7,
+    "min_bands": 3,
+    "max_missing_bands": 1,
+    "min_width": 0.025,
+    "max_width": 0.24,
+    "min_extent": 0.1,
+    "min_elongation": 1.3,
+    "clipped_elongation": 0.5,
+    "max_slope": 3.0,
+    "min_area": 0.0005208333333333333,
+    "max_components": 16,
+    "uncertain_threshold": 0.6,
+    "near_fraction": 0.6,
+    "near_bands": 3
+  },
+  "scenarios": {
+    "center": {
+      "geometry": {
+        "median_ms": 1.1063499841839075,
+        "p95_ms": 1.868030009791255,
+        "max_ms": 5.36820013076067
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 1.8783500418066978,
+        "p95_ms": 2.3874300066381693,
+        "max_ms": 4.795399960130453
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 19.0,
+        "elongation": 12.736842105263158
+      }
+    },
+    "strong_curve": {
+      "geometry": {
+        "median_ms": 1.1913999915122986,
+        "p95_ms": 1.9959899480454624,
+        "max_ms": 2.117900177836418
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 1.8664499511942267,
+        "p95_ms": 2.417780051473525,
+        "max_ms": 6.155800074338913
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 28.0,
+        "elongation": 8.642857142857142
+      }
+    },
+    "multiple": {
+      "geometry": {
+        "median_ms": 1.4729499816894531,
+        "p95_ms": 2.074214909225701,
+        "max_ms": 5.199700128287077
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 2.1881499560549855,
+        "p95_ms": 3.1144950655288994,
+        "max_ms": 6.009900011122227
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 19.0,
+        "elongation": 12.736842105263158
+      }
+    },
+    "crossing": {
+      "geometry": {
+        "median_ms": 1.1213000398129225,
+        "p95_ms": 1.3398449518717825,
+        "max_ms": 3.917600028216839
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 1.7726500518620014,
+        "p95_ms": 2.690315106883645,
+        "max_ms": 4.79470007121563
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 19.0,
+        "elongation": 12.736842105263158
+      }
+    },
+    "serrated": {
+      "geometry": {
+        "median_ms": 1.6188500449061394,
+        "p95_ms": 5.782350036315619,
+        "max_ms": 8.828500052914023
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 2.1168000530451536,
+        "p95_ms": 3.524619818199426,
+        "max_ms": 5.501300096511841
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 189,
+        "thickness": 19.0,
+        "elongation": 9.947368421052632
+      }
+    },
+    "overload": {
+      "geometry": {
+        "median_ms": 4.454549867659807,
+        "p95_ms": 7.44615497533232,
+        "max_ms": 10.960099985823035
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 5.058999988250434,
+        "p95_ms": 7.750159886199979,
+        "max_ms": 9.821200044825673
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 19.0,
+        "elongation": 12.736842105263158
+      }
+    },
+    "side": {
+      "geometry": {
+        "median_ms": 0.8614500984549522,
+        "p95_ms": 1.5080299461260438,
+        "max_ms": 1.639900030568242
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 1.2001499999314547,
+        "p95_ms": 1.7061949474737048,
+        "max_ms": 5.616500042378902
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 37.0,
+        "elongation": 6.54054054054054
+      }
+    },
+    "tilted": {
+      "geometry": {
+        "median_ms": 0.9992999257519841,
+        "p95_ms": 1.6743200365453956,
+        "max_ms": 2.661400008946657
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 1.483549945987761,
+        "p95_ms": 1.973830012138932,
+        "max_ms": 3.6822999827563763
+      },
+      "state": "PRESENT",
+      "confidence": 1.0,
+      "components": {
+        "score": 1.0,
+        "extent": 242,
+        "thickness": 80.0,
+        "elongation": 3.025
+      }
+    },
+    "particles": {
+      "geometry": {
+        "median_ms": 0.4871500423178077,
+        "p95_ms": 0.6392299663275479,
+        "max_ms": 0.7956998888403177
+      },
+      "segmentation_and_geometry": {
+        "median_ms": 0.7784999907016754,
+        "p95_ms": 1.0528050945140421,
+        "max_ms": 1.387299969792366
+      },
+      "state": "ABSENT",
+      "confidence": 0.0,
+      "components": {}
+    }
+  },
+  "near_presence": {
+    "median_ms": 0.5072499625384808,
+    "p95_ms": 0.7337250048294663,
+    "max_ms": 1.0828999802470207
+  },
+  "bottom_reference": {
+    "median_ms": 0.21840003319084644,
+    "p95_ms": 0.44979003723710775,
+    "max_ms": 0.5920000839978456
+  }
+}

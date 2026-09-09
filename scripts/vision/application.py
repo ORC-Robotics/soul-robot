@@ -7,7 +7,13 @@ import cv2  # type: ignore
 import numpy as np
 
 from . import stream_display
+try:
+    from silver_dataset_recorder import SilverDatasetRecorder
+except ImportError:
+    SilverDatasetRecorder = None
 from .calibration_capture import CalibrationCapture
+from .gap_validation import GapValidator, read_json_snapshot, FORWARD_STATUS_PATH
+from .line_presence import draw_near_presence_overlay
 from .line_control import LineFollowerController
 from .maneuver_state import LineManeuverState
 from .status_publisher import LineStatusPublisher
@@ -62,9 +68,6 @@ from .green_detection import (
 )
 from .line_control import (
     draw_line_control_overlay,
-    gap_entry_is_required,
-    update_gap_forward_recovery,
-    update_gap_recent_near_frames,
     update_green_maneuver_state,
     virtual_raw_line_is_visible,
 )
@@ -77,12 +80,17 @@ from .line_masks import (
 from .normal_trajectory import (
     draw_normal_trajectory_overlay,
 )
+from .silver_detection import (
+    SilverShadowMonitor,
+    empty_silver_shadow_status,
+)
 from .stream_display import (
     create_display_frame,
     draw_green_candidate_overlays,
     draw_green_rejection_details,
     draw_green_roi_overlays,
     draw_line_mode_green_overlays,
+    draw_silver_shadow_overlay,
     encode_frame,
     get_display_mode,
     handle_signal,
@@ -111,6 +119,9 @@ class DownwardCameraApplication:
         vision_profile = camera_profile["vision"]
         camera_details = {}
         status_publisher = LineStatusPublisher()
+        self.dataset_recorder = None
+        silver_shadow_monitor = SilverShadowMonitor()
+        silver_shadow_status = empty_silver_shadow_status()
 
         if GPIO is None or Picamera2 is None or Transform is None:
             error_message = "Dependências GPIO, libcamera ou Picamera2 não encontradas."
@@ -182,6 +193,7 @@ class DownwardCameraApplication:
             line_sequence = 0
             green_tracker = GreenObservationTracker()
             line_controller = LineFollowerController()
+            gap_validator = GapValidator()
             maneuver_state = LineManeuverState()
             maneuver_state.fusion_target_history = None
 
@@ -193,6 +205,7 @@ class DownwardCameraApplication:
 
              # Estado persistente da travessia de gap.
             maneuver_state.gap_forward_active = False
+            maneuver_state.gap_fusion_reacquire_active = False
             maneuver_state.gap_forward_frames = 0
             maneuver_state.gap_reacquire_frames = 0
             maneuver_state.gap_line_lost_seen = False
@@ -224,6 +237,15 @@ class DownwardCameraApplication:
                 flush=True,
             )
 
+            # A coleta compartilha os frames da câmera e falha sem interromper a visão.
+            if SilverDatasetRecorder is not None:
+                try:
+                    self.dataset_recorder = SilverDatasetRecorder("down")
+                except Exception as error:
+                    print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
+
+            silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
+
             while stream_display.running:
                 calibration_requested = calibration_capture.before_frame()
                 green_capture_requested = os.path.isfile(GREEN_CAPTURE_REQUEST_PATH)
@@ -238,6 +260,13 @@ class DownwardCameraApplication:
                         camera_request.release()
                 else:
                     raw_frame = picam2.capture_array()
+
+                if self.dataset_recorder is not None:
+                    try:
+                        self.dataset_recorder.submit(raw_frame)
+                    except Exception as error:
+                        print(f"Coleta do dataset inferior desativada após erro inesperado: {error}", flush=True)
+                        self.dataset_recorder = None
 
                 frame_height = raw_frame.shape[0]
                 vision_geometry = resolve_vision_geometry(
@@ -350,6 +379,11 @@ class DownwardCameraApplication:
 
                 line_timestamp = time.time()
                 line_sequence += 1
+                silver_shadow_status = silver_shadow_monitor.process(
+                    raw_frame,
+                    line_sequence,
+                    line_timestamp,
+                )
                 green_raw_interpretation = green_interpretation["interpretation"]
                 green_tracker_result = green_tracker.update(
                     line_sequence,
@@ -402,10 +436,6 @@ class DownwardCameraApplication:
                 )
                 near_center_visible = virtual_sensor_is_active(
                     virtual_sensors["nearCenter"]
-                )
-                maneuver_state.gap_recent_near_frames = update_gap_recent_near_frames(
-                    maneuver_state.gap_recent_near_frames,
-                    near_center_visible,
                 )
                 raw_line_visible = virtual_raw_line_is_visible(
                     virtual_sensors
@@ -535,73 +565,19 @@ class DownwardCameraApplication:
                         )
                     ),
                 )
-                geometric_heading = geometric_guidance.get(
-                    "farHeadingDeg"
-                )
-                lateral_exit_target = geometric_guidance.get(
-                    "lateralExitTarget"
-                )
-                real_near_point = geometric_guidance.get(
-                    "nearPoint"
-                )
-                virtual_near_point = geometric_guidance.get(
-                    "virtualNearPoint"
-                )
-                trace_folded_back = (
-                    geometric_heading is not None
-                    and abs(float(geometric_heading)) > 90.0
-                )
-
-                if gap_entry_is_required(
-                    maneuver_state.gap_forward_active,
-                    maneuver_state.green_direction,
-                    maneuver_state.gap_recent_near_frames,
-                    near_center_visible,
-                    real_near_point,
-                    virtual_near_point,
-                    lateral_exit_target,
-                    fusion_near_connected=(
-                        isinstance(fusion_style_line, dict)
-                        and fusion_style_line.get("valid") is True
-                        and fusion_style_line.get("selection") == "nearCenter"
-                    ),
-                ):
-                    maneuver_state.gap_forward_active = True
-                    maneuver_state.gap_forward_frames = 0
-                    maneuver_state.gap_reacquire_frames = 0
-                    maneuver_state.gap_line_lost_seen = True
-
-
-                gap_blind_search_requested = False
-                if maneuver_state.gap_forward_active:
-                    near_center_reacquired = virtual_sensor_is_active(
-                        virtual_sensors["nearCenter"]
-                    )
-                    near_reacquired = (
-                        near_center_reacquired
-                        or (
-                            real_near_point is not None
-                            and not trace_folded_back
-                        )
-                    )
-                    gap_state = update_gap_forward_recovery(
-                        maneuver_state.gap_forward_active,
-                        maneuver_state.gap_forward_frames,
-                        maneuver_state.gap_reacquire_frames,
-                        maneuver_state.gap_line_lost_seen,
-                        near_reacquired,
-                    )
-                    maneuver_state.gap_forward_active = gap_state["active"]
-                    maneuver_state.gap_forward_frames = gap_state["forwardFrames"]
-                    maneuver_state.gap_reacquire_frames = gap_state["reacquireFrames"]
-                    maneuver_state.gap_line_lost_seen = gap_state["lineLostSeen"]
-                    gap_blind_search_requested = gap_state[
-                        "blindSearchRequested"
-                    ]
-                    if not maneuver_state.gap_forward_active:
-                        line_controller.line_search_tracker.stop()
-
                 line_control_started = time.perf_counter()
+                bottom_far_present = (
+                    virtual_sensor_trust_is_active(virtual_sensors, "farTrusted")
+                    and virtual_sensors.get("farBandPosition") is not None
+                )
+                gap_blind_search_requested = gap_validator.process_frame(
+                    line_candidate_mask, maneuver_state, line_controller, line_sequence,
+                    line_timestamp, read_json_snapshot(FORWARD_STATUS_PATH), time.monotonic(),
+                    time.time(), fusion_blind_search_direction, sensor_recovery_requested,
+                    bottom_far_present=bottom_far_present,
+                    fusion_style_line=fusion_style_line,
+                    virtual_sensors=virtual_sensors,
+                )
 
                 line_follower_command = (
                     line_controller.calculate(
@@ -611,11 +587,15 @@ class DownwardCameraApplication:
                         maneuver_state.gap_forward_active,
                         virtual_sensors=virtual_sensors,
                         blind_search_requested=gap_blind_search_requested,
+                        local_line_lost=gap_validator.decision == "LOST",
                         sensor_recovery_requested=sensor_recovery_requested,
                         fusion_style_line=fusion_style_line,
                         curva_verde_iniciada=maneuver_state.green_curve_started,
                         blind_search_preferred_direction=(
                             fusion_blind_search_direction
+                        ),
+                        gap_fusion_reacquire_active=(
+                            maneuver_state.gap_fusion_reacquire_active
                         ),
                     )
                 )
@@ -713,6 +693,14 @@ class DownwardCameraApplication:
                         line_follower_command
                     )
 
+                if line_ipc_enabled:
+                    if not green_candidate_hold_active and gap_validator.near["present"]:
+                        gap_validator.remember(
+                            line_candidate_mask, fusion_style_line, line_follower_command,
+                            line_timestamp, line_sequence,
+                        )
+                    line_follower_command.update(gap_validator.diagnostics())
+
                 line_control_ms = (
                     time.perf_counter() - line_control_started
                 ) * 1000.0
@@ -735,6 +723,7 @@ class DownwardCameraApplication:
                         line_sequence,
                         green_status,
                         specular_repair_status=specular_repair_status,
+                        silver_status=silver_shadow_status,
                     )
 
                 if green_capture_requested:
@@ -877,6 +866,10 @@ class DownwardCameraApplication:
                         fusion_style_line,
                         line_follower_command,
                     )
+                    draw_near_presence_overlay(frame, gap_validator.near, line_follower_command)
+                    # O shadow é desenhado somente na cópia exibida. O frame bruto
+                    # usado pela visão, pelo modelo e pelo dataset permanece intacto.
+                    draw_silver_shadow_overlay(frame, silver_shadow_status)
 
                 now = time.monotonic()
                 elapsed = now - previous_time
@@ -931,6 +924,7 @@ class DownwardCameraApplication:
                         normal_trajectory=normal_trajectory,
                         fusion_style_line=fusion_style_line,
                         line_follower_command=line_follower_command,
+                        silver_shadow_status=silver_shadow_status,
                     )
                     last_status_time = now
         except Exception as error:

@@ -697,6 +697,59 @@ GEOMETRIC_GAP_MAX_SEARCH_PX = 120
 # amostra geométrica na altura exata usada pelo rastreador preservado.
 GAP_NEAR_HISTORY_FRAMES = 3
 
+# Presença física independente de NEAR-C e Fusion. O contexto começa em 0,60;
+# a confirmação exige bandas abaixo de 0,76, abrangendo NEAR-C e as duas asas.
+NEAR_LINE_PRESENCE_CONFIG = {
+    "roi_y0": 0.60, "roi_y1": 1.0, "roi_x0": 0.02, "roi_x1": 0.98,
+    "bands": 7, "min_bands": 3, "max_missing_bands": 1,
+    "min_width": 0.025, "max_width": 0.24,  # Frações da largura: 12–115 px em 480.
+    "min_extent": 0.10,  # Extensão entre bandas: pelo menos 48 px em 480.
+    "min_elongation": 1.3,  # Extensão/espessura; evita confirmar manchas compactas.
+    "clipped_elongation": 0.50,  # Aceita a ponta curta cortada pelo FOV, mantendo extensão mínima.
+    "max_slope": 3.0,  # Deslocamento transversal por pixel longitudinal entre bandas.
+    "min_area": 120.0 / (480 * 480),  # Apenas descarte rápido, nunca confirmação.
+    "max_components": 16, "uncertain_threshold": 0.60,
+    "near_fraction": 0.60, "near_bands": 3,  # Suporte local abaixo de y=0,76.
+}
+
+# A frontal confirma fita presente, mesmo inclinada ou lateral após uma curva.
+# A continuidade interna importa; acertar a extrapolação inferior não é requisito.
+FORWARD_PRESENCE_CONFIG = {
+    "bands": 7, "min_bands": 3, "max_missing_bands": 1,
+    "min_width": 0.008, "max_width": 0.15,  # Frações da largura frontal.
+    "min_extent": 0.07, "min_elongation": 1.4,
+    "clipped_elongation": 0.75,  # Não exige comprimento invisível além da borda.
+    "max_slope": 3.0,
+    "min_area": 120.0 / (960 * 960), "max_components": 16,
+    "uncertain_threshold": 0.60,
+    "near_fraction": 0.60,  # Prioriza os 60% mais próximos da ROI frontal.
+    "near_bands": 2,  # Exige suporte próximo, além de um único pixel na base.
+}
+
+# Validação frontal: posições usam a largura inteira de cada imagem, com zero
+# no eixo do robô. As escalas são projeções heurísticas, não uma homografia medida.
+FORWARD_PATH_CONFIG = {
+    "bottom_x_scale": 1.0,  # Ajustar se os FOVs tiverem escalas laterais diferentes.
+    "projection_near_offset": 0.0,  # Distância além do topo inferior, em sua escala.
+    "projection_depth_scale": 0.45,  # Avanço frontal na escala vertical inferior.
+}
+
+# Janelas em segundos. Decisões usam relógio monotônico; idades do IPC usam Unix.
+# Frames duplicados não confirmam GAP nem estendem indefinidamente a travessia.
+GAP_VALIDATION_CONFIG = {
+    "source_timeout": 0.125,  # Mesmo prazo do IPC frontal consumido pelo C++.
+    "reference_timeout": 2.0,  # Expira a trajetória anterior depois de perda longa.
+    "near_history_seconds": 0.30,  # Memória local curta; não usa validade do Fusion.
+    "near_present_frames": 2,  # Arma a detecção após presença real em frames novos.
+    "near_loss_frames": 2,  # Uma única imagem vazia não inicia possível GAP.
+    "bottom_far_present_frames": 2,  # FAR inferior confirma continuação de GAP curto.
+    "bottom_fusion_reacquire_frames": 2,  # Fusion distante estável pode reassumir antes do NEAR.
+    "confirmation_seconds": 0.25,  # Janela curta para frontal vazia/incerta.
+    "forward_present_frames": 2,  # Confirmação por frames frontais distintos.
+    "evidence_grace_seconds": 0.20,  # Tolera um frame vazio após confirmar GAP.
+    "max_gap_seconds": 1.5,  # Teto de avanço, compatível com 45 frames a 30 FPS.
+}
+
 # Uma faixa encontrada após o gap precisa continuar também nesta
 # distância para não aceitarmos um pequeno blob isolado como caminho.
 GEOMETRIC_GAP_CONFIRM_OFFSET_PX = 12

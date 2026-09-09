@@ -315,18 +315,64 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 "forwardLineTimestamp",
                 "forwardLineNormalLeftPower",
                 "forwardLineNormalRightPower",
+                "forwardPathVersion",
+                "forwardLinePresent",
+                "forwardPathState",
+                "forwardPathConfidence",
+                "forwardPathReferenceValid",
+                "forwardPathReferenceSequence",
+                "forwardPathReferenceTimestamp",
+                "forwardPathComponents",
             },
         )
         self.assertEqual(status["forwardLineSequence"], 7)
         self.assertEqual(status["forwardLineTimestamp"], 123.5)
-        self.assertGreater(status["forwardLineNormalRightPower"], 0.0)
-        self.assertGreater(status["forwardLineNormalLeftPower"], 0.0)
-        self.assertLess(
-            status["forwardLineNormalLeftPower"],
-            status["forwardLineNormalRightPower"],
-        )
+        self.assertIsNone(status["forwardLineNormalRightPower"])
+        self.assertIsNone(status["forwardLineNormalLeftPower"])
+        self.assertEqual(status["forwardPathVersion"], 2)
+        self.assertFalse(status["forwardPathReferenceValid"])
 
-    def test_forward_mapper_never_generates_reverse_or_strong_range(self):
+    def test_paired_ipc_uses_recent_bottom_reference_and_confirms_native_gap(self):
+        from vision import status_publisher
+        from vision.fusion_guidance import extract_fusion_style_line
+        from vision.gap_validation import GapValidator, read_json_snapshot
+        from vision.line_control import LineFollowerController
+        from vision.maneuver_state import LineManeuverState
+
+        bottom = np.zeros((360, 480), np.uint8)
+        bottom[:, 220:260] = 255
+        fusion = extract_fusion_style_line(bottom)
+        controller, validator = LineFollowerController(), GapValidator()
+        command = controller.calculate(bottom, {}, fusion_style_line=fusion)
+        validator.remember(bottom, fusion, command, 100.0, 10)
+        command.update(validator.diagnostics())
+        front = np.full((540, 960, 3), 255, np.uint8)
+        front[:, 462:498] = 0
+        maneuver = LineManeuverState()
+        tracker = forward_camera_stream.ForwardPathTracker()
+        with tempfile.TemporaryDirectory() as folder:
+            bottom_path, front_path = Path(folder) / "bottom.json", Path(folder) / "front.json"
+            with mock.patch.object(status_publisher, "LINE_STATUS_PATH", bottom_path), \
+                    mock.patch.object(status_publisher, "TEMP_LINE_STATUS_PATH", str(bottom_path) + ".tmp"), \
+                    mock.patch.object(forward_camera_stream, "FORWARD_LINE_STATUS_PATH", front_path), \
+                    mock.patch.object(forward_camera_stream, "TEMP_FORWARD_LINE_STATUS_PATH", str(front_path) + ".tmp"):
+                status_publisher.save_line_status(command, 100.0, 10, {})
+                observed_reference = read_json_snapshot(bottom_path)["bottomPathReference"]
+                for sequence, seconds in ((1, 0.02), (2, 0.06)):
+                    observed = forward_camera_stream.process_forward_frame(
+                        front, "RGB888", observed_reference, tracker, 100 + seconds)
+                    self.assertTrue(forward_camera_stream.save_forward_line_status(observed, 100 + seconds, sequence))
+                    snapshot = read_json_snapshot(front_path)
+                    validator.apply(maneuver, controller, True, False, False,
+                                    snapshot, seconds, 100 + seconds)
+                self.assertEqual(validator.decision, "GAP")
+                self.assertTrue(maneuver.gap_forward_active)
+                self.assertIsNone(snapshot["forwardLineNormalLeftPower"])
+                empty = np.zeros_like(bottom)
+                crossing = controller.calculate(empty, {}, gap_forward_active=maneuver.gap_forward_active)
+                self.assertEqual(crossing["controlSource"], "gap-forward")
+
+    def test_bottom_mapper_remains_inside_original_normal_range(self):
         for position in (-1.0, -0.2, 0.0, 0.2, 1.0):
             command = camera_line_frame.map_normal_steering_error(position)
 

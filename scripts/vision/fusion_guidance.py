@@ -1230,7 +1230,10 @@ def map_fusion_angle_to_steering_error(fusion_angle):
     return max(-1.0, min(1.0, steering_error))
 
 
-def calculate_fusion_control_status(fusion_style_line):
+def calculate_fusion_control_status(
+    fusion_style_line,
+    allow_distant_reacquisition=False,
+):
     """Valida a geometria Fusion e prepara sua telemetria de controle."""
 
     result = {
@@ -1255,9 +1258,16 @@ def calculate_fusion_control_status(fusion_style_line):
     # Nesta primeira etapa não há filtro temporal: o valor filtrado é uma cópia
     # direta do ângulo validado para deixar explícita essa decisão na telemetria.
     result["filteredFusionAngle"] = fusion_angle
+    selection = fusion_style_line.get("selection")
     fusion_geometry_valid = (
         fusion_style_line.get("valid") is True
-        and fusion_style_line.get("selection") == "nearCenter"
+        and (
+            selection == "nearCenter"
+            or (
+                allow_distant_reacquisition
+                and selection == "deepestFallback"
+            )
+        )
         and fusion_target_is_valid(fusion_style_line.get("nearPoint"))
         and fusion_target_is_valid(fusion_style_line.get("farPoint"))
     )

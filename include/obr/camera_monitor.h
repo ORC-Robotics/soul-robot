@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 
 enum class GreenInterpretation
 {
@@ -71,17 +72,24 @@ struct CameraLineSnapshot
     // Direção lateral calculada pelo recovery inferior exclusivamente com
     // posições trusted. A Raspberry apenas memoriza esta decisão entre frames.
     std::string trustedDirection = "NONE";
+    // Decisão do Python inferior; não contém steering frontal.
+    std::string gapValidationDecision = "NORMAL";
+    std::string nearLineState = "UNKNOWN";
     CameraCurveDiagnostics curveDiagnostics;
 };
 
-// Leitura leve da câmera frontal e comando produzido pelo mapper NORMAL
-// compartilhado com a câmera inferior. Confidence permanece apenas diagnóstico.
+// Trajetória frontal auxiliar. O Python inferior usa sua evidência para GAP;
+// nenhum consumidor deve convertê-la em comando de motor.
 struct ForwardLineSnapshot
 {
     bool sourceFresh = false;
     bool visible = false;
     double position = std::numeric_limits<double>::quiet_NaN();
     double confidence = 0.0;
+    std::string pathState = "ABSENT";
+    bool present = false;
+    bool referenceValid = false;
+    // Compatibilidade da estrutura: potências antigas nunca têm autoridade.
     double normalLeftPower = 0.0;
     double normalRightPower = 0.0;
     double timestamp = 0.0;
@@ -113,6 +121,9 @@ struct ForwardBallSnapshot
 class CameraMonitor
 {
 public:
+    // Um caminho alternativo permite testar o contrato IPC sem câmera nem motores.
+    explicit CameraMonitor(std::string forwardLineStatusPath = {})
+        : forwardLineStatusPath_(std::move(forwardLineStatusPath)) {}
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
@@ -121,6 +132,7 @@ public:
     bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
 
 private:
+    std::string forwardLineStatusPath_;
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
     ForwardLineSnapshot cachedForwardLineSnapshot_;

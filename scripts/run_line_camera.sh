@@ -3,7 +3,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="${OBR_APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PYTHON_BIN="$APP_DIR/.venv/bin/python3"
+PYTHON_BIN=""
+AI_PYTHON_BIN="$APP_DIR/.venv-ai/bin/python3"
+DEFAULT_PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 CAMERA_SCRIPT="$APP_DIR/scripts/camera_line_frame.py"
 STATUS_WRITER="$APP_DIR/scripts/write_line_camera_status.py"
 LINE_STATUS_PATH="/dev/shm/obr_line_status.json"
@@ -13,7 +15,14 @@ IDLE_POLL_SECONDS="0.10"
 RETRY_DELAY_SECONDS="1"
 CAMERA_PID=""
 
-if [[ ! -x "$PYTHON_BIN" ]]; then
+if [[ -x "$AI_PYTHON_BIN" ]] &&
+   "$AI_PYTHON_BIN" -c 'import cv2, numpy; from picamera2 import Picamera2; from ai_edge_litert.interpreter import Interpreter' >/dev/null 2>&1; then
+  # Usa o ambiente de inferência somente quando ele também possui todas as
+  # dependências da câmera. Um ambiente incompleto não pode derrubar o serviço.
+  PYTHON_BIN="$AI_PYTHON_BIN"
+elif [[ -x "$DEFAULT_PYTHON_BIN" ]]; then
+  PYTHON_BIN="$DEFAULT_PYTHON_BIN"
+else
   PYTHON_BIN="$(command -v python3)"
 fi
 

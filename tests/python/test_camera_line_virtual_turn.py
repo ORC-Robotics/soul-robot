@@ -76,6 +76,7 @@ def calculate_command(
     mask=None,
     fusion_style_line=None,
     blind_search_preferred_direction=None,
+    gap_fusion_reacquire_active=False,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
@@ -101,6 +102,7 @@ def calculate_command(
             blind_search_preferred_direction=(
                 blind_search_preferred_direction
             ),
+            gap_fusion_reacquire_active=gap_fusion_reacquire_active,
         )
 
 
@@ -3499,7 +3501,7 @@ class VirtualRecoveryTests(unittest.TestCase):
             fusion_near_connected=distant_fusion_near_connected,
         ))
 
-    def test_recent_near_loss_uses_far_left_gap_recovery(self):
+    def test_recent_near_loss_with_far_left_crosses_straight(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
             near_center_visible=True,
@@ -3521,13 +3523,14 @@ class VirtualRecoveryTests(unittest.TestCase):
         result = calculate_command(sensors, gap_active=gap_active)
 
         self.assertEqual(result["lineState"], "GAP")
-        self.assertEqual(result["controlSource"], "gap-sensor-recovery")
+        self.assertEqual(result["controlSource"], "gap-forward")
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+            (camera_line_frame.NORMAL_BASE_POWER,
+             camera_line_frame.NORMAL_BASE_POWER),
         )
 
-    def test_recent_near_loss_uses_far_right_gap_recovery(self):
+    def test_recent_near_loss_with_far_right_crosses_straight(self):
         recent_near_frames = camera_line_frame.update_gap_recent_near_frames(
             0,
             near_center_visible=True,
@@ -3549,10 +3552,11 @@ class VirtualRecoveryTests(unittest.TestCase):
         result = calculate_command(sensors, gap_active=gap_active)
 
         self.assertEqual(result["lineState"], "GAP")
-        self.assertEqual(result["controlSource"], "gap-sensor-recovery")
+        self.assertEqual(result["controlSource"], "gap-forward")
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+            (camera_line_frame.NORMAL_BASE_POWER,
+             camera_line_frame.NORMAL_BASE_POWER),
         )
 
     def test_gap_near_history_expires_without_being_renewed(self):
@@ -3745,17 +3749,19 @@ class VirtualRecoveryTests(unittest.TestCase):
             (0.0, 0.0),
         )
 
-    def test_gap_uses_medium_and_far_band_lateral_recovery(self):
+    def test_gap_ignores_medium_and_far_lateral_steering(self):
         cases = (
             (
                 sensor_values(None, -0.80, None),
                 "LEFT",
-                (0.0, camera_line_frame.NORMAL_BASE_POWER),
+                (camera_line_frame.NORMAL_BASE_POWER,
+                 camera_line_frame.NORMAL_BASE_POWER),
             ),
             (
                 sensor_values(None, None, 0.80),
                 "RIGHT",
-                (camera_line_frame.NORMAL_BASE_POWER, 0.0),
+                (camera_line_frame.NORMAL_BASE_POWER,
+                 camera_line_frame.NORMAL_BASE_POWER),
             ),
         )
         for sensors, _direction, expected_powers in cases:
@@ -3773,20 +3779,62 @@ class VirtualRecoveryTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     result["controlSource"],
-                    "gap-sensor-recovery",
+                    "gap-forward",
                 )
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
                     expected_powers,
                 )
 
-    def test_gap_recovery_direction_comes_from_forward_sensors(self):
+    def test_gap_does_not_turn_toward_forward_sensors_or_legacy_timeout(self):
         sensors = sensor_values(None, 0.80, 0.80)
         sensors["nearCenter"] = 0.20
         sensors["nearFinePosition"] = -0.80
-        result = calculate_command(sensors, gap_active=True)
-        self.assertEqual(result["controlSource"], "gap-sensor-recovery")
-        self.assertEqual((result["left_power"], result["right_power"]), (0.75, 0.0))
+        result = calculate_command(
+            sensors,
+            gap_active=True,
+            blind_search_requested=True,
+        )
+        self.assertEqual(result["controlSource"], "gap-forward")
+        self.assertEqual(
+            (result["left_power"], result["right_power"]),
+            (camera_line_frame.NORMAL_BASE_POWER,
+             camera_line_frame.NORMAL_BASE_POWER),
+        )
+
+    def test_distant_fusion_only_controls_during_confirmed_gap_reacquisition(self):
+        fusion_line = camera_line_frame.empty_fusion_style_line()
+        fusion_line.update({
+            "valid": True,
+            "selection": "deepestFallback",
+            "angleDeg": 110.0,
+            "nearPoint": {"x": 50, "y": 99},
+            "farPoint": {"x": 70, "y": 30},
+            "targetStableFrames": 2,
+            "targetConsistency": 1.0,
+            "fusionSpeedScale": 1.0,
+        })
+        sensors = sensor_values(None, 0.25, 0.30)
+
+        normal = calculate_command(sensors, fusion_style_line=fusion_line)
+        reacquiring = calculate_command(
+            sensors,
+            fusion_style_line=fusion_line,
+            gap_fusion_reacquire_active=True,
+        )
+
+        self.assertFalse(normal["fusionControlActive"])
+        self.assertNotEqual(normal["controlSource"], "fusion")
+        self.assertEqual(reacquiring["lineState"], "GAP")
+        self.assertEqual(
+            reacquiring["controlSource"],
+            "fusion-gap-reacquire",
+        )
+        self.assertTrue(reacquiring["fusionControlActive"])
+        self.assertNotEqual(
+            reacquiring["left_power"],
+            reacquiring["right_power"],
+        )
 
     def test_gap_only_ends_after_confirmed_near_reacquisition(self):
         self.assertEqual(camera_line_frame.GEOMETRIC_GAP_REACQUIRE_FRAMES, 2)

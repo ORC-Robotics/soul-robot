@@ -98,10 +98,13 @@ constexpr const char* kForwardBallStatusPath =
 constexpr int kForwardBallStatusTimeoutMs = 500;
 
 // Idade máxima, em milissegundos, aceita para a leitura frontal.
-// Uma amostra mais antiga perde autoridade imediatamente e não pode manter
-// nem o seguimento frontal nem uma decisão de linha encontrada.
+// Uma amostra antiga não valida GAP. O prazo correspondente do Python está em
+// GAP_VALIDATION_CONFIG["source_timeout"], em segundos, no perfil da câmera.
 constexpr int kForwardLineStatusTimeoutMs = 125;
 
+// Legado do assistente que comandava motores: estes parâmetros de giro e
+// confirmação não atuam mais. Dois campos continuam no JSON por compatibilidade.
+// Os novos gates de GAP ficam em GAP_VALIDATION_CONFIG, no Python inferior.
 // Potência simétrica usada somente na busca frontal com direção já confirmada
 // pela câmera inferior. O sinal é aplicado conforme LEFT ou RIGHT.
 constexpr double kForwardAssistSearchSpinPower = 0.72;
@@ -128,9 +131,8 @@ constexpr int kForwardAssistBottomStableFrames = 2;
 // prolongar excessivamente a transição quando a linha realmente desaparece.
 constexpr int kForwardAssistBottomLossFrames = 2;
 
-// Limites do mapper virtual NORMAL existente na câmera inferior. A leitura
-// frontal publica o resultado desse mesmo mapper e a Raspberry rejeita qualquer
-// comando auxiliar fora desta faixa no FORWARD_FOLLOW.
+// Limites ainda usados para validar o mapper NORMAL inferior no CameraMonitor.
+// O nome histórico permanece; estes valores não autorizam controle frontal.
 constexpr double kForwardAssistNormalMinimumPower = 0.66;
 constexpr double kForwardAssistNormalMaximumPower = 0.82;
 

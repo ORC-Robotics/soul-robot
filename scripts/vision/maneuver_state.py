@@ -10,6 +10,7 @@ class LineManeuverState:
         self.green_centered_frames = 0
         self.green_active_frames = 0
         self.gap_forward_active = False
+        self.gap_fusion_reacquire_active = False
         self.gap_forward_frames = 0
         self.gap_reacquire_frames = 0
         self.gap_line_lost_seen = False

@@ -1,0 +1,1393 @@
+{
+  "origin": "read-only existing IPC; not paired with JPEG",
+  "samples": [
+    {
+      "read_at": 1788907109.6827528,
+      "down": {
+        "lineTimestamp": 1788907109.6471648,
+        "lineSequence": 47992,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.6664815,
+        "forwardLineSequence": 48379,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028058606616700787,
+        "forwardLineConfidence": 0.17722146014327084
+      }
+    },
+    {
+      "read_at": 1788907109.7230232,
+      "down": {
+        "lineTimestamp": 1788907109.6833832,
+        "lineSequence": 47993,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.7000933,
+        "forwardLineSequence": 48380,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028594323492328044,
+        "forwardLineConfidence": 0.17731195701874713
+      }
+    },
+    {
+      "read_at": 1788907109.7634747,
+      "down": {
+        "lineTimestamp": 1788907109.7465377,
+        "lineSequence": 47995,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.7316883,
+        "forwardLineSequence": 48381,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028531270579032375,
+        "forwardLineConfidence": 0.1774167428745618
+      }
+    },
+    {
+      "read_at": 1788907109.8039227,
+      "down": {
+        "lineTimestamp": 1788907109.777692,
+        "lineSequence": 47996,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.7994094,
+        "forwardLineSequence": 48383,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029490149085236173,
+        "forwardLineConfidence": 0.17779778235025148
+      }
+    },
+    {
+      "read_at": 1788907109.8444662,
+      "down": {
+        "lineTimestamp": 1788907109.8078358,
+        "lineSequence": 47997,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.8327186,
+        "forwardLineSequence": 48384,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028745754477939478,
+        "forwardLineConfidence": 0.17768347050754457
+      }
+    },
+    {
+      "read_at": 1788907109.8847728,
+      "down": {
+        "lineTimestamp": 1788907109.8405046,
+        "lineSequence": 47998,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.8646233,
+        "forwardLineSequence": 48385,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028736883344913977,
+        "forwardLineConfidence": 0.17774062642889804
+      }
+    },
+    {
+      "read_at": 1788907109.9251394,
+      "down": {
+        "lineTimestamp": 1788907109.9065614,
+        "lineSequence": 48000,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.8979044,
+        "forwardLineSequence": 48386,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02850627060040578,
+        "forwardLineConfidence": 0.177659655540314
+      }
+    },
+    {
+      "read_at": 1788907109.9655554,
+      "down": {
+        "lineTimestamp": 1788907109.9405777,
+        "lineSequence": 48001,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.932642,
+        "forwardLineSequence": 48387,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028589013332789515,
+        "forwardLineConfidence": 0.17753581771071483
+      }
+    },
+    {
+      "read_at": 1788907110.0061858,
+      "down": {
+        "lineTimestamp": 1788907109.974405,
+        "lineSequence": 48002,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907109.9978359,
+        "forwardLineSequence": 48389,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028346535193189526,
+        "forwardLineConfidence": 0.1774834247828075
+      }
+    },
+    {
+      "read_at": 1788907110.046515,
+      "down": {
+        "lineTimestamp": 1788907110.0073173,
+        "lineSequence": 48003,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.0312192,
+        "forwardLineSequence": 48390,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029093380608483432,
+        "forwardLineConfidence": 0.1775262917238226
+      }
+    },
+    {
+      "read_at": 1788907110.086795,
+      "down": {
+        "lineTimestamp": 1788907110.0738103,
+        "lineSequence": 48005,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.0661454,
+        "forwardLineSequence": 48391,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02879908172509338,
+        "forwardLineConfidence": 0.17764536655997562
+      }
+    },
+    {
+      "read_at": 1788907110.1270738,
+      "down": {
+        "lineTimestamp": 1788907110.107156,
+        "lineSequence": 48006,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.0993319,
+        "forwardLineSequence": 48392,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028568438046358446,
+        "forwardLineConfidence": 0.17759297363206827
+      }
+    },
+    {
+      "read_at": 1788907110.1675277,
+      "down": {
+        "lineTimestamp": 1788907110.1396108,
+        "lineSequence": 48007,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.1648498,
+        "forwardLineSequence": 48394,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029938625569602362,
+        "forwardLineConfidence": 0.1780502210028959
+      }
+    },
+    {
+      "read_at": 1788907110.2079208,
+      "down": {
+        "lineTimestamp": 1788907110.1732328,
+        "lineSequence": 48008,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.1991534,
+        "forwardLineSequence": 48395,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02980829685277797,
+        "forwardLineConfidence": 0.1781454808718183
+      }
+    },
+    {
+      "read_at": 1788907110.2482376,
+      "down": {
+        "lineTimestamp": 1788907110.2071958,
+        "lineSequence": 48009,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.2327642,
+        "forwardLineSequence": 48396,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029529372583952274,
+        "forwardLineConfidence": 0.1781169029111416
+      }
+    },
+    {
+      "read_at": 1788907110.2885363,
+      "down": {
+        "lineTimestamp": 1788907110.2737002,
+        "lineSequence": 48011,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.264593,
+        "forwardLineSequence": 48397,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.030193943850447935,
+        "forwardLineConfidence": 0.17815500685871055
+      }
+    },
+    {
+      "read_at": 1788907110.328899,
+      "down": {
+        "lineTimestamp": 1788907110.3073666,
+        "lineSequence": 48012,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.300228,
+        "forwardLineSequence": 48398,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029491921542035726,
+        "forwardLineConfidence": 0.17795496113397347
+      }
+    },
+    {
+      "read_at": 1788907110.3696704,
+      "down": {
+        "lineTimestamp": 1788907110.3403516,
+        "lineSequence": 48013,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.3660762,
+        "forwardLineSequence": 48400,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029317684366223506,
+        "forwardLineConfidence": 0.17795496113397347
+      }
+    },
+    {
+      "read_at": 1788907110.410033,
+      "down": {
+        "lineTimestamp": 1788907110.3736343,
+        "lineSequence": 48014,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.3977413,
+        "forwardLineSequence": 48401,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.0298235333753738,
+        "forwardLineConfidence": 0.17806927297668038
+      }
+    },
+    {
+      "read_at": 1788907110.4503105,
+      "down": {
+        "lineTimestamp": 1788907110.4056118,
+        "lineSequence": 48015,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.431072,
+        "forwardLineSequence": 48402,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029673298779509638,
+        "forwardLineConfidence": 0.1782978966620942
+      }
+    },
+    {
+      "read_at": 1788907110.4905915,
+      "down": {
+        "lineTimestamp": 1788907110.4725463,
+        "lineSequence": 48017,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.4658937,
+        "forwardLineSequence": 48403,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029946461012885894,
+        "forwardLineConfidence": 0.1785312833409541
+      }
+    },
+    {
+      "read_at": 1788907110.5310233,
+      "down": {
+        "lineTimestamp": 1788907110.5071654,
+        "lineSequence": 48018,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.499298,
+        "forwardLineSequence": 48404,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029337690728110877,
+        "forwardLineConfidence": 0.1782978966620942
+      }
+    },
+    {
+      "read_at": 1788907110.5714552,
+      "down": {
+        "lineTimestamp": 1788907110.541031,
+        "lineSequence": 48019,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.5645847,
+        "forwardLineSequence": 48406,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.03029846374722278,
+        "forwardLineConfidence": 0.17857891327541534
+      }
+    },
+    {
+      "read_at": 1788907110.61176,
+      "down": {
+        "lineTimestamp": 1788907110.5731103,
+        "lineSequence": 48020,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.599394,
+        "forwardLineSequence": 48407,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029659032075146197,
+        "forwardLineConfidence": 0.17841697149824723
+      }
+    },
+    {
+      "read_at": 1788907110.6520588,
+      "down": {
+        "lineTimestamp": 1788907110.641127,
+        "lineSequence": 48022,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.6348665,
+        "forwardLineSequence": 48408,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029370081189227237,
+        "forwardLineConfidence": 0.17815500685871055
+      }
+    },
+    {
+      "read_at": 1788907110.6923168,
+      "down": {
+        "lineTimestamp": 1788907110.67353,
+        "lineSequence": 48023,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.6645172,
+        "forwardLineSequence": 48409,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02904343778200591,
+        "forwardLineConfidence": 0.17815024386526443
+      }
+    },
+    {
+      "read_at": 1788907110.7326992,
+      "down": {
+        "lineTimestamp": 1788907110.7072651,
+        "lineSequence": 48024,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.732521,
+        "forwardLineSequence": 48411,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029990393397782977,
+        "forwardLineConfidence": 0.178093087943911
+      }
+    },
+    {
+      "read_at": 1788907110.7730818,
+      "down": {
+        "lineTimestamp": 1788907110.7402143,
+        "lineSequence": 48025,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.765958,
+        "forwardLineSequence": 48412,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029533441354245182,
+        "forwardLineConfidence": 0.1780454580094498
+      }
+    },
+    {
+      "read_at": 1788907110.8133702,
+      "down": {
+        "lineTimestamp": 1788907110.7737749,
+        "lineSequence": 48026,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.797749,
+        "forwardLineSequence": 48413,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029899764177060417,
+        "forwardLineConfidence": 0.17817882182594116
+      }
+    },
+    {
+      "read_at": 1788907110.85365,
+      "down": {
+        "lineTimestamp": 1788907110.8389084,
+        "lineSequence": 48028,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.831351,
+        "forwardLineSequence": 48414,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.030066296273871584,
+        "forwardLineConfidence": 0.1782073997866179
+      }
+    },
+    {
+      "read_at": 1788907110.893909,
+      "down": {
+        "lineTimestamp": 1788907110.8734775,
+        "lineSequence": 48029,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.8657885,
+        "forwardLineSequence": 48415,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.03012950500638789,
+        "forwardLineConfidence": 0.17832647462277093
+      }
+    },
+    {
+      "read_at": 1788907110.934309,
+      "down": {
+        "lineTimestamp": 1788907110.9078264,
+        "lineSequence": 48030,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.9309652,
+        "forwardLineSequence": 48417,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029092198688008608,
+        "forwardLineConfidence": 0.17797401310775796
+      }
+    },
+    {
+      "read_at": 1788907110.9747105,
+      "down": {
+        "lineTimestamp": 1788907110.9407592,
+        "lineSequence": 48031,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.9666333,
+        "forwardLineSequence": 48418,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02948799883517439,
+        "forwardLineConfidence": 0.1780025910684347
+      }
+    },
+    {
+      "read_at": 1788907111.0150304,
+      "down": {
+        "lineTimestamp": 1788907110.9736812,
+        "lineSequence": 48032,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907110.999146,
+        "forwardLineSequence": 48419,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029217719542270038,
+        "forwardLineConfidence": 0.1778930422191739
+      }
+    },
+    {
+      "read_at": 1788907111.055326,
+      "down": {
+        "lineTimestamp": 1788907111.0400746,
+        "lineSequence": 48034,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.0327518,
+        "forwardLineSequence": 48420,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029353825452870907,
+        "forwardLineConfidence": 0.17785017527815883
+      }
+    },
+    {
+      "read_at": 1788907111.095735,
+      "down": {
+        "lineTimestamp": 1788907111.0735772,
+        "lineSequence": 48035,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.0644686,
+        "forwardLineSequence": 48421,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029046635790487274,
+        "forwardLineConfidence": 0.17792162017985064
+      }
+    },
+    {
+      "read_at": 1788907111.1365442,
+      "down": {
+        "lineTimestamp": 1788907111.1069229,
+        "lineSequence": 48036,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.1324537,
+        "forwardLineSequence": 48423,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028911041752226696,
+        "forwardLineConfidence": 0.17780730833714373
+      }
+    },
+    {
+      "read_at": 1788907111.1769462,
+      "down": {
+        "lineTimestamp": 1788907111.1403258,
+        "lineSequence": 48037,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.1659386,
+        "forwardLineSequence": 48424,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028326792278347224,
+        "forwardLineConfidence": 0.17749295076969973
+      }
+    },
+    {
+      "read_at": 1788907111.2174478,
+      "down": {
+        "lineTimestamp": 1788907111.173715,
+        "lineSequence": 48038,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.1976779,
+        "forwardLineSequence": 48425,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028881325521638024,
+        "forwardLineConfidence": 0.17772157445511355
+      }
+    },
+    {
+      "read_at": 1788907111.2577333,
+      "down": {
+        "lineTimestamp": 1788907111.2399693,
+        "lineSequence": 48040,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.2308807,
+        "forwardLineSequence": 48426,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028872084046734248,
+        "forwardLineConfidence": 0.17751676573693034
+      }
+    },
+    {
+      "read_at": 1788907111.2980766,
+      "down": {
+        "lineTimestamp": 1788907111.273353,
+        "lineSequence": 48041,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.2659752,
+        "forwardLineSequence": 48427,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029065928826906617,
+        "forwardLineConfidence": 0.17758344764517603
+      }
+    },
+    {
+      "read_at": 1788907111.3384805,
+      "down": {
+        "lineTimestamp": 1788907111.3077812,
+        "lineSequence": 48042,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.3313909,
+        "forwardLineSequence": 48429,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028736597021993493,
+        "forwardLineConfidence": 0.17742626886145405
+      }
+    },
+    {
+      "read_at": 1788907111.3787627,
+      "down": {
+        "lineTimestamp": 1788907111.341759,
+        "lineSequence": 48043,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.364631,
+        "forwardLineSequence": 48430,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028253312509446404,
+        "forwardLineConfidence": 0.17746913580246915
+      }
+    },
+    {
+      "read_at": 1788907111.4190557,
+      "down": {
+        "lineTimestamp": 1788907111.406959,
+        "lineSequence": 48045,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.3989918,
+        "forwardLineSequence": 48431,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02807489664287388,
+        "forwardLineConfidence": 0.1775739216582838
+      }
+    },
+    {
+      "read_at": 1788907111.459311,
+      "down": {
+        "lineTimestamp": 1788907111.4406776,
+        "lineSequence": 48046,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.4325755,
+        "forwardLineSequence": 48432,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02783801931372132,
+        "forwardLineConfidence": 0.1772548010973937
+      }
+    },
+    {
+      "read_at": 1788907111.4997153,
+      "down": {
+        "lineTimestamp": 1788907111.4735231,
+        "lineSequence": 48047,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.497647,
+        "forwardLineSequence": 48434,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.0274032761543761,
+        "forwardLineConfidence": 0.17677373875933547
+      }
+    },
+    {
+      "read_at": 1788907111.5401063,
+      "down": {
+        "lineTimestamp": 1788907111.5063794,
+        "lineSequence": 48048,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.532267,
+        "forwardLineSequence": 48435,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028344738743129705,
+        "forwardLineConfidence": 0.1773262459990855
+      }
+    },
+    {
+      "read_at": 1788907111.5804121,
+      "down": {
+        "lineTimestamp": 1788907111.5390308,
+        "lineSequence": 48049,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.5659745,
+        "forwardLineSequence": 48436,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028059640684411358,
+        "forwardLineConfidence": 0.17697378448407255
+      }
+    },
+    {
+      "read_at": 1788907111.6206934,
+      "down": {
+        "lineTimestamp": 1788907111.606864,
+        "lineSequence": 48051,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.5974967,
+        "forwardLineSequence": 48437,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02860084820344122,
+        "forwardLineConfidence": 0.17712620027434842
+      }
+    },
+    {
+      "read_at": 1788907111.6609735,
+      "down": {
+        "lineTimestamp": 1788907111.640052,
+        "lineSequence": 48052,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.6327908,
+        "forwardLineSequence": 48438,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028459959916059097,
+        "forwardLineConfidence": 0.17693568053650358
+      }
+    },
+    {
+      "read_at": 1788907111.701385,
+      "down": {
+        "lineTimestamp": 1788907111.6735656,
+        "lineSequence": 48053,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.6991029,
+        "forwardLineSequence": 48440,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028153539499300884,
+        "forwardLineConfidence": 0.17700712543819538
+      }
+    },
+    {
+      "read_at": 1788907111.7417605,
+      "down": {
+        "lineTimestamp": 1788907111.7068005,
+        "lineSequence": 48054,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.7306597,
+        "forwardLineSequence": 48441,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02811106573505362,
+        "forwardLineConfidence": 0.17686423563481177
+      }
+    },
+    {
+      "read_at": 1788907111.782064,
+      "down": {
+        "lineTimestamp": 1788907111.7406907,
+        "lineSequence": 48055,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.764462,
+        "forwardLineSequence": 48442,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.029083208105823655,
+        "forwardLineConfidence": 0.1771023853071178
+      }
+    },
+    {
+      "read_at": 1788907111.82236,
+      "down": {
+        "lineTimestamp": 1788907111.8063037,
+        "lineSequence": 48057,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.7988505,
+        "forwardLineSequence": 48443,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02888155514953561,
+        "forwardLineConfidence": 0.17704999237921049
+      }
+    },
+    {
+      "read_at": 1788907111.8627522,
+      "down": {
+        "lineTimestamp": 1788907111.8403149,
+        "lineSequence": 48058,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.8323576,
+        "forwardLineSequence": 48444,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02867619537497057,
+        "forwardLineConfidence": 0.17690233958238075
+      }
+    },
+    {
+      "read_at": 1788907111.9033818,
+      "down": {
+        "lineTimestamp": 1788907111.8735962,
+        "lineSequence": 48059,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.8974059,
+        "forwardLineSequence": 48446,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02846431369321567,
+        "forwardLineConfidence": 0.17704046639231824
+      }
+    },
+    {
+      "read_at": 1788907111.9437208,
+      "down": {
+        "lineTimestamp": 1788907111.9060602,
+        "lineSequence": 48060,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.933367,
+        "forwardLineSequence": 48447,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.028384103077004896,
+        "forwardLineConfidence": 0.17706904435299498
+      }
+    },
+    {
+      "read_at": 1788907111.9840472,
+      "down": {
+        "lineTimestamp": 1788907111.9406042,
+        "lineSequence": 48061,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.968065,
+        "forwardLineSequence": 48448,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02820625125767995,
+        "forwardLineConfidence": 0.17706904435299498
+      }
+    },
+    {
+      "read_at": 1788907112.0243316,
+      "down": {
+        "lineTimestamp": 1788907112.0055714,
+        "lineSequence": 48063,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907111.9974196,
+        "forwardLineSequence": 48449,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.027565464957720387,
+        "forwardLineConfidence": 0.17694996951684194
+      }
+    },
+    {
+      "read_at": 1788907112.064651,
+      "down": {
+        "lineTimestamp": 1788907112.040163,
+        "lineSequence": 48064,
+        "lineControlSource": "fusion",
+        "lineState": "LINE",
+        "lineNearDetected": true,
+        "fusionControlActive": true,
+        "farTrusted": false,
+        "mediumTrusted": false,
+        "finalSteering": -0.3640512474074074,
+        "lineFollowerLeftPower": 0.5921526755555557,
+        "lineFollowerRightPower": 0.7878473244444445
+      },
+      "forward": {
+        "forwardLineTimestamp": 1788907112.0320473,
+        "forwardLineSequence": 48450,
+        "forwardLineVisible": true,
+        "forwardLinePosition": 0.02742094742883272,
+        "forwardLineConfidence": 0.17677373875933547
+      }
+    }
+  ],
+  "source_sha256": {
+    "scripts/vision/application.py": "7cf7c132a2a3df385aaa3bdbdef3879bac42e7280a677f6a151a3cdcf83b7a2b",
+    "scripts/vision/camera_config.py": "bc172d07b099819437dd01f8637b9609060c5bb045699d6f73bffb7da5d41b60",
+    "scripts/vision/line_control.py": "5faad0d0c159014ff9db04f30aaa35a77f03319c3379fa46c41df9b51a8a8db9",
+    "scripts/forward_camera_stream.py": "685daacb13cf46d35e7cef2287435aaed542839f6145281ca3b954c91d0016b2"
+  },
+  "operator_label": "gap real na pista; posição próxima da entrada",
+  "capture_limitation": "Streams JPEG com overlay, IPC amostrado separadamente. Captura raw/mask não executada: StationaryGuard recusou E-Stop desativado. Nenhum comando de movimento enviado."
+}

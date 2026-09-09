@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -575,6 +576,30 @@ class CameraProfilesTest(unittest.TestCase):
         ):
             self.assertTrue(np.array_equal(current, original))
 
+    def test_silver_shadow_overlay_draws_diagnostics_on_display_copy(self):
+        raw = np.zeros((100, 240, 3), dtype=np.uint8)
+        display = raw.copy()
+        status = {
+            "silverShadowAvailable": True,
+            "silverShadowDetected": True,
+            "silverShadowLabel": "silver",
+            "silverShadowProbability": 0.85,
+            "silverShadowMargin": 0.75,
+            "silverShadowInferenceMs": 3.4,
+        }
+
+        with mock.patch(
+            "camera_line_frame.cv2.putText",
+            wraps=camera_line_frame.cv2.putText,
+        ) as put_text:
+            camera_line_frame.draw_silver_shadow_overlay(display, status)
+
+        texts = [call.args[1] for call in put_text.call_args_list]
+        self.assertIn("PRATA SILVER  0/4", texts)
+        self.assertIn("S 85.0%  M 75.0%  3.4 ms", texts)
+        self.assertGreater(np.count_nonzero(display), 0)
+        self.assertEqual(np.count_nonzero(raw), 0)
+
     def test_green_overlays_preserve_candidates_decisions_and_rois(self):
         contour = rectangle_contour(45, 35, 75, 65)
         candidate = {
@@ -904,6 +929,10 @@ class CameraProfilesTest(unittest.TestCase):
                     123.0,
                     7,
                     status,
+                    silver_status={
+                        "courseMarkerConfirmed": True,
+                        "courseMarker": "GRAY",
+                    },
                 )
                 with open(
                     camera_line_frame.LINE_STATUS_PATH,
@@ -918,6 +947,8 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["lineFollowerRightPower"], 0.0)
         self.assertTrue(published["lineNearDetected"])
         self.assertEqual(published["lineControlSource"], "virtual")
+        self.assertTrue(published["courseMarkerConfirmed"])
+        self.assertEqual(published["courseMarker"], "GRAY")
         self.assertEqual(published["fusionAngle"], 108.0)
         self.assertEqual(published["filteredFusionAngle"], 108.0)
         self.assertEqual(published["fusionSteeringError"], 0.18)
@@ -971,6 +1002,8 @@ class CameraProfilesTest(unittest.TestCase):
             "lineSequence",
             "specularRepairPixels",
             "specularRepairComponents",
+            "courseMarkerConfirmed",
+            "courseMarker",
         }
         self.assertEqual(set(published), expected_keys)
 

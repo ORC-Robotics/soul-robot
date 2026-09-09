@@ -41,6 +41,11 @@ struct AutonomousStatus
     bool forwardAssistEntryAllowed = false;
     bool forwardLineVisible = false;
     double forwardLinePosition = 0.0;
+    double forwardPathConfidence = 0.0;
+    std::string forwardPathState = "UNCERTAIN";
+    std::string gapValidationDecision = "NORMAL";
+    std::string nearLineState = "UNKNOWN";
+    std::string bottomLineControlSource = "UNAVAILABLE";
     int bottomStableFrames = 0;
 };
 

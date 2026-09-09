@@ -13,7 +13,21 @@ import camera_line_frame
 import cv2  # type: ignore
 import numpy as np
 
+try:
+    from silver_dataset_recorder import SilverDatasetRecorder, read_dataset_status
+except ModuleNotFoundError as error:
+    if error.name != "silver_dataset_recorder":
+        raise
+
+    # A coleta é opcional e não pode impedir a inicialização da câmera frontal.
+    SilverDatasetRecorder = None
+
+    def read_dataset_status():
+        return {}
 from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
+from vision.forward_path import ForwardPathTracker
+from vision.gap_validation import read_json_snapshot
+from vision.camera_config import GAP_VALIDATION_CONFIG, LINE_STATUS_PATH
 
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
@@ -310,6 +324,7 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         "error": error_message,
         "timestamp": time.time(),
     }
+    status.update(read_dataset_status())
     status.update(ball_status or empty_ball_status(
         detection_enabled=requested_ball_detection_enabled()
     ))
@@ -340,57 +355,19 @@ def resolve_forward_assist_roi(mask_shape):
     return x0, y0, x1, y1
 
 
-def calculate_forward_line_assist(filtered_line_mask):
-    """Calcula uma posição horizontal leve sem usar sensores virtuais da CAM0."""
+def calculate_forward_line_assist(filtered_line_mask, reference=None, tracker=None, now=None):
+    """Avalia caminhos separados; a posição publicada pertence ao candidato escolhido."""
 
     if filtered_line_mask.ndim != 2:
         raise ValueError("A máscara preta frontal deve possuir um único canal.")
 
-    x0, y0, x1, y1 = resolve_forward_assist_roi(filtered_line_mask.shape)
-    roi_mask = filtered_line_mask[y0:y1, x0:x1]
-    label_count, _labels, stats, centroids = cv2.connectedComponentsWithStats(
-        roi_mask,
-        connectivity=8,
-    )
-
-    valid_labels = []
-    valid_pixel_count = 0
-    weighted_centroid_x = 0.0
-    for label in range(1, label_count):
-        area = int(stats[label, cv2.CC_STAT_AREA])
-        if area < FORWARD_ASSIST_MIN_COMPONENT_AREA_PX:
-            continue
-        valid_labels.append(label)
-        valid_pixel_count += area
-        weighted_centroid_x += float(centroids[label][0]) * float(area)
-
-    if not valid_labels or valid_pixel_count <= 0:
-        return {
-            "forwardLineVisible": False,
-            "forwardLinePosition": None,
-            "forwardLineConfidence": 0.0,
-        }
-
-    centroid_x = weighted_centroid_x / float(valid_pixel_count)
-    roi_width = x1 - x0
-    if roi_width <= 1:
-        normalized_position = 0.0
-    else:
-        normalized_position = 2.0 * centroid_x / float(roi_width - 1) - 1.0
-    normalized_position = max(-1.0, min(1.0, normalized_position))
-
-    # A confiança é a fração da ROI ocupada somente pelos componentes válidos.
-    # Ela não cria decisão de movimento e pode ser recalibrada depois com dados reais.
-    confidence = float(valid_pixel_count) / float(roi_mask.size)
-    confidence = max(0.0, min(1.0, confidence))
-    return {
-        "forwardLineVisible": True,
-        "forwardLinePosition": normalized_position,
-        "forwardLineConfidence": confidence,
-    }
+    tracker = tracker if tracker is not None else ForwardPathTracker()
+    return tracker.analyze(filtered_line_mask, resolve_forward_assist_roi(filtered_line_mask.shape),
+                           reference, time.time() if now is None else now,
+                           FORWARD_ASSIST_MIN_COMPONENT_AREA_PX)
 
 
-def process_forward_frame(frame, camera_format):
+def process_forward_frame(frame, camera_format, reference=None, tracker=None, now=None):
     """Aplica somente a segmentação preta configurada para o perfil frontal."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
@@ -415,7 +392,7 @@ def process_forward_frame(frame, camera_format):
                 roi_start_y:roi_start_y + available_height,
                 :available_width,
             ] = filtered_mask[:available_height, :available_width]
-    return calculate_forward_line_assist(full_filtered_mask)
+    return calculate_forward_line_assist(full_filtered_mask, reference, tracker, now)
 
 
 def orient_forward_frame(frame):
@@ -449,19 +426,6 @@ def save_forward_line_status(reading, timestamp, sequence):
         elif position is not None:
             raise ValueError("forwardLinePosition deve ser None sem linha visível")
 
-        forward_error = (
-            max(-1.0, min(1.0, position))
-            if visible
-            else None
-        )
-        normal_command = (
-            camera_line_frame.map_normal_steering_error(forward_error)
-            if visible
-            else None
-        )
-        if visible and normal_command is None:
-            raise ValueError("mapper NORMAL não aceitou a posição frontal")
-
         confidence = float(reading["forwardLineConfidence"])
         if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
             raise ValueError("forwardLineConfidence inválido")
@@ -472,17 +436,23 @@ def save_forward_line_status(reading, timestamp, sequence):
             "forwardLineConfidence": confidence,
             "forwardLineSequence": sequence,
             "forwardLineTimestamp": timestamp,
-            "forwardLineNormalLeftPower": (
-                normal_command["left_power"]
-                if normal_command is not None
-                else None
-            ),
-            "forwardLineNormalRightPower": (
-                normal_command["right_power"]
-                if normal_command is not None
-                else None
-            ),
+            # Campos antigos permanecem nulos para não autorizar um consumidor
+            # antigo a usar a frontal como controlador de motores.
+            "forwardLineNormalLeftPower": None,
+            "forwardLineNormalRightPower": None,
+            "forwardPathVersion": 2,
+            "forwardLinePresent": reading.get("forwardLinePresent", False),
+            "forwardPathState": reading.get("forwardPathState", "UNCERTAIN"),
+            "forwardPathConfidence": confidence,
+            "forwardPathReferenceValid": reading.get("forwardPathReferenceValid", False),
+            "forwardPathReferenceSequence": reading.get("forwardPathReferenceSequence", 0),
+            "forwardPathReferenceTimestamp": reading.get("forwardPathReferenceTimestamp", 0.0),
+            "forwardPathComponents": reading.get("forwardPathComponents", {}),
         }
+        if status["forwardPathState"] not in ("PRESENT", "UNCERTAIN", "ABSENT"):
+            raise ValueError("Estado frontal desconhecido")
+        if status["forwardLinePresent"] != (status["forwardPathState"] == "PRESENT"):
+            raise ValueError("Presença frontal inconsistente com seu estado")
         with open(
             TEMP_FORWARD_LINE_STATUS_PATH,
             "w",
@@ -512,7 +482,7 @@ def clear_forward_line_status():
 
 
 def draw_forward_assist_overlay(display_frame, reading):
-    """Desenha somente a ROI, o centro e a posição produzida pelo assistente."""
+    """Exibe previsão e todos os runs, inclusive os rejeitados pela geometria."""
 
     x0, y0, x1, y1 = resolve_forward_assist_roi(display_frame.shape)
     right = x1 - 1
@@ -528,35 +498,34 @@ def draw_forward_assist_overlay(display_frame, reading):
         cv2.LINE_AA,
     )
 
-    position = reading["forwardLinePosition"]
-    if reading["forwardLineVisible"] and position is not None:
-        position_x = int(round(
-            x0 + (float(position) + 1.0) * 0.5 * float(right - x0)
-        ))
-        cv2.line(
-            display_frame,
-            (position_x, y0),
-            (position_x, bottom),
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
-        position_text = f"{float(position):+.3f}"
-    else:
-        position_text = "--"
-
-    confidence = float(reading["forwardLineConfidence"])
-    text_y = y0 - 7 if y0 >= 20 else min(bottom, y0 + 16)
-    cv2.putText(
-        display_frame,
-        f"FORWARD POS {position_text} CONF {confidence:.3f}",
-        (x0 + 4, text_y),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
-        (0, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
+    state = reading.get("forwardPathState", "UNCERTAIN")
+    colors = {"PRESENT": (0, 255, 0), "UNCERTAIN": (0, 255, 255), "ABSENT": (0, 0, 255)}
+    for candidate in reading.get("candidates", []):
+        color = colors[candidate["state"]]
+        x, y, width, height = candidate["box"]
+        cv2.rectangle(display_frame, (x, y), (x + width - 1, y + height - 1), color, 1)
+        points = []
+        for band in candidate["bands"]:
+            x, y, half = round(band["x"]), round(band["y"]), round(band["width"] / 2)
+            ends = ((x, y - half), (x, y + half)) if band["horizontal"] else ((x - half, y), (x + half, y))
+            cv2.line(display_frame, *ends, color, 2)
+            points.append((x, y))
+        if len(points) > 1:
+            cv2.polylines(display_frame, [np.array(points, np.int32)], False, color, 2, cv2.LINE_AA)
+    prediction = reading.get("prediction", [])
+    if len(prediction) > 1:
+        # Ciano é previsão; os candidatos vermelhos permanecem visíveis.
+        cv2.polylines(display_frame, [np.array(prediction, np.int32)], False, (255, 255, 0), 1, cv2.LINE_AA)
+    label_y = max(18, y0 - 86)
+    # Fundo escuro mantém a leitura do diagnóstico sobre o piso branco.
+    cv2.rectangle(display_frame, (x0, label_y - 16), (min(x1 - 1, x0 + 290), label_y + 95), (25, 25, 25), -1)
+    for index, text in enumerate((f"PATH CONF {reading['forwardLineConfidence']:.2f}",
+                                  f"NEAR {reading.get('nearState', 'UNKNOWN')}",
+                                  f"B-FAR {reading.get('bottomFarState', 'UNKNOWN')}", f"FWD {state}",
+                                  f"DECISION {reading.get('decision', 'UNAVAILABLE')}",
+                                  f"SOURCE {reading.get('source', 'UNAVAILABLE')}")):
+        cv2.putText(display_frame, text, (x0 + 4, label_y + index * 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
 
 
 def publish_frame(jpeg):
@@ -774,6 +743,14 @@ def main():
     last_status_time = 0.0
     next_retry_time = 0.0
     line_sequence = 0
+    path_tracker = ForwardPathTracker()
+
+    silver_dataset_recorder = None
+    if SilverDatasetRecorder is not None:
+        try:
+            silver_dataset_recorder = SilverDatasetRecorder("forward")
+        except Exception as error:
+            print(f"Coleta do dataset frontal indisponível: {error}", flush=True)
 
     try:
         while running:
@@ -826,8 +803,31 @@ def main():
             try:
                 frame = camera.capture_array("main")
                 frame = orient_forward_frame(frame)
-                reading = process_forward_frame(frame, camera_format)
+                if silver_dataset_recorder is not None:
+                    try:
+                        silver_dataset_recorder.submit(frame)
+                    except Exception as error:
+                        print(f"Coleta do dataset frontal desativada após erro inesperado: {error}", flush=True)
+                        silver_dataset_recorder = None
                 line_timestamp = time.time()
+                bottom_status = read_json_snapshot(LINE_STATUS_PATH)
+                try:
+                    bottom_age = line_timestamp - float(bottom_status["lineTimestamp"])
+                    bottom_fresh = 0 <= bottom_age <= GAP_VALIDATION_CONFIG["source_timeout"]
+                except (KeyError, TypeError, ValueError):
+                    bottom_fresh = False
+                reading = process_forward_frame(
+                    frame, camera_format,
+                    bottom_status.get("bottomPathReference") if bottom_fresh else None,
+                    path_tracker, line_timestamp,
+                )
+                reading["decision"] = bottom_status.get("gapValidationDecision", "UNAVAILABLE") if bottom_fresh else "UNAVAILABLE"
+                reading["nearState"] = bottom_status.get("nearLineState", "UNKNOWN") if bottom_fresh else "UNKNOWN"
+                reading["bottomFarState"] = (
+                    "PRESENT" if bottom_status.get("bottomFarLinePresent") is True
+                    else "ABSENT" if bottom_fresh else "UNKNOWN"
+                )
+                reading["source"] = bottom_status.get("lineControlSource", "UNAVAILABLE") if bottom_fresh else "UNAVAILABLE"
                 line_sequence += 1
                 save_forward_line_status(reading, line_timestamp, line_sequence)
 
@@ -846,7 +846,7 @@ def main():
                     )
                     last_ball_analysis_time = 0.0
 
-                # O segue-faixa frontal continua leve em todos os frames. HSV,
+                # A validação frontal continua leve em todos os frames. HSV,
                 # Hough e tracking só entram quando o resgate está autorizado e
                 # no máximo 15 vezes por segundo, preservando os 30 FPS da linha.
                 ball_time = time.monotonic()
@@ -867,6 +867,7 @@ def main():
                 close_forward_camera(camera)
                 camera = None
                 ball_detection_active = False
+                path_tracker = ForwardPathTracker()
                 ball_status = empty_ball_status(detection_enabled=False)
                 observation = None
                 candidates = ()

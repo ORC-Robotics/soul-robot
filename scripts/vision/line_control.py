@@ -102,6 +102,12 @@ def draw_line_control_overlay(frame, line_follower_command):
             f"R {float(line_follower_command['right_power']):.2f}"
         ),
     )
+    if "nearLineState" in line_follower_command:
+        overlay_texts += (
+            f"NEAR {line_follower_command['nearLineState']}  FWD {line_follower_command['forwardPresenceState']}",
+            f"DECISION {line_follower_command['gapValidationDecision']}",
+            f"SOURCE {line_follower_command['controlSource']}",
+        )
     for line_index, overlay_text in enumerate(overlay_texts):
         cv2.putText(
             frame,
@@ -216,14 +222,24 @@ def update_gap_recent_near_frames(recent_near_frames, near_center_visible):
 def gap_entry_is_required(
     gap_forward_active,
     green_direction,
-    recent_near_frames,
-    near_center_visible,
-    real_near_point,
-    virtual_near_point,
-    lateral_exit_target,
+    recent_near_frames=0,
+    near_center_visible=False,
+    real_near_point=None,
+    virtual_near_point=None,
+    lateral_exit_target=None,
     fusion_near_connected=False,
+    *,
+    near_line_present=None,
+    near_loss_confirmed=False,
+    special_control=False,
 ):
-    """Reconhece a perda recente do NEAR sem disputar prioridade com verde."""
+    """Usa perda física confirmada; conserva a chamada antiga apenas por compatibilidade."""
+
+    if near_line_present is not None:
+        # A aplicação fornece a medição ampla. Pontos Fusion ou projetados não
+        # provam presença física e não podem vetar este caminho de entrada.
+        return (not gap_forward_active and green_direction == "NENHUMA"
+                and not special_control and not near_line_present and near_loss_confirmed)
 
     return (
         not gap_forward_active
@@ -711,6 +727,8 @@ def calculate_line_follower_command(
     fusion_style_line=None,
     curva_verde_iniciada=False,
     blind_search_preferred_direction=None,
+    local_line_lost=False,
+    gap_fusion_reacquire_active=False,
 ):
     """
     Aplica o seguidor virtual validado pela câmera inferior.
@@ -722,7 +740,8 @@ def calculate_line_follower_command(
     _ = green_detection_result
 
     fusion_control_status = calculate_fusion_control_status(
-        fusion_style_line
+        fusion_style_line,
+        allow_distant_reacquisition=gap_fusion_reacquire_active,
     )
     fusion_steering_error = fusion_control_status["fusionSteeringError"]
 
@@ -828,48 +847,40 @@ def calculate_line_follower_command(
             steering_error = None
             control_source = "fusion-green-no-target"
 
+    elif gap_fusion_reacquire_active:
+        line_state = "GAP"
+        if virtual_turn_tracker is not None:
+            virtual_turn_tracker.reset()
+        if line_search_tracker is not None:
+            line_search_tracker.stop()
+        if fusion_steering_error is not None:
+            steering_error = fusion_steering_error
+            fusion_control_status["fusionControlActive"] = True
+            control_source = "fusion-gap-reacquire"
+        else:
+            # O gate remove este estado quando a geometria deixa de ser válida.
+            # Este fallback mantém avanço reto caso isso ocorra no mesmo ciclo.
+            steering_error = 0.0
+            control_source = "gap-forward"
+
     elif gap_forward_active:
         line_state = "GAP"
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
-        if observed_recovery_direction is not None:
-            if line_search_tracker is not None:
-                line_search_tracker.stop()
-            steering_error = None
-            direct_recovery_direction = observed_recovery_direction
-            control_source = "gap-sensor-recovery"
-        elif raw_line_visible:
-            # Uma linha de controle encerra a busca cega, mas somente o NEAR-C
-            # confirmado pode encerrar o estado GAP fora deste mapper.
-            if line_search_tracker is not None:
-                line_search_tracker.stop()
-            steering_error = 0.0
-            control_source = "gap-forward"
-        else:
-            if line_search_tracker is not None and blind_search_requested:
-                line_search_tracker.start()
-            blind_direction = (
-                line_search_tracker.next_direction()
-                if line_search_tracker is not None
-                else None
-            )
-            if blind_direction == "BACKWARD":
-                steering_error = None
-                blind_search_backup_requested = True
-                control_source = "gap-blind-search-backup"
-            elif blind_direction == "LEFT":
-                steering_error = -1.0
-                control_source = "gap-blind-search"
-            elif blind_direction == "RIGHT":
-                steering_error = 1.0
-                control_source = "gap-blind-search"
-            else:
-                steering_error = 0.0
-                control_source = "gap-forward"
+        # FAR, MEDIUM e o contador legado podem confirmar que há continuação,
+        # mas nunca escolhem curva durante CHECKING/GAP. Segui-los lateralmente
+        # produzia círculos em gaps curtos. Somente o gate externo pode mudar o
+        # estado para LOST e liberar a busca; fita próxima confirmada encerra GAP.
+        if line_search_tracker is not None:
+            line_search_tracker.stop()
+        steering_error = 0.0
+        control_source = "gap-forward"
 
     else:
-        virtual_normal_steering_valid = protected_virtual_steering is not None
-        if virtual_turn_tracker is not None:
+        # Só LOST confirmado bloqueia fragmentos que cancelariam a busca.
+        # Em LINE normal este argumento é falso e o mapper permanece idêntico.
+        virtual_normal_steering_valid = protected_virtual_steering is not None and not local_line_lost
+        if virtual_turn_tracker is not None and not local_line_lost:
             virtual_state = virtual_turn_tracker.update(
                 sensors,
                 virtual_normal_steering_valid,
@@ -877,6 +888,7 @@ def calculate_line_follower_command(
 
         fusion_can_hold_normal = (
             fusion_steering_error is not None
+            and not local_line_lost
             and virtual_state == VIRTUAL_STATE_NORMAL
             and not sensor_recovery_requested
             and (
@@ -938,6 +950,7 @@ def calculate_line_follower_command(
                 control_source = "virtual-reorient"
             elif (
                 raw_line_visible
+                and not local_line_lost
                 and line_search_tracker is not None
                 and (
                     line_search_tracker.active
@@ -1459,6 +1472,8 @@ class LineFollowerController:
         fusion_style_line=None,
         curva_verde_iniciada=False,
         blind_search_preferred_direction=None,
+        local_line_lost=False,
+        gap_fusion_reacquire_active=False,
     ):
         """Calcula o comando reutilizando o mesmo estado entre frames."""
 
@@ -1477,4 +1492,6 @@ class LineFollowerController:
             fusion_style_line=fusion_style_line,
             curva_verde_iniciada=curva_verde_iniciada,
             blind_search_preferred_direction=blind_search_preferred_direction,
+            local_line_lost=local_line_lost,
+            gap_fusion_reacquire_active=gap_fusion_reacquire_active,
         )

@@ -4,6 +4,12 @@ import json
 import math
 import os
 import time
+try:
+    from silver_dataset_recorder import read_dataset_status
+except ImportError:
+    # A ausência da coleta opcional não impede a publicação da visão.
+    def read_dataset_status():
+        return {}
 from .camera import (
     camera_transform_settings,
 )
@@ -27,6 +33,9 @@ from .green_detection import (
 from .normal_trajectory import (
     empty_normal_trajectory,
 )
+from .silver_detection import (
+    empty_silver_shadow_status,
+)
 from .numeric import (
     finite_virtual_position,
 )
@@ -42,6 +51,7 @@ def save_line_status(
     line_sequence,
     green_status,
     specular_repair_status=None,
+    silver_status=None,
 ):
     """Publica controle visual e telemetria leve no IPC rápido da linha."""
 
@@ -156,6 +166,24 @@ def save_line_status(
             ),
         }
         line_status.update(green_status)
+        # Referência e decisão são diagnóstico/validação; não substituem potências.
+        for key in ("bottomPathReference", "gapValidationDecision", "gapValidationReason",
+                    "nearLinePresent", "nearLineState", "nearLineMissingFrames",
+                    "bottomFarLinePresent", "bottomFarPresentFrames",
+                    "bottomFusionReacquireCandidate", "bottomFusionReacquireFrames",
+                    "bottomFusionReacquireReady", "forwardPresenceState"):
+            if key in line_follower_command:
+                line_status[key] = line_follower_command[key]
+        marker_status = silver_status if isinstance(silver_status, dict) else {}
+        line_status["courseMarkerConfirmed"] = (
+            marker_status.get("courseMarkerConfirmed") is True
+        )
+        line_status["courseMarker"] = (
+            "GRAY"
+            if line_status["courseMarkerConfirmed"]
+            and marker_status.get("courseMarker") == "GRAY"
+            else "NONE"
+        )
         with open(TEMP_LINE_STATUS_PATH, "w", encoding="utf-8") as status_file:
             json.dump(line_status, status_file, allow_nan=False)
         os.replace(TEMP_LINE_STATUS_PATH, LINE_STATUS_PATH)
@@ -185,6 +213,7 @@ def save_status(
     normal_trajectory=None,
     fusion_style_line=None,
     line_follower_command=None,
+    silver_shadow_status=None,
 ):
     """Publica somente a saúde da câmera e os resultados visuais preservados."""
 
@@ -346,6 +375,12 @@ def save_status(
         ),
     }
     status.update(green_status or empty_green_status())
+    status.update(
+        silver_shadow_status
+        if isinstance(silver_shadow_status, dict)
+        else empty_silver_shadow_status()
+    )
+    status.update(read_dataset_status())
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)

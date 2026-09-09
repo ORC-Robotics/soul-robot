@@ -331,28 +331,8 @@ bool ForwardLineSnapshot::lineObservationValid() const
 
 bool ForwardLineSnapshot::normalCommandValid() const
 {
-    if (!lineObservationValid() ||
-        !std::isfinite(normalLeftPower) ||
-        !std::isfinite(normalRightPower) ||
-        normalLeftPower < config::kForwardAssistNormalMinimumPower ||
-        normalLeftPower > config::kForwardAssistNormalMaximumPower ||
-        normalRightPower < config::kForwardAssistNormalMinimumPower ||
-        normalRightPower > config::kForwardAssistNormalMaximumPower)
-    {
-        return false;
-    }
-
-    constexpr double kComparisonTolerance = 1e-6;
-    if (position < 0.0)
-    {
-        return normalLeftPower <= normalRightPower + kComparisonTolerance;
-    }
-    if (position > 0.0)
-    {
-        return normalLeftPower + kComparisonTolerance >= normalRightPower;
-    }
-    return std::abs(normalLeftPower - normalRightPower) <=
-           kComparisonTolerance;
+    // Contrato mantido para consumidores antigos: a frontal não comanda motores.
+    return false;
 }
 
 bool CameraMonitor::ready() const
@@ -481,6 +461,22 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             json, "finalSteering", diagnostics.finalSteering);
         tryGetJsonString(json, "vstate", diagnostics.virtualState);
         tryGetJsonString(json, "lineState", diagnostics.lineState);
+        std::string decision;
+        std::string nearState;
+        if (tryGetJsonString(json, "nearLineState", nearState) &&
+            (nearState == "PRESENT" || nearState == "LOST" || nearState == "UNKNOWN"))
+        {
+            candidate.nearLineState = nearState;
+        }
+        if (tryGetJsonString(json, "gapValidationDecision", decision))
+        {
+            if (decision != "NORMAL" && decision != "CHECKING" &&
+                decision != "GAP" && decision != "LOST")
+            {
+                return unavailableLineSnapshot(cachedLineSnapshot_, hasCachedLineSnapshot_);
+            }
+            candidate.gapValidationDecision = decision;
+        }
 
         // Os gates trusted são opcionais somente para compatibilidade com uma
         // câmera antiga. Ausência mantém ambos falsos e bloqueia a assistência.
@@ -522,6 +518,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         candidate.normalSteeringValid =
             (virtualNormalCommand || fusionNormalCommand) &&
             isNormalizedValue(diagnostics.finalSteering);
+        // Validade do comando NORMAL não afirma presença física de fita.
+        // O gate local é decidido no Python e nunca é vetado por este campo.
 
         const bool valuesValid =
             isNormalizedValue(candidate.lineFollowerLeftPower) &&
@@ -561,7 +559,8 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
 {
     try
     {
-        std::ifstream file(config::kForwardLineStatusPath);
+        std::ifstream file(forwardLineStatusPath_.empty()
+                               ? config::kForwardLineStatusPath : forwardLineStatusPath_);
         if (!file)
         {
             return unavailableForwardLineSnapshot(
@@ -579,10 +578,14 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
         const std::string json = content.str();
 
         ForwardLineSnapshot candidate;
-        if (!tryGetJsonBool(
+        std::uint64_t pathVersion = 0;
+        if (!tryGetJsonUnsignedInteger(json, "forwardPathVersion", pathVersion) || pathVersion != 2 ||
+            !tryGetJsonString(json, "forwardPathState", candidate.pathState) ||
+            !tryGetJsonBool(json, "forwardLinePresent", candidate.present) ||
+            !tryGetJsonBool(
                 json, "forwardLineVisible", candidate.visible) ||
             !tryGetJsonNumber(
-                json, "forwardLineConfidence", candidate.confidence) ||
+                json, "forwardPathConfidence", candidate.confidence) ||
             !tryGetJsonUnsignedInteger(
                 json, "forwardLineSequence", candidate.sequence) ||
             !tryGetJsonNumber(
@@ -594,16 +597,7 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
         }
 
         if (candidate.visible &&
-            (!tryGetJsonNumber(
-                 json, "forwardLinePosition", candidate.position) ||
-             !tryGetJsonNumber(
-                 json,
-                 "forwardLineNormalLeftPower",
-                 candidate.normalLeftPower) ||
-             !tryGetJsonNumber(
-                 json,
-                 "forwardLineNormalRightPower",
-                 candidate.normalRightPower)))
+            !tryGetJsonNumber(json, "forwardLinePosition", candidate.position))
         {
             return unavailableForwardLineSnapshot(
                 cachedForwardLineSnapshot_,
@@ -612,6 +606,10 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
 
         const bool valuesValid =
             candidate.sequence > 0 &&
+            (candidate.pathState == "PRESENT" || candidate.pathState == "UNCERTAIN" ||
+             candidate.pathState == "ABSENT") &&
+            (candidate.present == (candidate.pathState == "PRESENT")) &&
+            (!candidate.present || (candidate.visible && candidate.confidence == 1.0)) &&
             std::isfinite(candidate.timestamp) &&
             candidate.timestamp >= 0.0 &&
             std::isfinite(candidate.confidence) &&

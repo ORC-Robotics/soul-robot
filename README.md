@@ -1,5 +1,8 @@
 # OBR2026K
 
+Para fotografar as classes de faixa prata e preparar o treinamento por câmera,
+consulte [Coleta e treinamento do dataset](docs/SILVER_DATASET.md).
+
 > Para conhecer arquitetura, eletrônica, protocolos, operação, segurança,
 > limitações e informações que ainda precisam ser preenchidas pela equipe, leia
 > o [Guia completo do projeto](docs/GUIA_COMPLETO_DO_PROJETO.md).

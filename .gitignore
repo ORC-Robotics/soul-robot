@@ -2,3 +2,14 @@ build/
 .codex
 __pycache__/
 *.pyc
+
+camera_fov_test/**/__pycache__/
+camera_fov_test/**/*.pyc
+camera_fov_test/**/*.npy
+camera_fov_test/**/*.png
+camera_fov_test/**/*.jpg
+camera_fov_test/**/*.json
+camera_fov_test/**/*.log
+.venv*/
+dataset/
+training_outputs/
