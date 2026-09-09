@@ -12,7 +12,9 @@ enum class ServoRoutineKind
     Initialize,
     Capture,
     InternalStorage,
-    Deposit
+    Deposit,
+    FullSequence,
+    FullSequenceTwo
 };
 
 struct ServoRoutineOutput

@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -21,196 +22,203 @@ bool closeTo(double actual, double expected)
 {
     return std::abs(actual - expected) < 0.001;
 }
+
+struct ObservedStep
+{
+    std::string phase;
+    ServoPose pose;
+};
+
+std::vector<ObservedStep> runRoutine(
+    ServoRoutineKind kind,
+    unsigned long long sequence,
+    const ServoPose& initialPose,
+    ServoRoutineOutput& finalOutput)
+{
+    ServoRoutine routine;
+    auto now = std::chrono::steady_clock::time_point{};
+    std::vector<ObservedStep> observed;
+    finalOutput = routine.update(kind, sequence, 0, initialPose, now);
+
+    for (int updateCount = 0;
+         updateCount < 80 && !finalOutput.completed && !finalOutput.failed;
+         ++updateCount)
+    {
+        require(!finalOutput.waitingForConfirmation,
+                "Debug servo routines must not wait for mission conditions");
+        require(!finalOutput.releaseGripper,
+                "The gripper must keep an active holding angle");
+        if (finalOutput.poseRequested)
+        {
+            observed.push_back({finalOutput.phase, finalOutput.pose});
+        }
+        now += std::chrono::seconds(10);
+        finalOutput = routine.update(kind, sequence, 0, initialPose, now);
+    }
+
+    require(finalOutput.completed && !finalOutput.failed,
+            "Servo routine should complete without external input");
+    return observed;
+}
+
+const ServoPose& poseAt(
+    const std::vector<ObservedStep>& steps,
+    const std::string& phase)
+{
+    for (const ObservedStep& step : steps)
+    {
+        if (step.phase == phase)
+        {
+            return step.pose;
+        }
+    }
+    throw std::runtime_error("Missing phase: " + phase);
+}
+
+void requireWristClearance(const std::vector<ObservedStep>& steps)
+{
+    for (std::size_t index = 1; index < steps.size(); ++index)
+    {
+        if (!closeTo(steps[index - 1].pose.wristDegrees,
+                     steps[index].pose.wristDegrees))
+        {
+            require(
+                steps[index - 1].pose.armDegrees >=
+                    config::kServoRoutineArmHomeDegrees,
+                "Wrist moved before the arm reached the 15-degree clearance");
+        }
+    }
+}
+
+void requirePhaseOrder(
+    const std::vector<ObservedStep>& steps,
+    const std::vector<std::string>& expectedPhases)
+{
+    std::size_t expectedIndex = 0;
+    for (const ObservedStep& step : steps)
+    {
+        if (expectedIndex < expectedPhases.size() &&
+            step.phase == expectedPhases[expectedIndex])
+        {
+            ++expectedIndex;
+        }
+    }
+    require(expectedIndex == expectedPhases.size(),
+            "Servo phases did not follow the required order");
+}
 }
 
 int main()
 {
-    using Clock = std::chrono::steady_clock;
     try
     {
-        ServoRoutine routine;
-        Clock::time_point now{};
+        ServoRoutineOutput output;
+        const ServoPose home{
+            config::kServoRoutineArmHomeDegrees,
+            config::kServoRoutineWristInternalDegrees,
+            config::kServoRoutineGripperClosedDegrees};
 
-        const ServoPose nonZeroPose{105.0, 174.0, 20.0};
-        ServoRoutineOutput output = routine.update(
-            ServoRoutineKind::Initialize, 1, 0, nonZeroPose, now);
-        require(output.poseRequested &&
-                    closeTo(output.pose.armDegrees, 0.0) &&
-                    closeTo(output.pose.wristDegrees, 0.0) &&
-                    closeTo(output.pose.gripperDegrees, 0.0),
-                "Initialization should apply the complete zero-degree pose");
-        now += std::chrono::milliseconds(config::kServoRoutineInitialPoseMs);
-        output = routine.update(
-            ServoRoutineKind::Initialize, 1, 0, nonZeroPose, now);
-        require(output.completed,
-                "Initialization should complete after the zero pose settles");
+        auto steps = runRoutine(ServoRoutineKind::Initialize, 1, {}, output);
+        require(closeTo(steps.front().pose.armDegrees, 15.0) &&
+                    closeTo(steps.front().pose.wristDegrees, 0.0) &&
+                    closeTo(steps.front().pose.gripperDegrees, 0.0),
+                "Initialize should apply the 15/0/0 home pose");
 
-        routine.resetExecution();
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.poseRequested &&
-                    closeTo(output.pose.armDegrees, 0.0) &&
-                    closeTo(output.pose.wristDegrees, 0.0) &&
-                    closeTo(output.pose.gripperDegrees, 0.0),
-                "Capture should first reapply the previous pose");
-        now += std::chrono::milliseconds(config::kServoRoutineResumePoseMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(closeTo(output.pose.armDegrees, 10.0),
-                "Capture should move the arm after restoring the pose");
-        now += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.poseRequested && closeTo(output.pose.wristDegrees, 174.0),
-                "Capture should move the wrist after the arm step");
-        now += std::chrono::milliseconds(config::kServoRoutineWristStepMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.poseRequested && closeTo(output.pose.gripperDegrees, 20.0),
-                "Capture should open the gripper after positioning the wrist");
-        now += std::chrono::milliseconds(config::kServoRoutineGripperStepMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.poseRequested && closeTo(output.pose.armDegrees, 105.0),
-                "Capture should lower the arm only after opening the gripper");
-        now += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.poseRequested && closeTo(output.pose.gripperDegrees, 3.0),
-                "Capture should finish with the short three-degree press");
-        now += std::chrono::milliseconds(config::kServoRoutineGripperPressMs);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.releaseGripper,
-                "Capture should remove only the gripper signal after the press");
-        now += std::chrono::milliseconds(config::kMainLoopPeriodMs * 2);
-        output = routine.update(ServoRoutineKind::Capture, 2, 0, {}, now);
-        require(output.completed,
-                "Capture should complete after releasing the gripper signal");
+        steps = runRoutine(ServoRoutineKind::Capture, 2, home, output);
+        require(closeTo(poseAt(steps, "servo_capture_gripper_open").gripperDegrees, 180.0) &&
+                    closeTo(poseAt(steps, "servo_capture_arm_pickup").armDegrees, 103.0) &&
+                    closeTo(poseAt(steps, "servo_capture_gripper_press").gripperDegrees, 0.0) &&
+                    closeTo(poseAt(steps, "servo_capture_gripper_retention").gripperDegrees, 5.0) &&
+                    closeTo(poseAt(steps, "servo_capture_arm_finish").armDegrees, 15.0),
+                "Capture should use the new pickup and retention poses");
+        requireWristClearance(steps);
 
-        routine.resetExecution();
-        const ServoPose capturedPose{105.0, 174.0, 3.0};
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(closeTo(output.pose.armDegrees, 105.0) &&
-                    closeTo(output.pose.wristDegrees, 174.0) &&
-                    closeTo(output.pose.gripperDegrees, 3.0),
-                "Storage should reapply the complete captured pose first");
-        now += std::chrono::milliseconds(config::kServoRoutineResumePoseMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(closeTo(output.pose.armDegrees, 10.0) &&
-                    closeTo(output.pose.gripperDegrees, 3.0),
-                "Storage should keep the gripper closed while moving the arm");
-        now += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(closeTo(output.pose.wristDegrees, 0.0),
-                "Storage should point the wrist inward");
-        now += std::chrono::milliseconds(config::kServoRoutineWristStepMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(closeTo(output.pose.gripperDegrees, 20.0),
-                "Storage should release the object internally");
-        now += std::chrono::milliseconds(config::kServoRoutineGripperStepMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(closeTo(output.pose.armDegrees, 105.0),
-                "Storage should return the arm for another capture");
-        now += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(output.waitingForConfirmation && output.internalObjectStored,
-                "Storage should remember the object and wait to close on the next one");
-        now += std::chrono::milliseconds(
-            config::kServoRoutineConfirmationTimeoutMs * 2);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 0, capturedPose, now);
-        require(output.waitingForConfirmation && !output.failed,
-                "Storage closing request should wait without the deposit timeout");
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 1, capturedPose, now);
-        require(output.poseRequested && closeTo(output.pose.gripperDegrees, 3.0),
-                "Storage confirmation should apply the short closing press");
-        now += std::chrono::milliseconds(config::kServoRoutineGripperPressMs);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 1, capturedPose, now);
-        require(output.releaseGripper,
-                "Storage should remove gripper PWM after capturing the next object");
-        now += std::chrono::milliseconds(config::kMainLoopPeriodMs * 2);
-        output = routine.update(
-            ServoRoutineKind::InternalStorage, 3, 1, capturedPose, now);
-        require(output.completed && output.internalObjectStored,
-                "Storage completion should retain the internal inventory state");
+        const ServoPose captured{
+            config::kServoRoutineArmHomeDegrees,
+            config::kServoRoutineWristForwardDegrees,
+            config::kServoRoutineGripperRetentionDegrees};
+        steps = runRoutine(ServoRoutineKind::InternalStorage, 3, captured, output);
+        require(closeTo(poseAt(steps, "servo_store_gripper_release").gripperDegrees, 90.0) &&
+                    closeTo(poseAt(steps, "servo_store_arm_clearance").armDegrees, 50.0) &&
+                    closeTo(poseAt(steps, "servo_store_wrist_clearance").wristDegrees, 45.0) &&
+                    closeTo(poseAt(steps, "servo_store_arm_transition").armDegrees, 20.0) &&
+                    closeTo(poseAt(steps, "servo_store_arm_ready").armDegrees, 0.0) &&
+                    output.internalObjectStored,
+                "Storage should deposit the victim and remember it internally");
+        requireWristClearance(steps);
 
-        routine.resetExecution();
-        const ServoPose readyForNextCapture{105.0, 0.0, 20.0};
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 1, readyForNextCapture, now);
-        require(closeTo(output.pose.armDegrees, 105.0) &&
-                    closeTo(output.pose.wristDegrees, 0.0) &&
-                    closeTo(output.pose.gripperDegrees, 20.0),
-                "Deposit should first restore the pose from the previous routine");
-        now += std::chrono::milliseconds(config::kServoRoutineResumePoseMs);
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 1, readyForNextCapture, now);
-        now += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 1, readyForNextCapture, now);
-        now += std::chrono::milliseconds(config::kServoRoutineWristStepMs);
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 0, readyForNextCapture, now);
-        require(output.waitingForConfirmation,
-                "Deposit should wait before opening the first object");
+        steps = runRoutine(ServoRoutineKind::FullSequence, 4, home, output);
+        require(closeTo(poseAt(steps, "servo_second_gripper_open").gripperDegrees, 180.0) &&
+                    closeTo(poseAt(steps, "servo_second_gripper_retention").gripperDegrees, 5.0) &&
+                    closeTo(poseAt(steps, "servo_second_deposit").gripperDegrees, 90.0) &&
+                    closeTo(poseAt(steps, "servo_stored_wrist_approach").wristDegrees, 65.0) &&
+                    closeTo(poseAt(steps, "servo_stored_arm_approach").armDegrees, 65.0) &&
+                    closeTo(poseAt(steps, "servo_stored_gripper_retention").gripperDegrees, 5.0) &&
+                    closeTo(poseAt(steps, "servo_stored_arm_carry").armDegrees, 25.0) &&
+                    closeTo(poseAt(steps, "servo_stored_deposit").gripperDegrees, 90.0) &&
+                    closeTo(poseAt(steps, "servo_final_arm_home").armDegrees, 15.0) &&
+                    closeTo(poseAt(steps, "servo_final_wrist_home").wristDegrees, 0.0) &&
+                    closeTo(poseAt(steps, "servo_final_gripper_home").gripperDegrees, 0.0) &&
+                    !output.internalObjectStored,
+                "Full sequence should execute the complete storage path and finish home");
+        requireWristClearance(steps);
+        requirePhaseOrder(steps, {
+            "servo_capture_arm_clearance",
+            "servo_capture_wrist_forward",
+            "servo_capture_gripper_open",
+            "servo_capture_arm_pickup",
+            "servo_capture_gripper_press",
+            "servo_capture_gripper_retention",
+            "servo_capture_arm_finish",
+            "servo_store_wrist_internal",
+            "servo_store_gripper_release",
+            "servo_store_arm_clearance",
+            "servo_store_wrist_clearance",
+            "servo_store_gripper_close",
+            "servo_store_arm_transition",
+            "servo_store_wrist_forward",
+            "servo_store_arm_ready",
+            "servo_second_gripper_open",
+            "servo_second_arm_pickup",
+            "servo_second_gripper_press",
+            "servo_second_gripper_retention",
+            "servo_second_arm_carry",
+            "servo_second_deposit",
+            "servo_stored_wrist_approach",
+            "servo_stored_arm_approach",
+            "servo_stored_wrist_internal",
+            "servo_stored_arm_pickup",
+            "servo_stored_gripper_press",
+            "servo_stored_gripper_retention",
+            "servo_stored_arm_carry",
+            "servo_stored_wrist_deposit",
+            "servo_stored_deposit",
+            "servo_final_arm_home",
+            "servo_final_wrist_home",
+            "servo_final_gripper_home"});
 
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 2, readyForNextCapture, now);
-        require(output.poseRequested && closeTo(output.pose.gripperDegrees, 20.0),
-                "Deposit confirmation should open the first object");
-
-        const int storedPathDurations[] = {
-            config::kServoRoutineGripperStepMs,
-            config::kServoRoutineArmStepMs,
-            config::kServoRoutineWristStepMs,
-            config::kServoRoutineGripperStepMs,
-            config::kServoRoutineArmStepMs,
-            config::kServoRoutineGripperPressMs,
-            config::kServoRoutineArmStepMs,
-            config::kServoRoutineWristStepMs,
-            config::kServoRoutineArmStepMs};
-        for (const int durationMs : storedPathDurations)
-        {
-            now += std::chrono::milliseconds(durationMs);
-            output = routine.update(
-                ServoRoutineKind::Deposit, 4, 2, readyForNextCapture, now);
-        }
-        require(output.waitingForConfirmation && output.internalObjectStored,
-                "Stored-object deposit should require a second opening confirmation");
-
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 3, readyForNextCapture, now);
-        require(output.poseRequested && closeTo(output.pose.gripperDegrees, 20.0),
-                "Second confirmation should open the stored object");
-        now += std::chrono::milliseconds(config::kServoRoutineGripperStepMs);
-        output = routine.update(
-            ServoRoutineKind::Deposit, 4, 3, readyForNextCapture, now);
-        require(output.completed && !output.internalObjectStored,
-                "Depositing the stored object should clear the inventory state");
-
-        ServoRoutine timeoutRoutine;
-        Clock::time_point timeoutNow{};
-        output = timeoutRoutine.update(
-            ServoRoutineKind::Deposit, 1, 0, capturedPose, timeoutNow);
-        timeoutNow += std::chrono::milliseconds(config::kServoRoutineResumePoseMs);
-        output = timeoutRoutine.update(
-            ServoRoutineKind::Deposit, 1, 0, capturedPose, timeoutNow);
-        timeoutNow += std::chrono::milliseconds(config::kServoRoutineArmStepMs);
-        output = timeoutRoutine.update(
-            ServoRoutineKind::Deposit, 1, 0, capturedPose, timeoutNow);
-        timeoutNow += std::chrono::milliseconds(config::kServoRoutineWristStepMs);
-        output = timeoutRoutine.update(
-            ServoRoutineKind::Deposit, 1, 0, capturedPose, timeoutNow);
-        require(output.waitingForConfirmation,
-                "Deposit should expose its confirmation gate");
-        timeoutNow += std::chrono::milliseconds(
-            config::kServoRoutineConfirmationTimeoutMs);
-        output = timeoutRoutine.update(
-            ServoRoutineKind::Deposit, 1, 0, capturedPose, timeoutNow);
-        require(output.failed && !output.poseRequested,
-                "Deposit timeout should stop without opening the gripper");
+        steps = runRoutine(ServoRoutineKind::FullSequenceTwo, 5, home, output);
+        require(closeTo(poseAt(steps, "servo_capture_gripper_open").gripperDegrees, 180.0) &&
+                    closeTo(poseAt(steps, "servo_capture_gripper_retention").gripperDegrees, 5.0) &&
+                    closeTo(poseAt(steps, "servo_capture_arm_finish").armDegrees, 0.0) &&
+                    closeTo(poseAt(steps, "servo_direct_deposit").gripperDegrees, 90.0) &&
+                    closeTo(poseAt(steps, "servo_direct_gripper_home").gripperDegrees, 0.0) &&
+                    closeTo(poseAt(steps, "servo_direct_arm_home").armDegrees, 15.0) &&
+                    closeTo(poseAt(steps, "servo_direct_wrist_home").wristDegrees, 0.0),
+                "Full sequence two should deliver directly and finish home");
+        requireWristClearance(steps);
+        requirePhaseOrder(steps, {
+            "servo_capture_arm_clearance",
+            "servo_capture_wrist_forward",
+            "servo_capture_gripper_open",
+            "servo_capture_arm_pickup",
+            "servo_capture_gripper_press",
+            "servo_capture_gripper_retention",
+            "servo_capture_arm_finish",
+            "servo_direct_deposit",
+            "servo_direct_gripper_home",
+            "servo_direct_arm_home",
+            "servo_direct_wrist_home"});
     }
     catch (const std::exception& error)
     {

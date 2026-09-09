@@ -233,6 +233,39 @@ bool Esp32Bridge::sendServoPose(const ServoPose& pose)
     return writeLine(command.str());
 }
 
+bool Esp32Bridge::sendServoSlew(
+    ServoId servo, double targetAngleDegrees,
+    double maximumSpeedDegreesPerSecond)
+{
+    if (!std::isfinite(targetAngleDegrees) ||
+        targetAngleDegrees < config::kServoMinimumAngleDegrees ||
+        targetAngleDegrees > config::kServoMaximumAngleDegrees ||
+        !std::isfinite(maximumSpeedDegreesPerSecond) ||
+        maximumSpeedDegreesPerSecond <
+            config::kServoSlewMinimumSpeedDegreesPerSecond ||
+        maximumSpeedDegreesPerSecond >
+            config::kServoSlewMaximumSpeedDegreesPerSecond)
+    {
+        return false;
+    }
+
+    // O comando opcional leva alvo e limite definidos pela Raspberry. Nenhuma
+    // rotina atual o envia, portanto SERVO e SERVO_POSE mantêm o comportamento.
+    std::ostringstream command;
+    command << std::fixed << std::setprecision(1)
+            << "SERVO_SLEW," << servoProtocolName(servo) << ','
+            << targetAngleDegrees << ','
+            << maximumSpeedDegreesPerSecond << "\n";
+    return writeLine(command.str());
+}
+
+bool Esp32Bridge::sendDisableServo(ServoId servo)
+{
+    std::ostringstream command;
+    command << "SERVO_DISABLE," << servoProtocolName(servo) << "\n";
+    return writeLine(command.str());
+}
+
 bool Esp32Bridge::sendDisableAllServos()
 {
     return writeLine("SERVO_DISABLE_ALL\n");
@@ -704,6 +737,22 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
             next.gripperServoMinimumPulseUs = std::stoi(values[49]);
             next.gripperServoMaximumPulseUs = std::stoi(values[50]);
             next.gripperServoInverted = std::stoi(values[51]) != 0;
+        }
+
+        if (values.size() >= 61)
+        {
+            // Os campos finais pertencem à capacidade opcional SERVO_SLEW.
+            // A ausência deles preserva compatibilidade com o firmware atual.
+            next.servoExtendedControlSupported = true;
+            next.armServoTargetAngleDegrees = std::stod(values[52]);
+            next.armServoSlewRateDegreesPerSecond = std::stod(values[53]);
+            next.armServoSlewActive = std::stoi(values[54]) != 0;
+            next.wristServoTargetAngleDegrees = std::stod(values[55]);
+            next.wristServoSlewRateDegreesPerSecond = std::stod(values[56]);
+            next.wristServoSlewActive = std::stoi(values[57]) != 0;
+            next.gripperServoTargetAngleDegrees = std::stod(values[58]);
+            next.gripperServoSlewRateDegreesPerSecond = std::stod(values[59]);
+            next.gripperServoSlewActive = std::stoi(values[60]) != 0;
         }
 
         std::lock_guard<std::mutex> lock(telemetryMutex_);

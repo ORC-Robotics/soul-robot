@@ -589,6 +589,8 @@ SYSTEM_STARTING
 SYSTEM_READY
 SERVO,<ARM|WRIST|GRIPPER>,<angleDegrees>
 SERVO_POSE,<armDegrees>,<wristDegrees>,<gripperDegrees>
+SERVO_SLEW,<ARM|WRIST|GRIPPER>,<targetDegrees>,<degreesPerSecond>
+SERVO_DISABLE,<ARM|WRIST|GRIPPER>
 SERVO_DISABLE_ALL
 SERVO_CAL_BEGIN
 SERVO_CAL_PULSE,<ARM|WRIST|GRIPPER>,<pulseUs>
@@ -602,6 +604,13 @@ PING
 ```
 
 ### Calibração persistente dos servos
+
+`SERVO_SLEW` e `SERVO_DISABLE` são extensões opcionais controladas pela
+Raspberry. O primeiro movimenta um canal já habilitado até o alvo, respeitando
+uma velocidade entre 1 e 720 graus por segundo. O segundo remove somente o
+sinal do canal indicado. As rotinas atuais continuam usando `SERVO` e
+`SERVO_POSE`, que mantêm a aplicação imediata anterior; portanto, a presença
+desses comandos no firmware não altera o comportamento existente.
 
 O painel da Raspberry oferece a seção **Calibrar pulsos sem regravar**. Entrar
 nesse modo zera a tração e não aplica pulso automaticamente. O operador escolhe
@@ -629,9 +638,17 @@ Procedimento recomendado:
 6. Encerre com **Parar** e confirme no controle normal os comandos 0°, 90° e
    180° antes de acoplar a mecânica.
 
-Ao entrar em Manual ou Autônomo, o `RobotState` solicita a pose inicial
-`{0°, 0°, 0°}`. O firmware converte cada ângulo linearmente para a faixa
+Ao entrar em Manual, o `RobotState` não envia uma pose e conserva a posição
+atual dos servos. Ao entrar em Autônomo, solicita a pose inicial
+`{braço 15°, pulso 0°, garra 0°}`. O firmware converte cada ângulo linearmente para a faixa
 500–2500 µs. No modo Parado, os três canais permanecem sem pulso.
+
+No seletor de diagnóstico, a sequência completa principal armazena a primeira
+vítima antes de coletar a segunda. A sequência completa 2 faz uma coleta e um
+depósito direto, sem armazenamento. Durante a coleta, a garra aperta em 0° por
+500 ms e depois permanece energizada em 5° para reter a vítima sem pressionar
+continuamente o batente. Qualquer mudança do pulso exige que o alvo atual do
+braço esteja em pelo menos 15°.
 
 O comando `OLED` aceita título de até 12 caracteres, duas linhas de até 20
 caracteres ASCII e duração entre 500 e 30.000 ms. Os campos de texto são

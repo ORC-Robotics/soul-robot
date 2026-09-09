@@ -207,6 +207,11 @@ Os canais, pulsos e inversões dos servos ficam em
 `esp32/obr_esp32_bridge/robot_config.h`. Na partida, no E-Stop, no botão Parar,
 durante a calibração e quando o heartbeat da Raspberry expira, a ESP32 remove os
 sinais dos três canais. Remover o sinal não corta a alimentação V+ dos servos.
+
+O firmware também aceita `SERVO_DISABLE,<servo>` para retirar somente um sinal
+e `SERVO_SLEW,<servo>,<alvo>,<grausPorSegundo>` para um movimento gradual
+solicitado pela Raspberry. Esses comandos são opcionais e não são usados pelas
+rotinas atuais; `SERVO` e `SERVO_POSE` continuam com o comportamento imediato.
 No modo Manual, o painel renova uma autorização exclusiva para os servos a cada
 500 ms; se ela não chegar por 2 s, os sinais são removidos sem alterar o watchdog
 independente dos motores.
@@ -225,14 +230,27 @@ Programações predefinidas publicam uma pose validada no `RobotState`; o
 
 ```cpp
 ServoPose pickupPose;
-pickupPose.armDegrees = 120.0;
-pickupPose.wristDegrees = 45.0;
-pickupPose.gripperDegrees = 20.0;
+pickupPose.armDegrees = 103.0;
+pickupPose.wristDegrees = 180.0;
+pickupPose.gripperDegrees = 180.0;
 robotState.setAutonomousServoPose(pickupPose);
 ```
 
-Ao iniciar o modo Manual ou Autônomo, a primeira pose enviada é `{0°, 0°, 0°}`.
-No modo Parado, os três canais permanecem sem pulso.
+No seletor autônomo, **Servos · Sequência com armazenamento** coleta duas
+vítimas, guarda a primeira no compartimento interno e depois deposita as duas.
+**Servos · Sequência sem armazenamento** coleta uma vítima e segue diretamente
+para o depósito. Os dois testes executam todos os passos por tempo, sem aguardar
+detecção de vítima ou chegada ao depósito, e mantêm a tração em zero.
+
+Nos passos de coleta, a garra aperta em 0° por um intervalo curto e depois
+permanece energizada em 5°. O ângulo de retenção conserva a vítima presa sem
+manter o servo forçando continuamente o batente de 0°. As rotinas elevam o
+braço a pelo menos 15° antes de qualquer mudança do pulso.
+
+Ao iniciar o modo Manual, nenhuma pose é enviada: os servos mantêm a posição
+atual até um comando explícito. Ao iniciar o Autônomo, a primeira pose enviada
+é `{braço 15°, pulso 0°, garra 0°}`. No modo Parado, os três canais
+permanecem sem pulso.
 
 Esses valores são alvos de comando. Como servos comuns não devolvem posição ao
 PCA9685, a telemetria confirma o pulso aplicado, não mede o ângulo físico do eixo.

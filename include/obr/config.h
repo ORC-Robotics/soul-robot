@@ -621,14 +621,23 @@ constexpr int kEsp32SerialBaudRate = 115200;
 constexpr double kServoMinimumAngleDegrees = 0.0;
 constexpr double kServoMaximumAngleDegrees = 180.0;
 
-// Pose aplicada aos três servos quando o robô entra em Manual ou Autônomo.
-// No modo Parado, os pulsos continuam desligados e esta pose não é aplicada.
+// Faixa aceita pela API opcional de movimento gradual da ESP32, em graus por
+// segundo. O ServoController não usa essa API automaticamente; a Raspberry
+// precisa solicitá-la explicitamente para não alterar as rotinas atuais.
+constexpr double kServoSlewMinimumSpeedDegreesPerSecond = 1.0;
+constexpr double kServoSlewMaximumSpeedDegreesPerSecond = 720.0;
+
+// Ângulo neutro usado pelo pulso, pela garra e por poses que exigem 0°.
 constexpr double kServoInitialAngleDegrees = 0.0;
+
+// Posição do braço, em graus, solicitada ao iniciar o modo Autônomo.
+// O modo Manual não aplica esta pose, pois deve conservar a posição atual.
+constexpr double kAutonomousInitialArmAngleDegrees = 15.0;
 
 // Velocidade máxima, em graus por segundo, aplicada ao servo do pulso pela
 // Raspberry. Reduzir este valor suaviza o movimento e diminui o impulso que
 // pode deslocar mecanicamente a garra; aumentar torna o pulso mais rápido.
-constexpr double kWristServoMaximumSpeedDegreesPerSecond = 90.0;
+constexpr double kWristServoMaximumSpeedDegreesPerSecond = 180.0;
 
 // Tempo, em milissegundos, que a pose completa permanece aplicada antes de o
 // pulso voltar a se mover após uma reativação. Isso dá à garra tempo para
@@ -643,20 +652,20 @@ constexpr int kServoMotionMaximumElapsedMs = 100;
 // conclua seu passo antes de o próximo começar. Não existe sensor físico de
 // posição, portanto esses valores devem ser validados com o mecanismo real.
 constexpr int kServoRoutineArmStepMs = 1000;
-constexpr int kServoRoutineWristStepMs = 2200;
+constexpr int kServoRoutineWristStepMs = 1100;
 constexpr int kServoRoutineGripperStepMs = 350;
 
-// Tempo, em milissegundos, para aplicar e estabilizar a pose inicial 0°/0°/0°.
-// Ele cobre o pior deslocamento do pulso pela rampa de 90°/s, inclusive após
+// Tempo, em milissegundos, para estabilizar a pose autônoma 15°/0°/0°.
+// Ele cobre o pior deslocamento do pulso pela rampa de 180°/s, inclusive após
 // a pausa de reativação, antes de qualquer outro mecanismo começar a mover.
-constexpr int kServoRoutineInitialPoseMs = 2400;
+constexpr int kServoRoutineInitialPoseMs = 1300;
 
 // Tempo, em milissegundos, para reativar e confirmar a pose memorizada antes
 // do primeiro movimento de uma rotina encadeada. Isso faz a garra recuperar
 // sua força de retenção antes de braço ou pulso produzirem inércia.
 constexpr int kServoRoutineResumePoseMs = 250;
 
-// Tempo curto, em milissegundos, durante o qual a garra pressiona em 3°.
+// Tempo curto, em milissegundos, durante o qual a garra pressiona em 0°.
 // Depois desse pulso, somente o sinal da garra é removido para evitar esforço
 // contínuo; braço e pulso permanecem energizados.
 constexpr int kServoRoutineGripperPressMs = 500;
@@ -667,16 +676,27 @@ constexpr int kServoRoutineConfirmationTimeoutMs = 2000;
 
 // Posições, em graus, usadas pelas rotinas mecânicas predefinidas. Alterar
 // qualquer valor muda diretamente os pontos de captura, armazenamento e depósito.
-constexpr double kServoRoutineArmTransferDegrees = 10.0;
-constexpr double kServoRoutineArmPickupDegrees = 105.0;
-constexpr double kServoRoutineArmStoredObjectLiftDegrees = 60.0;
-constexpr double kServoRoutineWristForwardDegrees = 174.0;
+constexpr double kServoRoutineArmHomeDegrees = kAutonomousInitialArmAngleDegrees;
+constexpr double kServoRoutineArmPickupDegrees = 103.0;
+constexpr double kServoRoutineArmStorageClearanceDegrees = 50.0;
+constexpr double kServoRoutineArmStorageTransitionDegrees = 20.0;
+constexpr double kServoRoutineArmStoredPickupDegrees = 65.0;
+constexpr double kServoRoutineArmStoredCarryDegrees = 25.0;
+constexpr double kServoRoutineWristForwardDegrees = 180.0;
 constexpr double kServoRoutineWristInternalDegrees = 0.0;
-constexpr double kServoRoutineGripperOpenDegrees = 20.0;
-constexpr double kServoRoutineGripperInternalOpenDegrees = 10.0;
-constexpr double kServoRoutineGripperClosedDegrees = 3.0;
+constexpr double kServoRoutineWristStorageClearanceDegrees = 45.0;
+constexpr double kServoRoutineWristStoredApproachDegrees = 65.0;
+constexpr double kServoRoutineGripperFullyOpenDegrees = 180.0;
+constexpr double kServoRoutineGripperDepositDegrees = 90.0;
+constexpr double kServoRoutineGripperClosedDegrees = 0.0;
+// Após o aperto inicial em 0°, a garra recua para 5° e mantém o PWM
+// ativo. Isso conserva a vítima presa sem forçar continuamente o batente.
+constexpr double kServoRoutineGripperRetentionDegrees = 5.0;
 
-static_assert(kWristServoMaximumSpeedDegreesPerSecond > 0.0 &&
+static_assert(kServoSlewMinimumSpeedDegreesPerSecond > 0.0 &&
+                  kServoSlewMaximumSpeedDegreesPerSecond >=
+                      kServoSlewMinimumSpeedDegreesPerSecond &&
+                  kWristServoMaximumSpeedDegreesPerSecond > 0.0 &&
                   kServoPoseHoldBeforeWristMotionMs >= 0 &&
                   kServoMotionMaximumElapsedMs >= kMainLoopPeriodMs &&
                   kServoRoutineArmStepMs > 0 &&
@@ -695,22 +715,34 @@ static_assert(kWristServoMaximumSpeedDegreesPerSecond > 0.0 &&
                           kWristServoMaximumSpeedDegreesPerSecond * 1000.0,
               "Os tempos das rotinas de servo devem ser positivos.");
 static_assert(
-    kServoRoutineArmTransferDegrees >= kServoMinimumAngleDegrees &&
-        kServoRoutineArmTransferDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmHomeDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmHomeDegrees <= kServoMaximumAngleDegrees &&
         kServoRoutineArmPickupDegrees >= kServoMinimumAngleDegrees &&
         kServoRoutineArmPickupDegrees <= kServoMaximumAngleDegrees &&
-        kServoRoutineArmStoredObjectLiftDegrees >= kServoMinimumAngleDegrees &&
-        kServoRoutineArmStoredObjectLiftDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmStorageClearanceDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmStorageClearanceDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmStorageTransitionDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmStorageTransitionDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmStoredPickupDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmStoredPickupDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmStoredCarryDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmStoredCarryDegrees <= kServoMaximumAngleDegrees &&
         kServoRoutineWristForwardDegrees >= kServoMinimumAngleDegrees &&
         kServoRoutineWristForwardDegrees <= kServoMaximumAngleDegrees &&
         kServoRoutineWristInternalDegrees >= kServoMinimumAngleDegrees &&
         kServoRoutineWristInternalDegrees <= kServoMaximumAngleDegrees &&
-        kServoRoutineGripperOpenDegrees >= kServoMinimumAngleDegrees &&
-        kServoRoutineGripperOpenDegrees <= kServoMaximumAngleDegrees &&
-        kServoRoutineGripperInternalOpenDegrees >= kServoMinimumAngleDegrees &&
-        kServoRoutineGripperInternalOpenDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineWristStorageClearanceDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineWristStorageClearanceDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineWristStoredApproachDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineWristStoredApproachDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperFullyOpenDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperFullyOpenDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperDepositDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperDepositDegrees <= kServoMaximumAngleDegrees &&
         kServoRoutineGripperClosedDegrees >= kServoMinimumAngleDegrees &&
-        kServoRoutineGripperClosedDegrees <= kServoMaximumAngleDegrees,
+        kServoRoutineGripperClosedDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperRetentionDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperRetentionDegrees <= kServoMaximumAngleDegrees,
     "As posições das rotinas devem permanecer na faixa angular segura.");
 
 // Faixa absoluta, em microssegundos, permitida somente na calibração de

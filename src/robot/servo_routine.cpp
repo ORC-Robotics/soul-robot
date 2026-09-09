@@ -135,138 +135,194 @@ void ServoRoutine::start(
     stepStarted_ = false;
     failed_ = false;
 
+    const auto appendArm = [this](double angle, const char* phase, const char* description)
+    {
+        appendMove(StepAction::MoveArm, angle, config::kServoRoutineArmStepMs,
+                   phase, description);
+    };
+    const auto appendWrist = [this](double angle, const char* phase, const char* description)
+    {
+        appendMove(StepAction::MoveWrist, angle, config::kServoRoutineWristStepMs,
+                   phase, description);
+    };
+    const auto appendGripper = [this](
+                                   double angle,
+                                   int durationMs,
+                                   const char* phase,
+                                   const char* description)
+    {
+        appendMove(StepAction::MoveGripper, angle, durationMs, phase, description);
+    };
+    const auto appendGripWithRetention = [&appendGripper](
+                                             const char* pressPhase,
+                                             const char* retentionPhase)
+    {
+        appendGripper(
+            config::kServoRoutineGripperClosedDegrees,
+            config::kServoRoutineGripperPressMs,
+            pressPhase, "Apertando a vítima com a garra em 0°");
+        appendGripper(
+            config::kServoRoutineGripperRetentionDegrees,
+            config::kServoRoutineGripperStepMs,
+            retentionPhase, "Mantendo a vítima presa com a garra em 5°");
+    };
+    const auto appendFirstCapture = [
+                                        &appendArm,
+                                        &appendWrist,
+                                        &appendGripper,
+                                        &appendGripWithRetention](double finalArmDegrees)
+    {
+        // O braço chega primeiro a 15° para liberar mecanicamente o pulso.
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_capture_arm_clearance", "Elevando braço para 15°");
+        appendWrist(config::kServoRoutineWristForwardDegrees,
+                    "servo_capture_wrist_forward", "Movendo pulso para 180°");
+        appendGripper(config::kServoRoutineGripperFullyOpenDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_capture_gripper_open", "Abrindo garra completamente em 180°");
+        appendArm(config::kServoRoutineArmPickupDegrees,
+                  "servo_capture_arm_pickup", "Movendo braço para 103°");
+        appendGripWithRetention(
+            "servo_capture_gripper_press", "servo_capture_gripper_retention");
+        appendArm(finalArmDegrees, "servo_capture_arm_finish",
+                  finalArmDegrees == 0.0
+                      ? "Movendo braço para 0°"
+                      : "Retornando braço para 15°");
+    };
+    const auto appendStorage = [
+                                   this,
+                                   &appendArm,
+                                   &appendWrist,
+                                   &appendGripper]()
+    {
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_store_wrist_internal", "Movendo pulso para 0°");
+        appendGripper(config::kServoRoutineGripperDepositDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_store_gripper_release",
+                      "Abrindo garra em 90° para armazenar a vítima");
+        // O braço afasta primeiro a garra do compartimento. Somente em 50° o
+        // pulso recebe a folga necessária para girar com segurança até 45°.
+        appendArm(config::kServoRoutineArmStorageClearanceDegrees,
+                  "servo_store_arm_clearance", "Elevando braço para 50°");
+        appendWrist(config::kServoRoutineWristStorageClearanceDegrees,
+                    "servo_store_wrist_clearance", "Movendo pulso para 45°");
+        appendGripper(config::kServoRoutineGripperClosedDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_store_gripper_close", "Fechando garra vazia em 0°");
+        appendArm(config::kServoRoutineArmStorageTransitionDegrees,
+                  "servo_store_arm_transition", "Movendo braço para 20°");
+        appendWrist(config::kServoRoutineWristForwardDegrees,
+                    "servo_store_wrist_forward", "Movendo pulso para 180°");
+        appendArm(config::kServoInitialAngleDegrees,
+                  "servo_store_arm_ready", "Movendo braço para 0°");
+        steps_.push_back({StepAction::MarkInternalStorage});
+    };
+
     if (kind == ServoRoutineKind::Initialize)
     {
+        pose_ = {
+            config::kAutonomousInitialArmAngleDegrees,
+            config::kServoInitialAngleDegrees,
+            config::kServoInitialAngleDegrees};
         steps_.push_back({
-            StepAction::ApplyInitialPose, 0.0,
+            StepAction::HoldCurrentPose, 0.0,
             config::kServoRoutineInitialPoseMs,
-            "servo_initial_pose", "Estabilizando braço, pulso e garra em 0°"});
+            "servo_initial_pose", "Estabilizando braço em 15° e demais servos em 0°"});
         steps_.push_back({StepAction::Complete});
         return;
     }
 
     steps_.push_back({
-        StepAction::HoldCurrentPose, 0.0,
-        config::kServoRoutineResumePoseMs,
-        "servo_resume_pose", "Reativando a pose anterior antes do movimento"});
-
-    appendMove(
-        StepAction::MoveArm, config::kServoRoutineArmTransferDegrees,
-        config::kServoRoutineArmStepMs,
-        "servo_arm_transfer", "Movendo braço para 10°");
+        StepAction::HoldCurrentPose, 0.0, config::kServoRoutineResumePoseMs,
+        "servo_resume_pose", "Estabilizando a pose antes da sequência"});
 
     if (kind == ServoRoutineKind::Capture)
     {
-        appendMove(
-            StepAction::MoveWrist, config::kServoRoutineWristForwardDegrees,
-            config::kServoRoutineWristStepMs,
-            "servo_wrist_forward", "Movendo pulso para 174°");
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperOpenDegrees,
-            config::kServoRoutineGripperStepMs,
-            "servo_gripper_open", "Abrindo garra em 20°");
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmPickupDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_arm_pickup", "Movendo braço para 105°");
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperClosedDegrees,
-            config::kServoRoutineGripperPressMs,
-            "servo_gripper_press", "Pressionando objeto com a garra em 3°");
-        steps_.push_back({
-            StepAction::ReleaseGripper, 0.0, config::kMainLoopPeriodMs * 2,
-            "servo_gripper_release", "Removendo esforço contínuo da garra"});
-        steps_.push_back({StepAction::Complete});
-        return;
+        appendFirstCapture(config::kServoRoutineArmHomeDegrees);
     }
-
-    if (kind == ServoRoutineKind::InternalStorage)
+    else if (kind == ServoRoutineKind::InternalStorage)
     {
-        appendMove(
-            StepAction::MoveWrist, config::kServoRoutineWristInternalDegrees,
-            config::kServoRoutineWristStepMs,
-            "servo_wrist_internal", "Movendo pulso para 0°");
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperOpenDegrees,
-            config::kServoRoutineGripperStepMs,
-            "servo_store_release", "Abrindo garra em 20° no armazenamento");
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmPickupDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_ready_next", "Movendo braço para 105° para nova captura");
-        steps_.push_back({StepAction::MarkInternalStorage});
-        steps_.push_back({
-            StepAction::WaitForCloseConfirmation, 0.0, 0,
-            "servo_wait_close", "Aguardando confirmação para fechar a garra"});
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperClosedDegrees,
-            config::kServoRoutineGripperPressMs,
-            "servo_next_gripper_press", "Pressionando o novo objeto com a garra em 3°");
-        steps_.push_back({
-            StepAction::ReleaseGripper, 0.0, config::kMainLoopPeriodMs * 2,
-            "servo_gripper_release", "Removendo esforço contínuo da garra"});
-        steps_.push_back({StepAction::Complete});
-        return;
+        appendStorage();
     }
-
-    appendMove(
-        StepAction::MoveWrist, config::kServoRoutineWristForwardDegrees,
-        config::kServoRoutineWristStepMs,
-        "servo_wrist_deposit", "Movendo pulso para 174°");
-    steps_.push_back({
-        StepAction::WaitForOpenConfirmation, 0.0,
-        config::kServoRoutineConfirmationTimeoutMs,
-        "servo_wait_open", "Aguardando confirmação para abrir a garra"});
-    appendMove(
-        StepAction::MoveGripper, config::kServoRoutineGripperOpenDegrees,
-        config::kServoRoutineGripperStepMs,
-        "servo_deposit_open", "Abrindo garra em 20° para depositar");
-
-    if (internalObjectStored_)
+    else if (kind == ServoRoutineKind::Deposit)
     {
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmPickupDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_stored_arm_pickup", "Movendo braço para 105°");
-        appendMove(
-            StepAction::MoveWrist, config::kServoRoutineWristInternalDegrees,
-            config::kServoRoutineWristStepMs,
-            "servo_stored_wrist_internal", "Corrigindo pulso para 0°");
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperInternalOpenDegrees,
-            config::kServoRoutineGripperStepMs,
-            "servo_stored_gripper_open", "Abrindo garra em 10°");
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmTransferDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_stored_arm_internal", "Movendo braço para 10° no armazenamento");
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperClosedDegrees,
-            config::kServoRoutineGripperPressMs,
-            "servo_stored_gripper_close", "Fechando garra no objeto armazenado");
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmStoredObjectLiftDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_stored_arm_lift", "Elevando braço para 60°");
-        appendMove(
-            StepAction::MoveWrist, config::kServoRoutineWristForwardDegrees,
-            config::kServoRoutineWristStepMs,
-            "servo_stored_wrist_deposit", "Movendo pulso para 174°");
-        appendMove(
-            StepAction::MoveArm, config::kServoRoutineArmTransferDegrees,
-            config::kServoRoutineArmStepMs,
-            "servo_stored_arm_deposit", "Movendo braço para 10° no depósito");
-        steps_.push_back({
-            StepAction::WaitForOpenConfirmation, 0.0,
-            config::kServoRoutineConfirmationTimeoutMs,
-            "servo_wait_stored_open",
-            "Aguardando confirmação para depositar o objeto armazenado"});
-        appendMove(
-            StepAction::MoveGripper, config::kServoRoutineGripperOpenDegrees,
-            config::kServoRoutineGripperStepMs,
-            "servo_stored_deposit_open", "Abrindo garra em 20° para depositar");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_deposit_arm_clearance", "Elevando braço para 15°");
+        appendWrist(config::kServoRoutineWristForwardDegrees,
+                    "servo_deposit_wrist_forward", "Movendo pulso para 180°");
+        appendGripper(config::kServoRoutineGripperDepositDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_deposit_gripper_open", "Abrindo garra em 90° no depósito");
+        appendGripper(config::kServoRoutineGripperClosedDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_deposit_gripper_close", "Fechando garra vazia em 0°");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_deposit_arm_home", "Retornando braço para 15°");
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_deposit_wrist_home", "Retornando pulso para 0°");
+    }
+    else if (kind == ServoRoutineKind::FullSequence)
+    {
+        // Sequência completa com armazenamento da primeira vítima.
+        steps_.push_back({StepAction::ClearInternalStorage});
+        appendFirstCapture(config::kServoRoutineArmHomeDegrees);
+        appendStorage();
+        appendGripper(config::kServoRoutineGripperFullyOpenDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_second_gripper_open", "Abrindo garra completamente em 180°");
+        appendArm(config::kServoRoutineArmPickupDegrees,
+                  "servo_second_arm_pickup", "Movendo braço para 103°");
+        appendGripWithRetention(
+            "servo_second_gripper_press", "servo_second_gripper_retention");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_second_arm_carry", "Retornando braço para 15°");
+        appendGripper(config::kServoRoutineGripperDepositDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_second_deposit", "Abrindo garra em 90° no depósito");
+        appendWrist(config::kServoRoutineWristStoredApproachDegrees,
+                    "servo_stored_wrist_approach", "Movendo pulso para 65°");
+        appendArm(config::kServoRoutineArmStoredPickupDegrees,
+                  "servo_stored_arm_approach", "Movendo braço para 65°");
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_stored_wrist_internal", "Movendo pulso para 0°");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_stored_arm_pickup", "Movendo braço para 15°");
+        appendGripWithRetention(
+            "servo_stored_gripper_press", "servo_stored_gripper_retention");
+        appendArm(config::kServoRoutineArmStoredCarryDegrees,
+                  "servo_stored_arm_carry", "Movendo braço para 25°");
+        appendWrist(config::kServoRoutineWristForwardDegrees,
+                    "servo_stored_wrist_deposit", "Movendo pulso para 180°");
+        appendGripper(config::kServoRoutineGripperDepositDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_stored_deposit", "Abrindo garra em 90° no depósito");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_final_arm_home", "Retornando braço para 15°");
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_final_wrist_home", "Retornando pulso para 0°");
+        appendGripper(config::kServoRoutineGripperClosedDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_final_gripper_home", "Fechando garra vazia em 0°");
         steps_.push_back({StepAction::ClearInternalStorage});
     }
+    else
+    {
+        // Sequência completa 2: coleta e entrega sem armazenamento interno.
+        steps_.push_back({StepAction::ClearInternalStorage});
+        appendFirstCapture(config::kServoInitialAngleDegrees);
+        appendGripper(config::kServoRoutineGripperDepositDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_direct_deposit", "Abrindo garra em 90° no depósito");
+        appendGripper(config::kServoRoutineGripperClosedDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_direct_gripper_home", "Fechando garra vazia em 0°");
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_direct_arm_home", "Retornando braço para 15°");
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_direct_wrist_home", "Retornando pulso para 0°");
+    }
+
     steps_.push_back({StepAction::Complete});
 }
 

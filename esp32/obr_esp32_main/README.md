@@ -30,6 +30,8 @@ SYSTEM_STARTING
 SYSTEM_READY
 SERVO,<ARM|WRIST|GRIPPER>,<anguloGraus>
 SERVO_POSE,<bracoGraus>,<pulsoGraus>,<garraGraus>
+SERVO_SLEW,<ARM|WRIST|GRIPPER>,<alvoGraus>,<velocidadeGrausPorSegundo>
+SERVO_DISABLE,<ARM|WRIST|GRIPPER>
 SERVO_DISABLE_ALL
 SERVO_CAL_BEGIN
 SERVO_CAL_PULSE,<ARM|WRIST|GRIPPER>,<pulsoUs>
@@ -71,7 +73,18 @@ ele também impede que um pulso antigo permaneça ativo se a Raspberry cair.
 
 `SERVO` movimenta um mecanismo entre 0° e 180°. `SERVO_POSE` valida os três
 ângulos antes de aplicar uma pose completa, sendo o formato indicado para
-programações predefinidas. `SERVO_DISABLE_ALL` remove os sinais dos três canais.
+programações predefinidas. Esses dois comandos preservam a aplicação imediata
+usada pelas rotinas atuais.
+
+`SERVO_SLEW` é uma capacidade opcional: recebe o alvo e a velocidade máxima
+entre 1 e 720 graus por segundo. O canal precisa estar habilitado em uma posição
+conhecida antes do comando. A ESP32 atualiza apenas esse servo até o alvo, e um
+novo `SERVO`, `SERVO_POSE`, `SERVO_DISABLE` ou `SERVO_DISABLE_ALL` cancela o
+movimento gradual correspondente. Nenhum caminho atual da Raspberry envia
+`SERVO_SLEW`, portanto gravar o firmware não muda as rotinas existentes.
+
+`SERVO_DISABLE` remove somente o sinal do mecanismo indicado;
+`SERVO_DISABLE_ALL` remove os sinais dos três canais.
 Os servos também são desligados por `STOP`, `ESTOP`, calibração,
 `SYSTEM_STARTING` ou perda do heartbeat `SYSTEM_READY`. Os canais e pulsos ficam
 centralizados em `../obr_esp32_bridge/robot_config.h`.
@@ -149,6 +162,9 @@ calibracaoServoAtiva,indiceServoEmTeste,
 minBracoUs,maxBracoUs,bracoInvertido,
 minPulsoUs,maxPulsoUs,pulsoInvertido,
 minGarraUs,maxGarraUs,garraInvertida
+alvoBracoGraus,velocidadeBracoGrausPorSegundo,bracoEmMovimentoGradual,
+alvoPulsoGraus,velocidadePulsoGrausPorSegundo,pulsoEmMovimentoGradual,
+alvoGarraGraus,velocidadeGarraGrausPorSegundo,garraEmMovimentoGradual
 ```
 
 A tensão da bateria não é zerada durante a calibração porque é uma medição

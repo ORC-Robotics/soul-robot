@@ -543,6 +543,18 @@ void DashboardServer::handleCommand(const std::string& message)
             robotState_.setAutonomousMission(AutonomousMission::ServoDeposit);
             std::cout << "Autonomous mission selected: servo_deposit\n";
         }
+        else if (message.find("\"mission\":\"servo_full_sequence\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::ServoFullSequence);
+            std::cout << "Autonomous mission selected: servo_full_sequence\n";
+        }
+        else if (message.find("\"mission\":\"servo_full_sequence_two\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::ServoFullSequenceTwo);
+            std::cout << "Autonomous mission selected: servo_full_sequence_two\n";
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
@@ -945,6 +957,20 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"gripperServoAngleDegrees\":" << esp32.gripperServoAngleDegrees
          << ",\"gripperServoPulseUs\":" << esp32.gripperServoPulseUs
          << ",\"gripperServoEnabled\":" << (esp32.gripperServoEnabled ? "true" : "false")
+         << ",\"armServoTargetAngleDegrees\":" << esp32.armServoTargetAngleDegrees
+         << ",\"armServoSlewRateDegreesPerSecond\":"
+         << esp32.armServoSlewRateDegreesPerSecond
+         << ",\"armServoSlewActive\":" << (esp32.armServoSlewActive ? "true" : "false")
+         << ",\"wristServoTargetAngleDegrees\":" << esp32.wristServoTargetAngleDegrees
+         << ",\"wristServoSlewRateDegreesPerSecond\":"
+         << esp32.wristServoSlewRateDegreesPerSecond
+         << ",\"wristServoSlewActive\":" << (esp32.wristServoSlewActive ? "true" : "false")
+         << ",\"gripperServoTargetAngleDegrees\":" << esp32.gripperServoTargetAngleDegrees
+         << ",\"gripperServoSlewRateDegreesPerSecond\":"
+         << esp32.gripperServoSlewRateDegreesPerSecond
+         << ",\"gripperServoSlewActive\":" << (esp32.gripperServoSlewActive ? "true" : "false")
+         << ",\"servoExtendedControlSupported\":"
+         << (esp32.servoExtendedControlSupported ? "true" : "false")
          << ",\"servoCalibrationRequested\":"
          << (state.servoCalibrationActive ? "true" : "false")
          << ",\"servoCalibrationSupported\":"
@@ -1655,10 +1681,12 @@ std::string DashboardServer::dashboardHtml()
                 <option value="rescue_detection">RESGATE · APENAS DETECTAR</option>
                 <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
-                <option value="servo_initialize">SERVOS · INICIALIZAR EM 0°</option>
+                <option value="servo_initialize">SERVOS · POSE HOME 15/0/0</option>
                 <option value="servo_capture">SERVOS · CAPTURA</option>
                 <option value="servo_internal_storage">SERVOS · ARMAZENAMENTO INTERNO</option>
                 <option value="servo_deposit">SERVOS · DEPÓSITO</option>
+                <option value="servo_full_sequence">SERVOS · SEQUÊNCIA COM ARMAZENAMENTO</option>
+                <option value="servo_full_sequence_two">SERVOS · SEQUÊNCIA SEM ARMAZENAMENTO</option>
               </select>
               <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
@@ -2092,7 +2120,7 @@ std::string DashboardServer::dashboardHtml()
         angleField: "armServoAngleDegrees", pulseField: "armServoPulseUs",
         enabledField: "armServoEnabled", minimumField: "armServoMinimumPulseUs",
         maximumField: "armServoMaximumPulseUs", invertedField: "armServoInverted",
-        index: 0
+        index: 0, requestedAngleDegrees: null
       },
       wrist: {
         slider: element("wristServoSlider"), input: element("wristServoInput"),
@@ -2100,7 +2128,7 @@ std::string DashboardServer::dashboardHtml()
         angleField: "wristServoAngleDegrees", pulseField: "wristServoPulseUs",
         enabledField: "wristServoEnabled", minimumField: "wristServoMinimumPulseUs",
         maximumField: "wristServoMaximumPulseUs", invertedField: "wristServoInverted",
-        index: 1
+        index: 1, requestedAngleDegrees: null
       },
       gripper: {
         slider: element("gripperServoSlider"), input: element("gripperServoInput"),
@@ -2108,7 +2136,7 @@ std::string DashboardServer::dashboardHtml()
         angleField: "gripperServoAngleDegrees", pulseField: "gripperServoPulseUs",
         enabledField: "gripperServoEnabled", minimumField: "gripperServoMinimumPulseUs",
         maximumField: "gripperServoMaximumPulseUs", invertedField: "gripperServoInverted",
-        index: 2
+        index: 2, requestedAngleDegrees: null
       }
     };
     const servoCalibrationTarget = element("servoCalibrationTarget");
@@ -2281,13 +2309,17 @@ std::string DashboardServer::dashboardHtml()
           : mission === "obstacle_avoidance"
             ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
           : mission === "servo_initialize"
-            ? "Aplica e estabiliza a pose inicial de 0° nos três servos."
+            ? "Aplica e estabiliza a pose Home: braço 15°, pulso 0° e garra 0°."
           : mission === "servo_capture"
-            ? "Executa captura em passos e alivia o PWM da garra após o aperto curto."
+            ? "Executa a coleta e mantém a garra energizada no ângulo de retenção de 5°."
           : mission === "servo_internal_storage"
-            ? "Guarda o objeto internamente e retorna o braço para uma nova captura."
+            ? "Executa os passos de armazenamento interno sem aguardar condições externas."
           : mission === "servo_deposit"
-            ? "Deposita sob confirmação; cada espera expira em 2 segundos sem abrir."
+            ? "Executa os passos de depósito diretamente para validação em bancada."
+          : mission === "servo_full_sequence"
+            ? "Coleta duas vítimas, armazena a primeira e deposita ambas passo a passo."
+          : mission === "servo_full_sequence_two"
+            ? "Coleta uma vítima e realiza o depósito sem armazenamento interno."
           : "Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.";
     }
 
@@ -2418,6 +2450,8 @@ std::string DashboardServer::dashboardHtml()
           : mission === "servo_capture" ? "Servos · Captura"
           : mission === "servo_internal_storage" ? "Servos · Armazenamento"
           : mission === "servo_deposit" ? "Servos · Depósito"
+          : mission === "servo_full_sequence" ? "Servos · Com armazenamento"
+          : mission === "servo_full_sequence_two" ? "Servos · Sem armazenamento"
           : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
       const obstacleActive = phase.startsWith("obstacle_");
@@ -2748,10 +2782,11 @@ std::string DashboardServer::dashboardHtml()
       return Math.round(Math.max(0, Math.min(180, Number(value) || 0)));
     }
 
-    function showRequestedServoAngle(servoName, value) {
+    function showRequestedServoAngle(servoName, value, rememberRequest = true) {
       const control = servoControls[servoName];
       if (!control) return 0;
       const angleDegrees = clampServoAngle(value);
+      if (rememberRequest) control.requestedAngleDegrees = angleDegrees;
       control.slider.value = String(angleDegrees);
       control.input.value = String(angleDegrees);
       control.value.textContent = `${angleDegrees}°`;
@@ -2802,12 +2837,19 @@ std::string DashboardServer::dashboardHtml()
         const angleDegrees = clampServoAngle(data[control.angleField]);
         const userEditing = document.activeElement === control.slider ||
           document.activeElement === control.input || servoSendTimers.has(servoName);
-        if (!userEditing) showRequestedServoAngle(servoName, angleDegrees);
         const enabled = fresh && data[control.enabledField] === true;
         control.outputEnabled = enabled;
+        if (!servoControlAllowed || !enabled) {
+          control.requestedAngleDegrees = null;
+        }
+        // Durante a rampa, angleDegrees é a referência intermediária aplicada.
+        // Copiá-la para o campo faria o keepalive substituir o alvo do operador.
+        if (!userEditing && control.requestedAngleDegrees === null) {
+          showRequestedServoAngle(servoName, angleDegrees, false);
+        }
         const pulseUs = Math.max(0, Number(data[control.pulseField]) || 0);
         control.state.textContent = enabled
-          ? `Saída ativa · alvo ${angleDegrees}° · ${pulseUs.toFixed(0)} µs.`
+          ? `Saída ativa · pedido ${clampServoAngle(control.input.value)}° · aplicado ${angleDegrees}° · ${pulseUs.toFixed(0)} µs.`
           : `Sinal desligado · último alvo ${angleDegrees}°.`;
         control.state.className = `servo-output-state ${enabled ? "state-good" : "state-neutral"}`;
       });
@@ -4154,7 +4196,9 @@ std::string DashboardServer::dashboardHtml()
         sendServoCalibrationPulse(servoCalibrationPulseInput.value, true);
       } else if (servoControlAllowed) {
         Object.entries(servoControls).forEach(([servoName, control]) => {
-          if (control.outputEnabled) sendServoAngle(servoName, control.input.value, true);
+          if (control.outputEnabled && control.requestedAngleDegrees !== null) {
+            sendServoAngle(servoName, control.requestedAngleDegrees, true);
+          }
         });
       }
     }, servoKeepAlivePeriodMs);

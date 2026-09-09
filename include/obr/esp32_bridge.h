@@ -58,6 +58,16 @@ struct Esp32TelemetrySnapshot
     bool armServoEnabled = false;
     bool wristServoEnabled = false;
     bool gripperServoEnabled = false;
+    double armServoTargetAngleDegrees = 0.0;
+    double armServoSlewRateDegreesPerSecond = 0.0;
+    bool armServoSlewActive = false;
+    double wristServoTargetAngleDegrees = 0.0;
+    double wristServoSlewRateDegreesPerSecond = 0.0;
+    bool wristServoSlewActive = false;
+    double gripperServoTargetAngleDegrees = 0.0;
+    double gripperServoSlewRateDegreesPerSecond = 0.0;
+    bool gripperServoSlewActive = false;
+    bool servoExtendedControlSupported = false;
     bool servoCalibrationSupported = false;
     bool servoCalibrationActive = false;
     int servoCalibrationSelectedIndex = -1;
@@ -102,6 +112,9 @@ public:
     bool sendSystemReady();
     bool sendServoAngle(ServoId servo, double angleDegrees);
     bool sendServoPose(const ServoPose& pose);
+    bool sendServoSlew(ServoId servo, double targetAngleDegrees,
+                       double maximumSpeedDegreesPerSecond);
+    bool sendDisableServo(ServoId servo);
     bool sendDisableAllServos();
     bool sendServoCalibrationBegin();
     bool sendServoCalibrationEnd();

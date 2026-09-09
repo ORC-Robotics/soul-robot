@@ -41,7 +41,9 @@ bool selectedMissionReady(
     if (mission == AutonomousMission::ServoInitialize ||
         mission == AutonomousMission::ServoCapture ||
         mission == AutonomousMission::ServoInternalStorage ||
-        mission == AutonomousMission::ServoDeposit)
+        mission == AutonomousMission::ServoDeposit ||
+        mission == AutonomousMission::ServoFullSequence ||
+        mission == AutonomousMission::ServoFullSequenceTwo)
     {
         // As rotinas não usam câmera nem sensores de navegação, mas dependem
         // da ponte e do PCA9685 prontos para aplicar cada passo com segurança.
@@ -88,7 +90,9 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::ServoInitialize ||
         mission == AutonomousMission::ServoCapture ||
         mission == AutonomousMission::ServoInternalStorage ||
-        mission == AutonomousMission::ServoDeposit)
+        mission == AutonomousMission::ServoDeposit ||
+        mission == AutonomousMission::ServoFullSequence ||
+        mission == AutonomousMission::ServoFullSequenceTwo)
     {
         return "servos";
     }

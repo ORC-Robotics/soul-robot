@@ -75,6 +75,10 @@ struct ServoOutputState
   float angleDegrees = 0.0f;
   uint16_t pulseUs = 0;
   bool enabled = false;
+  float targetAngleDegrees = 0.0f;
+  float slewRateDegreesPerSecond = 0.0f;
+  uint32_t lastSlewUpdateMs = 0;
+  bool slewActive = false;
 };
 
 // A ordem desta tabela deve permanecer igual à ordem de ServoId.
@@ -472,6 +476,15 @@ void disableServoOutput(ServoId servo)
   }
   state.enabled = false;
   state.pulseUs = 0;
+  state.targetAngleDegrees = state.angleDegrees;
+  state.slewRateDegreesPerSecond = 0.0f;
+  state.lastSlewUpdateMs = 0;
+  state.slewActive = false;
+  if (servoCalibrationSelectedIndex ==
+      static_cast<int8_t>(servoIndex(servo)))
+  {
+    servoCalibrationSelectedIndex = -1;
+  }
 }
 
 void disableAllServoOutputs()
@@ -485,11 +498,10 @@ void disableAllServoOutputs()
   servoCalibrationSelectedIndex = -1;
 }
 
-bool applyServoAngle(ServoId servo, float angleDegrees)
+bool servoOutputCommandIsAllowed()
 {
-  if (!pca9685Ready || !isValidServoAngle(angleDegrees) ||
-      emergencyStopActive || calibrationActive || calibrationStopLatched ||
-      servoCalibrationActive)
+  if (!pca9685Ready || emergencyStopActive || calibrationActive ||
+      calibrationStopLatched || servoCalibrationActive)
   {
     return false;
   }
@@ -503,6 +515,11 @@ bool applyServoAngle(ServoId servo, float angleDegrees)
   }
 #endif
 
+  return true;
+}
+
+void writeServoAngle(ServoId servo, float angleDegrees)
+{
   const ServoOutputConfig& config = servoConfig(servo);
   ServoOutputState& state = servoState(servo);
   const uint16_t pulseUs = servoPulseForAngle(
@@ -511,7 +528,106 @@ bool applyServoAngle(ServoId servo, float angleDegrees)
   state.angleDegrees = angleDegrees;
   state.pulseUs = pulseUs;
   state.enabled = true;
+}
+
+bool applyServoAngle(ServoId servo, float angleDegrees)
+{
+  if (!isValidServoAngle(angleDegrees) || !servoOutputCommandIsAllowed())
+  {
+    return false;
+  }
+
+  ServoOutputState& state = servoState(servo);
+  writeServoAngle(servo, angleDegrees);
+  state.targetAngleDegrees = angleDegrees;
+  state.slewRateDegreesPerSecond = 0.0f;
+  state.lastSlewUpdateMs = 0;
+  state.slewActive = false;
   return true;
+}
+
+bool beginServoSlew(ServoId servo, float targetAngleDegrees,
+                    float maximumSpeedDegreesPerSecond)
+{
+  if (!isValidServoAngle(targetAngleDegrees) ||
+      !isfinite(maximumSpeedDegreesPerSecond) ||
+      maximumSpeedDegreesPerSecond <
+          kServoSlewMinimumSpeedDegreesPerSecond ||
+      maximumSpeedDegreesPerSecond >
+          kServoSlewMaximumSpeedDegreesPerSecond ||
+      !servoOutputCommandIsAllowed())
+  {
+    return false;
+  }
+
+  ServoOutputState& state = servoState(servo);
+  // Sem realimentação física, um canal desligado não possui uma posição inicial
+  // confiável. A Raspberry deve primeiro aplicar uma pose conhecida.
+  if (!state.enabled)
+  {
+    return false;
+  }
+
+  state.targetAngleDegrees = targetAngleDegrees;
+  state.slewRateDegreesPerSecond = maximumSpeedDegreesPerSecond;
+  state.lastSlewUpdateMs = millis();
+  state.slewActive = fabsf(
+      state.targetAngleDegrees - state.angleDegrees) > 0.001f;
+  return true;
+}
+
+void updateServoSlewMotion()
+{
+  bool hasActiveSlew = false;
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    hasActiveSlew = hasActiveSlew || servoOutputStates[index].slewActive;
+  }
+  if (!hasActiveSlew)
+  {
+    return;
+  }
+
+  if (!servoOutputCommandIsAllowed())
+  {
+    return;
+  }
+
+  const uint32_t nowMs = millis();
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    ServoOutputState& state = servoOutputStates[index];
+    if (!state.enabled || !state.slewActive)
+    {
+      continue;
+    }
+
+    const uint32_t elapsedSinceUpdateMs =
+        nowMs - state.lastSlewUpdateMs;
+    if (elapsedSinceUpdateMs < kServoSlewUpdateIntervalMs)
+    {
+      continue;
+    }
+    const uint32_t elapsedMs = min(
+        elapsedSinceUpdateMs,
+        kServoSlewMaximumElapsedMs);
+    state.lastSlewUpdateMs = nowMs;
+
+    const float difference =
+        state.targetAngleDegrees - state.angleDegrees;
+    const float maximumStep =
+        state.slewRateDegreesPerSecond * elapsedMs / 1000.0f;
+    const float nextAngle =
+        fabsf(difference) <= maximumStep
+            ? state.targetAngleDegrees
+            : state.angleDegrees + copysignf(maximumStep, difference);
+    writeServoAngle(static_cast<ServoId>(index), nextAngle);
+    if (fabsf(state.targetAngleDegrees - state.angleDegrees) <= 0.001f)
+    {
+      state.angleDegrees = state.targetAngleDegrees;
+      state.slewActive = false;
+    }
+  }
 }
 
 bool applyServoPose(float armDegrees, float wristDegrees,
@@ -611,6 +727,10 @@ bool applyServoCalibrationPulse(ServoId servo, uint16_t pulseUs)
   state.angleDegrees = -1.0f;
   state.pulseUs = pulseUs;
   state.enabled = true;
+  state.targetAngleDegrees = -1.0f;
+  state.slewRateDegreesPerSecond = 0.0f;
+  state.lastSlewUpdateMs = 0;
+  state.slewActive = false;
   servoCalibrationSelectedIndex = static_cast<int8_t>(servoIndex(servo));
   lastServoCalibrationCommandMs = millis();
   return true;
@@ -2100,6 +2220,47 @@ void handleUartCommand(const char* line)
     return;
   }
 
+  if (strncmp(line, "SERVO_DISABLE,", 14) == 0)
+  {
+    char servoName[16] = {};
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO_DISABLE,%15[^,]%n", servoName, &consumedCharacters);
+    ServoId servo = ServoId::Arm;
+    if (parsedFields != 1 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !parseServoId(servoName, servo))
+    {
+      sendUartError("invalid_servo_disable");
+      return;
+    }
+    disableServoOutput(servo);
+    return;
+  }
+
+  if (strncmp(line, "SERVO_SLEW,", 11) == 0)
+  {
+    char servoName[16] = {};
+    float targetAngleDegrees = 0.0f;
+    float maximumSpeedDegreesPerSecond = 0.0f;
+    int consumedCharacters = 0;
+    const int parsedFields = sscanf(
+        line, "SERVO_SLEW,%15[^,],%f,%f%n", servoName,
+        &targetAngleDegrees, &maximumSpeedDegreesPerSecond,
+        &consumedCharacters);
+    ServoId servo = ServoId::Arm;
+    if (parsedFields != 3 ||
+        consumedCharacters != static_cast<int>(strlen(line)) ||
+        !parseServoId(servoName, servo) ||
+        !beginServoSlew(
+            servo, targetAngleDegrees, maximumSpeedDegreesPerSecond))
+    {
+      sendUartError("invalid_servo_slew");
+      return;
+    }
+    return;
+  }
+
   if (strncmp(line, "SERVO_POSE,", 11) == 0)
   {
     float armDegrees = 0.0f;
@@ -2283,8 +2444,8 @@ void sendUartTelemetryIfDue()
   Serial.print(',');
   Serial.print(static_cast<int>(controlSource));
 
-  // Os ângulos são os últimos alvos aceitos. O campo enabled informa se o
-  // PCA9685 ainda está emitindo o pulso correspondente para cada mecanismo.
+  // Os ângulos são as últimas referências realmente aplicadas. O campo enabled
+  // informa se o PCA9685 ainda emite o pulso de cada mecanismo.
   for (size_t index = 0; index < kServoOutputCount; ++index)
   {
     Serial.print(',');
@@ -2309,6 +2470,18 @@ void sendUartTelemetryIfDue()
     Serial.print(servoCalibrations[index].maximumPulseUs);
     Serial.print(',');
     Serial.print(servoCalibrations[index].inverted ? 1 : 0);
+  }
+
+  // Estes campos opcionais mostram o alvo e o progresso de SERVO_SLEW.
+  // Firmwares e parsers anteriores ignoram os campos anexados ao final.
+  for (size_t index = 0; index < kServoOutputCount; ++index)
+  {
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].targetAngleDegrees, 1);
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].slewRateDegreesPerSecond, 1);
+    Serial.print(',');
+    Serial.print(servoOutputStates[index].slewActive ? 1 : 0);
   }
   Serial.println();
 }
@@ -2411,6 +2584,7 @@ void loop()
   consumeUltrasonicSample();
   enforceMotorTimeout();
   enforceServoSafety();
+  updateServoSlewMotion();
   sendUartTelemetryIfDue();
   delay(1);
 }

@@ -29,13 +29,6 @@ bool sameServoAngle(double firstDegrees, double secondDegrees)
     return std::abs(firstDegrees - secondDegrees) < 0.001;
 }
 
-bool isServoRoutineMission(AutonomousMission mission)
-{
-    return mission == AutonomousMission::ServoInitialize ||
-           mission == AutonomousMission::ServoCapture ||
-           mission == AutonomousMission::ServoInternalStorage ||
-           mission == AutonomousMission::ServoDeposit;
-}
 }
 
 const char* autonomousMissionName(AutonomousMission mission)
@@ -60,6 +53,10 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "servo_internal_storage";
     case AutonomousMission::ServoDeposit:
         return "servo_deposit";
+    case AutonomousMission::ServoFullSequence:
+        return "servo_full_sequence";
+    case AutonomousMission::ServoFullSequenceTwo:
+        return "servo_full_sequence_two";
     case AutonomousMission::MainMission:
     default:
         return "main_mission";
@@ -90,7 +87,9 @@ void RobotState::start()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    requestInitialServoPoseLocked();
+    // Entrar no modo Manual não publica uma pose. Assim, os servos conservam
+    // a posição atual até que o operador envie um comando explícito.
+    lastManualServoCommand_ = std::chrono::steady_clock::now();
     state_.autonomousStatus = {"manual", "Controle manual ativo"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -110,10 +109,6 @@ void RobotState::startAutonomous()
         // A observação da câmera frontal não deve acionar nenhum atuador.
         // A seleção já desliga os servos; a partida conserva essa condição.
         disableServosLocked();
-    }
-    else if (isServoRoutineMission(state_.autonomousMission))
-    {
-        requestStoredServoPoseLocked();
     }
     else
     {
@@ -147,10 +142,6 @@ bool RobotState::tryStartAutonomous()
         // O botão físico inicia somente a percepção neste modo e conserva os
         // servos desligados, da mesma forma que a partida pelo dashboard.
         disableServosLocked();
-    }
-    else if (isServoRoutineMission(state_.autonomousMission))
-    {
-        requestStoredServoPoseLocked();
     }
     else
     {
@@ -301,6 +292,15 @@ bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
         return false;
     }
 
+    if (servo == ServoId::Wrist &&
+        !sameServoAngle(state_.servoPose.wristDegrees, angleDegrees) &&
+        state_.servoPose.armDegrees < config::kServoRoutineArmHomeDegrees)
+    {
+        // O pulso pode colidir com a estrutura quando o braço está abaixo de
+        // 15°. O operador deve elevar o braço antes de solicitar a rotação.
+        return false;
+    }
+
     // A renovação do servo possui relógio próprio. Ela não pode impedir o
     // watchdog dos motores de zerar um comando de tração antigo.
     lastManualServoCommand_ = std::chrono::steady_clock::now();
@@ -354,6 +354,14 @@ bool RobotState::setAutonomousServoPose(const ServoPose& pose)
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.emergencyStop || state_.mode != "autonomous")
     {
+        return false;
+    }
+
+    if (!sameServoAngle(state_.servoPose.wristDegrees, pose.wristDegrees) &&
+        state_.servoPose.armDegrees < config::kServoRoutineArmHomeDegrees)
+    {
+        // As rotinas devem concluir primeiro a elevação do braço. Rejeitar
+        // esta pose impede que uma alteração futura gire o pulso sem folga.
         return false;
     }
 
@@ -416,6 +424,8 @@ bool RobotState::confirmServoRoutineAction()
     const bool confirmationAllowed =
         !state_.emergencyStop && state_.mode == "autonomous" &&
         (state_.autonomousMission == AutonomousMission::ServoDeposit ||
+         state_.autonomousMission == AutonomousMission::ServoFullSequence ||
+         state_.autonomousMission == AutonomousMission::ServoFullSequenceTwo ||
          state_.autonomousMission == AutonomousMission::ServoInternalStorage) &&
         state_.autonomousStatus.servoRoutineWaitingForConfirmation;
     if (!confirmationAllowed)
@@ -607,23 +617,12 @@ void RobotState::enforceManualServoTimeout(std::chrono::milliseconds timeout)
 
 void RobotState::requestInitialServoPoseLocked()
 {
-    // A pose inicial só é solicitada após uma partida Manual ou Autônoma.
+    // O Autônomo parte com o braço em 15° e os demais servos em 0°.
     // Enquanto o robô estiver parado, disableServosLocked() remove os pulsos.
     state_.servoPose = {
-        config::kServoInitialAngleDegrees,
+        config::kAutonomousInitialArmAngleDegrees,
         config::kServoInitialAngleDegrees,
         config::kServoInitialAngleDegrees};
-    state_.armServoRequested = true;
-    state_.wristServoRequested = true;
-    state_.gripperServoRequested = true;
-    ++state_.servoCommandSequence;
-    lastManualServoCommand_ = std::chrono::steady_clock::now();
-}
-
-void RobotState::requestStoredServoPoseLocked()
-{
-    // Entre rotinas, conserva os três últimos alvos para não executar uma pose
-    // intermediária fora da sequência escolhida pelo operador.
     state_.armServoRequested = true;
     state_.wristServoRequested = true;
     state_.gripperServoRequested = true;

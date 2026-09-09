@@ -94,6 +94,18 @@ constexpr uint8_t kGripperServoChannel = 2;
 constexpr float kServoMinimumAngleDegrees = 0.0f;
 constexpr float kServoMaximumAngleDegrees = 180.0f;
 
+// Faixa aceita pelo comando opcional SERVO_SLEW, em graus por segundo.
+// Os comandos SERVO e SERVO_POSE continuam instantâneos e não usam estes
+// limites, preservando integralmente o comportamento atualmente instalado.
+constexpr float kServoSlewMinimumSpeedDegreesPerSecond = 1.0f;
+constexpr float kServoSlewMaximumSpeedDegreesPerSecond = 720.0f;
+
+// Cadência e intervalo máximo da atualização opcional de movimento. Cinco
+// milissegundos evitam ocupar o I2C a cada volta do loop; o teto impede que uma
+// pausa longa vire um salto angular no frame seguinte.
+constexpr uint32_t kServoSlewUpdateIntervalMs = 5;
+constexpr uint32_t kServoSlewMaximumElapsedMs = 100;
+
 // Valores de recuperação confirmados em bancada para os três servos. Perfis
 // válidos salvos pela calibração na NVS ainda podem substituir estes padrões.
 constexpr uint16_t kArmServoMinimumPulseUs = 500;
@@ -159,6 +171,12 @@ static_assert(kServoCalibrationMinimumSpanUs > 0 &&
                           kServoCalibrationAbsoluteMinimumPulseUs &&
                   kServoCalibrationCommandTimeoutMs > 0,
               "Servo calibration safety limits must be valid");
+static_assert(kServoSlewMinimumSpeedDegreesPerSecond > 0.0f &&
+                  kServoSlewMaximumSpeedDegreesPerSecond >=
+                      kServoSlewMinimumSpeedDegreesPerSecond &&
+                  kServoSlewUpdateIntervalMs > 0 &&
+                  kServoSlewMaximumElapsedMs >= kServoSlewUpdateIntervalMs,
+              "Optional servo slew limits must be valid");
 
 // PWM do DRV8833. A frequência de 20 kHz fica acima da faixa audível comum.
 constexpr uint32_t kMotorPwmFrequencyHz = 20000;

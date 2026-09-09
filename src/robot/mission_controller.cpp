@@ -183,6 +183,16 @@ void MissionController::update(
         updateServoRoutine(
             robotState, ServoRoutineKind::Deposit, snapshot, esp32Telemetry);
         return;
+    case AutonomousMission::ServoFullSequence:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::FullSequence, snapshot,
+            esp32Telemetry);
+        return;
+    case AutonomousMission::ServoFullSequenceTwo:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::FullSequenceTwo, snapshot,
+            esp32Telemetry);
+        return;
     case AutonomousMission::MainMission:
     default:
         testTurnController_.reset();

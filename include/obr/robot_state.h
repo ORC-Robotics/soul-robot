@@ -18,7 +18,9 @@ enum class AutonomousMission
     ServoInitialize,
     ServoCapture,
     ServoInternalStorage,
-    ServoDeposit
+    ServoDeposit,
+    ServoFullSequence,
+    ServoFullSequenceTwo
 };
 
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
@@ -122,6 +124,5 @@ private:
         std::chrono::steady_clock::now();
 
     void requestInitialServoPoseLocked();
-    void requestStoredServoPoseLocked();
     void disableServosLocked();
 };

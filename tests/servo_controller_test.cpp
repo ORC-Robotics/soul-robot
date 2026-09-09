@@ -61,12 +61,11 @@ int main()
                   "Stopped mode should reject manual servo commands");
     robotState.start();
     RobotSnapshot snapshot = robotState.snapshot();
-    ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
-                      snapshot.gripperServoRequested &&
-                      std::abs(snapshot.servoPose.armDegrees) < 0.001 &&
-                      std::abs(snapshot.servoPose.wristDegrees) < 0.001 &&
-                      std::abs(snapshot.servoPose.gripperDegrees) < 0.001,
-                  "Manual start should request the initial zero-degree pose");
+    ok &= require(!snapshot.armServoRequested && !snapshot.wristServoRequested &&
+                      !snapshot.gripperServoRequested,
+                  "Manual start should preserve the current servo pose");
+    ok &= require(!robotState.setManualServoAngle(ServoId::Wrist, 45.0),
+                  "Manual mode should reject wrist motion below arm clearance");
     ok &= require(robotState.setManualServoAngle(ServoId::Arm, 45.0),
                   "Manual mode should accept a valid arm angle");
     snapshot = robotState.snapshot();
@@ -119,6 +118,21 @@ int main()
                   "Stop should end servo calibration immediately");
 
     robotState.startAutonomous();
+    snapshot = robotState.snapshot();
+    ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
+                      snapshot.gripperServoRequested &&
+                      std::abs(snapshot.servoPose.armDegrees -
+                               config::kAutonomousInitialArmAngleDegrees) < 0.001 &&
+                      std::abs(snapshot.servoPose.wristDegrees) < 0.001 &&
+                      std::abs(snapshot.servoPose.gripperDegrees) < 0.001,
+                  "Autonomous start should request the 15/0/0-degree pose");
+    ok &= require(robotState.setAutonomousServoPose({0.0, 0.0, 0.0}),
+                  "Autonomous mode should allow lowering the arm without wrist motion");
+    ok &= require(!robotState.setAutonomousServoPose({0.0, 45.0, 0.0}),
+                  "Autonomous mode should reject wrist motion below arm clearance");
+    ok &= require(robotState.setAutonomousServoPose(
+                      {config::kServoRoutineArmHomeDegrees, 0.0, 0.0}),
+                  "Autonomous mode should allow restoring arm clearance first");
     const ServoPose pose{120.0, 45.0, 20.0};
     ok &= require(robotState.setAutonomousServoPose(pose),
                   "Autonomous mode should accept a valid complete pose");
@@ -162,15 +176,19 @@ int main()
     RobotState chainedRoutineState;
     chainedRoutineState.start();
     chainedRoutineState.setManualServoAngle(ServoId::Arm, 105.0);
-    chainedRoutineState.setManualServoAngle(ServoId::Wrist, 174.0);
-    chainedRoutineState.setManualServoAngle(ServoId::Gripper, 3.0);
+    chainedRoutineState.setManualServoAngle(
+        ServoId::Wrist, config::kServoRoutineWristForwardDegrees);
+    chainedRoutineState.setManualServoAngle(
+        ServoId::Gripper, config::kServoRoutineGripperClosedDegrees);
     chainedRoutineState.stop();
     chainedRoutineState.setAutonomousMission(AutonomousMission::ServoInternalStorage);
     chainedRoutineState.startAutonomous();
     snapshot = chainedRoutineState.snapshot();
-    ok &= require(std::abs(snapshot.servoPose.armDegrees - 105.0) < 0.001 &&
-                      std::abs(snapshot.servoPose.wristDegrees - 174.0) < 0.001 &&
-                      std::abs(snapshot.servoPose.gripperDegrees - 3.0) < 0.001,
-                  "Starting a chained servo routine should preserve the previous pose");
+    ok &= require(
+        std::abs(snapshot.servoPose.armDegrees -
+                 config::kAutonomousInitialArmAngleDegrees) < 0.001 &&
+            std::abs(snapshot.servoPose.wristDegrees) < 0.001 &&
+            std::abs(snapshot.servoPose.gripperDegrees) < 0.001,
+        "Starting a servo routine should first request the autonomous initial pose");
     return ok ? 0 : 1;
 }
