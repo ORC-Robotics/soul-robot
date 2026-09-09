@@ -1,5 +1,9 @@
 # Como retomar a calibração, se necessário
 
+A correção simétrica das sombras fixas, seus replays e a validação ainda
+necessária no robô estão documentados em
+[ILLUMINATION_CORRECTION.md](report/ILLUMINATION_CORRECTION.md).
+
 A calibração está encerrada por enquanto. Este roteiro registra oportunidades
 futuras; não solicita novas coletas nem indica alterações a aplicar agora.
 Podemos trabalhar em outro algoritmo mantendo o perfil visual atual.

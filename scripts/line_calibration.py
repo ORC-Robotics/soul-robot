@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from vision.camera_config import CAMERA_PROFILES
+
 from vision import fusion_guidance, line_masks
 from vision import virtual_sensors
 from vision.green_detection import create_green_mask
@@ -245,6 +247,11 @@ def main():
     parser.add_argument("--background-kernel", type=int)
     parser.add_argument("--min-threshold", type=int, choices=range(191), metavar="0..190")
     parser.add_argument("--exclude-green", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--illumination-correction",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     args = parser.parse_args()
     overrides = {key: value for key, value in [("line_threshold", args.threshold),
                  ("line_max_background_ratio_percent", args.ratio),
@@ -253,6 +260,22 @@ def main():
                  ("line_min_threshold", args.min_threshold)] if value is not None}
     if args.exclude_green is not None:
         overrides["line_exclude_green"] = args.exclude_green
+    if args.illumination_correction is not None:
+        overrides["line_illumination_correction_enabled"] = (
+            args.illumination_correction
+        )
+        if args.illumination_correction:
+            current_profile = CAMERA_PROFILES["down"]["vision"]
+            for key in (
+                "line_illumination_reference_path",
+                "line_illumination_reference_sha256",
+                "line_illumination_target_percentile",
+                "line_illumination_max_gain",
+                "line_illumination_useful_start_ratio",
+                "line_illumination_overlay_gain_threshold",
+                "line_illumination_overlay_margin_px",
+            ):
+                overrides[key] = current_profile[key]
     if args.threshold is not None and args.ratio is not None:
         parser.error("Teste threshold global ou relativo separadamente.")
     if any(value <= 0 for value in (args.open_kernel, args.close_kernel, args.background_kernel) if value is not None):

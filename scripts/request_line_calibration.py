@@ -18,10 +18,20 @@ def main():
     parser.add_argument("--controls-json", type=Path)
     parser.add_argument("--line-ratio", type=int, choices=range(1, 101), metavar="1..100")
     parser.add_argument("--exclude-green", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument(
+        "--illumination-correction",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--min-threshold", type=int, choices=range(191), metavar="0..190")
     args = parser.parse_args()
     controls = json.loads(args.controls_json.read_text(encoding="utf-8")) if args.controls_json else {}
-    if controls and (args.line_ratio is not None or args.exclude_green is not None or args.min_threshold is not None):
+    if controls and (
+        args.line_ratio is not None
+        or args.exclude_green is not None
+        or args.min_threshold is not None
+        or args.illumination_correction is not None
+    ):
         parser.error("Altere câmera ou segmentação, uma família por captura.")
     guard = StationaryGuard()
     try:
@@ -32,6 +42,10 @@ def main():
             segmentation["line_exclude_green"] = args.exclude_green
         if args.min_threshold is not None:
             segmentation["line_min_threshold"] = args.min_threshold
+        if args.illumination_correction is not None:
+            segmentation["line_illumination_correction_enabled"] = (
+                args.illumination_correction
+            )
         request = {"experiment": args.experiment, "scenario": args.scenario,
                    "frames": args.frames, "controls": controls,
                    "segmentation": segmentation,

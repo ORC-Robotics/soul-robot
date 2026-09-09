@@ -17,6 +17,9 @@ from .camera_config import (
 from .green_detection import (
     frame_to_hsv,
 )
+from .illumination_correction import (
+    apply_line_illumination_correction,
+)
 from .numeric import (
     scaled_odd_kernel_size,
 )
@@ -199,7 +202,17 @@ def create_filtered_line_mask(
     frame_height = frame.shape[0]
     roi_start_y = int(round(frame_height * vision_profile["line_roi_start_ratio"]))
     line_roi = frame[roi_start_y:frame_height, :]
-    gray_roi = cv2.cvtColor(line_roi, cv2.COLOR_BGR2GRAY)
+    uncorrected_gray_roi = cv2.cvtColor(line_roi, cv2.COLOR_BGR2GRAY)
+    gray_roi, illumination_status = apply_line_illumination_correction(
+        uncorrected_gray_roi,
+        vision_profile,
+        frame.shape,
+        roi_start_y,
+    )
+    if timings is not None:
+        timings["illuminationCorrectionMs"] = illumination_status[
+            "illuminationCorrectionMs"
+        ]
 
     scaled_profile = dict(vision_profile)
     if "geometry_reference" in vision_profile:
@@ -220,6 +233,16 @@ def create_filtered_line_mask(
         scaled_profile,
         timings=timings,
     )
+    if illumination_status["illuminationCorrectionActive"]:
+        # A compensação não pode desfazer o piso absoluto de cinza que
+        # recupera fita real quando ela ocupa a borda e contamina o fundo local.
+        minimum_threshold = int(scaled_profile.get("line_min_threshold", 0))
+        if minimum_threshold > 0:
+            dark_pixels = uncorrected_gray_roi <= minimum_threshold
+            illumination_status["illuminationDarkPixelsPreserved"] = int(
+                np.count_nonzero(dark_pixels & (binary_mask == 0))
+            )
+            binary_mask[dark_pixels] = 255
     if timings is not None:
         timings["binaryMs"] = (
             time.perf_counter() - binary_started
@@ -229,6 +252,7 @@ def create_filtered_line_mask(
     repair_status = {
         "specularRepairPixels": 0,
         "specularRepairComponents": 0,
+        **illumination_status,
     }
     if timings is not None:
         timings["specularMs"] = (

@@ -91,7 +91,7 @@ def analyze_line_presence(mask, roi, config):
 
 
 def draw_near_presence_overlay(frame, evidence, command):
-    """Mostra o NEAR-C e a decisão mesmo quando o debug legado está desligado."""
+    """Mostra a faixa NEAR usada pelo gate de GAP e sua decisão temporal."""
     roi = evidence.get("roi")
     if isinstance(roi, (list, tuple)) and len(roi) == 4:
         color = (0, 255, 0) if evidence.get("present") else (0, 0, 255)
@@ -113,7 +113,9 @@ def draw_near_presence_overlay(frame, evidence, command):
         else ""
     )
     gap_decision = command.get("gapValidationDecision", "NORMAL")
-    if command.get("bottomFusionReacquireReady"):
+    if command.get("fusionLateralCurveContinuation"):
+        bottom_fusion_state = "CURVE"
+    elif command.get("bottomFusionReacquireReady"):
         bottom_fusion_state = "READY"
     elif command.get("bottomFusionPathConnected"):
         bottom_fusion_state = "LINK"
@@ -121,7 +123,7 @@ def draw_near_presence_overlay(frame, evidence, command):
         bottom_fusion_state = "REJECT"
     else:
         bottom_fusion_state = "WAIT"
-    lines = (f"NEAR-C {command.get('nearLineState', 'UNKNOWN')}{near_percent}",
+    lines = (f"NEAR-ALL {command.get('nearLineState', 'UNKNOWN')}{near_percent}",
              f"B-FAR {'PRESENT' if command.get('bottomFarLinePresent') else 'ABSENT'} "
              f"{command.get('bottomFarPresentFrames', 0)}",
               f"B-FUSION {bottom_fusion_state} "

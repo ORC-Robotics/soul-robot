@@ -1002,6 +1002,10 @@ class CameraProfilesTest(unittest.TestCase):
             "lineSequence",
             "specularRepairPixels",
             "specularRepairComponents",
+            "illuminationCorrectionActive",
+            "illuminationCorrectionMs",
+            "illuminationReferenceSha256",
+            "illuminationDarkPixelsPreserved",
             "courseMarkerConfirmed",
             "courseMarker",
         }

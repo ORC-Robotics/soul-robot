@@ -1,0 +1,16 @@
+{
+  "dataset": "calibration/captures/validation_border_wire_01",
+  "sample_id": "0000",
+  "raw_sha256": "f6ef9ad6f66a8844f0844b1221d74baaf97da27d779fd206bbaab8be5fdf9754",
+  "reference_sha256": "21db98d4f1af631b1648fcf0dbabdb5b4663f2671878dfc7a7b48dd2d46e1608",
+  "target_gray": 198.0,
+  "maximum_gain": 2.0,
+  "zone_percent": 68.15029286474973,
+  "original_candidate_pixels": 22192,
+  "corrected_candidate_pixels": 22191,
+  "removed_pixels": 17,
+  "preserved_pixels": 22175,
+  "new_pixels": 16,
+  "original_structural_pixels": 22401,
+  "corrected_structural_pixels": 22191
+}

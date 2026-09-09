@@ -9,11 +9,10 @@ import numpy as np
 from .camera_config import (GAP_VALIDATION_CONFIG, NEAR_VIRTUAL_SENSOR_CONFIG,
                             VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES, GEOMETRIC_GAP_REACQUIRE_FRAMES)
 from .forward_path import bottom_reference
+from .fusion_guidance import fusion_style_has_lateral_continuation
 from .line_control import (gap_entry_is_required, update_gap_forward_recovery,
                            virtual_far_line_is_visible)
-from .virtual_sensors import (read_virtual_line_sensors,
-                              resolve_virtual_sensor_geometry,
-                              virtual_sensor_is_active,
+from .virtual_sensors import (resolve_virtual_sensor_geometry,
                               virtual_sensor_regions)
 
 
@@ -124,31 +123,40 @@ class GapValidator:
         self.reset()
 
     def observe_near(self, mask, timestamp, sequence, wall_time, special=False,
-                     bottom_far_present=False, virtual_sensors=None):
-        """Confirma perda do NEAR-C em frames novos, sem aceitar pixels laterais."""
+                     bottom_far_present=False, virtual_sensors=None,
+                     lateral_curve_continuation=False):
+        """Confirma perda somente quando toda a faixa NEAR aceita fica vazia."""
         cfg = NEAR_VIRTUAL_SENSOR_CONFIG
         height, width = mask.shape
-        roi = (round(width * cfg["roi_x0"]), round(height * cfg["roi_y0"]),
-               round(width * cfg["roi_x1"]), round(height * cfg["roi_y1"]))
-        sensors = (
-            virtual_sensors
-            if isinstance(virtual_sensors, dict)
-            else read_virtual_line_sensors(mask, "NENHUMA", False)
+        roi = (
+            max(0, min(width, round(width * cfg["roi_x0"]))),
+            max(0, min(height, round(height * cfg["roi_y0"]))),
+            max(0, min(width, round(width * cfg["roi_x1"]))),
+            max(0, min(height, round(height * cfg["roi_y1"]))),
         )
-        try:
-            sensor_value = float(sensors.get("nearCenter", 0.0))
-        except (TypeError, ValueError):
-            sensor_value = 0.0
-        if not math.isfinite(sensor_value):
-            sensor_value = 0.0
-        near_center_present = virtual_sensor_is_active(sensor_value)
+        near_roi = mask[roi[1]:roi[3], roi[0]:roi[2]]
+        active_pixels = (
+            int(cv2.countNonZero(near_roi))
+            if near_roi.size > 0
+            else 0
+        )
+        sensor_value = (
+            float(active_pixels) / float(near_roi.size)
+            if near_roi.size > 0
+            else 0.0
+        )
+        near_line_present = active_pixels >= max(
+            1,
+            int(cfg.get("minimum_active_pixels", 1)),
+        )
         observed = {
-            "state": "PRESENT" if near_center_present else "ABSENT",
-            "present": near_center_present,
+            "state": "PRESENT" if near_line_present else "ABSENT",
+            "present": near_line_present,
             "candidates": [],
             "roi": list(roi),
             "score": sensor_value,
             "sensorValue": sensor_value,
+            "activePixels": active_pixels,
         }
         fresh = (type(sequence) is int and sequence > 0 and math.isfinite(timestamp)
                  and 0 <= wall_time - timestamp <= self.config["source_timeout"]
@@ -171,6 +179,12 @@ class GapValidator:
                 self.bottom_far_present_frames = 0
                 self.last_near_present = timestamp
                 self.near_armed |= self.present_frames >= self.config["near_present_frames"]
+            elif lateral_curve_continuation:
+                # A fita saiu pela lateral, mas o mesmo target Fusion continua
+                # estável. Isso não transforma a curva em GAP nem arma recovery.
+                self.present_frames = 0
+                self.missing_frames = 0
+                self.bottom_far_present_frames = 0
             else:
                 self.present_frames = 0
                 self.missing_frames += 1
@@ -183,6 +197,9 @@ class GapValidator:
             self.last_bottom = (sequence, timestamp)
         recent = self.last_near_present is not None and 0 <= wall_time - self.last_near_present <= self.config["near_history_seconds"]
         self.near = {**observed, "fresh": fresh,
+                     "lateralCurveContinuation": bool(
+                         fresh and not special and lateral_curve_continuation
+                     ),
                      "lossConfirmed": bool(fresh and not special and self.near_armed and recent
                                            and self.missing_frames >= self.config["near_loss_frames"]),
                      "bottomFarConfirmed": bool(
@@ -318,10 +335,14 @@ class GapValidator:
                 and virtual_far_line_is_visible(virtual_sensors)
             )
         )
+        lateral_curve_continuation = (
+            fusion_style_has_lateral_continuation(fusion_style_line)
+        )
         near = self.observe_near(
             mask, timestamp, sequence, wall_time, special,
             bottom_far_present=bottom_far_present,
             virtual_sensors=virtual_sensors,
+            lateral_curve_continuation=lateral_curve_continuation,
         )
         gap_active = bool(
             maneuver.gap_forward_active
@@ -526,6 +547,10 @@ class GapValidator:
                 "nearLinePresent": self.near["present"],
                 "nearLineState": ("PRESENT" if self.near["present"] else "LOST") if self.near["fresh"] else "UNKNOWN",
                 "nearLineMissingFrames": self.missing_frames,
+                "nearLineActivePixels": int(self.near.get("activePixels", 0)),
+                "fusionLateralCurveContinuation": bool(
+                    self.near.get("lateralCurveContinuation", False)
+                ),
                 "bottomFarLinePresent": bool(
                     self.near.get("fresh") and self.bottom_far_present
                 ),

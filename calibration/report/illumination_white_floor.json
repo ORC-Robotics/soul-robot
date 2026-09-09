@@ -1,0 +1,16 @@
+{
+  "dataset": "calibration/captures/validation_white_floor_01",
+  "sample_id": "0000",
+  "raw_sha256": "a3bdacc543416f6b47ebd645c27023f8ebf556f146f0dc450e71ddc435320528",
+  "reference_sha256": "21db98d4f1af631b1648fcf0dbabdb5b4663f2671878dfc7a7b48dd2d46e1608",
+  "target_gray": 198.0,
+  "maximum_gain": 2.0,
+  "zone_percent": 68.15029286474973,
+  "original_candidate_pixels": 0,
+  "corrected_candidate_pixels": 0,
+  "removed_pixels": 0,
+  "preserved_pixels": 0,
+  "new_pixels": 0,
+  "original_structural_pixels": 1156,
+  "corrected_structural_pixels": 0
+}

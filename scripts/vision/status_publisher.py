@@ -164,11 +164,27 @@ def save_line_status(
             "specularRepairComponents": max(
                 0, int(repair_status.get("specularRepairComponents", 0))
             ),
+            "illuminationCorrectionActive": (
+                repair_status.get("illuminationCorrectionActive") is True
+            ),
+            "illuminationCorrectionMs": max(
+                0.0,
+                float(repair_status.get("illuminationCorrectionMs", 0.0)),
+            ),
+            "illuminationReferenceSha256": str(
+                repair_status.get("illuminationReferenceSha256", "")
+            ),
+            "illuminationDarkPixelsPreserved": max(
+                0,
+                int(repair_status.get("illuminationDarkPixelsPreserved", 0)),
+            ),
         }
         line_status.update(green_status)
         # Referência e decisão são diagnóstico/validação; não substituem potências.
         for key in ("bottomPathReference", "gapValidationDecision", "gapValidationReason",
                     "nearLinePresent", "nearLineState", "nearLineMissingFrames",
+                    "nearLineActivePixels",
+                    "fusionLateralCurveContinuation",
                     "bottomFarLinePresent", "bottomFarPresentFrames",
                     "bottomFusionReacquireCandidate", "bottomFusionPathConnected",
                     "bottomFusionReacquireFrames",
@@ -260,6 +276,7 @@ def save_status(
     safe_line_timings = {}
     for timing_name in (
         "lineProcessingMs",
+        "illuminationCorrectionMs",
         "binaryMs",
         "backgroundKernelMs",
         "backgroundCloseMs",
@@ -333,6 +350,34 @@ def save_status(
         ),
         "specularRepairPixels": repaired_pixels,
         "specularRepairComponents": repaired_components,
+        "illuminationCorrectionConfigured": (
+            repair_status.get("illuminationCorrectionConfigured") is True
+        ),
+        "illuminationCorrectionActive": (
+            repair_status.get("illuminationCorrectionActive") is True
+        ),
+        "illuminationCorrectionError": str(
+            repair_status.get("illuminationCorrectionError", "")
+        ),
+        "illuminationReferenceSha256": str(
+            repair_status.get("illuminationReferenceSha256", "")
+        ),
+        "illuminationMaximumGain": finite_virtual_position(
+            repair_status.get("illuminationMaximumGain")
+        ),
+        "illuminationTargetGray": finite_virtual_position(
+            repair_status.get("illuminationTargetGray")
+        ),
+        "illuminationCorrectionZonePercent": finite_virtual_position(
+            repair_status.get("illuminationCorrectionZonePercent")
+        ),
+        "illuminationCorrectionMs": safe_line_timings[
+            "illuminationCorrectionMs"
+        ],
+        "illuminationDarkPixelsPreserved": max(
+            0,
+            int(repair_status.get("illuminationDarkPixelsPreserved", 0)),
+        ),
         "lineProcessingMs": safe_line_timings["lineProcessingMs"],
         "binaryMs": safe_line_timings["binaryMs"],
         "backgroundKernelMs": safe_line_timings["backgroundKernelMs"],

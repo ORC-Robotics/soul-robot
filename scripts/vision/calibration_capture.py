@@ -139,8 +139,17 @@ def validate_request(request, camera):
         raise ValueError("Solicite entre 30 e 100 frames.")
     controls = request.get("controls", {})
     segmentation = request.get("segmentation", {})
-    if not isinstance(segmentation, dict) or set(segmentation) - {"line_max_background_ratio_percent", "line_exclude_green", "line_min_threshold"}:
-        raise ValueError("Somente razão relativa, limite mínimo e exclusão do verde podem variar nesta captura.")
+    allowed_segmentation = {
+        "line_max_background_ratio_percent",
+        "line_exclude_green",
+        "line_min_threshold",
+        "line_illumination_correction_enabled",
+    }
+    if not isinstance(segmentation, dict) or set(segmentation) - allowed_segmentation:
+        raise ValueError(
+            "Somente razão relativa, limite mínimo, exclusão do verde e "
+            "compensação de iluminação podem variar nesta captura."
+        )
     if "line_min_threshold" in segmentation:
         minimum = segmentation["line_min_threshold"]
         maximum = config.CAMERA_PROFILES["down"]["vision"]["line_max_brightness"]
@@ -148,6 +157,11 @@ def validate_request(request, camera):
             raise ValueError("O limite mínimo deve ser inteiro entre zero e o teto de cinza do perfil.")
     if "line_exclude_green" in segmentation and type(segmentation["line_exclude_green"]) is not bool:
         raise ValueError("A exclusão do verde deve ser booleana.")
+    if (
+        "line_illumination_correction_enabled" in segmentation
+        and type(segmentation["line_illumination_correction_enabled"]) is not bool
+    ):
+        raise ValueError("A compensação de iluminação deve ser booleana.")
     ratio = segmentation.get("line_max_background_ratio_percent")
     if "line_max_background_ratio_percent" in segmentation and (type(ratio) is not int or not 1 <= ratio <= 100):
         raise ValueError("A razão deve ser um inteiro entre 1 e 100.")

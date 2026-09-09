@@ -9,6 +9,8 @@ from .camera_config import (
     FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG,
     FUSION_FULL_NORMAL_STEERING_DEG,
     FUSION_FULL_PIVOT_STEERING_DEG,
+    FUSION_LATERAL_CONTINUATION_MIN_CONSISTENCY,
+    FUSION_LATERAL_CONTINUATION_MIN_STABLE_FRAMES,
     FUSION_MIN_FORWARD_SPEED_SCALE,
     FUSION_POWER_CURVE,
     FUSION_STEERING_DEADBAND_DEG,
@@ -600,6 +602,40 @@ def fusion_style_angle_direction(angle_deg):
     if angle_deg < 90.0:
         return "LEFT"
     return "NONE"
+
+
+def fusion_style_has_lateral_continuation(fusion_style_line):
+    """Aceita somente a continuação temporal de uma curva pela borda lateral."""
+
+    if (
+        not isinstance(fusion_style_line, dict)
+        or fusion_style_line.get("valid") is not True
+        or fusion_style_line.get("selection") != "deepestFallback"
+        or fusion_style_line.get("targetReacquired") is not False
+    ):
+        return False
+    reference_source = fusion_style_line.get("referenceSource")
+    expected_direction = {
+        "leftEdge": "LEFT",
+        "rightEdge": "RIGHT",
+    }.get(reference_source)
+    if expected_direction is None:
+        return False
+    angle_deg = finite_virtual_position(fusion_style_line.get("angleDeg"))
+    consistency = finite_virtual_position(
+        fusion_style_line.get("targetConsistency")
+    )
+    try:
+        stable_frames = int(fusion_style_line.get("targetStableFrames", 0))
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        angle_deg is not None
+        and fusion_style_angle_direction(angle_deg) == expected_direction
+        and consistency is not None
+        and consistency >= FUSION_LATERAL_CONTINUATION_MIN_CONSISTENCY
+        and stable_frames >= FUSION_LATERAL_CONTINUATION_MIN_STABLE_FRAMES
+    )
 
 
 def fusion_style_blind_search_direction(fusion_history):
@@ -1233,6 +1269,7 @@ def map_fusion_angle_to_steering_error(fusion_angle):
 def calculate_fusion_control_status(
     fusion_style_line,
     allow_distant_reacquisition=False,
+    allow_lateral_continuation=False,
 ):
     """Valida a geometria Fusion e prepara sua telemetria de controle."""
 
@@ -1246,6 +1283,7 @@ def calculate_fusion_control_status(
         "fusionTargetStableFrames": 0,
         "fusionTargetReacquired": False,
         "fusionSpeedScale": FUSION_MIN_FORWARD_SPEED_SCALE,
+        "fusionLateralContinuation": False,
     }
     if not isinstance(fusion_style_line, dict):
         return result
@@ -1259,10 +1297,16 @@ def calculate_fusion_control_status(
     # direta do ângulo validado para deixar explícita essa decisão na telemetria.
     result["filteredFusionAngle"] = fusion_angle
     selection = fusion_style_line.get("selection")
+    lateral_continuation = bool(
+        allow_lateral_continuation
+        and fusion_style_has_lateral_continuation(fusion_style_line)
+    )
+    result["fusionLateralContinuation"] = lateral_continuation
     fusion_geometry_valid = (
         fusion_style_line.get("valid") is True
         and (
             selection == "nearCenter"
+            or lateral_continuation
             or (
                 allow_distant_reacquisition
                 and selection == "deepestFallback"

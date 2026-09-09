@@ -14,6 +14,48 @@ motores. Quando quatro inferências consecutivas confirmam `silver`, porém, a
 câmera publica `courseMarkerConfirmed=GRAY` e a missão principal entra na área
 de resgate. Por isso, o modelo precisa ser validado na pista antes da operação.
 
+## Estado operacional temporário
+
+O detector está desativado por padrão em `vision.camera_config`, por meio de
+`SILVER_DETECTION_ENABLED=False`. Nessa condição, a câmera não carrega nem
+executa o modelo TFLite e publica `courseMarkerConfirmed=false` e
+`courseMarker=NONE`. A coleta do dataset e as ferramentas de inferência offline
+continuam disponíveis. Para um ensaio controlado, a variável de ambiente
+`SILVER_DETECTION_ENABLED=1` reativa o detector sem alterar o código.
+
+O desligamento foi motivado por falsos positivos observados em pista sobre uma
+faixa preta sem cinza aparente. O modelo chegou a 85,1% de probabilidade de
+`silver`, com margem de 71,4 pontos percentuais, e sustentou quatro positivos
+até acionar a entrada na área de resgate. Aumentar somente a confirmação
+temporal não corrige esse caso, pois o erro persistiu entre frames.
+
+O modelo atual recebe o frame inteiro reduzido para 128×128. Ele não confirma
+cor neutra, brilho, formato transversal, largura nem posição do marcador em
+relação à trajetória. O dataset inferior disponível durante o diagnóstico
+possuía apenas três sessões físicas, todas coletadas no mesmo dia. Isso permite
+que o classificador aprenda iluminação e contexto da cena em vez do material
+prateado. Também não há resultado versionado de uma validação independente em
+runs completas.
+
+Antes de reativar o marcador na missão principal:
+
+1. grave como exemplos `black` os falsos positivos reais, além de sombras,
+   reflexos, curvas, interseções e diferentes trechos de fita;
+2. faça novas sessões em dias, posições e iluminações diferentes, separando
+   treino, validação e teste por sessão física;
+3. detecte primeiro uma faixa transversal plausível e classifique apenas essa
+   ROI, exigindo brilho e neutralidade compatíveis com prata;
+4. relacione o candidato à trajetória preta e rejeite regiões sem geometria de
+   marcador;
+5. meça falsos acionamentos por run e recall de prata em sessões que não
+   participaram do ajuste;
+6. calibre confiança, margem e confirmação temporal somente depois dessas
+   medições.
+
+Elevar apenas o limiar de 70% não é uma correção comprovada: já houve falso
+positivo acima de 85%, e ainda não foi medida a distribuição dos positivos
+reais fora do treino.
+
 ## Fotografar na Raspberry Pi
 
 Com os serviços normais de câmera em execução e o robô parado, abra uma sessão SSH:

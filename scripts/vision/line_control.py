@@ -244,11 +244,11 @@ def gap_entry_is_required(
     near_loss_confirmed=False,
     special_control=False,
 ):
-    """Usa perda confirmada do NEAR-C; conserva a chamada antiga por compatibilidade."""
+    """Usa perda confirmada do NEAR inteiro; conserva a chamada antiga."""
 
     if near_line_present is not None:
-        # A aplicação fornece a presença temporal do NEAR-C. Pontos Fusion ou
-        # projetados não podem vetar este caminho de entrada.
+        # A aplicação fornece a presença temporal de toda a faixa NEAR. Enquanto
+        # a máscara final ainda toca essa faixa, o Fusion conserva autoridade.
         return (not gap_forward_active and green_direction == "NENHUMA"
                 and not special_control and not near_line_present and near_loss_confirmed)
 
@@ -753,6 +753,11 @@ def calculate_line_follower_command(
     fusion_control_status = calculate_fusion_control_status(
         fusion_style_line,
         allow_distant_reacquisition=gap_fusion_reacquire_active,
+        allow_lateral_continuation=(
+            direcao_verde_ativa == "NENHUMA"
+            and not gap_forward_active
+            and not gap_fusion_reacquire_active
+        ),
     )
     fusion_steering_error = fusion_control_status["fusionSteeringError"]
 
@@ -1489,6 +1494,9 @@ def calculate_line_follower_command(
         ],
         "fusionTargetReacquired": fusion_control_status[
             "fusionTargetReacquired"
+        ],
+        "fusionLateralContinuation": fusion_control_status[
+            "fusionLateralContinuation"
         ],
         "fusionSpeedScale": fusion_control_status["fusionSpeedScale"],
         # Reaproveita a direção já escolhida pelo recovery com MEDIUM/FAR

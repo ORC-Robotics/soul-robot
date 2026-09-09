@@ -176,6 +176,11 @@ def log_camera_inventory(camera_infos, assignments):
 # Esta chave permite desativar apenas o diagnóstico verde sem alterar a câmera.
 GREEN_PROCESSING_ENABLED = environment_flag("GREEN_PROCESSING_ENABLED", True)
 
+# Mantém temporariamente o classificador de prata fora do loop principal.
+# Enquanto estiver desativado, nenhum marcador cinza será publicado para a
+# missão e o modelo TFLite não consumirá tempo de processamento da câmera.
+SILVER_DETECTION_ENABLED = environment_flag("SILVER_DETECTION_ENABLED", False)
+
 # O diagnóstico legado é opt-in porque o extractor por scanlines e seus
 # desenhos aumentam o custo e escondem o vetor Fusion-style no uso normal.
 # Ativar esta flag não muda o controle; apenas restaura cálculo e overlay antigos.
@@ -429,6 +434,27 @@ CAMERA_PROFILES = {
             # ela ocupa a borda do campo e contamina a estimativa do fundo.
             # Aumentar demais aceita sujeira; zero desativa essa proteção.
             "line_min_threshold": 40,
+            # Compensa o padrão fixo de sombra causado pelo robô e pelos LEDs.
+            # O ganho atua somente no cinza da segmentação preta; RGB, verde,
+            # prata e controles de câmera continuam recebendo o frame original.
+            "line_illumination_correction_enabled": True,
+            "line_illumination_reference_path": (
+                "calibration/down_line_illumination_480x360.png"
+            ),
+            # O hash impede usar silenciosamente um mapa alterado ou corrompido.
+            "line_illumination_reference_sha256": (
+                "21db98d4f1af631b1648fcf0dbabdb5b"
+                "4663f2671878dfc7a7b48dd2d46e1608"
+            ),
+            "line_illumination_target_percentile": 85.0,
+            # Ganhos acima de 2× amplificam ruído sem melhorar o replay atual.
+            "line_illumination_max_gain": 2.0,
+            # A área acima do FAR não participa do controle da linha.
+            "line_illumination_useful_start_ratio": 0.13,
+            # O overlay inclui a penumbra e oito pixels de margem, sem excluir
+            # nenhum pixel da segmentação ou proibir fita real nessa região.
+            "line_illumination_overlay_gain_threshold": 1.10,
+            "line_illumination_overlay_margin_px": 8,
             # Retira o verde já detectado antes de filtrar componentes pretos.
             # A máscara estrutural original e o detector de verde são preservados.
             "line_exclude_green": True,
@@ -604,6 +630,12 @@ FUSION_TARGET_ESTABLISHED_LENGTH_RATIO = 0.75
 FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED = 6
 FUSION_STRONG_CORRECTION_ERROR_DEG = 25.0
 
+# Uma curva que deixa o NEAR pela lateral pode trocar de nearCenter para
+# deepestFallback sem representar um GAP. Só conservamos essa continuação
+# quando o target já vinha estável e permaneceu geometricamente consistente.
+FUSION_LATERAL_CONTINUATION_MIN_STABLE_FRAMES = 3
+FUSION_LATERAL_CONTINUATION_MIN_CONSISTENCY = 0.75
+
 # A recuperação começa no menor avanço que move as duas rodas e cresce até a
 # potência NORMAL. Este limite atua somente na recuperação da velocidade; o
 # diferencial contínuo do mapper Fusion permanece inalterado.
@@ -697,15 +729,18 @@ GEOMETRIC_GAP_MAX_SEARCH_PX = 120
 # amostra geométrica na altura exata usada pelo rastreador preservado.
 GAP_NEAR_HISTORY_FRAMES = 3
 
-# O gate de GAP usa novamente somente o NEAR-C virtual. A faixa estreita evita
-# que sombras e fragmentos laterais mantenham LINE quando a trajetória central
-# já desapareceu sob o robô. Alterar estes limites também afeta centralização.
+# O gate de GAP observa toda a largura do NEAR. Como recebe a máscara final já
+# filtrada, qualquer pixel aceito nessa faixa ainda representa linha disponível
+# para o Fusion e impede a entrada prematura em GAP. O NEAR-C usado no steering,
+# na centralização e no verde mantém sua geometria estreita original.
 NEAR_VIRTUAL_SENSOR_CONFIG = {
     "roi_y0": VIRTUAL_NEAR_Y0,
     "roi_y1": VIRTUAL_NEAR_Y1,
-    "roi_x0": VIRTUAL_CENTER_X0,
-    "roi_x1": VIRTUAL_CENTER_X1,
-    "activation": VIRTUAL_ROW_MIN_ACTIVATION,
+    "roi_x0": 0.0,
+    "roi_x1": 1.0,
+    # A filtragem de componentes ocorre antes deste gate. Exigir ausência total
+    # evita classificar como GAP uma ponta legítima que acabou de entrar no NEAR.
+    "minimum_active_pixels": 1,
 }
 
 # A frontal confirma fita presente, mesmo inclinada ou lateral após uma curva.

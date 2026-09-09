@@ -19,7 +19,9 @@ from vision.gap_validation import (GapValidator,
 from vision.line_control import (LineFollowerController, gap_entry_is_required,
                                  update_gap_forward_recovery,
                                  virtual_far_line_is_visible)
-from vision.fusion_guidance import extract_fusion_style_line, update_fusion_style_history
+from vision.fusion_guidance import (extract_fusion_style_line,
+                                    fusion_style_has_lateral_continuation,
+                                    update_fusion_style_history)
 from vision.maneuver_state import LineManeuverState
 from vision.virtual_sensors import read_virtual_line_sensors
 
@@ -359,7 +361,7 @@ class GapDecisionTest(unittest.TestCase):
 
 
 class VirtualNearGateTest(unittest.TestCase):
-    """Executa o gate do NEAR-C virtual antes do controlador inferior real."""
+    """Executa o gate da faixa NEAR antes do controlador inferior real."""
 
     def setUp(self):
         self.validator = GapValidator()
@@ -370,6 +372,8 @@ class VirtualNearGateTest(unittest.TestCase):
         tape(self.line, lambda d: 0, 80)
         self.fragment = np.zeros_like(self.line)
         cv2.circle(self.fragment, (235, 335), 14, 255, -1)
+        self.distant_fragment = np.zeros_like(self.line)
+        cv2.circle(self.distant_fragment, (235, 250), 14, 255, -1)
 
     def frame(self, mask, front_state="PRESENT", sequence=None, seconds=None,
               bottom_far_present=None, fusion_style_line=None):
@@ -417,50 +421,108 @@ class VirtualNearGateTest(unittest.TestCase):
                 for key in ("left_power", "right_power", "controlSource", "virtualState", "finalSteering"):
                     self.assertEqual(original[key], actual[key], key)
 
-    def test_small_particles_do_not_pool_near_center_presence(self):
+    def test_particles_outside_near_do_not_create_presence(self):
         for radius in (2, 7, 14):
             mask = np.zeros_like(self.line)
-            for x, y in ((70, 290), (210, 320), (380, 280)):
+            for x, y in ((70, 250), (210, 270), (380, 260)):
                 cv2.circle(mask, (x, y), radius, 255, -1)
             result = self.validator.observe_near(mask, 100, 1, 100)
             self.assertFalse(result["present"], result)
 
-    def test_lateral_shadow_with_valid_fusion_enters_gap_from_near_center_loss(self):
+    def test_lateral_near_tape_with_valid_fusion_blocks_gap(self):
         self.arm()
-        lateral_shadow = np.zeros_like(self.line)
-        cv2.line(lateral_shadow, (0, 340), (180, 359), 255, 45)
-        sensors = read_virtual_line_sensors(lateral_shadow, "NENHUMA", False)
-        fusion = extract_fusion_style_line(lateral_shadow)
+        lateral_tape = np.zeros_like(self.line)
+        cv2.line(lateral_tape, (0, 340), (180, 359), 255, 45)
+        sensors = read_virtual_line_sensors(lateral_tape, "NENHUMA", False)
+        fusion = extract_fusion_style_line(lateral_tape)
         self.assertTrue(fusion["valid"])
         self.assertEqual(fusion["selection"], "nearCenter")
         self.assertIsNone(sensors["nearFinePosition"])
         self.assertFalse(sensors["farTrusted"])
         self.assertFalse(sensors["mediumTrusted"])
 
-        self.frame(lateral_shadow, fusion_style_line=fusion)
-        checking = self.frame(lateral_shadow, fusion_style_line=fusion)
-        self.assertEqual(self.validator.decision, "CHECKING")
-        self.assertEqual(checking["controlSource"], "gap-forward")
-        self.assertFalse(self.validator.near["present"])
+        for _ in range(3):
+            command = self.frame(lateral_tape, fusion_style_line=fusion)
+            self.assertEqual(self.validator.decision, "NORMAL")
+            self.assertEqual(command["controlSource"], "fusion")
+            self.assertTrue(self.validator.near["present"])
 
-        confirmed = self.frame(lateral_shadow, fusion_style_line=fusion)
-        self.assertEqual(self.validator.decision, "GAP")
-        self.assertEqual(confirmed["controlSource"], "gap-forward")
+    def test_coherent_curve_leaving_near_by_side_keeps_fusion(self):
+        self.arm()
+        full_curve = np.zeros_like(self.line)
+        lateral_curve = np.zeros_like(self.line)
+        curve = lambda depth: -0.1 - 1.7 * depth ** 2
+        tape(full_curve, curve, 18)
+        tape(lateral_curve, curve, 18, start=0.22, end=0.75)
 
-    def test_fusion_valid_fragment_cannot_veto_confirmed_near_loss(self):
+        history = None
+        for _ in range(3):
+            fusion = extract_fusion_style_line(full_curve, history)
+            history = update_fusion_style_history(history, fusion)
+
+        for _ in range(3):
+            fusion = extract_fusion_style_line(lateral_curve, history)
+            history = update_fusion_style_history(history, fusion)
+            self.assertTrue(fusion_style_has_lateral_continuation(fusion))
+            command = self.frame(
+                lateral_curve,
+                fusion_style_line=fusion,
+            )
+            self.assertEqual(self.validator.decision, "NORMAL")
+            self.assertEqual(command["controlSource"], "fusion")
+            self.assertTrue(command["fusionLateralContinuation"])
+            self.assertFalse(self.validator.near["present"])
+            self.assertEqual(self.validator.missing_frames, 0)
+
+    def test_unestablished_lateral_fragment_does_not_veto_gap(self):
+        self.arm()
+        lateral_fragment = np.zeros_like(self.line)
+        tape(
+            lateral_fragment,
+            lambda depth: -0.1 - 1.7 * depth ** 2,
+            18,
+            start=0.22,
+            end=0.75,
+        )
+        history = None
+        for _ in range(2):
+            fusion = extract_fusion_style_line(lateral_fragment, history)
+            history = update_fusion_style_history(history, fusion)
+            self.assertFalse(fusion_style_has_lateral_continuation(fusion))
+            command = self.frame(
+                lateral_fragment,
+                front_state="ABSENT",
+                fusion_style_line=fusion,
+            )
+
+        self.assertNotEqual(self.validator.decision, "NORMAL")
+        self.assertFalse(command["fusionLateralContinuation"])
+
+    def test_small_valid_fusion_fragment_in_near_blocks_gap(self):
         self.arm()
         fusion = extract_fusion_style_line(self.fragment)
         self.assertTrue(fusion["valid"])
-        self.frame(self.fragment)
-        self.assertEqual(self.validator.decision, "NORMAL")
-        command = self.frame(self.fragment)
-        self.assertEqual(self.validator.decision, "CHECKING")
-        self.assertEqual(command["controlSource"], "gap-forward")
-        self.assertTrue(gap_entry_is_required(
+        for _ in range(3):
+            command = self.frame(self.fragment)
+            self.assertEqual(self.validator.decision, "NORMAL")
+            self.assertEqual(command["controlSource"], "fusion")
+            self.assertTrue(self.validator.near["present"])
+        self.assertFalse(gap_entry_is_required(
             False, "NENHUMA", near_center_visible=True, real_near_point={"x": 235, "y": 335},
-            fusion_near_connected=True, near_line_present=False, near_loss_confirmed=True))
-        self.frame(self.fragment)
-        self.assertEqual(self.validator.decision, "GAP")
+            fusion_near_connected=True, near_line_present=True, near_loss_confirmed=True))
+
+    def test_one_accepted_pixel_in_full_near_blocks_loss_counter(self):
+        self.arm()
+        tip = np.zeros_like(self.line)
+        tip[round(tip.shape[0] * 0.82), 2] = 255
+
+        first = self.validator.observe_near(tip, 100.1, 3, 100.1)
+        second = self.validator.observe_near(tip, 100.2, 4, 100.2)
+
+        self.assertTrue(first["present"])
+        self.assertTrue(second["present"])
+        self.assertEqual(second["activePixels"], 1)
+        self.assertEqual(self.validator.missing_frames, 0)
 
     def test_short_gap_uses_trusted_bottom_far_before_forward_camera(self):
         for x in (240, 70):
@@ -638,15 +700,20 @@ class VirtualNearGateTest(unittest.TestCase):
 
     def test_duplicate_stale_and_future_frames_cannot_confirm_local_loss(self):
         self.arm()
-        self.frame(self.fragment, sequence=3)
-        self.frame(self.fragment, sequence=3)
+        self.frame(self.distant_fragment, sequence=3)
+        self.frame(self.distant_fragment, sequence=3)
         self.assertEqual(self.validator.missing_frames, 1)
         for timestamp in (90.0, 101.0):
-            result = self.validator.observe_near(self.fragment, timestamp, 4, 100.14)
+            result = self.validator.observe_near(
+                self.distant_fragment,
+                timestamp,
+                4,
+                100.14,
+            )
             self.assertFalse(result["fresh"])
             self.assertFalse(result["lossConfirmed"])
         self.assertEqual(self.validator.decision, "NORMAL")
-        self.frame(self.fragment, sequence=4)
+        self.frame(self.distant_fragment, sequence=4)
         self.assertEqual(self.validator.decision, "CHECKING")
 
     def test_one_empty_frame_does_not_change_gate_and_present_resets_loss_count(self):
@@ -659,7 +726,10 @@ class VirtualNearGateTest(unittest.TestCase):
 
     def test_confirmed_loss_runs_original_backup_then_search_despite_residual_fusion(self):
         self.arm()
-        commands = [self.frame(self.fragment, "ABSENT") for _ in range(23)]
+        commands = [
+            self.frame(self.distant_fragment, "ABSENT")
+            for _ in range(23)
+        ]
         sources = [c["controlSource"] for c in commands]
         self.assertEqual(self.validator.decision, "LOST")
         self.assertIn("virtual-blind-search-backup", sources)
@@ -672,7 +742,10 @@ class VirtualNearGateTest(unittest.TestCase):
             self.setUp()
             self.arm()
             for _ in range(17 if not initially_present else 3):
-                self.frame(self.fragment, "PRESENT" if initially_present else "ABSENT")
+                self.frame(
+                    self.distant_fragment,
+                    "PRESENT" if initially_present else "ABSENT",
+                )
             self.assertEqual(self.validator.decision, "GAP" if initially_present else "LOST")
             self.frame(self.line)
             self.assertNotEqual(self.validator.decision, "NORMAL")
@@ -683,13 +756,13 @@ class VirtualNearGateTest(unittest.TestCase):
             self.assertFalse(self.maneuver.gap_forward_active)
 
     def test_no_recent_presence_does_not_invent_gap_and_special_controls_keep_priority(self):
-        self.frame(self.fragment)
-        self.frame(self.fragment)
+        self.frame(self.distant_fragment)
+        self.frame(self.distant_fragment)
         self.assertEqual(self.validator.decision, "NORMAL")
         self.arm()
         self.maneuver.green_direction = "DIREITA"
-        self.frame(self.fragment)
-        self.frame(self.fragment)
+        self.frame(self.distant_fragment)
+        self.frame(self.distant_fragment)
         self.assertEqual(self.validator.decision, "NORMAL")
         self.assertFalse(self.validator.near_armed)
 
@@ -708,9 +781,9 @@ class VirtualNearGateTest(unittest.TestCase):
 
     def test_expired_near_history_does_not_rearm_with_single_particle(self):
         self.arm()
-        self.frame(self.fragment, seconds=1)
+        self.frame(self.distant_fragment, seconds=1)
         self.assertFalse(self.validator.near_armed)
-        self.frame(self.fragment, seconds=1.04)
+        self.frame(self.distant_fragment, seconds=1.04)
         self.assertEqual(self.validator.decision, "NORMAL")
 
     def test_active_pivot_and_hard_corner_keep_priority(self):
@@ -719,7 +792,7 @@ class VirtualNearGateTest(unittest.TestCase):
             self.arm()
             tracker = getattr(self.controller, tracker_name)
             tracker.state = "LEFT"
-            self.validator.process_frame(self.fragment, self.maneuver, self.controller, 3, 100.1,
+            self.validator.process_frame(self.distant_fragment, self.maneuver, self.controller, 3, 100.1,
                                          reading(3, 100.1), 0.1, 100.1)
             self.assertEqual(self.validator.decision, "NORMAL")
             self.assertFalse(self.maneuver.gap_forward_active)

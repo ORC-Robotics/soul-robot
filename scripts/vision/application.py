@@ -32,6 +32,7 @@ from .camera_config import (
     LIMIAR_CURVA_VERDE_INICIADA,
     Picamera2,
     QUADROS_CENTRALIZADO_PARA_CONCLUIR,
+    SILVER_DETECTION_ENABLED,
     SNAPSHOT_FRAME_FPS,
     STATUS_FPS,
     Transform,
@@ -78,6 +79,7 @@ from .line_masks import (
     create_structural_line_mask,
     resolve_vision_geometry,
 )
+from .illumination_correction import line_illumination_data
 from .normal_trajectory import (
     draw_normal_trajectory_overlay,
 )
@@ -90,6 +92,7 @@ from .stream_display import (
     draw_green_candidate_overlays,
     draw_green_rejection_details,
     draw_green_roi_overlays,
+    draw_line_illumination_overlay,
     draw_line_mode_green_overlays,
     draw_silver_shadow_overlay,
     encode_frame,
@@ -121,8 +124,10 @@ class DownwardCameraApplication:
         camera_details = {}
         status_publisher = LineStatusPublisher()
         self.dataset_recorder = None
-        silver_shadow_monitor = SilverShadowMonitor()
-        silver_shadow_status = empty_silver_shadow_status()
+        silver_shadow_monitor = None
+        silver_shadow_status = empty_silver_shadow_status(
+            "Detector da faixa prata desativado por configuração."
+        )
 
         if GPIO is None or Picamera2 is None or Transform is None:
             error_message = "Dependências GPIO, libcamera ou Picamera2 não encontradas."
@@ -245,7 +250,14 @@ class DownwardCameraApplication:
                 except Exception as error:
                     print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
 
-            silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
+            if SILVER_DETECTION_ENABLED:
+                silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
+            else:
+                print(
+                    "Detector da faixa prata desativado por configuração; "
+                    "nenhum marcador cinza será publicado para a missão.",
+                    flush=True,
+                )
 
             while stream_display.running:
                 calibration_requested = calibration_capture.before_frame()
@@ -380,11 +392,15 @@ class DownwardCameraApplication:
 
                 line_timestamp = time.time()
                 line_sequence += 1
-                silver_shadow_status = silver_shadow_monitor.process(
-                    raw_frame,
-                    line_sequence,
-                    line_timestamp,
-                )
+                if (
+                    SILVER_DETECTION_ENABLED
+                    and silver_shadow_monitor is not None
+                ):
+                    silver_shadow_status = silver_shadow_monitor.process(
+                        raw_frame,
+                        line_sequence,
+                        line_timestamp,
+                    )
                 green_raw_interpretation = green_interpretation["interpretation"]
                 green_tracker_result = green_tracker.update(
                     line_sequence,
@@ -766,6 +782,44 @@ class DownwardCameraApplication:
                     green_status,
                 )
                 display_mode = get_display_mode()
+                uncorrected_line_candidate_mask = None
+                if (
+                    display_mode == DISPLAY_MODE_LINE
+                    and specular_repair_status.get(
+                        "illuminationCorrectionActive",
+                        False,
+                    )
+                ):
+                    # A comparação completa custa outra morfologia e só roda
+                    # no modo binário de diagnóstico. O stream normal mantém
+                    # uma única pipeline e a máscara de controle não é tocada.
+                    uncorrected_profile = dict(vision_profile)
+                    uncorrected_profile[
+                        "line_illumination_correction_enabled"
+                    ] = False
+                    uncorrected_filtered_mask, uncorrected_roi_start_y = (
+                        create_filtered_line_mask(
+                            raw_frame,
+                            uncorrected_profile,
+                            camera_format,
+                        )
+                    )
+                    uncorrected_structural_mask = create_structural_line_mask(
+                        uncorrected_filtered_mask,
+                        uncorrected_roi_start_y,
+                        vision_geometry["structural_end_y"],
+                        dead_zone_end_y,
+                    )
+                    uncorrected_line_candidate_mask = create_line_candidate_mask(
+                        uncorrected_structural_mask,
+                        uncorrected_profile,
+                        green_mask=(
+                            green_mask
+                            if green_processing_enabled
+                            and vision_profile.get("line_exclude_green", False)
+                            else None
+                        ),
+                    )
                 frame = create_display_frame(
                     raw_frame,
                     line_candidate_mask,
@@ -773,6 +827,18 @@ class DownwardCameraApplication:
                     roi_start_y,
                     display_mode,
                     structural_mask,
+                )
+
+                _illumination_gain, illumination_zone, _illumination_cached = (
+                    line_illumination_data(vision_profile, raw_frame.shape)
+                )
+                draw_line_illumination_overlay(
+                    frame,
+                    line_candidate_mask,
+                    illumination_zone,
+                    specular_repair_status,
+                    display_mode,
+                    uncorrected_line_candidate_mask,
                 )
 
                 if camera_profile["role"] == "down":

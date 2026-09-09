@@ -124,6 +124,7 @@ class CalibrationTests(unittest.TestCase):
                  {"experiment": "test", "segmentation": {"line_max_background_ratio_percent": None}},
                  {"experiment": "test", "segmentation": {"line_max_background_ratio_percent": 101}},
                  {"experiment": "test", "segmentation": {"line_exclude_green": 1}},
+                 {"experiment": "test", "segmentation": {"line_illumination_correction_enabled": 1}},
                  {"experiment": "test", "segmentation": {"line_min_threshold": True}},
                  {"experiment": "test", "segmentation": {"line_min_threshold": 191}},
                  {"experiment": "test", "segmentation": {"open_kernel_size": 9}},

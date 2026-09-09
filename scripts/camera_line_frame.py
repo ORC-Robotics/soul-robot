@@ -255,6 +255,7 @@ from vision.stream_display import (
     draw_green_decision_symbol,
     draw_green_rejection_details,
     draw_green_roi_overlays,
+    draw_line_illumination_overlay,
     draw_line_mode_green_overlays,
     draw_silver_shadow_overlay,
     encode_frame,
@@ -286,6 +287,13 @@ from vision.line_masks import (
     repair_small_specular_holes,
     resolve_vision_geometry,
     scale_reference_y,
+)
+
+from vision.illumination_correction import (
+    apply_line_illumination_correction,
+    build_smoothed_line_illumination_reference,
+    empty_line_illumination_status,
+    line_illumination_data,
 )
 
 from vision.green_detection import (
@@ -390,6 +398,7 @@ from vision.fusion_guidance import (
     fusion_style_band_components,
     fusion_style_blind_search_direction,
     fusion_style_has_forward_target,
+    fusion_style_has_lateral_continuation,
     fusion_style_previous_target,
     fusion_target_is_valid,
     green_direction_to_search_direction,

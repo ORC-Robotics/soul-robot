@@ -88,6 +88,148 @@ def create_display_frame(
     return display_frame
 
 
+def draw_line_illumination_overlay(
+    display_frame,
+    line_candidate_mask,
+    zone_mask,
+    illumination_status,
+    display_mode,
+    uncorrected_line_candidate_mask=None,
+):
+    """Mostra a área compensada sem modificar a máscara usada no controle."""
+
+    status = illumination_status if isinstance(illumination_status, dict) else {}
+    configured = status.get("illuminationCorrectionConfigured") is True
+    active = status.get("illuminationCorrectionActive") is True
+    if not configured:
+        return
+
+    if active and zone_mask is not None:
+        candidate_height = (
+            line_candidate_mask.shape[0]
+            if line_candidate_mask is not None
+            else display_frame.shape[0]
+        )
+        candidate_start_y = max(0, display_frame.shape[0] - candidate_height)
+        useful_height = min(
+            display_frame.shape[0] - candidate_start_y,
+            zone_mask.shape[0] - candidate_start_y,
+            candidate_height,
+        )
+        useful_width = min(display_frame.shape[1], zone_mask.shape[1])
+        zone = zone_mask[
+            candidate_start_y:candidate_start_y + useful_height,
+            :useful_width,
+        ]
+        candidates = (
+            line_candidate_mask[:useful_height, :useful_width]
+            if line_candidate_mask is not None
+            else np.zeros(zone.shape, dtype=np.uint8)
+        )
+        background_zone = cv2.bitwise_and(
+            zone,
+            cv2.bitwise_not(candidates),
+        )
+        region = display_frame[
+            candidate_start_y:candidate_start_y + useful_height,
+            :useful_width,
+        ]
+        line_diagnostic = normalize_display_mode(display_mode) == DISPLAY_MODE_LINE
+        if line_diagnostic:
+            # Na máscara, ciano escuro delimita a compensação e o branco
+            # continua reservado aos pixels realmente entregues ao seguidor.
+            cv2.add(
+                region,
+                (56, 56, 0, 0),
+                dst=region,
+                mask=background_zone,
+            )
+            if uncorrected_line_candidate_mask is not None:
+                old_candidates = uncorrected_line_candidate_mask[
+                    :useful_height,
+                    :useful_width,
+                ]
+                removed = cv2.bitwise_and(
+                    old_candidates,
+                    cv2.bitwise_not(candidates),
+                )
+                # Vermelho mostra exatamente o que a pipeline sem compensação
+                # entregaria ao Fusion e a correção fotométrica rejeitou.
+                region[removed > 0] = (0, 0, 255)
+
+            preserved = cv2.bitwise_and(zone, candidates)
+            preserved_contours, _ = cv2.findContours(
+                preserved.copy(),
+                cv2.RETR_EXTERNAL,
+                cv2.CHAIN_APPROX_SIMPLE,
+            )
+            # O contorno verde identifica fita preservada sem substituir o
+            # interior branco, que continua representando a máscara final.
+            cv2.drawContours(region, preserved_contours, -1, (0, 255, 0), 1)
+        else:
+            cv2.add(
+                region,
+                (42, 42, 0, 0),
+                dst=region,
+                mask=background_zone,
+            )
+            # Verde significa candidato preto preservado dentro da área
+            # compensada. A confirmação de fita real continua geométrica.
+            preserved = cv2.bitwise_and(zone, candidates)
+            cv2.add(
+                region,
+                (0, 110, 0, 0),
+                dst=region,
+                mask=preserved,
+            )
+        contours, _ = cv2.findContours(
+            zone.copy(),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        cv2.drawContours(region, contours, -1, (255, 255, 0), 1)
+
+    try:
+        maximum_gain = float(status.get("illuminationMaximumGain", 1.0))
+        correction_ms = float(status.get("illuminationCorrectionMs", 0.0))
+    except (TypeError, ValueError):
+        maximum_gain = 1.0
+        correction_ms = 0.0
+    reference_sha256 = str(status.get("illuminationReferenceSha256", ""))
+    short_hash = reference_sha256[:8] if reference_sha256 else "NOHASH"
+    label = (
+        f"ILLUM ON {short_hash} G{maximum_gain:.2f} {correction_ms:.2f} ms"
+        if active
+        else "ILLUM OFF  MAP INVALID"
+    )
+    color = (255, 255, 0) if active else (0, 0, 255)
+    text_size = cv2.getTextSize(
+        label,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.36,
+        1,
+    )[0]
+    left = max(4, display_frame.shape[1] - text_size[0] - 10)
+    bottom = max(18, display_frame.shape[0] - 5)
+    cv2.rectangle(
+        display_frame,
+        (left - 4, bottom - 15),
+        (display_frame.shape[1] - 3, bottom + 3),
+        (0, 0, 0),
+        -1,
+    )
+    cv2.putText(
+        display_frame,
+        label,
+        (left, bottom),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.36,
+        color,
+        1,
+        cv2.LINE_AA,
+    )
+
+
 def draw_silver_shadow_overlay(display_frame, shadow_status):
     """Mostra a decisão shadow somente na cópia enviada ao dashboard."""
 
