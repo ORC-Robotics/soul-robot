@@ -97,7 +97,8 @@ bool MissionController::requiresForwardBallDetection(
     {
         return false;
     }
-    if (snapshot.autonomousMission == AutonomousMission::RescueArea)
+    if (snapshot.autonomousMission == AutonomousMission::RescueDetection ||
+        snapshot.autonomousMission == AutonomousMission::RescueArea)
     {
         return true;
     }
@@ -150,12 +151,37 @@ void MissionController::update(
         updateRescueArea(
             robotState, esp32Telemetry, forwardBallSnapshot);
         return;
+    case AutonomousMission::RescueDetection:
+        testTurnController_.reset();
+        rescueAreaMission_.reset();
+        obstacleAvoidanceTest_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateRescueDetection(robotState, forwardBallSnapshot);
+        return;
     case AutonomousMission::ObstacleAvoidance:
         testTurnController_.reset();
         rescueAreaMission_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.reset();
         updateObstacleAvoidance(robotState, esp32Telemetry);
+        return;
+    case AutonomousMission::ServoInitialize:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::Initialize, snapshot, esp32Telemetry);
+        return;
+    case AutonomousMission::ServoCapture:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::Capture, snapshot, esp32Telemetry);
+        return;
+    case AutonomousMission::ServoInternalStorage:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::InternalStorage, snapshot,
+            esp32Telemetry);
+        return;
+    case AutonomousMission::ServoDeposit:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::Deposit, snapshot, esp32Telemetry);
         return;
     case AutonomousMission::MainMission:
     default:
@@ -173,6 +199,51 @@ void MissionController::update(
             activeAutonomousRunSequence_);
         return;
     }
+}
+
+void MissionController::updateServoRoutine(
+    RobotState& robotState,
+    ServoRoutineKind kind,
+    const RobotSnapshot& snapshot,
+    const Esp32TelemetrySnapshot& esp32Telemetry)
+{
+    // As rotinas nunca comandam tração. O zero é renovado em todos os ciclos
+    // para preservar também o watchdog normal dos motores.
+    robotState.driveAutonomous(0.0, 0.0);
+
+    if (!esp32Telemetry.readyForOperation() || !esp32Telemetry.pca9685Ok)
+    {
+        // Sem confirmação recente do driver, continuar contando o tempo poderia
+        // pular um movimento que nunca chegou ao mecanismo.
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "servo_driver_lost",
+            "Rotina interrompida: PCA9685 ou comunicação indisponível"));
+        return;
+    }
+
+    const ServoRoutineOutput output = servoRoutine_.update(
+        kind,
+        snapshot.autonomousRunSequence,
+        snapshot.servoRoutineConfirmationSequence,
+        snapshot.servoPose,
+        std::chrono::steady_clock::now());
+    if (output.poseRequested)
+    {
+        robotState.setAutonomousServoPose(output.pose);
+    }
+    if (output.releaseGripper)
+    {
+        robotState.setAutonomousServoOutputEnabled(ServoId::Gripper, false);
+    }
+    robotState.setServoRoutineInternalObjectStored(
+        output.internalObjectStored);
+
+    AutonomousStatus status = makeAutonomousStatus(
+        output.phase, output.action, output.progressPercent);
+    status.servoRoutineWaitingForConfirmation =
+        output.waitingForConfirmation;
+    robotState.updateAutonomousStatus(status);
 }
 
 void MissionController::updateRescueArea(
@@ -196,6 +267,38 @@ void MissionController::updateRescueArea(
         robotState.stop();
     }
     robotState.updateAutonomousStatus(output.status);
+}
+
+void MissionController::updateRescueDetection(
+    RobotState& robotState,
+    const ForwardBallSnapshot& forwardBallSnapshot)
+{
+    // Este modo existe para observar e validar o detector com o robô parado.
+    // O zero é renovado em todos os ciclos e nenhuma posição visual vira steering.
+    robotState.driveAutonomous(0.0, 0.0);
+
+    const bool currentRun =
+        forwardBallSnapshot.targetSequence == activeAutonomousRunSequence_;
+    if (!forwardBallSnapshot.sourceFresh || !currentRun)
+    {
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "rescue_detection_waiting_camera",
+            "Aguardando uma leitura frontal da execução atual; motores parados"));
+        return;
+    }
+
+    if (!forwardBallSnapshot.detected)
+    {
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "rescue_detection_searching",
+            "Nenhuma vítima detectada; motores parados"));
+        return;
+    }
+
+    robotState.updateAutonomousStatus(makeAutonomousStatus(
+        "rescue_detection_found",
+        "Vítima detectada; alinhamento e aproximação desativados",
+        100.0));
 }
 
 void MissionController::updateObstacleAvoidance(
@@ -528,6 +631,7 @@ void MissionController::resetMissionState()
     rescueAreaMission_.reset();
     obstacleAvoidanceTest_.reset();
     testTurnController_.reset();
+    servoRoutine_.resetExecution();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;
     lastDistanceProgressCounts_ = 0.0;

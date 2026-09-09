@@ -10,16 +10,20 @@ class OledEventNotifier
 public:
     explicit OledEventNotifier(Esp32Bridge& esp32);
 
-    void updateGreen(const CameraLineSnapshot& cameraSnapshot,
-                     bool displayAvailable);
+    void updateLineEvents(const CameraLineSnapshot& cameraSnapshot,
+                          bool displayAvailable);
     void updateObstacleDetour(bool obstacleConfirmed, bool displayAvailable);
 
     static const char* greenDirectionText(GreenInterpretation interpretation);
     static bool isConfirmedGreen(const CameraLineSnapshot& cameraSnapshot);
+    static bool isConfirmedGap(const CameraLineSnapshot& cameraSnapshot);
+    static bool isConfirmedGray(const CameraLineSnapshot& cameraSnapshot);
 
 private:
     Esp32Bridge& esp32_;
     bool greenAlertLatched_ = false;
     GreenInterpretation lastGreenInterpretation_ = GreenInterpretation::None;
+    bool gapAlertLatched_ = false;
+    bool grayAlertLatched_ = false;
     bool obstacleAlertLatched_ = false;
 };

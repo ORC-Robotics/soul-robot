@@ -211,6 +211,17 @@ def virtual_raw_line_is_visible(sensors):
     )
 
 
+def virtual_far_line_is_visible(sensors):
+    """Confirma qualquer posição FAR finita protegida pelo gate de trust."""
+
+    if not virtual_sensor_trust_is_active(sensors, "farTrusted"):
+        return False
+    return any(
+        finite_virtual_position(sensors.get(position_name)) is not None
+        for position_name in ("farPosition", "farBandPosition")
+    )
+
+
 def update_gap_recent_near_frames(recent_near_frames, near_center_visible):
     """Atualiza a memória curta de uma observação real no NEAR-C."""
 
@@ -233,11 +244,11 @@ def gap_entry_is_required(
     near_loss_confirmed=False,
     special_control=False,
 ):
-    """Usa perda física confirmada; conserva a chamada antiga apenas por compatibilidade."""
+    """Usa perda confirmada do NEAR-C; conserva a chamada antiga por compatibilidade."""
 
     if near_line_present is not None:
-        # A aplicação fornece a medição ampla. Pontos Fusion ou projetados não
-        # provam presença física e não podem vetar este caminho de entrada.
+        # A aplicação fornece a presença temporal do NEAR-C. Pontos Fusion ou
+        # projetados não podem vetar este caminho de entrada.
         return (not gap_forward_active and green_direction == "NENHUMA"
                 and not special_control and not near_line_present and near_loss_confirmed)
 
@@ -856,6 +867,9 @@ def calculate_line_follower_command(
         if fusion_steering_error is not None:
             steering_error = fusion_steering_error
             fusion_control_status["fusionControlActive"] = True
+            # O Fusion conserva a direção, mas usa a faixa de potência NORMAL
+            # enquanto a fita ainda não alcançou o NEAR.
+            normal_steering_mapper = True
             control_source = "fusion-gap-reacquire"
         else:
             # O gate remove este estado quando a geometria deixa de ser válida.
@@ -867,14 +881,31 @@ def calculate_line_follower_command(
         line_state = "GAP"
         if virtual_turn_tracker is not None:
             virtual_turn_tracker.reset()
-        # FAR, MEDIUM e o contador legado podem confirmar que há continuação,
-        # mas nunca escolhem curva durante CHECKING/GAP. Segui-los lateralmente
-        # produzia círculos em gaps curtos. Somente o gate externo pode mudar o
-        # estado para LOST e liberar a busca; fita próxima confirmada encerra GAP.
         if line_search_tracker is not None:
             line_search_tracker.stop()
-        steering_error = 0.0
-        control_source = "gap-forward"
+        gap_far_position = (
+            trusted_far_band_position
+            if trusted_far_band_position is not None
+            else trusted_far_position
+        )
+        if virtual_far_line_is_visible(sensors) and gap_far_position is not None:
+            # Durante o vazio local, FAR mantém uma correção contínua e limitada
+            # ao mapper NORMAL. As duas rodas seguem para frente; PIVOT, SPIN e
+            # a parada de uma roda continuam proibidos dentro do GAP.
+            steering_error = calculate_virtual_steering_error(
+                False,
+                None,
+                fallback_far_position=gap_far_position,
+            )
+            normal_steering_mapper = steering_error is not None
+            control_source = (
+                "virtual-gap-far"
+                if normal_steering_mapper
+                else "gap-forward"
+            )
+        else:
+            steering_error = 0.0
+            control_source = "gap-forward"
 
     else:
         # Só LOST confirmado bloqueia fragmentos que cancelariam a busca.
@@ -1187,6 +1218,21 @@ def calculate_line_follower_command(
         # a esquerda recua, preservando uma pequena componente de avanço.
         left_power = PIVOT_INNER_POWER
         right_power = PIVOT_OUTER_POWER
+
+    elif (
+        fusion_control_status["fusionControlActive"]
+        and line_state == "GAP"
+    ):
+        # Antes do NEAR reaparecer, o Fusion escolhe a direção, mas não pode
+        # transformar a travessia em pivot. Isso preserva avanço suficiente
+        # mesmo quando FAR e MEDIUM ocupam lados opostos da imagem.
+        normal_command = map_normal_steering_error(steering_error)
+        if normal_command is None:
+            left_power = 0.0
+            right_power = 0.0
+        else:
+            left_power = normal_command["left_power"]
+            right_power = normal_command["right_power"]
 
     elif fusion_control_status["fusionControlActive"]:
         # O Fusion permanece no seguimento LINE e varia continuamente a potência

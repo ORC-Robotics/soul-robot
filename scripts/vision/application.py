@@ -69,6 +69,7 @@ from .green_detection import (
 from .line_control import (
     draw_line_control_overlay,
     update_green_maneuver_state,
+    virtual_far_line_is_visible,
     virtual_raw_line_is_visible,
 )
 from .line_masks import (
@@ -566,9 +567,8 @@ class DownwardCameraApplication:
                     ),
                 )
                 line_control_started = time.perf_counter()
-                bottom_far_present = (
-                    virtual_sensor_trust_is_active(virtual_sensors, "farTrusted")
-                    and virtual_sensors.get("farBandPosition") is not None
+                bottom_far_present = virtual_far_line_is_visible(
+                    virtual_sensors
                 )
                 gap_blind_search_requested = gap_validator.process_frame(
                     line_candidate_mask, maneuver_state, line_controller, line_sequence,

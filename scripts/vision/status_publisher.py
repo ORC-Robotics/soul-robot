@@ -170,7 +170,8 @@ def save_line_status(
         for key in ("bottomPathReference", "gapValidationDecision", "gapValidationReason",
                     "nearLinePresent", "nearLineState", "nearLineMissingFrames",
                     "bottomFarLinePresent", "bottomFarPresentFrames",
-                    "bottomFusionReacquireCandidate", "bottomFusionReacquireFrames",
+                    "bottomFusionReacquireCandidate", "bottomFusionPathConnected",
+                    "bottomFusionReacquireFrames",
                     "bottomFusionReacquireReady", "forwardPresenceState"):
             if key in line_follower_command:
                 line_status[key] = line_follower_command[key]

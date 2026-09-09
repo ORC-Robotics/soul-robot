@@ -3,14 +3,90 @@
 import json
 import math
 
-from .camera_config import (GAP_VALIDATION_CONFIG, NEAR_LINE_PRESENCE_CONFIG,
+import cv2
+import numpy as np
+
+from .camera_config import (GAP_VALIDATION_CONFIG, NEAR_VIRTUAL_SENSOR_CONFIG,
                             VIRTUAL_BLIND_SEARCH_BACKUP_FRAMES, GEOMETRIC_GAP_REACQUIRE_FRAMES)
 from .forward_path import bottom_reference
-from .line_presence import analyze_line_presence
-from .line_control import gap_entry_is_required, update_gap_forward_recovery
+from .line_control import (gap_entry_is_required, update_gap_forward_recovery,
+                           virtual_far_line_is_visible)
+from .virtual_sensors import (read_virtual_line_sensors,
+                              resolve_virtual_sensor_geometry,
+                              virtual_sensor_is_active,
+                              virtual_sensor_regions)
 
 
 FORWARD_STATUS_PATH = "/dev/shm/obr_forward_line_status.json"
+
+
+def component_labels_in_virtual_row(labels, row_geometry):
+    """Coleta os componentes globais que realmente cruzam uma fileira virtual."""
+    height, width = labels.shape
+    visible_labels = set()
+    for sensor_geometry in row_geometry.values():
+        for region in virtual_sensor_regions(sensor_geometry):
+            x0 = max(0, min(width, int(region["x0"])))
+            y0 = max(0, min(height, int(region["y0"])))
+            x1 = max(x0, min(width, int(region["x1"])))
+            y1 = max(y0, min(height, int(region["y1"])))
+            if x1 <= x0 or y1 <= y0:
+                continue
+            visible_labels.update(
+                int(label)
+                for label in np.unique(labels[y0:y1, x0:x1])
+                if label != 0
+            )
+    return visible_labels
+
+
+def bottom_fusion_path_is_connected(
+    processed_line_mask,
+    fusion_style_line,
+    target_radius_px,
+):
+    """Exige que o target Fusion seja a mesma fita contínua em FAR e MEDIUM."""
+    if (
+        not isinstance(processed_line_mask, np.ndarray)
+        or processed_line_mask.ndim != 2
+        or processed_line_mask.size == 0
+        or not isinstance(fusion_style_line, dict)
+    ):
+        return False
+    far_point = fusion_style_line.get("farPoint")
+    if not isinstance(far_point, dict):
+        return False
+    try:
+        point_x = int(round(float(far_point["x"])))
+        point_y = int(round(float(far_point["y"])))
+        radius = max(0, int(target_radius_px))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    height, width = processed_line_mask.shape
+    if not 0 <= point_x < width or not 0 <= point_y < height:
+        return False
+
+    binary_mask = (processed_line_mask != 0).astype(np.uint8)
+    if cv2.countNonZero(binary_mask) == 0:
+        return False
+    _, labels = cv2.connectedComponents(binary_mask, connectivity=8)
+    geometry = resolve_virtual_sensor_geometry(processed_line_mask.shape)
+    far_labels = component_labels_in_virtual_row(labels, geometry["far"])
+    medium_labels = component_labels_in_virtual_row(labels, geometry["medium"])
+    path_labels = far_labels.intersection(medium_labels)
+    if not path_labels:
+        return False
+
+    x0 = max(0, point_x - radius)
+    y0 = max(0, point_y - radius)
+    x1 = min(width, point_x + radius + 1)
+    y1 = min(height, point_y + radius + 1)
+    target_labels = {
+        int(label)
+        for label in np.unique(labels[y0:y1, x0:x1])
+        if label != 0
+    }
+    return bool(path_labels.intersection(target_labels))
 
 
 def read_json_snapshot(path):
@@ -41,19 +117,39 @@ class GapValidator:
         self.bottom_far_present_frames = 0
         self.bottom_far_present = False
         self.bottom_fusion_candidate = False
+        self.bottom_fusion_connected = False
         self.bottom_fusion_frames = 0
         self.bottom_fusion_ready = False
         self.forward_state = "UNCERTAIN"
         self.reset()
 
     def observe_near(self, mask, timestamp, sequence, wall_time, special=False,
-                     bottom_far_present=False):
-        """Confirma perda física com frames novos; Fusion e NEAR-C não votam aqui."""
-        cfg = NEAR_LINE_PRESENCE_CONFIG
+                     bottom_far_present=False, virtual_sensors=None):
+        """Confirma perda do NEAR-C em frames novos, sem aceitar pixels laterais."""
+        cfg = NEAR_VIRTUAL_SENSOR_CONFIG
         height, width = mask.shape
         roi = (round(width * cfg["roi_x0"]), round(height * cfg["roi_y0"]),
                round(width * cfg["roi_x1"]), round(height * cfg["roi_y1"]))
-        observed = analyze_line_presence(mask, roi, cfg)
+        sensors = (
+            virtual_sensors
+            if isinstance(virtual_sensors, dict)
+            else read_virtual_line_sensors(mask, "NENHUMA", False)
+        )
+        try:
+            sensor_value = float(sensors.get("nearCenter", 0.0))
+        except (TypeError, ValueError):
+            sensor_value = 0.0
+        if not math.isfinite(sensor_value):
+            sensor_value = 0.0
+        near_center_present = virtual_sensor_is_active(sensor_value)
+        observed = {
+            "state": "PRESENT" if near_center_present else "ABSENT",
+            "present": near_center_present,
+            "candidates": [],
+            "roi": list(roi),
+            "score": sensor_value,
+            "sensorValue": sensor_value,
+        }
         fresh = (type(sequence) is int and sequence > 0 and math.isfinite(timestamp)
                  and 0 <= wall_time - timestamp <= self.config["source_timeout"]
                  and (self.last_bottom is None or
@@ -105,6 +201,7 @@ class GapValidator:
         self.last_forward = None
         self.forward_present_count = 0
         self.bottom_fusion_candidate = False
+        self.bottom_fusion_connected = False
         self.bottom_fusion_frames = 0
         self.bottom_fusion_ready = False
         self.reason = "BOTTOM_AUTHORITY"
@@ -129,10 +226,12 @@ class GapValidator:
         fresh,
         gap_active,
         special,
+        processed_line_mask=None,
     ):
         """Confirma em frames novos uma trajetória Fusion ainda distante do NEAR."""
         if special or not gap_active:
             self.bottom_fusion_candidate = False
+            self.bottom_fusion_connected = False
             self.bottom_fusion_frames = 0
             self.bottom_fusion_ready = False
             return False
@@ -160,15 +259,25 @@ class GapValidator:
             if isinstance(fusion_style_line, dict)
             else None
         )
-        plausible = bool(
+        basic_geometry = bool(
             isinstance(fusion_style_line, dict)
             and fusion_style_line.get("valid") is True
             and selection in ("nearCenter", "deepestFallback")
             and self.finite_field(fusion_style_line, "angleDeg")
             and isinstance(fusion_style_line.get("nearPoint"), dict)
             and isinstance(fusion_style_line.get("farPoint"), dict)
-            and (far_trusted or medium_trusted)
+            and far_trusted
+            and medium_trusted
         )
+        self.bottom_fusion_connected = bool(
+            basic_geometry
+            and bottom_fusion_path_is_connected(
+                processed_line_mask,
+                fusion_style_line,
+                self.config["bottom_fusion_target_radius_px"],
+            )
+        )
+        plausible = bool(basic_geometry and self.bottom_fusion_connected)
         try:
             stable_frames = int(fusion_style_line.get("targetStableFrames", 0))
         except (AttributeError, TypeError, ValueError):
@@ -199,9 +308,20 @@ class GapValidator:
                    or controller.virtual_turn_tracker.state != "NORMAL"
                    or controller.pivot_state_tracker.state != "NONE"
                    or controller.medium_spin_tracker.state != "NONE")
+        # O FAR inteiro e a FAR BAND representam a mesma continuação distante.
+        # Qualquer posição trusted mantém GAP; a chamada explícita permanece
+        # apenas para compatibilidade com testes e consumidores antigos.
+        bottom_far_present = bool(
+            bottom_far_present
+            or (
+                isinstance(virtual_sensors, dict)
+                and virtual_far_line_is_visible(virtual_sensors)
+            )
+        )
         near = self.observe_near(
             mask, timestamp, sequence, wall_time, special,
             bottom_far_present=bottom_far_present,
+            virtual_sensors=virtual_sensors,
         )
         gap_active = bool(
             maneuver.gap_forward_active
@@ -223,6 +343,7 @@ class GapValidator:
             near["fresh"],
             gap_active,
             special,
+            processed_line_mask=mask,
         )
         if maneuver.gap_forward_active and near["fresh"] and not special:
             # Uma interrupção entre capturas não conta como presença consecutiva.
@@ -242,8 +363,8 @@ class GapValidator:
                    bottom_far_confirmed=near["bottomFarConfirmed"],
                    bottom_fusion_confirmed=bottom_fusion_ready)
         if self.decision in ("CHECKING", "GAP") and bottom_fusion_ready:
-            # O Fusion assume com sua geometria completa; FAR/MEDIUM não geram
-            # direção diretamente e continuam apenas validando o target escolhido.
+            # O FAR guia a travessia com correção limitada até que FAR e MEDIUM
+            # confirmem juntos a geometria completa escolhida pelo Fusion.
             maneuver.gap_forward_active = False
             maneuver.gap_fusion_reacquire_active = True
             controller.line_search_tracker.stop()
@@ -285,7 +406,7 @@ class GapValidator:
 
     def update(self, candidate, recovered, special, reading, now, wall_time,
                bottom_far_confirmed=False, bottom_fusion_confirmed=False):
-        """Uma perda isolada espera; evidência repetida confirma GAP dentro de um teto."""
+        """Confirma GAP e limita avanço sem continuação inferior observável."""
         present, stamp = self.present_reading(reading, wall_time)
         state = reading.get("forwardPathState")
         self.forward_state = (state if reading.get("forwardPathVersion") == 2
@@ -303,13 +424,32 @@ class GapValidator:
             self.started = now
             self.decision = "CHECKING"
         if self.decision == "LOST":
-            return self.decision
+            if not (bottom_far_confirmed or bottom_fusion_confirmed):
+                return self.decision
+            # O FAR pode entrar no campo depois que a janela inicial termina.
+            # Dois frames trusted cancelam a busca e retomam a travessia sem
+            # exigir que o operador empurre a fita até o NEAR-C.
+            self.decision = "GAP"
+            self.reason = "BOTTOM_FAR_RECOVERED_AFTER_LOST"
+        bottom_continuation = bool(
+            bottom_far_confirmed or bottom_fusion_confirmed
+        )
+        if bottom_continuation:
+            # A evidência inferior pertence ao mesmo frame da máscara e pode
+            # renovar GAP antes de o prazo frontal vencer neste ciclo.
+            self.last_forward_present = now
         elapsed = now - self.started
-        if elapsed < 0 or elapsed >= self.config["max_gap_seconds"]:
+        if (
+            elapsed < 0
+            or (
+                elapsed >= self.config["max_gap_seconds"]
+                and not bottom_continuation
+            )
+        ):
             self.decision, self.reason = "LOST", "GAP_TIME_LIMIT"
             return self.decision
-        # Verifica os prazos antes de ler evidência nova. Um ciclo atrasado não
-        # pode renovar uma janela de avanço que já venceu.
+        # A evidência inferior sincronizada já foi consumida. A frontal continua
+        # sujeita aos prazos e não pode reabrir uma janela que já venceu.
         if self.decision == "CHECKING" and elapsed >= self.config["confirmation_seconds"]:
             self.decision, self.reason = "LOST", "NO_CONFIRMED_CONTINUATION"
             return self.decision
@@ -320,10 +460,10 @@ class GapValidator:
         if bottom_far_confirmed:
             # O FAR inferior é sincronizado com a perda local. Em um GAP curto,
             # ele pode enxergar a continuação antes de a frontal confirmar.
-            self.last_forward_present = now
-            self.decision, self.reason = "GAP", "BOTTOM_FAR_PRESENT"
+            self.decision = "GAP"
+            if self.reason != "BOTTOM_FAR_RECOVERED_AFTER_LOST":
+                self.reason = "BOTTOM_FAR_PRESENT"
         if bottom_fusion_confirmed:
-            self.last_forward_present = now
             self.decision, self.reason = "GAP", "BOTTOM_FUSION_REACQUIRED"
         if stamp != self.last_forward:
             increasing = self.last_forward is None or (stamp is not None
@@ -356,8 +496,8 @@ class GapValidator:
             maneuver.gap_fusion_reacquire_active = False
             return decision
         if decision == "NORMAL" and previous_decision == "LOST" and near_recovered:
-            # Presença física confirmada libera também o Fusion lateral, que
-            # não precisa esperar o tracker de busca aceitar pixels soltos.
+            # O reencontro confirmado no NEAR-C devolve autoridade ao controle
+            # normal sem esperar o tracker de busca aceitar pixels laterais.
             controller.line_search_tracker.stop()
         if (decision in ("CHECKING", "GAP")
                 and not maneuver.gap_forward_active
@@ -391,6 +531,7 @@ class GapValidator:
                 ),
                 "bottomFarPresentFrames": self.bottom_far_present_frames,
                 "bottomFusionReacquireCandidate": self.bottom_fusion_candidate,
+                "bottomFusionPathConnected": self.bottom_fusion_connected,
                 "bottomFusionReacquireFrames": self.bottom_fusion_frames,
                 "bottomFusionReacquireReady": self.bottom_fusion_ready,
                 "forwardPresenceState": self.forward_state,

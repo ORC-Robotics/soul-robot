@@ -501,6 +501,14 @@ void DashboardServer::handleCommand(const std::string& message)
                 std::cerr << "Invalid drive-distance target ignored\n";
             }
         }
+        else if (message.find("\"mission\":\"rescue_detection\"") != std::string::npos)
+        {
+            // O modo de observação liga o mesmo detector, mas mantém a tração
+            // zerada e nunca encaminha o alvo ao alinhamento automático.
+            robotState_.setAutonomousMission(
+                AutonomousMission::RescueDetection);
+            std::cout << "Autonomous mission selected: rescue_detection\n";
+        }
         else if (message.find("\"mission\":\"rescue_area\"") != std::string::npos)
         {
             // Selecionar a etapa não liga o detector. O gate só abre depois
@@ -514,11 +522,39 @@ void DashboardServer::handleCommand(const std::string& message)
                 AutonomousMission::ObstacleAvoidance);
             std::cout << "Autonomous mission selected: obstacle_avoidance\n";
         }
+        else if (message.find("\"mission\":\"servo_initialize\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::ServoInitialize);
+            std::cout << "Autonomous mission selected: servo_initialize\n";
+        }
+        else if (message.find("\"mission\":\"servo_capture\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::ServoCapture);
+            std::cout << "Autonomous mission selected: servo_capture\n";
+        }
+        else if (message.find("\"mission\":\"servo_internal_storage\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(
+                AutonomousMission::ServoInternalStorage);
+            std::cout << "Autonomous mission selected: servo_internal_storage\n";
+        }
+        else if (message.find("\"mission\":\"servo_deposit\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::ServoDeposit);
+            std::cout << "Autonomous mission selected: servo_deposit\n";
+        }
         else
         {
             // Missões desconhecidas são ignoradas para nunca executar um
             // comportamento diferente daquele selecionado pelo operador.
             std::cerr << "Invalid autonomous mission ignored\n";
+        }
+    }
+    else if (message.find("\"command\":\"servo_routine_confirm\"") != std::string::npos)
+    {
+        if (!robotState_.confirmServoRoutineAction())
+        {
+            std::cerr << "Servo routine confirmation ignored: no step is waiting\n";
         }
     }
     else if (message.find("\"command\":\"stop\"") != std::string::npos)
@@ -817,6 +853,10 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
          << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
+         << ",\"servoRoutineWaitingForConfirmation\":"
+         << (state.autonomousStatus.servoRoutineWaitingForConfirmation ? "true" : "false")
+         << ",\"servoRoutineInternalObjectStored\":"
+         << (state.servoRoutineInternalObjectStored ? "true" : "false")
          << ",\"forwardAssistState\":\"" << state.autonomousStatus.forwardAssistState << "\""
          << ",\"forwardAssistDirection\":\"" << state.autonomousStatus.forwardAssistDirection << "\""
          << ",\"forwardAssistLatchedDirection\":\"" << state.autonomousStatus.forwardAssistLatchedDirection << "\""
@@ -1612,8 +1652,13 @@ std::string DashboardServer::dashboardHtml()
                 <option value="main_mission" selected>MISSÃO PRINCIPAL</option>
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
-                <option value="rescue_area">ÁREA DE RESGATE · VÍTIMA MAIS PRÓXIMA</option>
+                <option value="rescue_detection">RESGATE · APENAS DETECTAR</option>
+                <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
+                <option value="servo_initialize">SERVOS · INICIALIZAR EM 0°</option>
+                <option value="servo_capture">SERVOS · CAPTURA</option>
+                <option value="servo_internal_storage">SERVOS · ARMAZENAMENTO INTERNO</option>
+                <option value="servo_deposit">SERVOS · DEPÓSITO</option>
               </select>
               <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
@@ -1623,6 +1668,11 @@ std::string DashboardServer::dashboardHtml()
                   <strong>cm</strong>
                 </div>
                 <small class="distance-calibration">Calibração real: 3600 contagens = 18,7 cm · 192,51 cont/cm.</small>
+              </div>
+              <div id="servoRoutineSettings" class="distance-mission-settings" hidden>
+                <span id="servoRoutineStorageState" class="distance-input-label">Armazenamento interno vazio</span>
+                <button id="servoRoutineConfirmButton" type="button" class="warning" disabled>Confirmar próximo passo</button>
+                <small class="distance-calibration">O armazenamento aguarda o pedido de fechamento. No depósito, cada abertura deve ser confirmada em até 2 segundos.</small>
               </div>
             </div>
 
@@ -1882,6 +1932,8 @@ std::string DashboardServer::dashboardHtml()
                   <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="ESQUERDA" data-preset-label="Verde · esquerda" disabled><strong>VERDE</strong><span>ESQUERDA</span></button>
                   <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="DIREITA" data-preset-label="Verde · direita" disabled><strong>VERDE</strong><span>DIREITA</span></button>
                   <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="VERDE" data-secondary="180 GRAUS" data-preset-label="Verde · retorno de 180 graus" disabled><strong>VERDE</strong><span>180 GRAUS</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="GAP" data-secondary="CONFIRMADO" data-preset-label="GAP confirmado" disabled><strong>GAP</strong><span>CONFIRMADO</span></button>
+                  <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="CINZA" data-secondary="CONFIRMADO" data-preset-label="Faixa cinza confirmada" disabled><strong>CINZA</strong><span>CONFIRMADO</span></button>
                   <button type="button" class="oled-preset" data-oled-send data-oled-preset data-primary="DESVIO" data-secondary="" data-preset-label="Desvio de obstáculo" disabled><strong>DESVIO</strong><span>SEM DETALHE</span></button>
                 </div>
               </section>
@@ -2176,10 +2228,14 @@ std::string DashboardServer::dashboardHtml()
         ? "Executando giro de 90° à direita"
         : selectedMission === "drive_distance"
           ? "Percorrendo a distância selecionada pelos encoders"
+          : selectedMission === "rescue_detection"
+            ? "Detectando vítimas com os motores mantidos parados"
           : selectedMission === "rescue_area"
             ? "Detectando, alinhando e aproximando da vítima mais próxima"
           : selectedMission === "obstacle_avoidance"
             ? "Executando o desvio ultrassônico de obstáculo"
+          : selectedMission.startsWith("servo_")
+            ? "Executando movimentos sequenciais de braço, pulso e garra"
           : "Missão principal em execução";
       element("modeDetail").textContent = mode === "manual" ? "Comandos humanos habilitados" : mode === "autonomous" ? autonomousDetail : mode === "servo_calibration" ? "Motores zerados · Parar desliga os pulsos" : mode === "emergency" ? "Movimento bloqueado pela trava de segurança" : "Saídas de motor zeradas";
       ["manualButton", "autoButton", "stopButton"].forEach(id => element(id).classList.remove("active"));
@@ -2201,14 +2257,37 @@ std::string DashboardServer::dashboardHtml()
         distanceTargetCm.value = formatNumber(data.driveDistanceTargetCm, 1);
       }
       element("distanceMissionSettings").hidden = mission !== "drive_distance";
+      element("servoRoutineSettings").hidden = !mission.startsWith("servo_");
+      element("servoRoutineStorageState").textContent =
+        data.servoRoutineInternalObjectStored === true
+          ? "Objeto registrado no armazenamento interno"
+          : "Armazenamento interno vazio";
+      const waitingForServoConfirmation =
+        data.mode === "autonomous" &&
+        data.servoRoutineWaitingForConfirmation === true;
+      element("servoRoutineConfirmButton").disabled = !waitingForServoConfirmation;
+      element("servoRoutineConfirmButton").textContent =
+        data.autonomousPhase === "servo_wait_close"
+          ? "Confirmar fechamento da garra"
+          : "Confirmar abertura da garra";
       element("missionHint").textContent = mission === "turn_right_90"
         ? "Usa o MPU6050, comando 0,01 com perfil operacional e frenagem preditiva."
         : mission === "drive_distance"
           ? "Avança os dois lados até o alvo medido pelos encoders."
+          : mission === "rescue_detection"
+            ? "Liga o detector frontal para observação; não alinha, não aproxima e mantém a tração zerada."
           : mission === "rescue_area"
-            ? "Gate de resgate: o detector de vítimas só consome CPU enquanto esta etapa estiver em execução."
+            ? "Liga o detector frontal e permite o alinhamento e a aproximação automáticos da vítima."
           : mission === "obstacle_avoidance"
             ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
+          : mission === "servo_initialize"
+            ? "Aplica e estabiliza a pose inicial de 0° nos três servos."
+          : mission === "servo_capture"
+            ? "Executa captura em passos e alivia o PWM da garra após o aperto curto."
+          : mission === "servo_internal_storage"
+            ? "Guarda o objeto internamente e retorna o braço para uma nova captura."
+          : mission === "servo_deposit"
+            ? "Deposita sob confirmação; cada espera expira em 2 segundos sem abrir."
           : "Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.";
     }
 
@@ -2221,6 +2300,14 @@ std::string DashboardServer::dashboardHtml()
         emergency: ["EMERGÊNCIA", "danger", "machineStepFeedback"],
         calibrating: ["CALIBRANDO", "warn", "machineStepFeedback"],
         servo_calibration: ["CALIBRANDO SERVO", "warn", "machineStepFeedback"],
+        servo_initial_pose: ["SERVOS: POSIÇÃO INICIAL", "active", "machineStepMotion"],
+        servo_resume_pose: ["SERVOS: REATIVANDO POSE", "warn", "machineStepFeedback"],
+        servo_wait_open: ["SERVOS: CONFIRMAR ABERTURA", "warn", "machineStepDecision"],
+        servo_wait_stored_open: ["SERVOS: CONFIRMAR ABERTURA", "warn", "machineStepDecision"],
+        servo_wait_close: ["SERVOS: CONFIRMAR FECHAMENTO", "warn", "machineStepDecision"],
+        servo_confirmation_timeout: ["SERVOS: CONFIRMAÇÃO EXPIRADA", "danger", "machineStepFeedback"],
+        servo_driver_lost: ["SERVOS: DRIVER INDISPONÍVEL", "danger", "machineStepFeedback"],
+        servo_completed: ["SERVOS: ROTINA CONCLUÍDA", "active", "machineStepFeedback"],
         waiting_esp32: ["ESP32 OFFLINE", "danger", "machineStepFeedback"],
         main_waiting_behaviors: ["ESTRUTURA PRONTA", "idle", "machineStepDecision"],
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
@@ -2276,6 +2363,9 @@ std::string DashboardServer::dashboardHtml()
         obstacle_turn_imu_lost: ["DESVIO: IMU PERDIDA", "danger", "machineStepFeedback"],
         obstacle_turn_correction_failed: ["DESVIO: CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
         rescue_esp32_not_ready: ["RESGATE: ESP32 OFFLINE", "danger", "machineStepFeedback"],
+        rescue_detection_waiting_camera: ["DETECÇÃO: AGUARDANDO CÂMERA", "warn", "machineStepPerception"],
+        rescue_detection_searching: ["DETECÇÃO: PROCURANDO VÍTIMA", "warn", "machineStepPerception"],
+        rescue_detection_found: ["DETECÇÃO: VÍTIMA ENCONTRADA", "active", "machineStepPerception"],
         ball_alignment_waiting_target: ["RESGATE: PROCURANDO VÍTIMA", "warn", "machineStepPerception"],
         ball_alignment_camera_stale: ["RESGATE: VISÃO OFFLINE", "danger", "machineStepFeedback"],
         ball_alignment_target_lost: ["RESGATE: ALVO PERDIDO", "warn", "machineStepPerception"],
@@ -2321,8 +2411,13 @@ std::string DashboardServer::dashboardHtml()
         ? "Giro 90° à direita"
         : mission === "drive_distance"
           ? "Percorrer distância"
-          : mission === "rescue_area" ? "Área de resgate"
+          : mission === "rescue_detection" ? "Resgate · Detecção"
+          : mission === "rescue_area" ? "Resgate · Detectar e seguir"
           : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
+          : mission === "servo_initialize" ? "Servos · Inicialização"
+          : mission === "servo_capture" ? "Servos · Captura"
+          : mission === "servo_internal_storage" ? "Servos · Armazenamento"
+          : mission === "servo_deposit" ? "Servos · Depósito"
           : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
       const obstacleActive = phase.startsWith("obstacle_");
@@ -2330,10 +2425,14 @@ std::string DashboardServer::dashboardHtml()
         ? "TESTE DE GIRO"
         : mission === "drive_distance"
           ? "TESTE DE DISTÂNCIA"
+          : mission === "rescue_detection"
+            ? "SOMENTE DETECÇÃO"
           : mission === "rescue_area"
-            ? "DETECTOR DE VÍTIMAS"
+            ? "ALINHAMENTO DE VÍTIMA"
           : mission === "obstacle_avoidance"
             ? "TESTE DE OBSTÁCULO"
+          : mission.startsWith("servo_")
+            ? "ROTINA DE SERVOS"
           : obstacleActive ? "DESVIO DE OBSTÁCULO"
           : turnAroundActive ? "RETORNO 180°" : "SEGUE-LINHA";
       element("machineRequestedSpeed").textContent = `${formatNumber(data.left, 2)} / ${formatNumber(data.right, 2)}`;
@@ -3050,7 +3149,13 @@ std::string DashboardServer::dashboardHtml()
       const targetCm = Math.max(1, Math.min(300, Number(distanceTargetCm.value) || 20));
       distanceTargetCm.value = formatNumber(targetCm, 1);
       element("distanceMissionSettings").hidden = autonomousMission.value !== "drive_distance";
+      element("servoRoutineSettings").hidden = !autonomousMission.value.startsWith("servo_");
       send({ command: "set_autonomous_mission", mission: autonomousMission.value, distanceCm: targetCm });
+    }
+
+    function confirmServoRoutineAction() {
+      send({ command: "servo_routine_confirm" });
+      element("servoRoutineConfirmButton").disabled = true;
     }
 
     function startAutonomousMission() {
@@ -4064,6 +4169,8 @@ std::string DashboardServer::dashboardHtml()
     });
     autonomousMission.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
+    element("servoRoutineConfirmButton").addEventListener(
+      "click", confirmServoRoutineAction);
     document.addEventListener("keydown", event => {
       if (!driveKeyCodes.includes(event.code) || event.ctrlKey || event.altKey || event.metaKey) return;
       event.preventDefault();

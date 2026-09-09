@@ -96,8 +96,22 @@ bool ServoController::apply(const RobotSnapshot& state)
     }
     else
     {
-        // No controle manual, cada servo passa a fazer parte do estado quando
-        // recebe seu primeiro alvo. Os demais canais continuam sem sinal.
+        if (hasAppliedState_ &&
+            state.servoCommandSequence == lastCommandSequence_)
+        {
+            lastMotionUpdate_ = now;
+            return true;
+        }
+
+        // O protocolo atual só desliga todos os canais de uma vez. Para retirar
+        // apenas o esforço da garra, limpa as saídas e reaplica imediatamente
+        // os servos que continuam solicitados, sem exigir firmware novo.
+        if (!outputsDisabled_ && !esp32_.sendDisableAllServos())
+        {
+            return false;
+        }
+        outputsDisabled_ = true;
+
         if (state.armServoRequested)
         {
             sent = setAngle(ServoId::Arm, state.servoPose.armDegrees) && sent;
@@ -109,6 +123,15 @@ bool ServoController::apply(const RobotSnapshot& state)
         if (state.gripperServoRequested)
         {
             sent = setAngle(ServoId::Gripper, state.servoPose.gripperDegrees) && sent;
+        }
+
+        if (!sent)
+        {
+            // Uma falha no meio da reaplicação volta ao estado seguro conhecido.
+            esp32_.sendDisableAllServos();
+            outputsDisabled_ = true;
+            hasAppliedState_ = false;
+            return false;
         }
     }
 

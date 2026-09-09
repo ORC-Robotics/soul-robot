@@ -13,10 +13,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from forward_camera_stream import (calculate_forward_line_assist, draw_forward_assist_overlay,
                                    process_forward_frame, resolve_forward_assist_roi)
-from vision.camera_config import FORWARD_PATH_CONFIG, FORWARD_PRESENCE_CONFIG, NEAR_LINE_PRESENCE_CONFIG
+from vision.camera_config import FORWARD_PATH_CONFIG, FORWARD_PRESENCE_CONFIG, NEAR_VIRTUAL_SENSOR_CONFIG
 from vision.gap_validation import GapValidator
 from vision.forward_path import ForwardPathTracker, bottom_reference, predicted_path
 from vision.fusion_guidance import extract_fusion_style_line
+from vision.virtual_sensors import read_virtual_line_sensors
 
 
 def paint_path(mask, curve, roi, thickness=18):
@@ -54,7 +55,7 @@ def main():
               "python": platform.python_version(), "opencv": cv2.__version__,
               "opencv_threads": cv2.getNumThreads(), "resolution": [960, 540],
               "frames_per_scenario": args.frames, "forward_config": dict(FORWARD_PRESENCE_CONFIG),
-              "near_config": dict(NEAR_LINE_PRESENCE_CONFIG), "scenarios": {}}
+              "near_config": dict(NEAR_VIRTUAL_SENSOR_CONFIG), "scenarios": {}}
     for name in ("center", "strong_curve", "multiple", "crossing", "serrated", "overload", "side", "tilted", "particles"):
         mask = np.zeros((540, 960), np.uint8)
         roi = resolve_forward_assist_roi(mask.shape)
@@ -105,7 +106,19 @@ def main():
     bottom = np.zeros((360, 480), np.uint8)
     paint_path(bottom, lambda d: 0.20 * d ** 2, (0, 0, 480, 360), 40)
     validator = GapValidator()
-    report["near_presence"] = timed(lambda i: validator.observe_near(bottom, 100 + i / 30, i + 1, 100 + i / 30), args.frames)
+    # A aplicação já calcula os sensores virtuais antes do gate de GAP.
+    # O benchmark mede somente o custo incremental da decisão central.
+    bottom_sensors = read_virtual_line_sensors(bottom, "NENHUMA", False)
+    report["near_presence"] = timed(
+        lambda i: validator.observe_near(
+            bottom,
+            100 + i / 30,
+            i + 1,
+            100 + i / 30,
+            virtual_sensors=bottom_sensors,
+        ),
+        args.frames,
+    )
     fusion = extract_fusion_style_line(bottom)
     report["bottom_reference"] = timed(lambda i: bottom_reference(bottom, fusion, 100 + i / 30, i + 1), args.frames)
     (args.output / "benchmark.json").write_text(json.dumps(report, indent=2, allow_nan=False), encoding="utf-8")

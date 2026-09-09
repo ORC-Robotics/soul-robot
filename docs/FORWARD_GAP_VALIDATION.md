@@ -1,18 +1,23 @@
-# GAP: presença física inferior e validação frontal
+# GAP: NEAR-C virtual e validação frontal
 
 ## Resultado e diagnóstico
 
-O gate atual usa presença física de fita próxima, independente do Fusion.
-A frontal responde `PRESENT / UNCERTAIN / ABSENT`; a decisão inferior é
+O gate atual usa a presença do sensor virtual central `NEAR-C`, independente
+da validade global do Fusion. A frontal responde
+`PRESENT / UNCERTAIN / ABSENT`; a decisão inferior é
 `NORMAL / CHECKING / GAP / LOST`. A frontal não calcula steering nem comanda
-motores. Esta implementação é local: **nenhum deploy ou alteração de systemd**.
+motores. O operador instalou a revisão no robô em 9 de setembro; os hashes de
+`line_control.py` e `gap_validation.py` foram conferidos antes de analisar as
+três runs descritas abaixo. Esta tarefa não alterou systemd.
 
-Antes da correção, um fragmento podia manter o Fusion válido e impedir GAP
-por dois caminhos: `fusion_near_connected` vetava a entrada, e a validade Fusion
-participava de `normal_visible`, que encerrava a confirmação. O código C++
-`normalSteeringValid` também representa validade do comando, não existência
-física da fita. Ele continua validando a faixa de potências NORMAL sem votar
-na presença local.
+Antes da correção mais recente, um detector geométrico cobria quase toda a base
+da imagem inferior. Uma sombra lateral podia satisfazer esse detector e publicar
+`nearLinePresent=true`, mesmo com `nearFinePosition=null` e o `NEAR-C` vazio.
+O Fusion permanecia válido pelo mesmo ruído e mantinha `SOURCE: fusion`, sem
+abrir CHECKING. Agora somente a ocupação do corredor central pode manter a
+presença local. O código C++ `normalSteeringValid` representa validade do
+comando, não existência física da fita; ele continua validando as potências
+NORMAL sem votar na entrada de GAP.
 
 A primeira versão local da frontal exigia concordância com a extrapolação
 inferior. Essa exigência foi substituída conforme o relato da equipe: fita
@@ -30,35 +35,24 @@ residuais não podem encerrar prematuramente a busca.
 
 ## Presença próxima: `nearLinePresent`
 
-`line_presence.py` examina a máscara já segmentada, sem modificá-la. Na inferior,
-o contexto cobre x=2–98% e y=60–100%. A confirmação local exige pelo menos três
-bandas abaixo de y=76%, cobrindo o NEAR existente (82–100%) e suas laterais.
-O contexto superior ajuda a avaliar a forma sem exigir que toda a fita caiba
-na estreita região próxima.
+`nearLinePresent` agora reflete diretamente o sensor virtual `nearCenter`. Na
+resolução inferior de 480×360, ele ocupa x=38,5–61,5% e y=82–100%. A ocupação
+média da máscara nessa faixa precisa alcançar 10% para publicar `PRESENT`.
+Esses limites são os mesmos usados pelo seguidor virtual preservado.
 
-Cada componente é examinado separadamente em até sete bandas horizontais e sete
-verticais. A segunda orientação preserva curvas quase horizontais e saídas
-laterais. Para ser fita plausível precisa combinar:
+Sombras, sujeira e fragmentos restritos às laterais ainda podem formar um target
+Fusion, mas não votam como linha sob o centro do robô. Isso permite iniciar GAP
+quando a faixa central some, mesmo que haja ruído preto nas asas da imagem. A
+frontal e o FAR inferior continuam sendo evidências de continuação; nenhum deles
+rearma o `NEAR-C`.
 
-- espessura dentro da faixa configurada;
-- extensão mínima entre bandas;
-- pelo menos três bandas coerentes do mesmo componente;
-- deslocamento transversal limitado entre bandas;
-- extensão compatível com a espessura, com regra explícita para corte pelo FOV;
-- suporte suficiente na região próxima.
+Uma sombra grande que atravesse o corredor central ainda pode ativar o sensor.
+Se isso aparecer em novas runs, a sequência raw/máscara deve orientar um ajuste
+da ocupação ou dos limites da faixa. O caso observado em 9 de setembro era
+lateral e já é separado pela geometria existente, portanto não justificou mudar
+o threshold calibrado da câmera.
 
-Área só descarta partículas óbvias antes desse trabalho. Partículas separadas
-não somam bandas entre si. Um blob pequeno não tem extensão; uma mancha compacta
-não satisfaz o alongamento. O detector não exige estar no NEAR-C nem concordar
-com um target Fusion.
-
-Uma fita cortada pela base ou pela borda lateral pode continuar fora da imagem.
-Nesses casos a exigência de alongamento é menor, mas largura, extensão mínima e
-bandas próximas continuam obrigatórias. Isso evita declarar perda por uma ponta
-real curta. A amostragem inclui as extremidades observáveis do componente;
-intervalos estreitos demais continuam rejeitados.
-
-A medição geométrica é por frame. A memória temporal só aceita sequência e
+A medição de ocupação é por frame. A memória temporal só aceita sequência e
 timestamp crescentes, com idade de no máximo 125 ms. Arma após dois frames de
 presença, lembra essa presença por 300 ms e exige dois frames novos de ausência
 para abrir CHECKING. Frame repetido, antigo ou futuro não confirma perda.
@@ -68,30 +62,37 @@ Uma imagem vazia isolada não abre GAP.
 
 | Condição | Decisão / efeito |
 |---|---|
-| Fita local plausível | NORMAL; controle inferior original |
+| `NEAR-C` ativo | NORMAL; controle inferior original |
 | Presença local recente + duas ausências novas | CHECKING; tentativa limitada de travessia inferior |
-| CHECKING + FAR inferior confiável nas mesmas duas ausências | GAP; confirma imediatamente um GAP curto |
+| CHECKING + qualquer posição FAR inferior confiável nas mesmas duas ausências | GAP; confirma imediatamente um GAP curto |
 | CHECKING + duas observações frontais novas PRESENT | GAP; mantém travessia inferior |
-| GAP + target Fusion inferior distante, trusted e estável por dois frames | Mantém decisão GAP e transfere o controle para `fusion-gap-reacquire` |
-| Sem confirmação frontal em 250 ms | LOST; inicia recovery inferior existente |
-| GAP perde evidência frontal por 200 ms | LOST |
-| GAP chega a 1,5 s desde CHECKING | LOST, mesmo com fita frontal visível |
+| GAP + FAR trusted | `virtual-gap-far`; FAR BAND, ou o conjunto FAR quando ela está vazia, guia com o mapper NORMAL |
+| GAP + target Fusion inferior apoiado pelo mesmo componente conectado em FAR e MEDIUM, estável por dois frames | Mantém decisão GAP e transfere o controle para `fusion-gap-reacquire` |
+| Sem confirmação frontal ou inferior em 500 ms | LOST; inicia recovery inferior existente |
+| GAP perde toda evidência de continuação por 200 ms | LOST |
+| GAP chega a 1,5 s sem continuação inferior no frame atual | LOST; a frontal sozinha não prolonga esse teto |
 | Duas observações novas de fita inferior reaparecida | Libera NORMAL e encerra busca/travessia |
 | Verde, recuperação por sensores ou tracker especial já ativo | Preserva prioridade existente; desarma a memória local |
 
 CHECKING não é parada: usa provisoriamente o avanço GAP original. O contador
 legado de 45 frames não recebe autoridade para iniciar busca enquanto o gate
-estiver em CHECKING/GAP. Os prazos são verificados antes de consumir nova
-evidência; um ciclo atrasado não reabre uma janela vencida.
+estiver em CHECKING/GAP. A evidência inferior do frame atual é consumida antes
+dos prazos. Evidência frontal atrasada não reabre uma janela vencida.
 
-`SOURCE: gap-forward` significa execução de avanço, inclusive em CHECKING.
-`DECISION: GAP` significa continuação confirmada pelo FAR inferior, pela frontal
-ou pelo target Fusion inferior reobservado. Enquanto só existe evidência,
-FAR/MEDIUM não produzem steering. Quando o mesmo contorno Fusion forma um target
-estável em dois frames novos, `SOURCE: fusion-gap-reacquire` aplica o mapper
-Fusion existente antes de a fita chegar ao NEAR. Ao chegar a LOST, a mesma ré de
-cinco frames e a mesma varredura do `VirtualLineSearchTracker` assumem, no lado
-lembrado pela inferior. Não foi criado recovery novo nem alteradas suas potências.
+`SOURCE: gap-forward` significa avanço reto enquanto nenhuma posição FAR trusted
+está disponível. `SOURCE: virtual-gap-far` significa que a posição FAR guia a
+travessia. Ela usa a mesma correção contínua limitada do mapper NORMAL: ambas as
+rodas permanecem positivas e os ramos PIVOT, SPIN e parada de uma roda ficam
+bloqueados. `DECISION: GAP` significa continuação confirmada pelo FAR inferior,
+pela frontal ou pelo target Fusion inferior reobservado. Quando FAR e MEDIUM
+trusted sustentam juntos o mesmo componente conectado e o target Fusion pertence
+a esse componente por dois frames novos,
+`SOURCE: fusion-gap-reacquire` conserva a direção Fusion, mas limita as potências
+ao mapper NORMAL enquanto a fita não chega ao NEAR; nenhuma roda recua. Ao chegar
+a LOST, a mesma ré de cinco frames e a mesma varredura do
+`VirtualLineSearchTracker` assumem, no lado lembrado pela inferior. Dois frames
+FAR trusted podem cancelar essa busca e retomar GAP sem esperar pelo NEAR. Não
+foi criado recovery novo nem alteradas suas potências.
 
 A espera original por um candidato verde ainda pode preservar o último comando
 Fusion por até dois frames. Essa prioridade breve foi mantida; por isso DECISION
@@ -99,12 +100,18 @@ e SOURCE são publicados separadamente e podem divergir durante essa espera.
 
 Para um GAP curto, o FAR inferior é evidência melhor e mais rápida que esperar o
 IPC frontal: vem do mesmo frame em que a ausência local foi medida. Duas leituras
-FAR trusted, com posição de banda finita, confirmam continuação. Uma leitura FAR
-ou MEDIUM isolada mantém `gap-forward` e não possui autoridade de steering. Ela
-só participa da reaquisição antecipada quando o Fusion seleciona um contorno
-com target finito e estabilidade temporal. Sua última direção continua disponível
-para o recovery caso a decisão chegue a LOST. O FAR não substitui
-`nearLinePresent`, não rearma presença local e não interfere em LINE normal.
+trusted confirmam continuação se `farBandPosition` ou `farPosition` for finita.
+A FAR BAND é preferida por enxergar mais longe; `farPosition` reúne os sensores
+FAR laterais e central e assume quando a banda ainda está vazia. Uma única leitura
+trusted já pode produzir steering limitado durante CHECKING, mas não confirma GAP
+sozinha. MEDIUM isolado não guia a travessia e não libera o Fusion. A reaquisição
+antecipada exige FAR e MEDIUM trusted simultâneos, target Fusion finito,
+conectividade física na máscara e estabilidade temporal. Dois trechos distintos
+não podem somar seus trusts para liberar o Fusion. Uma curva forte ainda passa
+quando forma um componente contínuo; não existe limite arbitrário entre suas
+posições laterais. O FAR não substitui `nearLinePresent`, não rearma presença
+local e não interfere em LINE normal. Da mesma forma, um target Fusion sem esse
+suporte conjunto não pode vetar a perda do `NEAR-C` nem assumir durante GAP.
 
 Essa restrição veio de evidência da run real de 8 de setembro. Em uma execução de
 44 segundos, o CSV registrou 24 entradas em GAP e 121 frames nesse estado. Em
@@ -118,22 +125,53 @@ O comportamento lateral foi introduzido em `0d1daf0` (`perto da estabilidade`,
 25 de agosto de 2026). Antes desse commit, o ramo GAP aplicava direção zero com
 fonte `gap-forward`. O commit passou a dar prioridade à direção observada em
 FAR/MEDIUM e a usar `gap-sensor-recovery`, que para uma das rodas. Os refactors
-posteriores apenas moveram esse ramo entre arquivos. A correção atual restaura o
-avanço reto enquanto existe apenas evidência. Quando há uma trajetória Fusion
-inferior estável, o próprio Fusion reassume; FAR/MEDIUM nunca comandam uma roda
-diretamente e continuam como evidência e memória para LOST.
+posteriores apenas moveram esse ramo entre arquivos. A primeira correção removeu
+o comando de uma roda parada. A revisão atual recupera o steering FAR sem
+reintroduzir esse giro: usa o mapper NORMAL, sempre com as duas rodas avançando.
+Quando FAR e MEDIUM confirmam uma trajetória Fusion estável, o próprio Fusion
+reassume com ambas as rodas para frente; até esse ponto, MEDIUM não comanda a
+travessia.
 
-Em LOST, o novo argumento do mapper impede que Fusion ou pixels soltos cancelem
-a busca antes do reencontro local confirmado. Na recuperação, o gate libera o
-tracker e o mapper original volta a decidir, inclusive com fita lateral.
+### Três runs reais após o primeiro deploy
+
+O CSV de 9 de setembro registrou as três tentativas nos frames 95–201, 300–394
+e 475–615. Nas duas falhas, a sequência foi praticamente igual: um candidato
+distante ativou GAP/Fusion, o `NEAR-C` reapareceu por poucos frames, o Fusion
+normal chegou a saturar em pivot e houve uma segunda perda. O operador confirmou
+depois que essa primeira reaquisição pertencia a outro trecho desconectado da
+continuação correta. Essa segunda entrada teve somente oito frames de
+`gap-forward`, aproximadamente 0,27 s, antes de LOST.
+
+Na primeira falha, FAR BAND reapareceu durante a busca por 28 frames; na segunda,
+por nove frames. O estado LOST antigo ignorou ambos. Na terceira tentativa, FAR
+BAND reapareceu por 45 frames e MEDIUM por 30, mas a busca continuou até a ajuda
+manual levar a fita ao `NEAR-C`. A janela curta agravou as falhas, mas não foi a
+causa inicial: o gate aceitava trust FAR e MEDIUM calculado separadamente, sem
+provar que o target Fusion pertencia à mesma fita. Havia ainda duas falhas:
+LOST era terminal sem NEAR e o Fusion de reaquisição podia mandar uma roda para
+trás. A terceira tentativa não
+terminou limpa no registro: o último frame ainda estava em GAP, sem NEAR.
+
+A revisão seguinte aumentou `confirmation_seconds` de 0,25 para 0,50 s, permite
+LOST → GAP após dois frames FAR trusted e limita `fusion-gap-reacquire` ao mapper
+NORMAL. O gate agora exige que o label escolhido pelo Fusion cruze FAR e MEDIUM;
+trechos desconectados não somam evidência. O seguimento LINE normal conserva sua
+curva de potência e seus pivots.
+O CSV bruto foi preservado localmente em
+`build/gap-three-runs-20260909-073732/obr_curve_diagnostics.csv` e fica fora do Git.
+
+Em LOST, o argumento do mapper impede que Fusion ou pixels soltos cancelem a
+busca. As exceções são o reencontro local confirmado e dois frames FAR trusted;
+este último retoma GAP com potência limitada. Na recuperação normal, o gate
+libera o tracker e o mapper original volta a decidir, inclusive com fita lateral.
 
 Sem histórico recente de fita local, não se inventa um GAP no startup. Nesse
 caso a lógica normal/recovery já existente continua decidindo. Um robô colocado
 parado diretamente num vazio não fornece a transição presença → ausência.
 
-`gap_entry_is_required` possui parâmetros explícitos de presença física usados
-pela aplicação. A assinatura antiga foi mantida para consumidores/testes legados;
-o caminho legado não é chamado pelo gate atual e não decide sobre o novo IPC.
+`gap_entry_is_required` recebe a presença temporal já confirmada do `NEAR-C`.
+A assinatura antiga foi mantida para consumidores/testes legados; o caminho
+legado não é chamado pelo gate atual e não decide sobre o novo IPC.
 
 ## O que a frontal confirma
 
@@ -168,37 +206,47 @@ continua importante. Não há promessa de eliminar todo falso positivo.
 ## Configuração
 
 Parâmetros em [camera_config.py](../scripts/vision/camera_config.py). Os dicionários
-são independentes dos sensores virtuais e do PID. Não há hot reload; uma instalação
-futura deve atualizar os processos correspondentes juntos.
+do GAP reutiliza `VIRTUAL_CENTER_X0/X1`, `VIRTUAL_NEAR_Y0/Y1` e
+`VIRTUAL_ROW_MIN_ACTIVATION`; alterar esses valores também muda o sensor virtual
+usado pelo seguidor. Não há hot reload; uma instalação futura deve atualizar os
+processos correspondentes juntos.
 
-| Parâmetro | Inferior | Frontal |
-|---|---:|---:|
-| `bands` / `min_bands` | 7 / 3 | 7 / 3 |
-| `min_width` / `max_width`, fração da largura | 0,025 / 0,24 | 0,008 / 0,15 |
-| Espessura equivalente na resolução atual | 12–115 px em 480 | 7,68–144 px em 960 |
-| `min_extent`, fração da largura | 0,10 (48 px) | 0,07 (67,2 px) |
-| `min_elongation` | 1,3 | 1,4 |
-| `clipped_elongation` | 0,50 | 0,75 |
-| `near_fraction` / `near_bands` | 0,60 / 3 | 0,60 / 2 |
-| `max_slope`, px transversais por px longitudinal | 3 | 3 |
-| `max_missing_bands` / `max_components` | 1 / 16 | 1 / 16 |
-| `uncertain_threshold` | 0,60 | 0,60 |
+| Parâmetro do gate inferior | Valor |
+|---|---:|
+| Faixa horizontal do `NEAR-C` | 0,385–0,615 |
+| Faixa vertical do `NEAR-C` | 0,82–1,00 |
+| Ocupação mínima | 0,10 |
 
-Os limites de espessura e extensão são proporcionais à resolução. Reduzi-los
-aceita fragmentos menores; aumentá-los perde pontas legítimas e fita lateral.
-Os filtros de alongamento ajudam contra blobs, mas precisam considerar bordas.
-A largura inferior inicial de 0,18 rejeitou fita real larga das capturas salvas;
-0,24 preservou esses casos. A amostragem inicialmente interna ao componente
-oscilou entre 48 UNCERTAIN e 42 PRESENT num gap com ponta cortada. Incluir os
-extremos observáveis e tratar o corte pelo FOV produziu PRESENT em 90/90, sem
-passar as partículas sintéticas. Esses dados participaram do desenvolvimento.
+O analisador geométrico por componentes permanece na câmera frontal:
+
+| Parâmetro frontal | Valor |
+|---|---:|
+| `bands` / `min_bands` | 7 / 3 |
+| `min_width` / `max_width`, fração da largura | 0,008 / 0,15 |
+| Espessura equivalente na resolução atual | 7,68–144 px em 960 |
+| `min_extent`, fração da largura | 0,07 (67,2 px) |
+| `min_elongation` / `clipped_elongation` | 1,4 / 0,75 |
+| `near_fraction` / `near_bands` | 0,60 / 2 |
+| `max_slope`, px transversais por px longitudinal | 3 |
+| `max_missing_bands` / `max_components` | 1 / 16 |
+| `uncertain_threshold` | 0,60 |
+
+Os limites frontais de espessura e extensão são proporcionais à resolução.
+Reduzi-los aceita fragmentos menores; aumentá-los perde pontas legítimas e fita
+lateral. Os filtros de alongamento ajudam contra blobs, mas precisam considerar
+bordas.
 
 `GAP_VALIDATION_CONFIG`: `near_present_frames=2` arma; `near_loss_frames=2`
-confirma perda; `bottom_far_present_frames=2` confirma GAP curto;
-`bottom_fusion_reacquire_frames=2` libera o target Fusion distante estável;
+confirma perda; `bottom_far_present_frames=2` confirma qualquer posição FAR
+trusted; `bottom_fusion_reacquire_frames=2` libera o target Fusion distante
+somente com FAR e MEDIUM trusted no mesmo componente;
+`bottom_fusion_target_radius_px=3` associa o ponto Fusion ao label da fita sem
+unir componentes;
 `near_history_seconds=0.30`; `forward_present_frames=2` confirma
-frontal; `source_timeout=0.125`; `confirmation_seconds=0.25`;
+frontal; `source_timeout=0.125`; `confirmation_seconds=0.50`;
 `evidence_grace_seconds=0.20`; `max_gap_seconds=1.5`. Tempos em segundos.
+A continuação inferior observada no frame atual mantém GAP além desse último
+teto; sem ela, o teto impede que apenas a frontal sustente avanço indefinido.
 A reaquisição mantém `GEOMETRIC_GAP_REACQUIRE_FRAMES=2`. O prazo C++ frontal
 continua `kForwardLineStatusTimeoutMs=125`, em milissegundos.
 
@@ -229,6 +277,14 @@ O dashboard também publica a decisão e a fonte inferior; seu resumo de missão
 é atualizado durante a execução da missão.
 
 ## Evidência física e dados preservados
+
+Na run relatada em 9 de setembro, a leitura ao vivo do IPC inferior mostrou no
+mesmo frame `nearFinePosition=null`, `farTrusted=false`, `mediumTrusted=false`,
+`nearLinePresent=true`, Fusion válido em aproximadamente 10,6° e
+`SOURCE: fusion`. Isso confirmou que o gate largo, e não o `NEAR-C`, sustentava
+NORMAL. A máscara exibida continha uma mancha lateral; sem uma captura raw/máscara
+pareada dessa run, esse diagnóstico comprova a causa lógica da decisão, mas não
+atribui toda a mancha a uma causa óptica específica.
 
 A equipe identificou a posição como um gap real da pista. Foram lidos os streams
 existentes, sem abrir outra câmera, alterar configuração ou enviar movimento:
@@ -263,19 +319,21 @@ Foram reprocessadas **900 máscaras reais já salvas**, em dez sequências de 90
 | Reta com sombra | 90 | 0 / 0 |
 | Piso branco sem fita | 0 | 90 / 0 |
 
-[Resultados por frame, configurações e hashes](gap-presence-evidence/replay.json).
+[Resumo do replay do NEAR-C, configurações e hashes](gap-presence-evidence/replay-near-center-summary.json).
 São dados estáticos da calibração anterior, incluindo reprocessamentos com o
 perfil 61/min40/verde; não são novas travessias nem validação independente da
 transição GAP/LOST. Nove sequências ainda contêm fita local verdadeira. Confirmar
-presença nelas não significa que cada componente aceito seja fita.
+presença nelas significa apenas que a ocupação central ultrapassou o limite.
+O [replay geométrico anterior](gap-presence-evidence/replay.json) foi preservado
+como evidência histórica e não representa mais o gate inferior ativo.
 
 ## Testes e performance
 
-A suíte local passou: **324 testes Python, 12 testes de calibração e os seis
+A suíte local passou: **350 testes Python, 12 testes de calibração e os sete
 alvos CTest**, além do build completo. Testes novos executam o mesmo
 `GapValidator.process_frame` usado pela aplicação, seguido pelo controlador
-inferior real: reta e curvas com comandos idênticos; fita lateral/horizontal;
-micropartículas; Fusion válido por fragmento; perda em dois frames novos;
+inferior real: reta e curvas com comandos idênticos; `NEAR-C` central;
+micropartículas; Fusion válido por sombra lateral; perda em dois frames novos;
 frontal inclinada/deslocada; ausência prolongada; retorno da linha;
 FAR inferior central/lateral num GAP curto; alternância rápida dos lados do FAR;
 frames repetidos/antigos/futuros;
@@ -287,21 +345,22 @@ frontal tiveram:
 
 | Caso | Mediana, ms | P95, ms |
 |---|---:|---:|
-| Reta | 1,878 | 2,387 |
-| Curva forte | 1,866 | 2,418 |
-| Dois caminhos | 2,188 | 3,114 |
-| Interseção | 1,773 | 2,690 |
-| Lateral | 1,200 | 1,706 |
-| Inclinada | 1,484 | 1,974 |
-| Partículas | 0,778 | 1,053 |
-| Dez caminhos | 5,059 | 7,750 |
+| Reta | 1,719 | 2,760 |
+| Curva forte | 1,931 | 2,303 |
+| Dois caminhos | 1,999 | 2,499 |
+| Interseção | 1,606 | 1,975 |
+| Lateral | 1,700 | 2,172 |
+| Inclinada | 1,361 | 1,816 |
+| Partículas | 0,757 | 1,176 |
+| Dez caminhos | 4,645 | 5,306 |
 
-O detector local inferior acrescentou mediana de **0,507 ms**, P95 de 0,734 ms.
-A referência opcional acrescentou mediana de 0,218 ms. O tempo da presença está
-incluído em `lineProcessingMs`. [Benchmark completo](gap-presence-evidence/benchmark.json).
-O processo usa componentes e sete bandas em duas orientações, sem ML ou novas
-dependências. Não há previsão de runtime garantido no Raspberry: captura, IPC,
-JPEG, streaming e detector de bolas não estão nessa medição.
+Como a aplicação já calcula os sensores virtuais, ler o `NEAR-C` e atualizar o
+gate acrescentou mediana de **0,0016 ms**, P95 de 0,0027 ms. A referência
+opcional acrescentou mediana de 0,194 ms. O tempo continua incluído em
+`lineProcessingMs`. [Benchmark completo](gap-presence-evidence/benchmark.json).
+O processamento geométrico por componentes e bandas permanece apenas na frontal,
+sem ML ou novas dependências. Não há previsão de runtime garantido no Raspberry:
+captura, IPC, JPEG, streaming e detector de bolas não estão nessa medição.
 
 Comandos locais, sem iniciar câmera ou motores:
 
@@ -340,7 +399,8 @@ precisam da mesma versão. Não executar deploy geral com versões divergentes.
 3. Mostrar fita frontal inclinada/lateral: confirmar GAP sem exigir a linha
    ciana coincidente. Um frame frontal vazio isolado não deve declarar LOST.
 4. Retirar evidência frontal até o prazo: verificar LOST e a busca original.
-   Reapresentar fita inferior por dois frames e conferir a devolução ao normal.
+   Reapresentar FAR trusted por dois frames e conferir retorno a GAP; levar a
+   fita ao NEAR-C e conferir a devolução ao normal.
 5. Somente após os ensaios estáticos, verificar movimento com o procedimento
    existente de potência reduzida, emergência acessível e novos trechos reais.
    Medir falsos GAP, perdas corretamente encaminhadas, atraso e FPS no Raspberry.

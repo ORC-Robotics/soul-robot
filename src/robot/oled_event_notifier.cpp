@@ -9,7 +9,7 @@ OledEventNotifier::OledEventNotifier(Esp32Bridge& esp32)
 {
 }
 
-void OledEventNotifier::updateGreen(
+void OledEventNotifier::updateLineEvents(
     const CameraLineSnapshot& cameraSnapshot,
     bool displayAvailable)
 {
@@ -19,29 +19,71 @@ void OledEventNotifier::updateGreen(
         return;
     }
 
-    if (!isConfirmedGreen(cameraSnapshot))
+    const bool greenConfirmed = isConfirmedGreen(cameraSnapshot);
+    const bool gapConfirmed = isConfirmedGap(cameraSnapshot);
+    const bool grayConfirmed = isConfirmedGray(cameraSnapshot);
+
+    if (!greenConfirmed)
     {
         greenAlertLatched_ = false;
         lastGreenInterpretation_ = GreenInterpretation::None;
-        return;
     }
-
-    if (!displayAvailable ||
-        (greenAlertLatched_ &&
-         lastGreenInterpretation_ == cameraSnapshot.greenInterpretation))
+    if (!gapConfirmed)
+    {
+        gapAlertLatched_ = false;
+    }
+    if (!grayConfirmed)
+    {
+        grayAlertLatched_ = false;
+    }
+    if (!displayAvailable)
     {
         return;
     }
 
-    const char* direction = greenDirectionText(cameraSnapshot.greenInterpretation);
-    if (direction != nullptr && esp32_.sendOledLargeMessage(
-                                    "VERDE",
-                                    direction,
-                                    config::kOledNavigationAlertDurationMs))
+    // Marcadores de fase têm prioridade sobre manobras e GAP. O retorno evita
+    // que dois eventos confirmados no mesmo frame sobrescrevam a OLED.
+    if (grayConfirmed)
     {
-        greenAlertLatched_ = true;
-        lastGreenInterpretation_ = cameraSnapshot.greenInterpretation;
-        std::cout << "OLED green alert: " << direction << "\n";
+        if (!grayAlertLatched_ && esp32_.sendOledLargeMessage(
+                                      "CINZA",
+                                      "CONFIRMADO",
+                                      config::kOledNavigationAlertDurationMs))
+        {
+            grayAlertLatched_ = true;
+            std::cout << "OLED gray-marker alert\n";
+        }
+        return;
+    }
+
+    if (greenConfirmed)
+    {
+        if (greenAlertLatched_ &&
+            lastGreenInterpretation_ == cameraSnapshot.greenInterpretation)
+        {
+            return;
+        }
+        const char* direction = greenDirectionText(
+            cameraSnapshot.greenInterpretation);
+        if (direction != nullptr && esp32_.sendOledLargeMessage(
+                                        "VERDE",
+                                        direction,
+                                        config::kOledNavigationAlertDurationMs))
+        {
+            greenAlertLatched_ = true;
+            lastGreenInterpretation_ = cameraSnapshot.greenInterpretation;
+            std::cout << "OLED green alert: " << direction << "\n";
+        }
+        return;
+    }
+
+    if (gapConfirmed && !gapAlertLatched_ && esp32_.sendOledLargeMessage(
+                                                   "GAP",
+                                                   "CONFIRMADO",
+                                                   config::kOledNavigationAlertDurationMs))
+    {
+        gapAlertLatched_ = true;
+        std::cout << "OLED gap alert\n";
     }
 }
 
@@ -96,4 +138,19 @@ bool OledEventNotifier::isConfirmedGreen(
     return cameraSnapshot.sourceFresh && cameraSnapshot.greenConfirmed &&
            cameraSnapshot.greenPathBlackValid &&
            greenDirectionText(cameraSnapshot.greenInterpretation) != nullptr;
+}
+
+bool OledEventNotifier::isConfirmedGap(
+    const CameraLineSnapshot& cameraSnapshot)
+{
+    return cameraSnapshot.sourceFresh &&
+           cameraSnapshot.gapValidationDecision == "GAP";
+}
+
+bool OledEventNotifier::isConfirmedGray(
+    const CameraLineSnapshot& cameraSnapshot)
+{
+    return cameraSnapshot.sourceFresh &&
+           cameraSnapshot.courseMarkerConfirmed &&
+           cameraSnapshot.courseMarker == CourseMarker::Gray;
 }

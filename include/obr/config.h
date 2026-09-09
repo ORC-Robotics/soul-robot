@@ -639,10 +639,79 @@ constexpr int kServoPoseHoldBeforeWristMotionMs = 200;
 // O limite evita um salto grande depois de uma pausa inesperada do loop.
 constexpr int kServoMotionMaximumElapsedMs = 100;
 
+// Tempos conservadores, em milissegundos, reservados para que cada servo
+// conclua seu passo antes de o próximo começar. Não existe sensor físico de
+// posição, portanto esses valores devem ser validados com o mecanismo real.
+constexpr int kServoRoutineArmStepMs = 1000;
+constexpr int kServoRoutineWristStepMs = 2200;
+constexpr int kServoRoutineGripperStepMs = 350;
+
+// Tempo, em milissegundos, para aplicar e estabilizar a pose inicial 0°/0°/0°.
+// Ele cobre o pior deslocamento do pulso pela rampa de 90°/s, inclusive após
+// a pausa de reativação, antes de qualquer outro mecanismo começar a mover.
+constexpr int kServoRoutineInitialPoseMs = 2400;
+
+// Tempo, em milissegundos, para reativar e confirmar a pose memorizada antes
+// do primeiro movimento de uma rotina encadeada. Isso faz a garra recuperar
+// sua força de retenção antes de braço ou pulso produzirem inércia.
+constexpr int kServoRoutineResumePoseMs = 250;
+
+// Tempo curto, em milissegundos, durante o qual a garra pressiona em 3°.
+// Depois desse pulso, somente o sinal da garra é removido para evitar esforço
+// contínuo; braço e pulso permanecem energizados.
+constexpr int kServoRoutineGripperPressMs = 500;
+
+// Tempo máximo, em milissegundos, para confirmar uma abertura no depósito.
+// Se não houver confirmação, a sequência para sem abrir automaticamente.
+constexpr int kServoRoutineConfirmationTimeoutMs = 2000;
+
+// Posições, em graus, usadas pelas rotinas mecânicas predefinidas. Alterar
+// qualquer valor muda diretamente os pontos de captura, armazenamento e depósito.
+constexpr double kServoRoutineArmTransferDegrees = 10.0;
+constexpr double kServoRoutineArmPickupDegrees = 105.0;
+constexpr double kServoRoutineArmStoredObjectLiftDegrees = 60.0;
+constexpr double kServoRoutineWristForwardDegrees = 174.0;
+constexpr double kServoRoutineWristInternalDegrees = 0.0;
+constexpr double kServoRoutineGripperOpenDegrees = 20.0;
+constexpr double kServoRoutineGripperInternalOpenDegrees = 10.0;
+constexpr double kServoRoutineGripperClosedDegrees = 3.0;
+
 static_assert(kWristServoMaximumSpeedDegreesPerSecond > 0.0 &&
                   kServoPoseHoldBeforeWristMotionMs >= 0 &&
-                  kServoMotionMaximumElapsedMs >= kMainLoopPeriodMs,
-              "A rampa do pulso deve avançar e tolerar um ciclo normal do loop.");
+                  kServoMotionMaximumElapsedMs >= kMainLoopPeriodMs &&
+                  kServoRoutineArmStepMs > 0 &&
+                  kServoRoutineWristStepMs > 0 &&
+                  kServoRoutineGripperStepMs > 0 &&
+                  kServoRoutineInitialPoseMs > 0 &&
+                  kServoRoutineResumePoseMs >= kServoPoseHoldBeforeWristMotionMs &&
+                  kServoRoutineGripperPressMs > 0 &&
+                  kServoRoutineConfirmationTimeoutMs > 0 &&
+                  static_cast<double>(kServoRoutineInitialPoseMs) >=
+                      kServoPoseHoldBeforeWristMotionMs +
+                          (kServoMaximumAngleDegrees - kServoMinimumAngleDegrees) /
+                              kWristServoMaximumSpeedDegreesPerSecond * 1000.0 &&
+                  static_cast<double>(kServoRoutineWristStepMs) >=
+                      kServoRoutineWristForwardDegrees /
+                          kWristServoMaximumSpeedDegreesPerSecond * 1000.0,
+              "Os tempos das rotinas de servo devem ser positivos.");
+static_assert(
+    kServoRoutineArmTransferDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmTransferDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmPickupDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmPickupDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineArmStoredObjectLiftDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineArmStoredObjectLiftDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineWristForwardDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineWristForwardDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineWristInternalDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineWristInternalDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperOpenDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperOpenDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperInternalOpenDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperInternalOpenDegrees <= kServoMaximumAngleDegrees &&
+        kServoRoutineGripperClosedDegrees >= kServoMinimumAngleDegrees &&
+        kServoRoutineGripperClosedDegrees <= kServoMaximumAngleDegrees,
+    "As posições das rotinas devem permanecer na faixa angular segura.");
 
 // Faixa absoluta, em microssegundos, permitida somente na calibração de
 // bancada. Ela é mais ampla que a faixa operacional e nunca é ultrapassada,

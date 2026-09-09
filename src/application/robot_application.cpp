@@ -38,6 +38,15 @@ bool selectedMissionReady(
     bool cameraReady,
     const CameraLineSnapshot& cameraLineSnapshot)
 {
+    if (mission == AutonomousMission::ServoInitialize ||
+        mission == AutonomousMission::ServoCapture ||
+        mission == AutonomousMission::ServoInternalStorage ||
+        mission == AutonomousMission::ServoDeposit)
+    {
+        // As rotinas não usam câmera nem sensores de navegação, mas dependem
+        // da ponte e do PCA9685 prontos para aplicar cada passo com segurança.
+        return telemetry.readyForOperation() && telemetry.pca9685Ok;
+    }
     if (mission == AutonomousMission::TurnRight90)
     {
         return turn90ImuReady(telemetry);
@@ -46,7 +55,8 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
-    if (mission == AutonomousMission::RescueArea)
+    if (mission == AutonomousMission::RescueDetection ||
+        mission == AutonomousMission::RescueArea)
     {
         // A visão pesada é ligada somente depois da partida. A missão começa
         // parada e aguarda um IPC frontal recente antes de mover os motores.
@@ -75,6 +85,13 @@ const char* motorDirectionName(double power)
 
 const char* autonomousCommandSourceName(AutonomousMission mission)
 {
+    if (mission == AutonomousMission::ServoInitialize ||
+        mission == AutonomousMission::ServoCapture ||
+        mission == AutonomousMission::ServoInternalStorage ||
+        mission == AutonomousMission::ServoDeposit)
+    {
+        return "servos";
+    }
     if (mission == AutonomousMission::TurnRight90)
     {
         return "imu";
@@ -82,6 +99,10 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::DriveDistance)
     {
         return "encoders";
+    }
+    if (mission == AutonomousMission::RescueDetection)
+    {
+        return "forward_ball_detection";
     }
     if (mission == AutonomousMission::RescueArea)
     {
@@ -192,7 +213,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
         const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
                                                esp32Telemetry.oledOk &&
                                                esp32Telemetry.raspberrySystemReady;
-        oledEvents.updateGreen(cameraLineSnapshot, oledEventDisplayAvailable);
+        oledEvents.updateLineEvents(
+            cameraLineSnapshot, oledEventDisplayAvailable);
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
         if (cameraLineDiagnosticTime - lastCameraLineDiagnosticTime >=
             std::chrono::seconds(1))

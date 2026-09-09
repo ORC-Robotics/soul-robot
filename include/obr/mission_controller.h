@@ -6,6 +6,7 @@
 #include "obr/obstacle_avoidance.h"
 #include "obr/rescue_area_mission.h"
 #include "obr/robot_state.h"
+#include "obr/servo_routine.h"
 
 #include <chrono>
 
@@ -37,6 +38,7 @@ private:
     RescueAreaMission rescueAreaMission_;
     ObstacleAvoidance obstacleAvoidanceTest_;
     ImuTurnController testTurnController_;
+    ServoRoutine servoRoutine_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
     long long distanceStartLeftCount_ = 0;
@@ -62,8 +64,16 @@ private:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         const ForwardBallSnapshot& forwardBallSnapshot);
+    void updateRescueDetection(
+        RobotState& robotState,
+        const ForwardBallSnapshot& forwardBallSnapshot);
     void updateObstacleAvoidance(
         RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry);
+    void updateServoRoutine(
+        RobotState& robotState,
+        ServoRoutineKind kind,
+        const RobotSnapshot& snapshot,
         const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetMissionState();
 

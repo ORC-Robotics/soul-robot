@@ -1,0 +1,92 @@
+{
+  "origin": "offline saved masks; no new camera capture",
+  "config": {
+    "roi_y0": 0.82,
+    "roi_y1": 1.0,
+    "roi_x0": 0.385,
+    "roi_x1": 0.615,
+    "activation": 0.1
+  },
+  "datasets": [
+    {
+      "dataset": "calibration/experiments/validation_gap_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "4a738c74781443fd473f7a9738b8c9f1b335f97d47da916b8f71251ca5fccac4"
+    },
+    {
+      "dataset": "calibration/experiments/validation_gentle_curve_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "2941b143cc4de97080ec1a54026342eebde5e71b1a6435d622be1ed346251258"
+    },
+    {
+      "dataset": "calibration/experiments/validation_green_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "9643cec40e99acf1ffddaeb57967d4c60bbed29df0e0c4211923d703c1c02a81"
+    },
+    {
+      "dataset": "calibration/experiments/validation_intersection_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "1fa0592164b57ee17c2070e5a7adcbaf910aaa01af79fa1d7657f5155297f0a8"
+    },
+    {
+      "dataset": "calibration/experiments/validation_same_pose_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "1019a8eb79e8a9cc7618f6cd015ec3e55b4b923209d99b5957f9c3df644563c7"
+    },
+    {
+      "dataset": "calibration/experiments/validation_straight_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "192a8347dc57a20bbbe0043b6863dd2d31e5acd9681ca9c4815c32bd06cbc318"
+    },
+    {
+      "dataset": "calibration/experiments/validation_turn90_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "64b410940c7f8f75b261bd594157f13d60b33a885c057ac6b6316eed71b4fc50"
+    },
+    {
+      "dataset": "calibration/experiments/validation_white_floor_01/candidate_61_min40_green",
+      "frames": 90,
+      "counts": {
+        "ABSENT": 90
+      },
+      "input_sha256": "6452ab3c12d24d7616fbb9d2a4b3be4a34d295b169de5ea6fea2f6fd27778284"
+    },
+    {
+      "dataset": "calibration/captures/live_border_minimum_40_01",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "79fe9b6ce8ebd02148aa35642828cc7ab10c947d37a060c528d0bd7102d9da2e"
+    },
+    {
+      "dataset": "calibration/captures/live_external_shadow_candidate_01",
+      "frames": 90,
+      "counts": {
+        "PRESENT": 90
+      },
+      "input_sha256": "386eb3c6f7f6e6c111a4d75d5509920b6ddaca5b5608048a27bfbfc99b0b7352"
+    }
+  ]
+}

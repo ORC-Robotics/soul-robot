@@ -126,11 +126,51 @@ int main()
     ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
                       snapshot.gripperServoRequested,
                   "An autonomous pose should request all three servos");
+    ok &= require(robotState.setAutonomousServoOutputEnabled(
+                      ServoId::Gripper, false),
+                  "Autonomous routines should be able to release the gripper output");
+    snapshot = robotState.snapshot();
+    ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
+                      !snapshot.gripperServoRequested,
+                  "Releasing the gripper should preserve arm and wrist requests");
     robotState.emergencyStop();
     snapshot = robotState.snapshot();
     ok &= require(!snapshot.armServoRequested &&
                       !snapshot.wristServoRequested &&
                       !snapshot.gripperServoRequested,
                   "Emergency stop should clear every servo request");
+
+    RobotState confirmationState;
+    confirmationState.setAutonomousMission(AutonomousMission::ServoDeposit);
+    confirmationState.startAutonomous();
+    ok &= require(!confirmationState.confirmServoRoutineAction(),
+                  "Deposit confirmation should be rejected outside its waiting step");
+    AutonomousStatus waitingStatus;
+    waitingStatus.servoRoutineWaitingForConfirmation = true;
+    confirmationState.updateAutonomousStatus(waitingStatus);
+    const unsigned long long confirmationSequence =
+        confirmationState.snapshot().servoRoutineConfirmationSequence;
+    ok &= require(confirmationState.confirmServoRoutineAction() &&
+                      confirmationState.snapshot().servoRoutineConfirmationSequence ==
+                          confirmationSequence + 1,
+                  "Deposit confirmation should publish exactly one request");
+    confirmationState.setServoRoutineInternalObjectStored(true);
+    confirmationState.stop();
+    ok &= require(confirmationState.snapshot().servoRoutineInternalObjectStored,
+                  "Internal storage state should persist between servo routines");
+
+    RobotState chainedRoutineState;
+    chainedRoutineState.start();
+    chainedRoutineState.setManualServoAngle(ServoId::Arm, 105.0);
+    chainedRoutineState.setManualServoAngle(ServoId::Wrist, 174.0);
+    chainedRoutineState.setManualServoAngle(ServoId::Gripper, 3.0);
+    chainedRoutineState.stop();
+    chainedRoutineState.setAutonomousMission(AutonomousMission::ServoInternalStorage);
+    chainedRoutineState.startAutonomous();
+    snapshot = chainedRoutineState.snapshot();
+    ok &= require(std::abs(snapshot.servoPose.armDegrees - 105.0) < 0.001 &&
+                      std::abs(snapshot.servoPose.wristDegrees - 174.0) < 0.001 &&
+                      std::abs(snapshot.servoPose.gripperDegrees - 3.0) < 0.001,
+                  "Starting a chained servo routine should preserve the previous pose");
     return ok ? 0 : 1;
 }

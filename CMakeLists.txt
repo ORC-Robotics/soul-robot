@@ -29,6 +29,7 @@ add_executable(robot_test
     src/robot/robot_state.cpp
     src/robot/rescue_area_mission.cpp
     src/robot/servo_controller.cpp
+    src/robot/servo_routine.cpp
     src/robot/obstacle_avoidance.cpp
     src/telemetry/telemetry.cpp
 )
@@ -52,10 +53,12 @@ if(BUILD_TESTING)
         src/robot/imu_turn_controller.cpp
         src/robot/line_course_mission.cpp
         src/robot/main_mission.cpp
+        src/robot/mission_controller.cpp
         src/robot/obstacle_avoidance.cpp
         src/robot/ball_alignment_mission.cpp
         src/robot/rescue_area_mission.cpp
         src/robot/robot_state.cpp
+        src/robot/servo_routine.cpp
     )
     target_include_directories(main_mission_test PRIVATE
         include
@@ -113,6 +116,13 @@ if(BUILD_TESTING)
         target_link_libraries(servo_controller_test pthread)
     endif()
     add_test(NAME servo_controller_test COMMAND servo_controller_test)
+
+    add_executable(servo_routine_test
+        tests/servo_routine_test.cpp
+        src/robot/servo_routine.cpp
+    )
+    target_include_directories(servo_routine_test PRIVATE include)
+    add_test(NAME servo_routine_test COMMAND servo_routine_test)
 
     add_executable(oled_event_notifier_test
         tests/oled_event_notifier_test.cpp

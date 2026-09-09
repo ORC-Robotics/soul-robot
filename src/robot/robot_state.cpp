@@ -28,6 +28,14 @@ bool sameServoAngle(double firstDegrees, double secondDegrees)
 {
     return std::abs(firstDegrees - secondDegrees) < 0.001;
 }
+
+bool isServoRoutineMission(AutonomousMission mission)
+{
+    return mission == AutonomousMission::ServoInitialize ||
+           mission == AutonomousMission::ServoCapture ||
+           mission == AutonomousMission::ServoInternalStorage ||
+           mission == AutonomousMission::ServoDeposit;
+}
 }
 
 const char* autonomousMissionName(AutonomousMission mission)
@@ -38,10 +46,20 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "drive_distance";
     case AutonomousMission::TurnRight90:
         return "turn_right_90";
+    case AutonomousMission::RescueDetection:
+        return "rescue_detection";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
         return "obstacle_avoidance";
+    case AutonomousMission::ServoInitialize:
+        return "servo_initialize";
+    case AutonomousMission::ServoCapture:
+        return "servo_capture";
+    case AutonomousMission::ServoInternalStorage:
+        return "servo_internal_storage";
+    case AutonomousMission::ServoDeposit:
+        return "servo_deposit";
     case AutonomousMission::MainMission:
     default:
         return "main_mission";
@@ -87,7 +105,20 @@ void RobotState::startAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    requestInitialServoPoseLocked();
+    if (state_.autonomousMission == AutonomousMission::RescueDetection)
+    {
+        // A observação da câmera frontal não deve acionar nenhum atuador.
+        // A seleção já desliga os servos; a partida conserva essa condição.
+        disableServosLocked();
+    }
+    else if (isServoRoutineMission(state_.autonomousMission))
+    {
+        requestStoredServoPoseLocked();
+    }
+    else
+    {
+        requestInitialServoPoseLocked();
+    }
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -111,7 +142,20 @@ bool RobotState::tryStartAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    requestInitialServoPoseLocked();
+    if (state_.autonomousMission == AutonomousMission::RescueDetection)
+    {
+        // O botão físico inicia somente a percepção neste modo e conserva os
+        // servos desligados, da mesma forma que a partida pelo dashboard.
+        disableServosLocked();
+    }
+    else if (isServoRoutineMission(state_.autonomousMission))
+    {
+        requestStoredServoPoseLocked();
+    }
+    else
+    {
+        requestInitialServoPoseLocked();
+    }
     ++state_.autonomousRunSequence;
     state_.autonomousStatus = {"starting", "Inicializando missão"};
     lastCommand_ = std::chrono::steady_clock::now();
@@ -332,6 +376,68 @@ bool RobotState::setAutonomousServoPose(const ServoPose& pose)
     return true;
 }
 
+bool RobotState::setAutonomousServoOutputEnabled(ServoId servo, bool enabled)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.emergencyStop || state_.mode != "autonomous")
+    {
+        return false;
+    }
+
+    bool* requested = nullptr;
+    switch (servo)
+    {
+    case ServoId::Arm:
+        requested = &state_.armServoRequested;
+        break;
+    case ServoId::Wrist:
+        requested = &state_.wristServoRequested;
+        break;
+    case ServoId::Gripper:
+        requested = &state_.gripperServoRequested;
+        break;
+    }
+
+    if (*requested == enabled)
+    {
+        return true;
+    }
+
+    // A rotina pode retirar somente o esforço contínuo da garra. O controlador
+    // reaplica os outros canais após limpar as saídas no protocolo existente.
+    *requested = enabled;
+    ++state_.servoCommandSequence;
+    return true;
+}
+
+bool RobotState::confirmServoRoutineAction()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool confirmationAllowed =
+        !state_.emergencyStop && state_.mode == "autonomous" &&
+        (state_.autonomousMission == AutonomousMission::ServoDeposit ||
+         state_.autonomousMission == AutonomousMission::ServoInternalStorage) &&
+        state_.autonomousStatus.servoRoutineWaitingForConfirmation;
+    if (!confirmationAllowed)
+    {
+        return false;
+    }
+
+    ++state_.servoRoutineConfirmationSequence;
+    return true;
+}
+
+void RobotState::setServoRoutineInternalObjectStored(bool stored)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.mode == "autonomous" && !state_.emergencyStop)
+    {
+        // O inventário é apenas um registro lógico para escolher a sequência
+        // de depósito. Ele permanece entre Stop e a próxima rotina.
+        state_.servoRoutineInternalObjectStored = stored;
+    }
+}
+
 void RobotState::disableServos()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -405,6 +511,7 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "distance_encoder_mismatch" ||
                                        status.phase == "distance_correction_failed" ||
                                        status.phase == "distance_invalid_target" ||
+                                       status.phase == "servo_driver_lost" ||
                                        status.phase == "turnaround_forward_timeout" ||
                                        status.phase == "turnaround_encoder_lost" ||
                                        status.phase == "turnaround_line_search_angle_limit" ||
@@ -506,6 +613,17 @@ void RobotState::requestInitialServoPoseLocked()
         config::kServoInitialAngleDegrees,
         config::kServoInitialAngleDegrees,
         config::kServoInitialAngleDegrees};
+    state_.armServoRequested = true;
+    state_.wristServoRequested = true;
+    state_.gripperServoRequested = true;
+    ++state_.servoCommandSequence;
+    lastManualServoCommand_ = std::chrono::steady_clock::now();
+}
+
+void RobotState::requestStoredServoPoseLocked()
+{
+    // Entre rotinas, conserva os três últimos alvos para não executar uma pose
+    // intermediária fora da sequência escolhida pelo operador.
     state_.armServoRequested = true;
     state_.wristServoRequested = true;
     state_.gripperServoRequested = true;

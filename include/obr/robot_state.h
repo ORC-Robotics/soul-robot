@@ -12,8 +12,13 @@ enum class AutonomousMission
     MainMission,
     TurnRight90,
     DriveDistance,
+    RescueDetection,
     RescueArea,
-    ObstacleAvoidance
+    ObstacleAvoidance,
+    ServoInitialize,
+    ServoCapture,
+    ServoInternalStorage,
+    ServoDeposit
 };
 
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
@@ -47,6 +52,7 @@ struct AutonomousStatus
     std::string nearLineState = "UNKNOWN";
     std::string bottomLineControlSource = "UNAVAILABLE";
     int bottomStableFrames = 0;
+    bool servoRoutineWaitingForConfirmation = false;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
@@ -70,6 +76,8 @@ struct RobotSnapshot
     bool wristServoRequested = false;
     bool gripperServoRequested = false;
     unsigned long long servoCommandSequence = 0;
+    unsigned long long servoRoutineConfirmationSequence = 0;
+    bool servoRoutineInternalObjectStored = false;
     bool servoCalibrationActive = false;
     AutonomousStatus autonomousStatus;
 };
@@ -96,6 +104,9 @@ public:
         bool encoderSynchronizationAllowed = true);
     bool setManualServoAngle(ServoId servo, double angleDegrees);
     bool setAutonomousServoPose(const ServoPose& pose);
+    bool setAutonomousServoOutputEnabled(ServoId servo, bool enabled);
+    bool confirmServoRoutineAction();
+    void setServoRoutineInternalObjectStored(bool stored);
     void disableServos();
     bool beginServoCalibration();
     void endServoCalibration();
@@ -111,5 +122,6 @@ private:
         std::chrono::steady_clock::now();
 
     void requestInitialServoPoseLocked();
+    void requestStoredServoPoseLocked();
     void disableServosLocked();
 };

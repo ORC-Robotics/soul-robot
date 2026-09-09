@@ -51,5 +51,32 @@ int main()
     snapshot.greenPathBlackValid = false;
     ok &= require(!OledEventNotifier::isConfirmedGreen(snapshot),
                   "Green without the associated black path should be rejected");
+
+    CameraLineSnapshot gap;
+    gap.sourceFresh = true;
+    gap.gapValidationDecision = "GAP";
+    ok &= require(OledEventNotifier::isConfirmedGap(gap),
+                  "A fresh confirmed GAP should produce an OLED alert");
+    gap.gapValidationDecision = "CHECKING";
+    ok &= require(!OledEventNotifier::isConfirmedGap(gap),
+                  "A GAP candidate should not produce a confirmed alert");
+    gap.gapValidationDecision = "GAP";
+    gap.sourceFresh = false;
+    ok &= require(!OledEventNotifier::isConfirmedGap(gap),
+                  "A stale GAP decision should be rejected");
+
+    CameraLineSnapshot gray;
+    gray.sourceFresh = true;
+    gray.courseMarkerConfirmed = true;
+    gray.courseMarker = CourseMarker::Gray;
+    ok &= require(OledEventNotifier::isConfirmedGray(gray),
+                  "A fresh confirmed gray marker should produce an OLED alert");
+    gray.courseMarker = CourseMarker::Red;
+    ok &= require(!OledEventNotifier::isConfirmedGray(gray),
+                  "A red marker should not produce a gray OLED alert");
+    gray.courseMarker = CourseMarker::Gray;
+    gray.sourceFresh = false;
+    ok &= require(!OledEventNotifier::isConfirmedGray(gray),
+                  "A stale gray marker should be rejected");
     return ok ? 0 : 1;
 }

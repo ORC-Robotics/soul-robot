@@ -91,18 +91,43 @@ def analyze_line_presence(mask, roi, config):
 
 
 def draw_near_presence_overlay(frame, evidence, command):
-    """Mostra presença e decisão mesmo quando o debug legado está desligado."""
+    """Mostra o NEAR-C e a decisão mesmo quando o debug legado está desligado."""
+    roi = evidence.get("roi")
+    if isinstance(roi, (list, tuple)) and len(roi) == 4:
+        color = (0, 255, 0) if evidence.get("present") else (0, 0, 255)
+        cv2.rectangle(
+            frame,
+            (int(roi[0]), int(roi[1])),
+            (int(roi[2]), int(roi[3])),
+            color,
+            1,
+        )
     for candidate in evidence.get("candidates", []):
         color = (0, 255, 0) if candidate["state"] == "PRESENT" else (0, 255, 255) if candidate["state"] == "UNCERTAIN" else (0, 0, 255)
         for band in candidate["bands"]:
             cv2.circle(frame, (round(band["x"]), round(band["y"])), 2, color, -1)
-    lines = (f"NEAR {command.get('nearLineState', 'UNKNOWN')}",
+    near_value = evidence.get("sensorValue")
+    near_percent = (
+        f" {100.0 * float(near_value):.1f}%"
+        if isinstance(near_value, (int, float))
+        else ""
+    )
+    gap_decision = command.get("gapValidationDecision", "NORMAL")
+    if command.get("bottomFusionReacquireReady"):
+        bottom_fusion_state = "READY"
+    elif command.get("bottomFusionPathConnected"):
+        bottom_fusion_state = "LINK"
+    elif gap_decision in ("CHECKING", "GAP", "LOST"):
+        bottom_fusion_state = "REJECT"
+    else:
+        bottom_fusion_state = "WAIT"
+    lines = (f"NEAR-C {command.get('nearLineState', 'UNKNOWN')}{near_percent}",
              f"B-FAR {'PRESENT' if command.get('bottomFarLinePresent') else 'ABSENT'} "
              f"{command.get('bottomFarPresentFrames', 0)}",
-             f"B-FUSION {'READY' if command.get('bottomFusionReacquireReady') else 'WAIT'} "
-             f"{command.get('bottomFusionReacquireFrames', 0)}",
-             f"FWD {command.get('forwardPresenceState', 'UNCERTAIN')}",
-             f"DECISION {command.get('gapValidationDecision', 'NORMAL')}")
+              f"B-FUSION {bottom_fusion_state} "
+              f"{command.get('bottomFusionReacquireFrames', 0)}",
+              f"FWD {command.get('forwardPresenceState', 'UNCERTAIN')}",
+              f"DECISION {gap_decision}")
     cv2.rectangle(frame, (4, 78), (214, 166), (25, 25, 25), -1)
     for index, text in enumerate(lines):
         cv2.putText(frame, text, (8, 92 + 17 * index), cv2.FONT_HERSHEY_SIMPLEX,

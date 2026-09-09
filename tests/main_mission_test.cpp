@@ -1,5 +1,6 @@
 #include "obr/config.h"
 #include "obr/main_mission.h"
+#include "obr/mission_controller.h"
 #include "obr/robot_state.h"
 
 #include <algorithm>
@@ -1070,6 +1071,89 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         !fixture.mission.requiresRescueVision(),
         "O reset deve restaurar o primeiro percurso sem visão pesada.");
 }
+
+void testRescueDetectionOnlyKeepsMotorsStopped()
+{
+    RobotState robotState;
+    MissionController controller;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    robotState.setAutonomousMission(AutonomousMission::RescueDetection);
+    robotState.startAutonomous();
+
+    RobotSnapshot snapshot = robotState.snapshot();
+    require(
+        controller.requiresForwardBallDetection(snapshot),
+        "O modo de observação deve ligar o detector frontal.");
+    require(
+        !snapshot.armServoRequested && !snapshot.wristServoRequested &&
+            !snapshot.gripperServoRequested,
+        "O modo de observação não deve acionar os servos ao iniciar.");
+
+    // Simula um comando antigo para verificar que a observação o zera no
+    // primeiro ciclo, mesmo quando existe uma vítima válida fora do centro.
+    robotState.driveAutonomous(0.8, -0.8);
+    ForwardBallSnapshot ball;
+    ball.sourceFresh = true;
+    ball.detected = true;
+    ball.type = "black";
+    ball.txDegrees = 18.0;
+    ball.distanceCm = 24.0;
+    ball.radiusPixels = 30.0;
+    ball.visibleAreaPixels = 2500.0;
+    ball.targetSequence = snapshot.autonomousRunSequence;
+    ball.targetLocked = true;
+    controller.update(robotState, telemetry, false, {}, {}, ball);
+
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && closeTo(snapshot.left, 0.0) &&
+            closeTo(snapshot.right, 0.0),
+        "Detectar uma vítima não pode comandar alinhamento nem aproximação.");
+    require(
+        snapshot.autonomousStatus.phase == "rescue_detection_found",
+        "Uma vítima válida deve aparecer como detectada no modo de observação.");
+
+    ForwardBallSnapshot noBall;
+    noBall.sourceFresh = true;
+    noBall.targetSequence = snapshot.autonomousRunSequence;
+    noBall.targetLocked = false;
+    controller.update(robotState, telemetry, false, {}, {}, noBall);
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && closeTo(snapshot.left, 0.0) &&
+            closeTo(snapshot.right, 0.0) &&
+            snapshot.autonomousStatus.phase == "rescue_detection_searching",
+        "A ausência de vítima deve continuar sendo observada com tração zero.");
+}
+
+void testRescueAlignmentModeKeepsExistingMotorAuthority()
+{
+    RobotState robotState;
+    MissionController controller;
+    robotState.setAutonomousMission(AutonomousMission::RescueArea);
+    robotState.startAutonomous();
+
+    const RobotSnapshot started = robotState.snapshot();
+    ForwardBallSnapshot ball;
+    ball.sourceFresh = true;
+    ball.detected = true;
+    ball.type = "black";
+    ball.txDegrees = 18.0;
+    ball.distanceCm = 24.0;
+    ball.radiusPixels = 30.0;
+    ball.visibleAreaPixels = 2500.0;
+    ball.targetSequence = started.autonomousRunSequence;
+    ball.targetLocked = true;
+    controller.update(
+        robotState, readyTelemetry(), false, {}, {}, ball);
+
+    const RobotSnapshot snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
+            snapshot.right < 0.0 &&
+            snapshot.autonomousStatus.phase == "ball_alignment_turning",
+        "O modo de detectar e alinhar deve conservar a autoridade motora existente.");
+}
 }
 
 int main()
@@ -1101,6 +1185,8 @@ int main()
         testUnavailableCameraStopsMission();
         testObstacleTakesControlAndSurvivesCameraLoss();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
+        testRescueDetectionOnlyKeepsMotorsStopped();
+        testRescueAlignmentModeKeepsExistingMotorAuthority();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }

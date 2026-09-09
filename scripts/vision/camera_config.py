@@ -697,19 +697,15 @@ GEOMETRIC_GAP_MAX_SEARCH_PX = 120
 # amostra geométrica na altura exata usada pelo rastreador preservado.
 GAP_NEAR_HISTORY_FRAMES = 3
 
-# Presença física independente de NEAR-C e Fusion. O contexto começa em 0,60;
-# a confirmação exige bandas abaixo de 0,76, abrangendo NEAR-C e as duas asas.
-NEAR_LINE_PRESENCE_CONFIG = {
-    "roi_y0": 0.60, "roi_y1": 1.0, "roi_x0": 0.02, "roi_x1": 0.98,
-    "bands": 7, "min_bands": 3, "max_missing_bands": 1,
-    "min_width": 0.025, "max_width": 0.24,  # Frações da largura: 12–115 px em 480.
-    "min_extent": 0.10,  # Extensão entre bandas: pelo menos 48 px em 480.
-    "min_elongation": 1.3,  # Extensão/espessura; evita confirmar manchas compactas.
-    "clipped_elongation": 0.50,  # Aceita a ponta curta cortada pelo FOV, mantendo extensão mínima.
-    "max_slope": 3.0,  # Deslocamento transversal por pixel longitudinal entre bandas.
-    "min_area": 120.0 / (480 * 480),  # Apenas descarte rápido, nunca confirmação.
-    "max_components": 16, "uncertain_threshold": 0.60,
-    "near_fraction": 0.60, "near_bands": 3,  # Suporte local abaixo de y=0,76.
+# O gate de GAP usa novamente somente o NEAR-C virtual. A faixa estreita evita
+# que sombras e fragmentos laterais mantenham LINE quando a trajetória central
+# já desapareceu sob o robô. Alterar estes limites também afeta centralização.
+NEAR_VIRTUAL_SENSOR_CONFIG = {
+    "roi_y0": VIRTUAL_NEAR_Y0,
+    "roi_y1": VIRTUAL_NEAR_Y1,
+    "roi_x0": VIRTUAL_CENTER_X0,
+    "roi_x1": VIRTUAL_CENTER_X1,
+    "activation": VIRTUAL_ROW_MIN_ACTIVATION,
 }
 
 # A frontal confirma fita presente, mesmo inclinada ou lateral após uma curva.
@@ -735,19 +731,25 @@ FORWARD_PATH_CONFIG = {
 }
 
 # Janelas em segundos. Decisões usam relógio monotônico; idades do IPC usam Unix.
-# Frames duplicados não confirmam GAP nem estendem indefinidamente a travessia.
+# Frames duplicados não confirmam GAP. Uma posição FAR inferior trusted pode
+# manter a travessia enquanto guia o robô; a frontal sozinha respeita o teto.
 GAP_VALIDATION_CONFIG = {
     "source_timeout": 0.125,  # Mesmo prazo do IPC frontal consumido pelo C++.
     "reference_timeout": 2.0,  # Expira a trajetória anterior depois de perda longa.
     "near_history_seconds": 0.30,  # Memória local curta; não usa validade do Fusion.
     "near_present_frames": 2,  # Arma a detecção após presença real em frames novos.
     "near_loss_frames": 2,  # Uma única imagem vazia não inicia possível GAP.
-    "bottom_far_present_frames": 2,  # FAR inferior confirma continuação de GAP curto.
-    "bottom_fusion_reacquire_frames": 2,  # Fusion distante estável pode reassumir antes do NEAR.
-    "confirmation_seconds": 0.25,  # Janela curta para frontal vazia/incerta.
+    "bottom_far_present_frames": 2,  # Qualquer posição FAR trusted confirma continuação.
+    "bottom_fusion_reacquire_frames": 2,  # FAR + MEDIUM estáveis devolvem o controle ao Fusion.
+    # Procura o label escolhido pelo Fusion ao redor do seu ponto distante.
+    # A margem cobre arredondamento do centro da fita, sem unir componentes.
+    "bottom_fusion_target_radius_px": 3,
+    # Meio segundo ainda limita uma perda acidental, mas permite avançar além
+    # dos oito frames observados nas falhas reais antes de iniciar a busca.
+    "confirmation_seconds": 0.50,
     "forward_present_frames": 2,  # Confirmação por frames frontais distintos.
     "evidence_grace_seconds": 0.20,  # Tolera um frame vazio após confirmar GAP.
-    "max_gap_seconds": 1.5,  # Teto de avanço, compatível com 45 frames a 30 FPS.
+    "max_gap_seconds": 1.5,  # Teto quando não existe continuação inferior no frame atual.
 }
 
 # Uma faixa encontrada após o gap precisa continuar também nesta

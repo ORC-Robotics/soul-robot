@@ -10,7 +10,7 @@ import sys
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from vision.camera_config import NEAR_LINE_PRESENCE_CONFIG
+from vision.camera_config import NEAR_VIRTUAL_SENSOR_CONFIG
 from vision.gap_validation import GapValidator
 
 
@@ -19,7 +19,7 @@ def main():
     parser.add_argument("datasets", nargs="+", type=Path, help="Pastas contendo mask/*.png.")
     parser.add_argument("--output", type=Path, default=Path("build/gap-presence-replay.json"))
     args = parser.parse_args()
-    report = {"origin": "offline saved masks; no new camera capture", "config": NEAR_LINE_PRESENCE_CONFIG,
+    report = {"origin": "offline saved masks; no new camera capture", "config": NEAR_VIRTUAL_SENSOR_CONFIG,
               "datasets": []}
     for dataset in args.datasets:
         counts, digest, details = Counter(), hashlib.sha256(), []
