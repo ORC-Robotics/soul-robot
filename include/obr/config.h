@@ -625,6 +625,25 @@ constexpr double kServoMaximumAngleDegrees = 180.0;
 // No modo Parado, os pulsos continuam desligados e esta pose não é aplicada.
 constexpr double kServoInitialAngleDegrees = 0.0;
 
+// Velocidade máxima, em graus por segundo, aplicada ao servo do pulso pela
+// Raspberry. Reduzir este valor suaviza o movimento e diminui o impulso que
+// pode deslocar mecanicamente a garra; aumentar torna o pulso mais rápido.
+constexpr double kWristServoMaximumSpeedDegreesPerSecond = 90.0;
+
+// Tempo, em milissegundos, que a pose completa permanece aplicada antes de o
+// pulso voltar a se mover após uma reativação. Isso dá à garra tempo para
+// recuperar o alvo antes de receber o esforço mecânico do movimento.
+constexpr int kServoPoseHoldBeforeWristMotionMs = 200;
+
+// Intervalo máximo, em milissegundos, considerado pela rampa do pulso.
+// O limite evita um salto grande depois de uma pausa inesperada do loop.
+constexpr int kServoMotionMaximumElapsedMs = 100;
+
+static_assert(kWristServoMaximumSpeedDegreesPerSecond > 0.0 &&
+                  kServoPoseHoldBeforeWristMotionMs >= 0 &&
+                  kServoMotionMaximumElapsedMs >= kMainLoopPeriodMs,
+              "A rampa do pulso deve avançar e tolerar um ciclo normal do loop.");
+
 // Faixa absoluta, em microssegundos, permitida somente na calibração de
 // bancada. Ela é mais ampla que a faixa operacional e nunca é ultrapassada,
 // mesmo que o dashboard envie um valor inválido.

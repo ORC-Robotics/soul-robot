@@ -261,35 +261,37 @@ bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
     // watchdog dos motores de zerar um comando de tração antigo.
     lastManualServoCommand_ = std::chrono::steady_clock::now();
 
+    const bool completePoseWasRequested = state_.armServoRequested &&
+                                          state_.wristServoRequested &&
+                                          state_.gripperServoRequested;
+    bool targetChanged = false;
+
     switch (servo)
     {
     case ServoId::Arm:
-        if (state_.armServoRequested &&
-            sameServoAngle(state_.servoPose.armDegrees, angleDegrees))
-        {
-            return true;
-        }
+        targetChanged = !sameServoAngle(state_.servoPose.armDegrees, angleDegrees);
         state_.servoPose.armDegrees = angleDegrees;
-        state_.armServoRequested = true;
         break;
     case ServoId::Wrist:
-        if (state_.wristServoRequested &&
-            sameServoAngle(state_.servoPose.wristDegrees, angleDegrees))
-        {
-            return true;
-        }
+        targetChanged = !sameServoAngle(state_.servoPose.wristDegrees, angleDegrees);
         state_.servoPose.wristDegrees = angleDegrees;
-        state_.wristServoRequested = true;
         break;
     case ServoId::Gripper:
-        if (state_.gripperServoRequested &&
-            sameServoAngle(state_.servoPose.gripperDegrees, angleDegrees))
-        {
-            return true;
-        }
+        targetChanged = !sameServoAngle(state_.servoPose.gripperDegrees, angleDegrees);
         state_.servoPose.gripperDegrees = angleDegrees;
-        state_.gripperServoRequested = true;
         break;
+    }
+
+    // Qualquer ajuste manual renova a pose completa já memorizada. Assim, após
+    // o watchdog remover os sinais, mover o pulso também volta a energizar a
+    // garra no seu último alvo e evita que a inércia a desloque livremente.
+    state_.armServoRequested = true;
+    state_.wristServoRequested = true;
+    state_.gripperServoRequested = true;
+
+    if (!targetChanged && completePoseWasRequested)
+    {
+        return true;
     }
 
     ++state_.servoCommandSequence;

@@ -2,6 +2,8 @@
 
 #include "obr/config.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 
@@ -12,6 +14,8 @@ ServoController::ServoController(Esp32Bridge& esp32)
 
 bool ServoController::apply(const RobotSnapshot& state)
 {
+    const auto now = std::chrono::steady_clock::now();
+
     if (state.servoCalibrationActive && !state.emergencyStop)
     {
         // A calibração usa pulsos brutos enviados de forma explícita pelo
@@ -29,16 +33,66 @@ bool ServoController::apply(const RobotSnapshot& state)
         return disableAll();
     }
 
-    if (hasAppliedState_ && state.servoCommandSequence == lastCommandSequence_)
-    {
-        return true;
-    }
-
     bool sent = true;
     if (state.armServoRequested && state.wristServoRequested &&
         state.gripperServoRequested)
     {
-        sent = setPose(state.servoPose);
+        if (hasAppliedState_ &&
+            state.servoCommandSequence == lastCommandSequence_)
+        {
+            // Mantém a referência temporal próxima do loop normal para que um
+            // comando posterior não comece com um passo maior por tempo ocioso.
+            lastMotionUpdate_ = now;
+            return true;
+        }
+
+        // Cada passo envia novamente a pose completa. Braço e garra permanecem
+        // energizados nos alvos memorizados enquanto apenas o pulso avança.
+        ServoPose nextPose = state.servoPose;
+        const bool reactivatingPose = outputsDisabled_ && hasAppliedPose_;
+        if (reactivatingPose)
+        {
+            // Primeiro reaplica a garra e mantém o pulso no último alvo conhecido.
+            // O movimento começa somente após o breve tempo de estabilização.
+            nextPose.wristDegrees = appliedPose_.wristDegrees;
+            wristMotionAllowedAt_ = now + std::chrono::milliseconds(
+                                             config::kServoPoseHoldBeforeWristMotionMs);
+        }
+        else if (hasAppliedPose_)
+        {
+            double elapsedSeconds = 0.0;
+            if (now >= wristMotionAllowedAt_)
+            {
+                elapsedSeconds = std::min(
+                    std::chrono::duration<double>(now - lastMotionUpdate_).count(),
+                    static_cast<double>(config::kServoMotionMaximumElapsedMs) / 1000.0);
+            }
+            const double maximumStepDegrees =
+                config::kWristServoMaximumSpeedDegreesPerSecond *
+                std::max(0.0, elapsedSeconds);
+            nextPose.wristDegrees = moveAngleToward(
+                appliedPose_.wristDegrees,
+                state.servoPose.wristDegrees,
+                maximumStepDegrees);
+        }
+
+        sent = setPose(nextPose);
+        if (sent)
+        {
+            appliedPose_ = nextPose;
+            hasAppliedPose_ = true;
+            lastMotionUpdate_ = now;
+
+            const bool wristReachedTarget =
+                nextPose.wristDegrees == state.servoPose.wristDegrees;
+            hasAppliedState_ = wristReachedTarget;
+            if (wristReachedTarget)
+            {
+                lastCommandSequence_ = state.servoCommandSequence;
+            }
+            outputsDisabled_ = false;
+        }
+        return sent;
     }
     else
     {
@@ -63,6 +117,20 @@ bool ServoController::apply(const RobotSnapshot& state)
         lastCommandSequence_ = state.servoCommandSequence;
         hasAppliedState_ = true;
         outputsDisabled_ = false;
+        hasAppliedPose_ = true;
+        if (state.armServoRequested)
+        {
+            appliedPose_.armDegrees = state.servoPose.armDegrees;
+        }
+        if (state.wristServoRequested)
+        {
+            appliedPose_.wristDegrees = state.servoPose.wristDegrees;
+        }
+        if (state.gripperServoRequested)
+        {
+            appliedPose_.gripperDegrees = state.servoPose.gripperDegrees;
+        }
+        lastMotionUpdate_ = now;
     }
     return sent;
 }
@@ -93,6 +161,10 @@ bool ServoController::setPose(const ServoPose& pose)
 
 bool ServoController::disableAll()
 {
+    // Mesmo sem sinal nos servos, o relógio continua acompanhando o loop para
+    // que a reativação não use um intervalo ocioso como um salto de movimento.
+    lastMotionUpdate_ = std::chrono::steady_clock::now();
+
     if (outputsDisabled_)
     {
         return true;
@@ -105,6 +177,24 @@ bool ServoController::disableAll()
         hasAppliedState_ = false;
     }
     return sent;
+}
+
+double ServoController::moveAngleToward(double currentDegrees,
+                                        double targetDegrees,
+                                        double maximumStepDegrees)
+{
+    if (!std::isfinite(currentDegrees) || !std::isfinite(targetDegrees) ||
+        !std::isfinite(maximumStepDegrees) || maximumStepDegrees <= 0.0)
+    {
+        return currentDegrees;
+    }
+
+    const double difference = targetDegrees - currentDegrees;
+    if (std::abs(difference) <= maximumStepDegrees)
+    {
+        return targetDegrees;
+    }
+    return currentDegrees + std::copysign(maximumStepDegrees, difference);
 }
 
 bool ServoController::beginCalibration()

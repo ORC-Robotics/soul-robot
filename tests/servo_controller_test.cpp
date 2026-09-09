@@ -49,6 +49,12 @@ int main()
                   "Reversed endpoints should be accepted and represent inversion");
     ok &= require(!ServoController::isValidCalibrationEndpoints(1400, 1500),
                   "Endpoints that are too close should be rejected");
+    ok &= require(std::abs(ServoController::moveAngleToward(0.0, 90.0, 1.8) - 1.8) < 0.001,
+                  "The wrist ramp should limit a positive step");
+    ok &= require(std::abs(ServoController::moveAngleToward(90.0, 0.0, 1.8) - 88.2) < 0.001,
+                  "The wrist ramp should limit a negative step");
+    ok &= require(std::abs(ServoController::moveAngleToward(89.0, 90.0, 1.8) - 90.0) < 0.001,
+                  "The wrist ramp should stop exactly at the target");
 
     RobotState robotState;
     ok &= require(!robotState.setManualServoAngle(ServoId::Arm, 45.0),
@@ -67,12 +73,31 @@ int main()
     ok &= require(snapshot.armServoRequested &&
                       std::abs(snapshot.servoPose.armDegrees - 45.0) < 0.001,
                   "RobotState should publish the requested arm angle");
+    ok &= require(robotState.setManualServoAngle(ServoId::Gripper, 35.0),
+                  "Manual mode should accept a gripper holding angle");
     robotState.enforceManualServoTimeout(std::chrono::milliseconds(-1));
     snapshot = robotState.snapshot();
-    ok &= require(!snapshot.armServoRequested,
-                  "Manual servo commands should expire independently");
-    ok &= require(robotState.setManualServoAngle(ServoId::Arm, 45.0),
+    ok &= require(!snapshot.armServoRequested &&
+                      !snapshot.wristServoRequested &&
+                      !snapshot.gripperServoRequested,
+                  "Manual servo commands should expire together");
+    ok &= require(robotState.setManualServoAngle(ServoId::Wrist, 45.0),
                   "Manual servo control should recover after its timeout");
+    snapshot = robotState.snapshot();
+    ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
+                      snapshot.gripperServoRequested &&
+                      std::abs(snapshot.servoPose.gripperDegrees - 35.0) < 0.001,
+                  "Moving the wrist after a timeout should restore the complete stored pose");
+    robotState.enforceManualServoTimeout(std::chrono::milliseconds(-1));
+    const unsigned long long sequenceAfterSecondTimeout =
+        robotState.snapshot().servoCommandSequence;
+    ok &= require(robotState.setManualServoAngle(ServoId::Wrist, 45.0),
+                  "An unchanged wrist target should reactivate an expired pose");
+    snapshot = robotState.snapshot();
+    ok &= require(snapshot.armServoRequested && snapshot.wristServoRequested &&
+                      snapshot.gripperServoRequested &&
+                      snapshot.servoCommandSequence > sequenceAfterSecondTimeout,
+                  "Reactivation should publish the complete pose even when the target is unchanged");
     robotState.stop();
     snapshot = robotState.snapshot();
     ok &= require(!snapshot.armServoRequested &&
