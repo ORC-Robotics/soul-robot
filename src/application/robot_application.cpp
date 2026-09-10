@@ -75,10 +75,18 @@ bool selectedMissionReady(
     }
     if (mission == AutonomousMission::RescueArea ||
         mission == AutonomousMission::RescueZoneDetection ||
-        mission == AutonomousMission::RescueZoneFrame)
+        mission == AutonomousMission::RescueZoneSearch ||
+        mission == AutonomousMission::RescueZoneTriangle ||
+        mission == AutonomousMission::RescueZoneAlign)
     {
         // A visão pesada é ligada somente depois da partida. A missão começa
         // parada e aguarda um IPC frontal recente antes de mover os motores.
+        return true;
+    }
+    if (mission == AutonomousMission::RescueZoneApproach)
+    {
+        // O módulo dedicado valida lockedHeading, IMU e ULTRA novamente no
+        // primeiro ciclo e mantém PWM zero se qualquer entrada estiver ausente.
         return true;
     }
     if (mission == AutonomousMission::ObstacleAvoidance)
@@ -129,9 +137,21 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     {
         return "forward_rescue_zone_detection";
     }
-    if (mission == AutonomousMission::RescueZoneFrame)
+    if (mission == AutonomousMission::RescueZoneSearch)
     {
-        return "forward_rescue_zone_frame";
+        return "forward_rescue_zone_search";
+    }
+    if (mission == AutonomousMission::RescueZoneAlign)
+    {
+        return "forward_rescue_zone_align";
+    }
+    if (mission == AutonomousMission::RescueZoneApproach)
+    {
+        return "ultrasonic_locked_heading_camera_stop";
+    }
+    if (mission == AutonomousMission::RescueZoneTriangle)
+    {
+        return "rescue_zone_triangle_orchestrator";
     }
     if (mission == AutonomousMission::ObstacleAvoidance)
     {

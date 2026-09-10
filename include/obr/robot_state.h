@@ -4,6 +4,7 @@
 #include "obr/servo_types.h"
 
 #include <chrono>
+#include <limits>
 #include <mutex>
 #include <string>
 
@@ -13,7 +14,10 @@ enum class AutonomousMission
     TurnRight90,
     DriveDistance,
     RescueZoneDetection,
-    RescueZoneFrame,
+    RescueZoneSearch,
+    RescueZoneAlign,
+    RescueZoneApproach,
+    RescueZoneTriangle,
     RescueArea,
     ObstacleAvoidance,
     ServoInitialize,
@@ -66,9 +70,24 @@ struct AutonomousStatus
     bool rescueZoneUltrasonicFresh = false;
     bool rescueZoneUltrasonicValid = false;
     double rescueZoneUltrasonicDistanceCm = 0.0;
-    bool rescueZoneFrameCompleted = false;
-    bool rescueZoneFrameFailed = false;
-    std::string rescueZoneFrameCompletionReason;
+    double rescueZoneAlignAimNormalized =
+        std::numeric_limits<double>::quiet_NaN();
+    std::string rescueZoneAlignState = "UNAVAILABLE";
+    double rescueZoneAlignLockedHeading =
+        std::numeric_limits<double>::quiet_NaN();
+    std::string rescueZoneAlignCompletionReason;
+    double rescueZoneApproachLockedHeading =
+        std::numeric_limits<double>::quiet_NaN();
+    double rescueZoneApproachHeadingError =
+        std::numeric_limits<double>::quiet_NaN();
+    bool rescueZoneApproachNearLatched = false;
+    std::string rescueZoneApproachSpeedState = "STOP";
+    std::string rescueZoneApproachCompletionReason;
+    std::string rescueZoneSearchTargetColor = "green";
+    bool rescueZoneSearchTargetDetected = false;
+    std::string rescueZoneSearchState = "SEARCHING";
+    std::string rescueZoneSearchCompletionReason;
+    std::string rescueZoneTrianglePhase;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
@@ -88,6 +107,8 @@ struct RobotSnapshot
     unsigned long long autonomousRunSequence = 0;
     double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
     RescueZoneTargetColor rescueZoneTargetColor = RescueZoneTargetColor::Green;
+    double rescueZoneLockedHeading =
+        std::numeric_limits<double>::quiet_NaN();
     ServoPose servoPose;
     bool armServoRequested = false;
     bool wristServoRequested = false;
@@ -112,6 +133,7 @@ public:
     void setAutonomousMission(AutonomousMission mission);
     bool setDriveDistanceTargetCm(double targetCm);
     void setRescueZoneTargetColor(RescueZoneTargetColor color);
+    bool setRescueZoneLockedHeading(double headingDegrees);
     void stop();
     void emergencyStop();
     void drive(double left, double right);

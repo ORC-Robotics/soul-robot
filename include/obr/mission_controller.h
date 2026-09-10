@@ -5,7 +5,10 @@
 #include "obr/main_mission.h"
 #include "obr/obstacle_avoidance.h"
 #include "obr/rescue_area_mission.h"
-#include "obr/rescue_zone_frame_mission.h"
+#include "obr/rescue_zone_align_mission.h"
+#include "obr/rescue_zone_approach_mission.h"
+#include "obr/rescue_zone_search_mission.h"
+#include "obr/rescue_zone_triangle_mission.h"
 #include "obr/robot_state.h"
 #include "obr/servo_routine.h"
 
@@ -39,7 +42,10 @@ private:
 
     MainMission mainMission_;
     RescueAreaMission rescueAreaMission_;
-    RescueZoneFrameMission rescueZoneFrameMission_;
+    RescueZoneAlignMission rescueZoneAlignMission_;
+    RescueZoneApproachMission rescueZoneApproachMission_;
+    RescueZoneSearchMission rescueZoneSearchMission_;
+    RescueZoneTriangleMission rescueZoneTriangleMission_;
     ObstacleAvoidance obstacleAvoidanceTest_;
     ImuTurnController testTurnController_;
     ServoRoutine servoRoutine_;
@@ -71,7 +77,21 @@ private:
     void updateRescueZoneDetection(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);
-    void updateRescueZoneFrame(
+    void updateRescueZoneAlign(
+        RobotState& robotState,
+        const RobotSnapshot& snapshot,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const RescueZoneSnapshot& rescueZoneSnapshot);
+    void updateRescueZoneSearch(
+        RobotState& robotState,
+        const RobotSnapshot& snapshot,
+        const RescueZoneSnapshot& rescueZoneSnapshot);
+    void updateRescueZoneApproach(
+        RobotState& robotState,
+        const RobotSnapshot& snapshot,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const RescueZoneSnapshot& rescueZoneSnapshot);
+    void updateRescueZoneTriangle(
         RobotState& robotState,
         const RobotSnapshot& snapshot,
         const Esp32TelemetrySnapshot& esp32Telemetry,

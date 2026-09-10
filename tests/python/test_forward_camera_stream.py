@@ -41,6 +41,28 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+    def test_rescue_zone_frame_obstruction_covers_real_closeup_patterns(self):
+        dark_frame = np.full((120, 160, 3), (18, 14, 51), dtype=np.uint8)
+        cyan_frame = np.full((120, 160, 3), (220, 190, 20), dtype=np.uint8)
+        textured_frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        textured_frame[:, ::2] = 255
+
+        self.assertTrue(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                dark_frame
+            )["obscured"]
+        )
+        self.assertTrue(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                cyan_frame
+            )["obscured"]
+        )
+        self.assertFalse(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                textured_frame
+            )["obscured"]
+        )
+
     def test_environment_defaults_to_enabled(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertTrue(forward_camera_stream.environment_enabled())

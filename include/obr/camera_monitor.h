@@ -127,7 +127,7 @@ enum class RescueZoneGeometryState
 };
 
 // Preserva separadamente a observação atual e a confirmação temporal da zona.
-// FRAME_ZONE só pode mover com uma amostra atual e confirmada do mesmo frame.
+// ALIGN_ZONE só pode mover com uma amostra atual e confirmada do mesmo frame.
 struct RescueZoneObservation
 {
     bool candidateDetected = false;
@@ -136,6 +136,8 @@ struct RescueZoneObservation
         RescueZoneGeometryState::NotDetected;
     bool aimValid = false;
     double aimX = std::numeric_limits<double>::quiet_NaN();
+    double aimNormalized = std::numeric_limits<double>::quiet_NaN();
+    double frameCoverage = 0.0;
 };
 
 // Snapshot atômico das duas cores publicado pela câmera frontal.
@@ -145,6 +147,7 @@ struct RescueZoneSnapshot
     std::uint64_t sequence = 0;
     double timestamp = 0.0;
     double ageMs = 0.0;
+    bool cameraObscured = false;
     RescueZoneObservation green;
     RescueZoneObservation red;
 };

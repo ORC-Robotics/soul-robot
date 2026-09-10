@@ -1206,6 +1206,117 @@ void testRescueZoneDetectionOnlyKeepsMotorsStopped()
         !controller.requiresRescueZoneDetection(robotState.snapshot()),
         "Stop deve fechar imediatamente o gate das áreas de resgate.");
 }
+
+void testRescueZoneAlignKeepsDetectionGateActive()
+{
+    RobotState robotState;
+    MissionController controller;
+    robotState.setAutonomousMission(AutonomousMission::RescueZoneAlign);
+    robotState.setRescueZoneTargetColor(RescueZoneTargetColor::Green);
+    robotState.startAutonomous();
+
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "ALIGN_ZONE autônomo deve manter o snapshot GREEN/RED sendo atualizado.");
+
+    robotState.start();
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "ALIGN_ZONE selecionado deve preservar o overlay também no modo Manual.");
+
+    robotState.emergencyStop();
+    require(
+        !controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "E-Stop deve fechar o gate visual e manter os motores protegidos.");
+}
+
+void testRescueZoneApproachUsesStoredHeadingWithCameraStopGate()
+{
+    RobotState robotState;
+    MissionController controller;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    telemetry.ultrasonicDistanceCm = 30.0;
+
+    robotState.setAutonomousMission(AutonomousMission::RescueZoneAlign);
+    robotState.startAutonomous();
+    require(
+        robotState.setRescueZoneLockedHeading(12.0),
+        "ALIGN_ZONE deve salvar o heading que libera a aproximação isolada.");
+    robotState.stop();
+    robotState.setAutonomousMission(AutonomousMission::RescueZoneApproach);
+    robotState.startAutonomous();
+
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "APPROACH_ZONE deve manter a CAM1 ativa para a parada por obstrução.");
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    RobotSnapshot snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
+            snapshot.right > 0.0 &&
+            snapshot.autonomousStatus.rescueZoneApproachSpeedState == "FAR",
+        "APPROACH_ZONE deve avançar sem depender da visão quando as entradas são válidas.");
+
+    telemetry.lastSensorAgeMs =
+        config::kRescueZoneUltrasonicFreshnessMs + 1;
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "stopped" && closeTo(snapshot.left, 0.0) &&
+            closeTo(snapshot.right, 0.0) &&
+            snapshot.autonomousStatus.phase ==
+                "rescue_zone_approach_imu_stale",
+        "Stale real deve encerrar APPROACH_ZONE com os motores zerados.");
+}
+
+void testRescueZoneTriangleGateFollowsInternalPhase()
+{
+    RobotState robotState;
+    MissionController controller;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    telemetry.ultrasonicDistanceCm = 20.0;
+    RescueZoneSnapshot zones;
+    zones.sourceFresh = true;
+    zones.sequence = 1;
+    zones.timestamp = 1.0;
+    zones.green.detected = true;
+    zones.green.geometryState = RescueZoneGeometryState::BoundsUnknown;
+
+    robotState.setAutonomousMission(AutonomousMission::RescueZoneTriangle);
+    robotState.setRescueZoneTargetColor(RescueZoneTargetColor::Green);
+    robotState.startAutonomous();
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "TRIÂNGULO deve abrir o gate visual durante SEARCH.");
+
+    controller.update(
+        robotState, telemetry, false, CameraLineSnapshot{},
+        ForwardLineSnapshot{}, ForwardBallSnapshot{}, zones);
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "FOUND deve manter o gate visual aberto para ALIGN.");
+
+    zones.sequence = 2;
+    zones.timestamp = 2.0;
+    controller.update(
+        robotState, telemetry, false, CameraLineSnapshot{},
+        ForwardLineSnapshot{}, ForwardBallSnapshot{}, zones);
+    require(
+        controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "ALIGN concluído deve manter o gate visual para proteger APPROACH.");
+}
 }
 
 int main()
@@ -1239,6 +1350,9 @@ int main()
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();
+        testRescueZoneAlignKeepsDetectionGateActive();
+        testRescueZoneApproachUsesStoredHeadingWithCameraStopGate();
+        testRescueZoneTriangleGateFollowsInternalPhase();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }

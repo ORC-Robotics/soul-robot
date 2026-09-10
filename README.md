@@ -657,19 +657,44 @@ preserva separadamente a validade geométrica bruta do frame. O IPC também publ
 `confirmationFrames`, `confirmationRequiredFrames`, `lossFrames` e
 `lossRequiredFrames` dentro de cada cor.
 
-O modo isolado `rescue_zone_frame` executa somente o enquadramento da zona. No
-dashboard, selecione `FRAME_ZONE · ENQUADRAR ÁREA`, escolha obrigatoriamente
-`GREEN` ou `RED` e então use `Autônomo`. Uma zona ausente mantém o robô parado;
-`BOUNDS_UNKNOWN` conclui imediatamente em best effort, parado e sem ré, enquanto
-`LEFT_BOUND_ONLY` e `RIGHT_BOUND_ONLY` aplicam micro-pivôs opostos de 80 ms em
-potência `0.69`.
-Cada pulso termina com PWM zero, settling fixo de 100 ms e um frame novo posterior
-ao movimento, sem depender da velocidade indicada pelos encoders.
-`FULL_BOUNDS` com `aimValid=true` conclui na condição ideal, sem alinhar ao `aimX`
-e sem avançar. Se três micro-pivôs não obtiverem essa condição, o modo conclui
-parado com o melhor enquadramento parcial disponível. A telemetria distingue
-`FULL_BOUNDS`, `BEST_EFFORT_BOUNDS_UNKNOWN` e `BEST_EFFORT_PARTIAL_BOUND`.
-O ultrassônico continua apenas no overlay e na telemetria.
+O modo isolado `rescue_zone_align` reúne enquadramento e alinhamento da zona.
+Selecione `ALIGN_ZONE · CENTRALIZAR ÁREA`, escolha `GREEN` ou `RED` e use
+`Autônomo`. Em `LEFT_BOUND_ONLY` ou `RIGHT_BOUND_ONLY`, o modo tenta revelar a
+borda ausente com micro-pivôs sucessivos, sem limite de tentativas ou de ângulo.
+Ele não aceita bounds parciais por demora: continua até receber `FULL_BOUNDS`.
+`BOUNDS_UNKNOWN` conclui parado e sem ré com `BEST_EFFORT_BOUNDS_UNKNOWN`.
+
+Quando a visão publica `FULL_BOUNDS` e `aimValid=true`, o modo lê diretamente o
+`aimNormalized`: valor negativo aplica micro-pivô para a esquerda e valor
+positivo aplica micro-pivô para a direita. Todos os pulsos usam potência `0.69`,
+duração de `80 ms`, PWM zero e settling fixo de `100 ms`, seguido por um frame
+novo. Não existe confirmação por encoder nem setpoint angular curto pela IMU.
+
+A deadband inicial é `abs(aimNormalized) <= 0.10`. Dois frames distintos e
+consecutivos dentro dela concluem com `ALIGNED` e salvam o yaw atual em
+`lockedHeading`. Se `aimValid` estiver falso ou desaparecer durante o movimento,
+o PWM é zerado e o modo aguarda uma observação válida, sem inventar outro centro.
+Não existe timeout global nem conclusão parcial. Este modo não aproxima, não
+deposita e não participa da MainMission.
+O gate mantém o pipeline GREEN/RED ativo durante toda a execução e também no
+Manual enquanto o modo estiver selecionado. O ultrassônico continua apenas no
+overlay e na telemetria. Visão ou IMU stale zeram o PWM e pausam a etapa; quando
+as entradas voltam fresh, o alinhamento continua exigindo um frame posterior ao
+movimento. Somente o E-Stop aborta a execução.
+
+O modo isolado `rescue_zone_approach`, exibido como
+`APPROACH_ZONE · APROXIMAR ÁREA`, usa o `lockedHeading` persistido por uma
+conclusão anterior do ALIGN_ZONE. Ele não liga nem consulta a visão: mantém o
+rumo pela IMU e escolhe a velocidade somente pela leitura fresh do ultrassônico
+frontal. As faixas iniciais são `0.85` acima de 25 cm, `0.75` entre 12 e 25 cm
+e `0.70` entre 6 e 12 cm; até 6 cm, conclui com PWM zero.
+
+Ao entrar em até 12 cm, `nearLatched` permanece armado até o fim da execução.
+Assim, uma perda de eco que reapareça como distância grande não libera novamente
+as velocidades FAR ou MID. O controle aplica correção diferencial de até `0.06`
+para conservar o heading, sem usar encoder ou visão. Locked heading ausente,
+IMU/ULTRA inválido ou stale e timeout de 10 segundos encerram o teste parado.
+Este modo ainda não deposita e não participa da MainMission.
 
 O código também pode solicitar que o stream frontal já fique disponível no início:
 

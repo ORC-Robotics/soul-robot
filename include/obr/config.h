@@ -86,7 +86,7 @@ constexpr const char* kRescueZoneDetectionTemporaryControlPath =
 constexpr const char* kRescueZoneStatusPath =
     "/dev/shm/obr_rescue_zone_status.json";
 
-// Idade máxima, em milissegundos, aceita pelo FRAME_ZONE para comandar movimento.
+// Idade máxima, em milissegundos, aceita pelo ALIGN_ZONE para comandar movimento.
 // Um prazo curto impede que a geometria de um frame antigo mova o robô.
 constexpr int kRescueZoneStatusTimeoutMs = 250;
 
@@ -252,44 +252,92 @@ constexpr double kMotorRunMinimumPower = 0.61;
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
 constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
 
-// Potência exclusiva dos micro-pivôs do FRAME_ZONE.
-constexpr double kRescueZoneFrameTurnPower = 0.69;
+// Faixa central normalizada aceita pelo ALIGN_ZONE. O valor corresponde a
+// dez por cento para cada lado do centro publicado pela visão frontal.
+constexpr double kRescueZoneAlignDeadbandNormalized = 0.10;
 
-// Duração, em milissegundos, de cada toque lateral antes de zerar o PWM.
-// Este valor pode ser calibrado no robô sem alterar a máquina de estados.
-constexpr int kRescueZoneFrameMicroPivotDurationMs = 80;
+// Dois frames distintos no centro evitam concluir por uma observação isolada.
+constexpr int kRescueZoneAlignStableFrames = 2;
 
-// Tempo fixo, em milissegundos, aguardado após cada micro-pivô lateral.
-// A liberação depende apenas deste prazo e de um frame posterior ao movimento.
-constexpr int kRescueZoneFrameLateralSettleMs = 100;
+// Potência dos micro-pivôs usados tanto para revelar bounds quanto para
+// centralizar o aim. O sinal é definido pela direção da correção visual.
+constexpr double kRescueZoneAlignTurnPower = 0.69;
 
-// Quantidade máxima de tentativas laterais antes de aceitar o melhor
-// enquadramento disponível. Um valor baixo evita procurar FULL_BOUNDS sem fim.
-constexpr int kRescueZoneFrameMaximumMicroPivots = 3;
+// Duração do pulso e pausa mecânica fixa, em milissegundos. Nenhuma dessas
+// etapas consulta encoder ou usa um pequeno setpoint angular da IMU.
+constexpr int kRescueZoneAlignMicroPivotDurationMs = 80;
+constexpr int kRescueZoneAlignSettleMs = 100;
 
-// Limite angular absoluto acumulado dos micro-pivôs visuais.
-// A IMU não define cada pulso; apenas interrompe a operação se ela não convergir.
-constexpr double kRescueZoneFrameMaximumPivotDegrees = 24.0;
+// Potência normalizada do pivot contínuo usado exclusivamente pelo SEARCH_ZONE.
+// O valor baixo permite observar vários frames da CAM1 durante a varredura.
+constexpr double kRescueZoneSearchTurnPower = 0.72;
 
-// Prazos de segurança do movimento e da aquisição posterior à parada.
-constexpr int kRescueZoneFrameStartupVisionTimeoutMs = 1500;
-constexpr int kRescueZoneFrameTurnTimeoutMs = 2500;
-constexpr int kRescueZoneFrameNewFrameTimeoutMs = 1000;
+static_assert(kRescueZoneAlignDeadbandNormalized > 0.0 &&
+                  kRescueZoneAlignDeadbandNormalized < 1.0 &&
+                  kRescueZoneAlignStableFrames > 0 &&
+                  kRescueZoneAlignTurnPower >= kMotorStartMinimumPower &&
+                  kRescueZoneAlignTurnPower <= kMaxMotorOutput &&
+                  kRescueZoneAlignMicroPivotDurationMs > 0 &&
+                  kRescueZoneAlignSettleMs > 0 &&
+                  kRescueZoneSearchTurnPower >= kMotorStartMinimumPower &&
+                  kRescueZoneSearchTurnPower <= kMaxMotorOutput,
+              "Os limites do ALIGN_ZONE devem permanecer seguros.");
 
-static_assert(kRescueZoneStatusTimeoutMs > 0 &&
-                  kRescueZoneFrameTurnPower >= kMotorStartMinimumPower &&
-                  kRescueZoneFrameTurnPower <= kMaxMotorOutput &&
-                  kRescueZoneFrameMicroPivotDurationMs > 0 &&
-                  kRescueZoneFrameMicroPivotDurationMs <
-                      kRescueZoneFrameTurnTimeoutMs &&
-                  kRescueZoneFrameLateralSettleMs > 0 &&
-                  kRescueZoneFrameMaximumMicroPivots > 0 &&
-                  kRescueZoneFrameMaximumPivotDegrees > 0.0 &&
-                  kRescueZoneFrameMaximumPivotDegrees <= 180.0 &&
-                  kRescueZoneFrameStartupVisionTimeoutMs > 0 &&
-                  kRescueZoneFrameTurnTimeoutMs > 0 &&
-                  kRescueZoneFrameNewFrameTimeoutMs > 0,
-              "Os limites do FRAME_ZONE devem permanecer seguros.");
+// Distâncias frontais, em centímetros, que selecionam as faixas de velocidade
+// e concluem a aproximação. Reduzir o limite final aumenta o risco de colisão.
+constexpr double kRescueZoneApproachFarDistanceCm = 25.0;
+constexpr double kRescueZoneApproachNearDistanceCm = 12.0;
+constexpr double kRescueZoneApproachStopDistanceCm = 6.0;
+
+// Potências normalizadas da aproximação. A transição gradual reduz a inércia
+// perto da área sem deixar os motores abaixo do piso operacional validado.
+constexpr double kRescueZoneApproachFarPower = 0.85;
+constexpr double kRescueZoneApproachMidPower = 0.75;
+constexpr double kRescueZoneApproachNearPower = 0.70;
+
+// Tempo, em milissegundos, do avanço final após alcançar a distância alvo.
+// Esse deslocamento usa a potência NEAR e termina obrigatoriamente com PWM zero.
+constexpr int kRescueZoneApproachFinalAdvanceMs = 600;
+
+// Cobertura mínima da imagem pela zona alvo para concluir a aproximação.
+// A câmera funciona como parada redundante quando o ULTRA perde o eco de perto.
+constexpr double kRescueZoneApproachCameraStopCoverage = 0.70;
+
+// Correção diferencial máxima aplicada para conservar o lockedHeading.
+// O erro angular de referência aplica a correção completa nos dois lados.
+constexpr double kRescueZoneApproachMaximumHeadingCorrection = 0.06;
+constexpr double kRescueZoneApproachFullHeadingErrorDegrees = 10.0;
+
+// Tempo máximo, em milissegundos, permitido para uma aproximação isolada.
+// O timeout sempre encerra o movimento com PWM zero.
+constexpr int kRescueZoneApproachTimeoutMs = 10000;
+
+static_assert(kRescueZoneApproachFarDistanceCm >
+                      kRescueZoneApproachNearDistanceCm &&
+                  kRescueZoneApproachNearDistanceCm >
+                      kRescueZoneApproachStopDistanceCm &&
+                  kRescueZoneApproachStopDistanceCm >=
+                      kRescueZoneUltrasonicMinimumCm &&
+                  kRescueZoneApproachFarPower <= kMaxMotorOutput &&
+                  kRescueZoneApproachFarPower >
+                      kRescueZoneApproachMidPower &&
+                  kRescueZoneApproachMidPower >
+                      kRescueZoneApproachNearPower &&
+                  kRescueZoneApproachNearPower >=
+                      kMotorStartMinimumPower &&
+                  kRescueZoneApproachMaximumHeadingCorrection > 0.0 &&
+                  kRescueZoneApproachFarPower +
+                          kRescueZoneApproachMaximumHeadingCorrection <=
+                      kMaxMotorOutput &&
+                  kRescueZoneApproachNearPower -
+                          kRescueZoneApproachMaximumHeadingCorrection >=
+                      kMotorRunMinimumPower &&
+                  kRescueZoneApproachFullHeadingErrorDegrees > 0.0 &&
+                  kRescueZoneApproachFinalAdvanceMs > 0 &&
+                  kRescueZoneApproachCameraStopCoverage > 0.0 &&
+                  kRescueZoneApproachCameraStopCoverage <= 1.0 &&
+                  kRescueZoneApproachTimeoutMs > 0,
+              "Os limites do APPROACH_ZONE devem permanecer seguros.");
 
 // Margem angular, em graus, aceita para considerar a vítima centralizada.
 constexpr double kBallAlignmentDeadbandDegrees = 1.0;

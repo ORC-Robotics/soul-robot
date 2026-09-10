@@ -295,6 +295,18 @@ def _reconstruct_hull(mask, strong_mask=None, minimum_strong_fraction=0.0):
     return hull, area_pixels, selected_mask, strong_fraction
 
 
+def _reconstruct_green_hull(strong_mask):
+    """Forma a região GREEN exclusivamente com componentes strong contínuos."""
+
+    # A máscara candidata continua disponível para diagnóstico, mas não pode
+    # propagar o hull por pisos ou paredes com dominante verde fraca.
+    return _reconstruct_hull(
+        strong_mask,
+        strong_mask,
+        MIN_STRONG_GREEN_FRACTION,
+    )
+
+
 def _empty_result():
     """Cria o resultado seguro usado quando nenhuma zona foi detectada."""
 
@@ -308,6 +320,7 @@ def _empty_result():
         "leftEdgeX": None,
         "rightEdgeX": None,
         "areaPixels": 0,
+        "frameCoverage": 0.0,
         "boundsCoverage": 0.0,
         "_hull": None,
     }
@@ -404,6 +417,7 @@ def _measure_geometry(hull, area_pixels, frame_shape):
         "leftEdgeX": round(left_edge, 2) if left_edge is not None else None,
         "rightEdgeX": round(right_edge, 2) if right_edge is not None else None,
         "areaPixels": area_pixels,
+        "frameCoverage": round(area_ratio, 4),
         "boundsCoverage": round(coverage, 3),
         "_hull": hull,
     }
@@ -418,6 +432,35 @@ def _median_channels(image, sample_mask):
     if pixels.shape[0] < MINIMUM_DIAGNOSTIC_SAMPLE_PIXELS:
         return None
     return [int(round(float(value))) for value in np.median(pixels, axis=0)]
+
+
+def _nearby_background_mask(hsv_frame, selected_mask, hull):
+    """Cria o anel local externo usado para comparar a cor com o fundo."""
+
+    if selected_mask is None or hull is None:
+        return None
+    hull_mask = np.zeros(selected_mask.shape, dtype=np.uint8)
+    cv2.drawContours(hull_mask, [hull], -1, 255, cv2.FILLED)
+    kernel_size = _odd_kernel_size(
+        selected_mask.shape,
+        BACKGROUND_SAMPLE_KERNEL_RATIO,
+        9,
+    )
+    margin_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
+    )
+    expanded_hull = cv2.dilate(hull_mask, margin_kernel)
+    background_mask = cv2.bitwise_and(
+        expanded_hull,
+        cv2.bitwise_not(hull_mask),
+    )
+
+    # Evita que rodas, vítimas ou sombras pretas dominem a referência local.
+    visible_background = background_mask.copy()
+    visible_background[hsv_frame[:, :, 2] < BACKGROUND_MINIMUM_VISIBLE_VALUE] = 0
+    if cv2.countNonZero(visible_background) >= MINIMUM_DIAGNOSTIC_SAMPLE_PIXELS:
+        return visible_background
+    return background_mask
 
 
 def _empty_green_color_diagnostics():
@@ -448,29 +491,9 @@ def _green_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
         hsv_frame, selected_mask
     )
 
-    hull_mask = np.zeros(selected_mask.shape, dtype=np.uint8)
-    cv2.drawContours(hull_mask, [hull], -1, 255, cv2.FILLED)
-    kernel_size = _odd_kernel_size(
-        selected_mask.shape,
-        BACKGROUND_SAMPLE_KERNEL_RATIO,
-        9,
+    background_mask = _nearby_background_mask(
+        hsv_frame, selected_mask, hull
     )
-    margin_kernel = cv2.getStructuringElement(
-        cv2.MORPH_ELLIPSE, (kernel_size, kernel_size)
-    )
-    expanded_hull = cv2.dilate(hull_mask, margin_kernel)
-    background_mask = cv2.bitwise_and(
-        expanded_hull,
-        cv2.bitwise_not(hull_mask),
-    )
-
-    # Pixels claros são preferidos para evitar rodas, vítimas e sombras
-    # pretas. Se não houver quantidade suficiente, a margem completa ainda
-    # fornece a melhor amostra local disponível.
-    visible_background = background_mask.copy()
-    visible_background[hsv_frame[:, :, 2] < BACKGROUND_MINIMUM_VISIBLE_VALUE] = 0
-    if cv2.countNonZero(visible_background) >= MINIMUM_DIAGNOSTIC_SAMPLE_PIXELS:
-        background_mask = visible_background
 
     background_median_bgr = _median_channels(frame_bgr, background_mask)
     diagnostics["backgroundMedianRgb"] = (
@@ -565,11 +588,14 @@ def _analyze_color(
             hsv_frame,
             channel_metrics,
         )
-    hull, area_pixels, selected_mask, strong_fraction = _reconstruct_hull(
-        mask,
-        strong_mask,
-        MIN_STRONG_GREEN_FRACTION if strong_mask is not None else 0.0,
-    )
+    if apply_green_chromatic_filter:
+        hull, area_pixels, selected_mask, strong_fraction = (
+            _reconstruct_green_hull(strong_mask)
+        )
+    else:
+        hull, area_pixels, selected_mask, strong_fraction = _reconstruct_hull(
+            mask
+        )
     if hull is None:
         result = _empty_result()
     else:

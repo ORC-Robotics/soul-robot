@@ -238,13 +238,22 @@ bool parseRescueZoneObservation(
         !tryGetJsonString(json, "geometryState", geometryState) ||
         !parseRescueZoneGeometryState(
             geometryState, observation.geometryState) ||
-        !tryGetJsonBool(json, "aimValid", observation.aimValid))
+        !tryGetJsonBool(json, "aimValid", observation.aimValid) ||
+        !tryGetJsonNumber(json, "frameCoverage", observation.frameCoverage) ||
+        !std::isfinite(observation.frameCoverage) ||
+        observation.frameCoverage < 0.0 ||
+        observation.frameCoverage > 1.0)
     {
         return false;
     }
     if (observation.aimValid &&
         (!tryGetJsonNumber(json, "aimX", observation.aimX) ||
-         !std::isfinite(observation.aimX)))
+         !std::isfinite(observation.aimX) ||
+         !tryGetJsonNumber(
+             json, "aimNormalized", observation.aimNormalized) ||
+         !std::isfinite(observation.aimNormalized) ||
+         observation.aimNormalized < -1.0 ||
+         observation.aimNormalized > 1.0))
     {
         return false;
     }
@@ -854,6 +863,7 @@ RescueZoneSnapshot CameraMonitor::rescueZoneSnapshot() const
         if (!tryGetJsonBool(json, "active", active) ||
             !tryGetJsonNumber(json, "timestamp", snapshot.timestamp) ||
             !tryGetJsonUnsignedInteger(json, "sequence", snapshot.sequence) ||
+            !tryGetJsonBool(json, "cameraObscured", snapshot.cameraObscured) ||
             !tryGetJsonObject(json, "green", greenJson) ||
             !tryGetJsonObject(json, "red", redJson) ||
             !parseRescueZoneObservation(greenJson, snapshot.green) ||

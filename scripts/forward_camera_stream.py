@@ -49,6 +49,12 @@ TEMP_RESCUE_ZONE_STATUS_PATH = "/dev/shm/obr_rescue_zone_status.tmp.json"
 # O heartbeat do C++ chega a cada 50 ms. Após 300 ms, o gate e o ultrassônico
 # ficam indisponíveis mesmo se o serviço encerrar sem escrever o valor zero.
 RESCUE_ZONE_INPUT_TIMEOUT_SECONDS = 0.30
+
+# Um frame dominado pela zona, muito escuro ou praticamente uniforme indica
+# que a CAM1 encostou na área e já não fornece orientação visual útil.
+RESCUE_ZONE_OBSCURED_DARK_VALUE = 60
+RESCUE_ZONE_OBSCURED_DARK_FRACTION = 0.70
+RESCUE_ZONE_OBSCURED_LUMA_STDDEV = 8.0
 STREAM_PORT = 8091
 STREAM_PATH = "/stream.mjpg"
 STATUS_FPS = 5
@@ -261,7 +267,31 @@ def requested_rescue_zone_detection_enabled():
     return read_rescue_zone_detection_input()["enabled"]
 
 
-def save_rescue_zone_status(results, timestamp, sequence, detection_input):
+def measure_rescue_zone_frame_obstruction(frame_bgr):
+    """Mede condições visuais que indicam lente coberta pela área."""
+
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    dark_fraction = float(
+        np.count_nonzero(gray <= RESCUE_ZONE_OBSCURED_DARK_VALUE)
+    ) / float(gray.size)
+    luma_stddev = float(np.std(gray))
+    return {
+        "obscured": (
+            dark_fraction >= RESCUE_ZONE_OBSCURED_DARK_FRACTION
+            or luma_stddev <= RESCUE_ZONE_OBSCURED_LUMA_STDDEV
+        ),
+        "darkFraction": round(dark_fraction, 4),
+        "lumaStdDev": round(luma_stddev, 3),
+    }
+
+
+def save_rescue_zone_status(
+    results,
+    timestamp,
+    sequence,
+    detection_input,
+    frame_obstruction=None,
+):
     """Publica atomicamente as duas zonas observadas no mesmo frame frontal."""
 
     status = {
@@ -273,6 +303,15 @@ def save_rescue_zone_status(results, timestamp, sequence, detection_input):
             "valid": bool(detection_input["ultrasonicValid"]),
             "distanceCm": detection_input["ultrasonicDistanceCm"],
         },
+        "cameraObscured": bool(
+            (frame_obstruction or {}).get("obscured", False)
+        ),
+        "cameraDarkFraction": (frame_obstruction or {}).get(
+            "darkFraction", 0.0
+        ),
+        "cameraLumaStdDev": (frame_obstruction or {}).get(
+            "lumaStdDev", 0.0
+        ),
     }
     status.update(serializable_results(results))
     with open(TEMP_RESCUE_ZONE_STATUS_PATH, "w", encoding="utf-8") as status_file:
@@ -902,6 +941,9 @@ def main():
                     rescue_zone_results = rescue_zone_temporal_filter.update(
                         rescue_zone_candidates
                     )
+                    rescue_zone_frame_obstruction = (
+                        measure_rescue_zone_frame_obstruction(frame)
+                    )
                     if profile_this_cycle:
                         detection_total_ms = (
                             time.perf_counter() - stage_started
@@ -928,6 +970,7 @@ def main():
                             line_timestamp,
                             rescue_zone_sequence,
                             rescue_zone_input,
+                            rescue_zone_frame_obstruction,
                         )
                         if profile_this_cycle:
                             profile_timings["ipcPublishMs"] += (

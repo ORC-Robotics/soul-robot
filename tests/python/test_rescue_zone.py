@@ -224,6 +224,59 @@ class RescueZoneDetectionTest(unittest.TestCase):
                     self.assertFalse(result["detected"])
                     self.assertIsNone(result["_hull"])
 
+    def test_strong_green_hull_does_not_spread_into_connected_weak_candidate(self):
+        frame = blank_frame()
+        weak_hsv = np.asarray([[[67, 84, 148]]], dtype=np.uint8)
+        weak_bgr = cv2.cvtColor(weak_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        cv2.rectangle(frame, (20, 35), (300, 220), weak_bgr.tolist(), cv2.FILLED)
+        cv2.rectangle(frame, (95, 75), (155, 190), GREEN, cv2.FILLED)
+
+        result = analyze_rescue_zones(frame)["green"]
+
+        self.assertTrue(result["detected"])
+        hull_x, _, hull_width, _ = cv2.boundingRect(result["_hull"])
+        self.assertGreaterEqual(hull_x, 95)
+        self.assertLessEqual(hull_x + hull_width - 1, 155)
+
+    def test_low_light_strong_green_survives_connected_weak_floor(self):
+        frame = blank_frame()
+        weak_hsv = np.asarray([[[66, 83, 147]]], dtype=np.uint8)
+        weak_bgr = cv2.cvtColor(weak_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        strong_hsv = np.asarray([[[79, 253, 116]]], dtype=np.uint8)
+        strong_bgr = cv2.cvtColor(strong_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        cv2.rectangle(frame, (20, 35), (300, 220), weak_bgr.tolist(), cv2.FILLED)
+        cv2.rectangle(frame, (95, 75), (155, 190), strong_bgr.tolist(), cv2.FILLED)
+
+        result = analyze_rescue_zones(frame)["green"]
+
+        self.assertTrue(result["detected"])
+        hull_x, _, hull_width, _ = cv2.boundingRect(result["_hull"])
+        self.assertGreaterEqual(hull_x, 95)
+        self.assertLessEqual(hull_x + hull_width - 1, 155)
+
+    def test_weak_green_candidate_without_strong_core_is_rejected(self):
+        frame = blank_frame()
+        weak_hsv = np.asarray([[[67, 84, 148]]], dtype=np.uint8)
+        weak_bgr = cv2.cvtColor(weak_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        cv2.rectangle(frame, (20, 35), (300, 220), weak_bgr.tolist(), cv2.FILLED)
+
+        result = analyze_rescue_zones(frame)["green"]
+
+        self.assertFalse(result["detected"])
+        self.assertIsNone(result["_hull"])
+
+    def test_weak_edges_are_not_incorporated_without_local_expansion(self):
+        frame = blank_frame()
+        weak_hsv = np.asarray([[[54, 83, 126]]], dtype=np.uint8)
+        weak_bgr = cv2.cvtColor(weak_hsv, cv2.COLOR_HSV2BGR)[0, 0]
+        cv2.rectangle(frame, (75, 55), (235, 210), weak_bgr.tolist(), cv2.FILLED)
+        cv2.rectangle(frame, (100, 80), (210, 190), GREEN, cv2.FILLED)
+
+        result = analyze_rescue_zones(frame)["green"]
+
+        self.assertTrue(result["detected"])
+        self.assertEqual(cv2.boundingRect(result["_hull"]), (100, 80, 111, 111))
+
     def test_wood_olive_and_brown_surfaces_are_rejected(self):
         non_green_samples = (
             (190, 170, 125),
@@ -236,32 +289,6 @@ class RescueZoneDetectionTest(unittest.TestCase):
             with self.subTest(rgb=rgb):
                 result = analyze_rescue_zones(frame_with_rgb_zone(rgb))["green"]
                 self.assertFalse(result["detected"])
-
-    def test_candidate_component_requires_twenty_percent_strong_green(self):
-        zone_mask = np.zeros((FRAME_HEIGHT, FRAME_WIDTH), dtype=np.uint8)
-        draw_complete_zone(zone_mask, 255)
-        candidate_pixels = np.flatnonzero(zone_mask)
-
-        accepted_frame = blank_frame()
-        weak_hsv = np.asarray([[[54, 83, 126]]], dtype=np.uint8)
-        weak_bgr = cv2.cvtColor(weak_hsv, cv2.COLOR_HSV2BGR)[0, 0]
-        accepted_frame[zone_mask > 0] = weak_bgr
-        accepted_strong_pixels = candidate_pixels[: int(candidate_pixels.size * 0.30)]
-        accepted_frame.reshape(-1, 3)[accepted_strong_pixels] = GREEN
-        accepted = analyze_rescue_zones(accepted_frame)["green"]
-
-        rejected_frame = blank_frame()
-        rejected_frame[zone_mask > 0] = weak_bgr
-        rejected_strong_pixels = candidate_pixels[: int(candidate_pixels.size * 0.10)]
-        rejected_frame.reshape(-1, 3)[rejected_strong_pixels] = GREEN
-        rejected = analyze_rescue_zones(rejected_frame)["green"]
-
-        self.assertTrue(accepted["detected"])
-        self.assertGreaterEqual(
-            accepted["strongGreenFraction"],
-            rescue_zone.MIN_STRONG_GREEN_FRACTION,
-        )
-        self.assertFalse(rejected["detected"])
 
     def test_plausible_competition_green_variations_are_accepted(self):
         green_samples = (
@@ -452,6 +479,7 @@ class RescueZoneDetectionTest(unittest.TestCase):
 
         self.assertNotIn("_hull", status["green"])
         self.assertIn("boundsCoverage", status["green"])
+        self.assertIn("frameCoverage", status["green"])
 
     def test_green_and_nearby_background_medians_use_rgb_display_order(self):
         frame = blank_frame()

@@ -28,7 +28,10 @@ add_executable(robot_test
     src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
     src/robot/rescue_area_mission.cpp
-    src/robot/rescue_zone_frame_mission.cpp
+    src/robot/rescue_zone_align_mission.cpp
+    src/robot/rescue_zone_approach_mission.cpp
+    src/robot/rescue_zone_search_mission.cpp
+    src/robot/rescue_zone_triangle_mission.cpp
     src/robot/servo_controller.cpp
     src/robot/servo_routine.cpp
     src/robot/obstacle_avoidance.cpp
@@ -58,7 +61,10 @@ if(BUILD_TESTING)
         src/robot/obstacle_avoidance.cpp
         src/robot/ball_alignment_mission.cpp
         src/robot/rescue_area_mission.cpp
-        src/robot/rescue_zone_frame_mission.cpp
+        src/robot/rescue_zone_align_mission.cpp
+        src/robot/rescue_zone_approach_mission.cpp
+        src/robot/rescue_zone_search_mission.cpp
+        src/robot/rescue_zone_triangle_mission.cpp
         src/robot/robot_state.cpp
         src/robot/servo_routine.cpp
     )
@@ -95,20 +101,66 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME obstacle_avoidance_test COMMAND obstacle_avoidance_test)
 
-    add_executable(rescue_zone_frame_mission_test
-        tests/rescue_zone_frame_mission_test.cpp
-        src/hal/camera_monitor.cpp
+    add_executable(rescue_zone_align_mission_test
+        tests/rescue_zone_align_mission_test.cpp
         src/robot/imu_turn_controller.cpp
-        src/robot/rescue_zone_frame_mission.cpp
+        src/robot/rescue_zone_align_mission.cpp
         src/robot/robot_state.cpp
     )
-    target_include_directories(rescue_zone_frame_mission_test PRIVATE include)
+    target_include_directories(rescue_zone_align_mission_test PRIVATE include)
     if(NOT WIN32)
-        target_link_libraries(rescue_zone_frame_mission_test pthread)
+        target_link_libraries(rescue_zone_align_mission_test pthread)
     endif()
     add_test(
-        NAME rescue_zone_frame_mission_test
-        COMMAND rescue_zone_frame_mission_test)
+        NAME rescue_zone_align_mission_test
+        COMMAND rescue_zone_align_mission_test)
+
+    add_executable(rescue_zone_approach_mission_test
+        tests/rescue_zone_approach_mission_test.cpp
+        src/robot/imu_turn_controller.cpp
+        src/robot/rescue_zone_approach_mission.cpp
+        src/robot/robot_state.cpp
+    )
+    target_include_directories(
+        rescue_zone_approach_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(rescue_zone_approach_mission_test pthread)
+    endif()
+    add_test(
+        NAME rescue_zone_approach_mission_test
+        COMMAND rescue_zone_approach_mission_test)
+
+    add_executable(rescue_zone_search_mission_test
+        tests/rescue_zone_search_mission_test.cpp
+        src/robot/rescue_zone_search_mission.cpp
+        src/robot/robot_state.cpp
+    )
+    target_include_directories(
+        rescue_zone_search_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(rescue_zone_search_mission_test pthread)
+    endif()
+    add_test(
+        NAME rescue_zone_search_mission_test
+        COMMAND rescue_zone_search_mission_test)
+
+    add_executable(rescue_zone_triangle_mission_test
+        tests/rescue_zone_triangle_mission_test.cpp
+        src/robot/imu_turn_controller.cpp
+        src/robot/rescue_zone_align_mission.cpp
+        src/robot/rescue_zone_approach_mission.cpp
+        src/robot/rescue_zone_search_mission.cpp
+        src/robot/rescue_zone_triangle_mission.cpp
+        src/robot/robot_state.cpp
+    )
+    target_include_directories(
+        rescue_zone_triangle_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(rescue_zone_triangle_mission_test pthread)
+    endif()
+    add_test(
+        NAME rescue_zone_triangle_mission_test
+        COMMAND rescue_zone_triangle_mission_test)
 
     add_executable(curve_diagnostics_logger_test
         tests/curve_diagnostics_logger_test.cpp

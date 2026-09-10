@@ -41,8 +41,14 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "turn_right_90";
     case AutonomousMission::RescueZoneDetection:
         return "rescue_zone_detection";
-    case AutonomousMission::RescueZoneFrame:
-        return "rescue_zone_frame";
+    case AutonomousMission::RescueZoneSearch:
+        return "rescue_zone_search";
+    case AutonomousMission::RescueZoneAlign:
+        return "rescue_zone_align";
+    case AutonomousMission::RescueZoneApproach:
+        return "rescue_zone_approach";
+    case AutonomousMission::RescueZoneTriangle:
+        return "rescue_zone_triangle";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
@@ -112,9 +118,12 @@ void RobotState::startAutonomous()
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
     if (state_.autonomousMission == AutonomousMission::RescueZoneDetection ||
-        state_.autonomousMission == AutonomousMission::RescueZoneFrame)
+        state_.autonomousMission == AutonomousMission::RescueZoneSearch ||
+        state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
+        state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
+        state_.autonomousMission == AutonomousMission::RescueZoneTriangle)
     {
-        // Estes modos usam apenas a câmera e, no FRAME_ZONE, a tração lateral.
+        // Estes modos usam apenas a câmera e, quando necessário, a tração lateral.
         // Manter os servos desligados evita movimentos mecânicos não solicitados.
         disableServosLocked();
     }
@@ -146,7 +155,10 @@ bool RobotState::tryStartAutonomous()
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
     if (state_.autonomousMission == AutonomousMission::RescueZoneDetection ||
-        state_.autonomousMission == AutonomousMission::RescueZoneFrame)
+        state_.autonomousMission == AutonomousMission::RescueZoneSearch ||
+        state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
+        state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
+        state_.autonomousMission == AutonomousMission::RescueZoneTriangle)
     {
         // A partida física aplica a mesma condição segura do dashboard:
         // os servos permanecem desligados durante o enquadramento visual.
@@ -176,6 +188,14 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     state_.servoCalibrationActive = false;
     disableServosLocked();
     state_.autonomousMission = mission;
+    if (mission == AutonomousMission::RescueZoneAlign ||
+        mission == AutonomousMission::RescueZoneTriangle)
+    {
+        // Uma nova tentativa de alinhamento invalida o heading anterior.
+        // Somente uma conclusão nova pode liberar o APPROACH_ZONE novamente.
+        state_.rescueZoneLockedHeading =
+            std::numeric_limits<double>::quiet_NaN();
+    }
     state_.autonomousStatus = {"ready", "Missão selecionada e pronta"};
     lastCommand_ = std::chrono::steady_clock::now();
 }
@@ -207,8 +227,29 @@ void RobotState::setRescueZoneTargetColor(RescueZoneTargetColor color)
     state_.servoCalibrationActive = false;
     disableServosLocked();
     state_.rescueZoneTargetColor = color;
-    state_.autonomousStatus = {"ready", "Cor alvo do FRAME_ZONE selecionada"};
+    state_.autonomousStatus = {"ready", "Cor alvo da zona selecionada"};
     lastCommand_ = std::chrono::steady_clock::now();
+}
+
+bool RobotState::setRescueZoneLockedHeading(double headingDegrees)
+{
+    if (!std::isfinite(headingDegrees))
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.emergencyStop || state_.mode != "autonomous" ||
+        (state_.autonomousMission != AutonomousMission::RescueZoneAlign &&
+         state_.autonomousMission != AutonomousMission::RescueZoneTriangle))
+    {
+        return false;
+    }
+
+    // O heading validado pelo ALIGN_ZONE permanece disponível após Stop e
+    // seleção do APPROACH_ZONE. Nenhuma outra missão pode sobrescrevê-lo.
+    state_.rescueZoneLockedHeading = headingDegrees;
+    return true;
 }
 
 void RobotState::stop()
@@ -536,8 +577,19 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
         status.phase == "obstacle_turn_correction_failed" ||
         status.phase == "obstacle_encoder_lost" ||
         status.phase == "obstacle_distance_timeout";
-    const bool terminalRescueZoneFrameStatus =
-        status.rescueZoneFrameCompleted || status.rescueZoneFrameFailed;
+    const bool terminalRescueZoneAlignStatus =
+        status.phase == "rescue_zone_align_completed";
+    const bool terminalRescueZoneApproachStatus =
+        status.phase == "rescue_zone_approach_completed" ||
+        status.phase == "rescue_zone_approach_no_heading" ||
+        status.phase == "rescue_zone_approach_imu_stale" ||
+        status.phase == "rescue_zone_approach_ultra_stale" ||
+        status.phase == "rescue_zone_approach_timeout";
+    const bool terminalRescueZoneSearchStatus =
+        status.phase == "rescue_zone_search_found";
+    const bool terminalRescueZoneTriangleStatus =
+        status.phase == "rescue_zone_triangle_success" ||
+        status.phase == "rescue_zone_triangle_failed";
     const bool terminalMissionStatus = status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||
@@ -562,7 +614,10 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase ==
                                            "ball_alignment_target_lost_timeout" ||
                                        terminalObstacleStatus ||
-                                       terminalRescueZoneFrameStatus;
+                                       terminalRescueZoneAlignStatus ||
+                                       terminalRescueZoneApproachStatus ||
+                                       terminalRescueZoneSearchStatus ||
+                                       terminalRescueZoneTriangleStatus;
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;
