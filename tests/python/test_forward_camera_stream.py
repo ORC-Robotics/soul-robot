@@ -148,7 +148,10 @@ class ForwardCameraStreamTest(unittest.TestCase):
         frame = np.full((240, 320, 3), 255, dtype=np.uint8)
         cv2.rectangle(frame, (30, 70), (130, 220), (0, 200, 0), -1)
         cv2.rectangle(frame, (190, 70), (290, 220), (0, 0, 220), -1)
-        candidates = forward_camera_stream.analyze_rescue_zones(frame)
+        candidates = forward_camera_stream.analyze_rescue_zones(
+            frame,
+            collect_color_diagnostics=True,
+        )
         temporal_filter = forward_camera_stream.RescueZoneTemporalFilter()
         temporal_filter.update(candidates)
         temporal_filter.update(candidates)
@@ -421,6 +424,36 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 command["right_power"],
                 camera_line_frame.NORMAL_MAX_POWER,
             )
+
+    def test_rescue_zone_profiler_separates_client_conditions_and_reports_p95(self):
+        profiler = forward_camera_stream.RescueZoneCycleProfiler(
+            enabled=True,
+            window_frames=2,
+        )
+        first = {
+            stage: 1.0
+            for stage in forward_camera_stream.RescueZoneCycleProfiler.STAGES
+        }
+        second = dict(first)
+        first["totalCycleMs"] = 10.0
+        second["totalCycleMs"] = 30.0
+
+        with mock.patch("builtins.print") as print_mock:
+            profiler.record(False, first, {"ExposureTime": 8000})
+            profiler.record(True, first, {"FrameDuration": 33333})
+            self.assertEqual(print_mock.call_count, 0)
+            profiler.record(False, second, {"ExposureTime": 12000})
+
+        self.assertEqual(print_mock.call_count, 1)
+        report_text = print_mock.call_args.args[0]
+        self.assertTrue(report_text.startswith("CAM1_PROFILE "))
+        report = json.loads(report_text.split(" ", 1)[1])
+        self.assertEqual(report["condition"], "withoutStreamClient")
+        self.assertEqual(report["frames"], 2)
+        self.assertEqual(report["effectiveFps"], 50.0)
+        self.assertEqual(report["stagesMs"]["totalCycleMs"]["average"], 20.0)
+        self.assertEqual(report["stagesMs"]["totalCycleMs"]["p95"], 30.0)
+        self.assertEqual(len(profiler.samples["withStreamClient"]), 1)
 
 
 if __name__ == "__main__":

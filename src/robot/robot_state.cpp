@@ -41,6 +41,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "turn_right_90";
     case AutonomousMission::RescueZoneDetection:
         return "rescue_zone_detection";
+    case AutonomousMission::RescueZoneFrame:
+        return "rescue_zone_frame";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
@@ -61,6 +63,11 @@ const char* autonomousMissionName(AutonomousMission mission)
     default:
         return "main_mission";
     }
+}
+
+const char* rescueZoneTargetColorName(RescueZoneTargetColor color)
+{
+    return color == RescueZoneTargetColor::Red ? "red" : "green";
 }
 
 RobotSnapshot RobotState::snapshot() const
@@ -104,10 +111,11 @@ void RobotState::startAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection)
+    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection ||
+        state_.autonomousMission == AutonomousMission::RescueZoneFrame)
     {
-        // O modo isolado valida somente a percepção. Manter os servos
-        // desligados evita movimentos mecânicos durante o enquadramento manual.
+        // Estes modos usam apenas a câmera e, no FRAME_ZONE, a tração lateral.
+        // Manter os servos desligados evita movimentos mecânicos não solicitados.
         disableServosLocked();
     }
     else
@@ -137,10 +145,11 @@ bool RobotState::tryStartAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection)
+    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection ||
+        state_.autonomousMission == AutonomousMission::RescueZoneFrame)
     {
         // A partida física aplica a mesma condição segura do dashboard:
-        // somente a câmera fica ativa, sem tracionar nem mover os servos.
+        // os servos permanecem desligados durante o enquadramento visual.
         disableServosLocked();
     }
     else
@@ -183,6 +192,23 @@ bool RobotState::setDriveDistanceTargetCm(double targetCm)
     std::lock_guard<std::mutex> lock(mutex_);
     state_.driveDistanceTargetCm = targetCm;
     return true;
+}
+
+void RobotState::setRescueZoneTargetColor(RescueZoneTargetColor color)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Alterar o alvo para o robô antes da próxima partida. Assim, uma manobra
+    // iniciada para uma cor nunca continua usando a seleção nova no meio do giro.
+    state_.mode = state_.emergencyStop ? "emergency" : "stopped";
+    state_.left = 0.0;
+    state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    disableServosLocked();
+    state_.rescueZoneTargetColor = color;
+    state_.autonomousStatus = {"ready", "Cor alvo do FRAME_ZONE selecionada"};
+    lastCommand_ = std::chrono::steady_clock::now();
 }
 
 void RobotState::stop()
@@ -510,6 +536,8 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
         status.phase == "obstacle_turn_correction_failed" ||
         status.phase == "obstacle_encoder_lost" ||
         status.phase == "obstacle_distance_timeout";
+    const bool terminalRescueZoneFrameStatus =
+        status.rescueZoneFrameCompleted || status.rescueZoneFrameFailed;
     const bool terminalMissionStatus = status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||
@@ -533,7 +561,8 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "ball_reached" ||
                                        status.phase ==
                                            "ball_alignment_target_lost_timeout" ||
-                                       terminalObstacleStatus;
+                                       terminalObstacleStatus ||
+                                       terminalRescueZoneFrameStatus;
     if (state_.mode != "autonomous" && !terminalMissionStatus)
     {
         return;

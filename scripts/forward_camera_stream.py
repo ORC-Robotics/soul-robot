@@ -55,6 +55,107 @@ STATUS_FPS = 5
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
 
+# O profiling é temporário e permanece desligado para não afetar a CAM1 normal.
+# Cada condição acumula uma janela inteira antes de publicar um único resumo.
+RESCUE_ZONE_PROFILE_ENABLED = os.environ.get(
+    "OBR_RESCUE_ZONE_PROFILE", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+RESCUE_ZONE_PROFILE_WINDOW_FRAMES = 300
+RESCUE_ZONE_PROFILE_METADATA_INTERVAL_FRAMES = 30
+
+
+def _profile_summary(values):
+    """Calcula média e P95 sem depender de bibliotecas estatísticas externas."""
+
+    ordered = sorted(float(value) for value in values)
+    percentile_index = max(0, math.ceil(len(ordered) * 0.95) - 1)
+    return {
+        "average": round(sum(ordered) / len(ordered), 3),
+        "p95": round(ordered[percentile_index], 3),
+    }
+
+
+class RescueZoneCycleProfiler:
+    """Agrupa custos da CAM1 por presença de cliente sem imprimir a cada frame."""
+
+    STAGES = (
+        "captureMs",
+        "preparationMs",
+        "forwardAssistMs",
+        "rescueZoneDetectionMs",
+        "overlayMs",
+        "jpegEncodeMs",
+        "ipcPublishMs",
+        "otherMs",
+        "totalCycleMs",
+    )
+
+    def __init__(self, enabled=False, window_frames=RESCUE_ZONE_PROFILE_WINDOW_FRAMES):
+        self.enabled = bool(enabled)
+        self.window_frames = max(1, int(window_frames))
+        self.samples = {
+            "withoutStreamClient": [],
+            "withStreamClient": [],
+        }
+
+    def metadata_is_due(self, bucket):
+        """Amostra metadados espaçadamente para não distorcer o ciclo medido."""
+
+        if not self.enabled:
+            return False
+        count = len(self.samples[bucket])
+        return count % RESCUE_ZONE_PROFILE_METADATA_INTERVAL_FRAMES == 0
+
+    def record(self, has_stream_client, timings, metadata=None):
+        """Registra um ciclo e emite somente resumos de janelas completas."""
+
+        if not self.enabled:
+            return
+        bucket = "withStreamClient" if has_stream_client else "withoutStreamClient"
+        sample = {
+            stage: max(0.0, float(timings.get(stage, 0.0)))
+            for stage in self.STAGES
+        }
+        if metadata:
+            for name in ("ExposureTime", "FrameDuration"):
+                value = metadata.get(name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    sample[name] = float(value)
+        self.samples[bucket].append(sample)
+        if len(self.samples[bucket]) < self.window_frames:
+            return
+
+        window = self.samples[bucket]
+        stages = {
+            stage: _profile_summary([sample[stage] for sample in window])
+            for stage in self.STAGES
+        }
+        total_average_ms = stages["totalCycleMs"]["average"]
+        report = {
+            "profile": "CAM1_RESCUE_ZONE",
+            "condition": bucket,
+            "frames": len(window),
+            "effectiveFps": round(1000.0 / total_average_ms, 2)
+            if total_average_ms > 0.0
+            else 0.0,
+            "stagesMs": stages,
+            "camera": {
+                "targetFps": camera_line_frame.CAMERA_PROFILES["forward"]["target_fps"],
+                "configuredFrameDurationLimitsUs": [
+                    int(
+                        1_000_000
+                        / camera_line_frame.CAMERA_PROFILES["forward"]["target_fps"]
+                    )
+                ] * 2,
+            },
+        }
+        for name in ("ExposureTime", "FrameDuration"):
+            values = [sample[name] for sample in window if name in sample]
+            if values:
+                report["camera"][f"{name}Us"] = _profile_summary(values)
+        print(f"CAM1_PROFILE {json.dumps(report, allow_nan=False)}", flush=True)
+        self.samples[bucket] = []
+
 # A OV5647 frontal está fisicamente invertida, mas o hvflip solicitado ao
 # Picamera2 não alterou o JPEG de forma consistente. Rotacionar o array uma vez,
 # antes da visão e do stream, mantém percepção e diagnóstico na mesma orientação.
@@ -663,6 +764,9 @@ def main():
     rescue_zone_input = None
     rescue_zone_temporal_filter = RescueZoneTemporalFilter()
     path_tracker = ForwardPathTracker()
+    rescue_zone_profiler = RescueZoneCycleProfiler(
+        RESCUE_ZONE_PROFILE_ENABLED
+    )
 
     silver_dataset_recorder = None
     if SilverDatasetRecorder is not None:
@@ -719,9 +823,27 @@ def main():
             elif enabled:
                 stream_active = True
 
+            profile_this_cycle = (
+                rescue_zone_profiler.enabled and rescue_zone_active
+            )
+            profile_timings = {
+                stage: 0.0 for stage in RescueZoneCycleProfiler.STAGES
+            } if profile_this_cycle else None
+            cycle_started = time.perf_counter() if profile_this_cycle else 0.0
+
             try:
+                stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 frame = camera.capture_array("main")
+                if profile_this_cycle:
+                    profile_timings["captureMs"] = (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
+                    stage_started = time.perf_counter()
                 frame = orient_forward_frame(frame)
+                if profile_this_cycle:
+                    profile_timings["preparationMs"] = (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
                 if silver_dataset_recorder is not None:
                     try:
                         silver_dataset_recorder.submit(frame)
@@ -729,6 +851,7 @@ def main():
                         print(f"Coleta do dataset frontal desativada após erro inesperado: {error}", flush=True)
                         silver_dataset_recorder = None
                 line_timestamp = time.time()
+                stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 bottom_status = read_json_snapshot(LINE_STATUS_PATH)
                 try:
                     bottom_age = line_timestamp - float(bottom_status["lineTimestamp"])
@@ -747,8 +870,17 @@ def main():
                     else "ABSENT" if bottom_fresh else "UNKNOWN"
                 )
                 reading["source"] = bottom_status.get("lineControlSource", "UNAVAILABLE") if bottom_fresh else "UNAVAILABLE"
+                if profile_this_cycle:
+                    profile_timings["forwardAssistMs"] = (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
                 line_sequence += 1
+                stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 save_forward_line_status(reading, line_timestamp, line_sequence)
+                if profile_this_cycle:
+                    profile_timings["ipcPublishMs"] += (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
 
                 rescue_zone_input = read_rescue_zone_detection_input()
                 detection_requested = rescue_zone_input["enabled"]
@@ -761,22 +893,46 @@ def main():
                         rescue_zone_input = None
                         clear_rescue_zone_status()
                 if rescue_zone_active:
-                    rescue_zone_candidates = analyze_rescue_zones(frame)
+                    stage_started = time.perf_counter() if profile_this_cycle else 0.0
+                    detection_timings = {} if profile_this_cycle else None
+                    rescue_zone_candidates = analyze_rescue_zones(
+                        frame,
+                        profile_timings=detection_timings,
+                    )
                     rescue_zone_results = rescue_zone_temporal_filter.update(
                         rescue_zone_candidates
                     )
+                    if profile_this_cycle:
+                        detection_total_ms = (
+                            time.perf_counter() - stage_started
+                        ) * 1000.0
+                        color_conversion_ms = detection_timings.get(
+                            "colorConversionMs", 0.0
+                        )
+                        profile_timings["preparationMs"] += color_conversion_ms
+                        profile_timings["rescueZoneDetectionMs"] = max(
+                            0.0,
+                            detection_total_ms - color_conversion_ms,
+                        )
                     # O gate é relido depois do processamento para reduzir a
                     # janela entre STOP/E-Stop e a remoção do resultado anterior.
                     latest_rescue_zone_input = read_rescue_zone_detection_input()
                     if latest_rescue_zone_input["enabled"]:
                         rescue_zone_input = latest_rescue_zone_input
                         rescue_zone_sequence += 1
+                        stage_started = (
+                            time.perf_counter() if profile_this_cycle else 0.0
+                        )
                         save_rescue_zone_status(
                             rescue_zone_results,
                             line_timestamp,
                             rescue_zone_sequence,
                             rescue_zone_input,
                         )
+                        if profile_this_cycle:
+                            profile_timings["ipcPublishMs"] += (
+                                time.perf_counter() - stage_started
+                            ) * 1000.0
                     else:
                         rescue_zone_active = False
                         rescue_zone_results = None
@@ -808,7 +964,9 @@ def main():
                 )
                 continue
 
-            if enabled and stream_has_clients():
+            has_stream_client = enabled and stream_has_clients()
+            if has_stream_client:
+                stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 display_frame = frame.copy()
                 if rescue_zone_active and rescue_zone_results is not None:
                     display_frame = draw_rescue_zone_overlay(
@@ -818,7 +976,16 @@ def main():
                     )
                 else:
                     draw_forward_assist_overlay(display_frame, reading)
+                if profile_this_cycle:
+                    profile_timings["overlayMs"] = (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
+                    stage_started = time.perf_counter()
                 jpeg = camera_line_frame.encode_frame(display_frame)
+                if profile_this_cycle:
+                    profile_timings["jpegEncodeMs"] = (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
                 if jpeg is not None:
                     publish_frame(jpeg)
 
@@ -832,6 +999,7 @@ def main():
                     if smoothed_fps > 0.0 else current_fps
                 )
             if current_time - last_status_time >= 1.0 / STATUS_FPS:
+                stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 save_status(
                     enabled,
                     enabled,
@@ -841,7 +1009,45 @@ def main():
                     details,
                     processing_active=True,
                 )
+                if profile_this_cycle:
+                    profile_timings["ipcPublishMs"] += (
+                        time.perf_counter() - stage_started
+                    ) * 1000.0
                 last_status_time = current_time
+            if profile_this_cycle and rescue_zone_active:
+                profile_timings["totalCycleMs"] = (
+                    time.perf_counter() - cycle_started
+                ) * 1000.0
+                accounted_stages = (
+                    "captureMs",
+                    "preparationMs",
+                    "forwardAssistMs",
+                    "rescueZoneDetectionMs",
+                    "overlayMs",
+                    "jpegEncodeMs",
+                    "ipcPublishMs",
+                )
+                profile_timings["otherMs"] = max(
+                    0.0,
+                    profile_timings["totalCycleMs"]
+                    - sum(profile_timings[stage] for stage in accounted_stages),
+                )
+                bucket = (
+                    "withStreamClient"
+                    if has_stream_client
+                    else "withoutStreamClient"
+                )
+                metadata = None
+                if rescue_zone_profiler.metadata_is_due(bucket):
+                    try:
+                        metadata = camera.capture_metadata()
+                    except Exception:
+                        metadata = None
+                rescue_zone_profiler.record(
+                    has_stream_client,
+                    profile_timings,
+                    metadata,
+                )
     finally:
         stream_active = False
         close_forward_camera(camera)

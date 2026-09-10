@@ -117,17 +117,53 @@ struct ForwardBallSnapshot
     double ageMs = 0.0;
 };
 
+enum class RescueZoneGeometryState
+{
+    NotDetected,
+    BoundsUnknown,
+    LeftBoundOnly,
+    RightBoundOnly,
+    FullBounds
+};
+
+// Preserva separadamente a observação atual e a confirmação temporal da zona.
+// FRAME_ZONE só pode mover com uma amostra atual e confirmada do mesmo frame.
+struct RescueZoneObservation
+{
+    bool candidateDetected = false;
+    bool detected = false;
+    RescueZoneGeometryState geometryState =
+        RescueZoneGeometryState::NotDetected;
+    bool aimValid = false;
+    double aimX = std::numeric_limits<double>::quiet_NaN();
+};
+
+// Snapshot atômico das duas cores publicado pela câmera frontal.
+struct RescueZoneSnapshot
+{
+    bool sourceFresh = false;
+    std::uint64_t sequence = 0;
+    double timestamp = 0.0;
+    double ageMs = 0.0;
+    RescueZoneObservation green;
+    RescueZoneObservation red;
+};
+
 // Monitora a saúde da câmera e rejeita IPC ausente, antigo ou inválido.
 class CameraMonitor
 {
 public:
     // Um caminho alternativo permite testar o contrato IPC sem câmera nem motores.
-    explicit CameraMonitor(std::string forwardLineStatusPath = {})
-        : forwardLineStatusPath_(std::move(forwardLineStatusPath)) {}
+    explicit CameraMonitor(
+        std::string forwardLineStatusPath = {},
+        std::string rescueZoneStatusPath = {})
+        : forwardLineStatusPath_(std::move(forwardLineStatusPath)),
+          rescueZoneStatusPath_(std::move(rescueZoneStatusPath)) {}
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
     ForwardBallSnapshot forwardBallSnapshot() const;
+    RescueZoneSnapshot rescueZoneSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;
     bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
     bool publishRescueZoneDetectionInput(
@@ -138,6 +174,7 @@ public:
 
 private:
     std::string forwardLineStatusPath_;
+    std::string rescueZoneStatusPath_;
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
     ForwardLineSnapshot cachedForwardLineSnapshot_;

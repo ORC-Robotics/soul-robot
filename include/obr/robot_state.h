@@ -13,6 +13,7 @@ enum class AutonomousMission
     TurnRight90,
     DriveDistance,
     RescueZoneDetection,
+    RescueZoneFrame,
     RescueArea,
     ObstacleAvoidance,
     ServoInitialize,
@@ -23,8 +24,15 @@ enum class AutonomousMission
     ServoFullSequenceTwo
 };
 
+enum class RescueZoneTargetColor
+{
+    Green,
+    Red
+};
+
 // Retorna o identificador estável usado na telemetria e nos comandos do dashboard.
 const char* autonomousMissionName(AutonomousMission mission);
+const char* rescueZoneTargetColorName(RescueZoneTargetColor color);
 
 // Descreve a etapa atual da missão para telemetria e diagnóstico no dashboard.
 // Estes dados não comandam os motores; apenas refletem a decisão já tomada pelo controle autônomo.
@@ -58,6 +66,9 @@ struct AutonomousStatus
     bool rescueZoneUltrasonicFresh = false;
     bool rescueZoneUltrasonicValid = false;
     double rescueZoneUltrasonicDistanceCm = 0.0;
+    bool rescueZoneFrameCompleted = false;
+    bool rescueZoneFrameFailed = false;
+    std::string rescueZoneFrameCompletionReason;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
@@ -76,6 +87,7 @@ struct RobotSnapshot
     bool commandTimedOut = false;
     unsigned long long autonomousRunSequence = 0;
     double driveDistanceTargetCm = config::kDriveDistanceDefaultTargetCm;
+    RescueZoneTargetColor rescueZoneTargetColor = RescueZoneTargetColor::Green;
     ServoPose servoPose;
     bool armServoRequested = false;
     bool wristServoRequested = false;
@@ -99,6 +111,7 @@ public:
     bool tryStartAutonomous();
     void setAutonomousMission(AutonomousMission mission);
     bool setDriveDistanceTargetCm(double targetCm);
+    void setRescueZoneTargetColor(RescueZoneTargetColor color);
     void stop();
     void emergencyStop();
     void drive(double left, double right);

@@ -74,7 +74,8 @@ bool selectedMissionReady(
         return driveDistanceEncodersReady(telemetry);
     }
     if (mission == AutonomousMission::RescueArea ||
-        mission == AutonomousMission::RescueZoneDetection)
+        mission == AutonomousMission::RescueZoneDetection ||
+        mission == AutonomousMission::RescueZoneFrame)
     {
         // A visão pesada é ligada somente depois da partida. A missão começa
         // parada e aguarda um IPC frontal recente antes de mover os motores.
@@ -127,6 +128,10 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::RescueZoneDetection)
     {
         return "forward_rescue_zone_detection";
+    }
+    if (mission == AutonomousMission::RescueZoneFrame)
+    {
+        return "forward_rescue_zone_frame";
     }
     if (mission == AutonomousMission::ObstacleAvoidance)
     {
@@ -281,6 +286,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
             cameraMonitor.forwardLineSnapshot();
         const ForwardBallSnapshot forwardBallSnapshot =
             forwardBallVision.snapshot();
+        const RescueZoneSnapshot rescueZoneSnapshot =
+            cameraMonitor.rescueZoneSnapshot();
         const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
                                                esp32Telemetry.oledOk &&
                                                esp32Telemetry.raspberrySystemReady;
@@ -405,7 +412,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
             cameraReady,
             cameraLineSnapshot,
             forwardLineSnapshot,
-            forwardBallSnapshot);
+            forwardBallSnapshot,
+            rescueZoneSnapshot);
 
         // Zera comandos antigos antes de enviá-los à ESP32.
         // Isso impede que uma queda do dashboard mantenha o último movimento ativo.

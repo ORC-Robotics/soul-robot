@@ -5,6 +5,7 @@
 #include "obr/main_mission.h"
 #include "obr/obstacle_avoidance.h"
 #include "obr/rescue_area_mission.h"
+#include "obr/rescue_zone_frame_mission.h"
 #include "obr/robot_state.h"
 #include "obr/servo_routine.h"
 
@@ -24,7 +25,8 @@ public:
         bool cameraReady,
         const CameraLineSnapshot& cameraLineSnapshot,
         const ForwardLineSnapshot& forwardLineSnapshot,
-        const ForwardBallSnapshot& forwardBallSnapshot);
+        const ForwardBallSnapshot& forwardBallSnapshot,
+        const RescueZoneSnapshot& rescueZoneSnapshot = {});
 
 private:
     enum class DistancePhase
@@ -37,6 +39,7 @@ private:
 
     MainMission mainMission_;
     RescueAreaMission rescueAreaMission_;
+    RescueZoneFrameMission rescueZoneFrameMission_;
     ObstacleAvoidance obstacleAvoidanceTest_;
     ImuTurnController testTurnController_;
     ServoRoutine servoRoutine_;
@@ -68,6 +71,11 @@ private:
     void updateRescueZoneDetection(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);
+    void updateRescueZoneFrame(
+        RobotState& robotState,
+        const RobotSnapshot& snapshot,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const RescueZoneSnapshot& rescueZoneSnapshot);
     void updateObstacleAvoidance(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);

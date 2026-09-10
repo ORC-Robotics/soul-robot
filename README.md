@@ -657,6 +657,20 @@ preserva separadamente a validade geométrica bruta do frame. O IPC também publ
 `confirmationFrames`, `confirmationRequiredFrames`, `lossFrames` e
 `lossRequiredFrames` dentro de cada cor.
 
+O modo isolado `rescue_zone_frame` executa somente o enquadramento da zona. No
+dashboard, selecione `FRAME_ZONE · ENQUADRAR ÁREA`, escolha obrigatoriamente
+`GREEN` ou `RED` e então use `Autônomo`. Uma zona ausente mantém o robô parado;
+`BOUNDS_UNKNOWN` conclui imediatamente em best effort, parado e sem ré, enquanto
+`LEFT_BOUND_ONLY` e `RIGHT_BOUND_ONLY` aplicam micro-pivôs opostos de 80 ms em
+potência `0.69`.
+Cada pulso termina com PWM zero, settling fixo de 100 ms e um frame novo posterior
+ao movimento, sem depender da velocidade indicada pelos encoders.
+`FULL_BOUNDS` com `aimValid=true` conclui na condição ideal, sem alinhar ao `aimX`
+e sem avançar. Se três micro-pivôs não obtiverem essa condição, o modo conclui
+parado com o melhor enquadramento parcial disponível. A telemetria distingue
+`FULL_BOUNDS`, `BEST_EFFORT_BOUNDS_UNKNOWN` e `BEST_EFFORT_PARTIAL_BOUND`.
+O ultrassônico continua apenas no overlay e na telemetria.
+
 O código também pode solicitar que o stream frontal já fique disponível no início:
 
 ```sh

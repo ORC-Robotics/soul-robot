@@ -139,6 +139,118 @@ bool tryGetJsonString(
     return true;
 }
 
+bool tryGetJsonObject(
+    const std::string& json,
+    const std::string& key,
+    std::string& object)
+{
+    const std::string marker = "\"" + key + "\":";
+    std::size_t start = json.find(marker);
+    if (start == std::string::npos)
+    {
+        return false;
+    }
+    start = json.find('{', start + marker.size());
+    if (start == std::string::npos)
+    {
+        return false;
+    }
+
+    int depth = 0;
+    bool insideString = false;
+    bool escaped = false;
+    for (std::size_t index = start; index < json.size(); ++index)
+    {
+        const char character = json[index];
+        if (insideString)
+        {
+            if (escaped)
+            {
+                escaped = false;
+            }
+            else if (character == '\\')
+            {
+                escaped = true;
+            }
+            else if (character == '"')
+            {
+                insideString = false;
+            }
+            continue;
+        }
+        if (character == '"')
+        {
+            insideString = true;
+        }
+        else if (character == '{')
+        {
+            ++depth;
+        }
+        else if (character == '}' && --depth == 0)
+        {
+            object = json.substr(start, index - start + 1);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool parseRescueZoneGeometryState(
+    const std::string& value,
+    RescueZoneGeometryState& state)
+{
+    if (value == "NOT_DETECTED")
+    {
+        state = RescueZoneGeometryState::NotDetected;
+        return true;
+    }
+    if (value == "BOUNDS_UNKNOWN")
+    {
+        state = RescueZoneGeometryState::BoundsUnknown;
+        return true;
+    }
+    if (value == "LEFT_BOUND_ONLY")
+    {
+        state = RescueZoneGeometryState::LeftBoundOnly;
+        return true;
+    }
+    if (value == "RIGHT_BOUND_ONLY")
+    {
+        state = RescueZoneGeometryState::RightBoundOnly;
+        return true;
+    }
+    if (value == "FULL_BOUNDS")
+    {
+        state = RescueZoneGeometryState::FullBounds;
+        return true;
+    }
+    return false;
+}
+
+bool parseRescueZoneObservation(
+    const std::string& json,
+    RescueZoneObservation& observation)
+{
+    std::string geometryState;
+    if (!tryGetJsonBool(
+            json, "candidateDetected", observation.candidateDetected) ||
+        !tryGetJsonBool(json, "detected", observation.detected) ||
+        !tryGetJsonString(json, "geometryState", geometryState) ||
+        !parseRescueZoneGeometryState(
+            geometryState, observation.geometryState) ||
+        !tryGetJsonBool(json, "aimValid", observation.aimValid))
+    {
+        return false;
+    }
+    if (observation.aimValid &&
+        (!tryGetJsonNumber(json, "aimX", observation.aimX) ||
+         !std::isfinite(observation.aimX)))
+    {
+        return false;
+    }
+    return true;
+}
+
 bool tryGetJsonUnsignedInteger(
     const std::string& json,
     const std::string& key,
@@ -712,6 +824,60 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
     catch (const std::exception&)
     {
         return ForwardBallSnapshot{};
+    }
+}
+
+RescueZoneSnapshot CameraMonitor::rescueZoneSnapshot() const
+{
+    RescueZoneSnapshot snapshot;
+    try
+    {
+        const std::string& configuredPath = rescueZoneStatusPath_.empty()
+                                                ? config::kRescueZoneStatusPath
+                                                : rescueZoneStatusPath_;
+        std::ifstream file(configuredPath);
+        if (!file)
+        {
+            return snapshot;
+        }
+        std::ostringstream content;
+        content << file.rdbuf();
+        if (file.bad())
+        {
+            return snapshot;
+        }
+
+        const std::string json = content.str();
+        bool active = false;
+        std::string greenJson;
+        std::string redJson;
+        if (!tryGetJsonBool(json, "active", active) ||
+            !tryGetJsonNumber(json, "timestamp", snapshot.timestamp) ||
+            !tryGetJsonUnsignedInteger(json, "sequence", snapshot.sequence) ||
+            !tryGetJsonObject(json, "green", greenJson) ||
+            !tryGetJsonObject(json, "red", redJson) ||
+            !parseRescueZoneObservation(greenJson, snapshot.green) ||
+            !parseRescueZoneObservation(redJson, snapshot.red))
+        {
+            return RescueZoneSnapshot{};
+        }
+
+        snapshot.ageMs = (currentUnixSeconds() - snapshot.timestamp) * 1000.0;
+        snapshot.sourceFresh = active && snapshot.sequence > 0 &&
+                               std::isfinite(snapshot.ageMs) &&
+                               snapshot.ageMs >= 0.0 &&
+                               snapshot.ageMs <=
+                                   config::kRescueZoneStatusTimeoutMs;
+        if (!snapshot.sourceFresh)
+        {
+            snapshot.green = {};
+            snapshot.red = {};
+        }
+        return snapshot;
+    }
+    catch (const std::exception&)
+    {
+        return RescueZoneSnapshot{};
     }
 }
 

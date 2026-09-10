@@ -2,6 +2,7 @@
 
 import math
 import os
+import time
 
 import cv2  # type: ignore
 import numpy as np
@@ -133,9 +134,14 @@ def _green_channel_metrics(frame_bgr):
     )
 
 
-def _green_chromatic_mask(frame_bgr):
+def _green_chromatic_mask(frame_bgr, channel_metrics=None):
     """Produz a camada permissiva que preserva pixels GREEN mais fracos."""
 
+    channel_metrics = (
+        _green_channel_metrics(frame_bgr)
+        if channel_metrics is None
+        else channel_metrics
+    )
     (
         red,
         green,
@@ -143,7 +149,7 @@ def _green_chromatic_mask(frame_bgr):
         green_blue_dominance,
         green_red_dominance,
         normalized_chroma,
-    ) = _green_channel_metrics(frame_bgr)
+    ) = channel_metrics
     accepted = (
         (green > blue)
         & (green > red)
@@ -154,9 +160,14 @@ def _green_chromatic_mask(frame_bgr):
     return accepted.astype(np.uint8) * 255
 
 
-def _strong_green_mask(frame_bgr, hsv_frame):
+def _strong_green_mask(frame_bgr, hsv_frame, channel_metrics=None):
     """Marca pixels com evidência cromática inequívoca de verde."""
 
+    channel_metrics = (
+        _green_channel_metrics(frame_bgr)
+        if channel_metrics is None
+        else channel_metrics
+    )
     (
         red,
         green,
@@ -164,7 +175,7 @@ def _strong_green_mask(frame_bgr, hsv_frame):
         green_blue_dominance,
         green_red_dominance,
         normalized_chroma,
-    ) = _green_channel_metrics(frame_bgr)
+    ) = channel_metrics
     hue = hsv_frame[:, :, 0]
     saturation = hsv_frame[:, :, 1]
     value = hsv_frame[:, :, 2]
@@ -409,15 +420,21 @@ def _median_channels(image, sample_mask):
     return [int(round(float(value))) for value in np.median(pixels, axis=0)]
 
 
-def _green_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
-    """Mede a zona GREEN e um anel de fundo sem alterar sua classificação."""
+def _empty_green_color_diagnostics():
+    """Mantém o contrato IPC sem calcular estatísticas quando o diagnóstico está desligado."""
 
-    diagnostics = {
+    return {
         "greenMedianRgb": None,
         "greenMedianHsv": None,
         "backgroundMedianRgb": None,
         "backgroundMedianHsv": None,
     }
+
+
+def _green_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
+    """Mede a zona GREEN e um anel de fundo sem alterar sua classificação."""
+
+    diagnostics = _empty_green_color_diagnostics()
     if selected_mask is None or hull is None:
         return diagnostics
 
@@ -467,15 +484,21 @@ def _green_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
     return diagnostics
 
 
-def _red_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
-    """Mede a zona RED e seu fundo sem alterar a máscara segmentada."""
+def _empty_red_color_diagnostics():
+    """Mantém as chaves RED nulas sem construir o anel de fundo diagnóstico."""
 
-    diagnostics = {
+    return {
         "redMedianRgb": None,
         "redMedianHsv": None,
         "redBackgroundMedianRgb": None,
         "redBackgroundMedianHsv": None,
     }
+
+
+def _red_color_diagnostics(frame_bgr, hsv_frame, selected_mask, hull):
+    """Mede a zona RED e seu fundo sem alterar a máscara segmentada."""
+
+    diagnostics = _empty_red_color_diagnostics()
     if selected_mask is None or hull is None:
         return diagnostics
 
@@ -532,8 +555,16 @@ def _analyze_color(
     mask = _segment_hsv(hsv_frame, ranges)
     strong_mask = None
     if apply_green_chromatic_filter:
-        mask = cv2.bitwise_and(mask, _green_chromatic_mask(frame_bgr))
-        strong_mask = _strong_green_mask(frame_bgr, hsv_frame)
+        channel_metrics = _green_channel_metrics(frame_bgr)
+        mask = cv2.bitwise_and(
+            mask,
+            _green_chromatic_mask(frame_bgr, channel_metrics),
+        )
+        strong_mask = _strong_green_mask(
+            frame_bgr,
+            hsv_frame,
+            channel_metrics,
+        )
     hull, area_pixels, selected_mask, strong_fraction = _reconstruct_hull(
         mask,
         strong_mask,
@@ -543,12 +574,17 @@ def _analyze_color(
         result = _empty_result()
     else:
         result = _measure_geometry(hull, area_pixels, mask.shape)
-    if collect_green_diagnostics:
+    if apply_green_chromatic_filter:
         result["strongGreenFraction"] = (
             round(strong_fraction, 3)
             if strong_fraction is not None
             else None
         )
+    if apply_green_chromatic_filter:
+        result.update(_empty_green_color_diagnostics())
+    else:
+        result.update(_empty_red_color_diagnostics())
+    if collect_green_diagnostics:
         result.update(
             _green_color_diagnostics(
                 frame_bgr,
@@ -569,25 +605,39 @@ def _analyze_color(
     return result
 
 
-def analyze_rescue_zones(frame_bgr):
+def analyze_rescue_zones(
+    frame_bgr,
+    collect_color_diagnostics=None,
+    profile_timings=None,
+):
     """Retorna resultados independentes para as áreas verde e vermelha."""
 
     if frame_bgr.ndim != 3 or frame_bgr.shape[2] != 3:
         raise ValueError("O frame frontal deve possuir três canais BGR.")
+    diagnostics_enabled = (
+        SHOW_COLOR_DIAGNOSTICS
+        if collect_color_diagnostics is None
+        else bool(collect_color_diagnostics)
+    )
+    conversion_started = time.perf_counter() if profile_timings is not None else 0.0
     hsv_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    if profile_timings is not None:
+        profile_timings["colorConversionMs"] = (
+            time.perf_counter() - conversion_started
+        ) * 1000.0
     return {
         "green": _analyze_color(
             frame_bgr,
             hsv_frame,
             GREEN_HSV_RANGES,
-            collect_green_diagnostics=True,
+            collect_green_diagnostics=diagnostics_enabled,
             apply_green_chromatic_filter=True,
         ),
         "red": _analyze_color(
             frame_bgr,
             hsv_frame,
             RED_HSV_RANGES,
-            collect_red_diagnostics=True,
+            collect_red_diagnostics=diagnostics_enabled,
         ),
     }
 

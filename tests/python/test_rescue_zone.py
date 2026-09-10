@@ -446,7 +446,9 @@ class RescueZoneDetectionTest(unittest.TestCase):
         frame = blank_frame()
         draw_complete_zone(frame, GREEN)
 
-        status = serializable_results(analyze_rescue_zones(frame))
+        status = serializable_results(
+            analyze_rescue_zones(frame, collect_color_diagnostics=True)
+        )
 
         self.assertNotIn("_hull", status["green"])
         self.assertIn("boundsCoverage", status["green"])
@@ -455,7 +457,9 @@ class RescueZoneDetectionTest(unittest.TestCase):
         frame = blank_frame()
         draw_complete_zone(frame, GREEN)
 
-        status = serializable_results(analyze_rescue_zones(frame))
+        status = serializable_results(
+            analyze_rescue_zones(frame, collect_color_diagnostics=True)
+        )
 
         self.assertEqual(status["greenMedianRgb"], [0, 200, 0])
         self.assertEqual(status["greenMedianHsv"], [60, 255, 200])
@@ -470,7 +474,9 @@ class RescueZoneDetectionTest(unittest.TestCase):
         frame = blank_frame()
         draw_complete_zone(frame, RED)
 
-        status = serializable_results(analyze_rescue_zones(frame))
+        status = serializable_results(
+            analyze_rescue_zones(frame, collect_color_diagnostics=True)
+        )
 
         self.assertEqual(status["redMedianRgb"], [220, 0, 0])
         self.assertEqual(status["redMedianHsv"], [0, 255, 220])
@@ -480,7 +486,7 @@ class RescueZoneDetectionTest(unittest.TestCase):
 
     def test_missing_green_sample_publishes_none_and_draws_dashes(self):
         frame = blank_frame()
-        results = analyze_rescue_zones(frame)
+        results = analyze_rescue_zones(frame, collect_color_diagnostics=True)
         status = serializable_results(results)
 
         self.assertIsNone(status["greenMedianRgb"])
@@ -509,7 +515,7 @@ class RescueZoneDetectionTest(unittest.TestCase):
     def test_red_diagnostics_are_shown_only_when_requested(self):
         frame = blank_frame()
         draw_complete_zone(frame, RED)
-        results = analyze_rescue_zones(frame)
+        results = analyze_rescue_zones(frame, collect_color_diagnostics=True)
 
         with mock.patch.object(
             rescue_zone.cv2, "putText", wraps=rescue_zone.cv2.putText
@@ -526,7 +532,7 @@ class RescueZoneDetectionTest(unittest.TestCase):
 
     def test_ultrasonic_remains_visible_without_detected_zone(self):
         frame = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
-        results = analyze_rescue_zones(frame)
+        results = analyze_rescue_zones(frame, collect_color_diagnostics=True)
         ultrasonic = {
             "ultrasonicFresh": True,
             "ultrasonicValid": True,
@@ -550,7 +556,10 @@ class RescueZoneDetectionTest(unittest.TestCase):
     def test_overlay_places_valid_ultrasonic_beside_area_name(self):
         frame = blank_frame()
         draw_complete_zone(frame, GREEN)
-        results = analyze_rescue_zones(frame)
+        results = analyze_rescue_zones(
+            frame,
+            collect_color_diagnostics=True,
+        )
         ultrasonic = {
             "ultrasonicFresh": True,
             "ultrasonicValid": True,
@@ -592,6 +601,113 @@ class RescueZoneDetectionTest(unittest.TestCase):
         self.assertFalse(any(label.startswith("BG    RGB") for label in labels))
         self.assertFalse(any(label.startswith("RED RGB") for label in labels))
         self.assertFalse(any(label.startswith("BG  RGB") for label in labels))
+
+    def test_disabled_diagnostics_skip_expensive_statistics(self):
+        frame = blank_frame()
+        draw_complete_zone(frame, GREEN)
+        cv2.rectangle(frame, (200, 80), (315, 220), RED, -1)
+
+        with mock.patch.object(
+            rescue_zone,
+            "_green_color_diagnostics",
+            wraps=rescue_zone._green_color_diagnostics,
+        ) as green_diagnostics, mock.patch.object(
+            rescue_zone,
+            "_red_color_diagnostics",
+            wraps=rescue_zone._red_color_diagnostics,
+        ) as red_diagnostics:
+            results = analyze_rescue_zones(
+                frame,
+                collect_color_diagnostics=False,
+            )
+
+        green_diagnostics.assert_not_called()
+        red_diagnostics.assert_not_called()
+        self.assertIsNone(results["green"]["greenMedianRgb"])
+        self.assertIsNone(results["red"]["redMedianRgb"])
+        self.assertIn("strongGreenFraction", results["green"])
+
+    def test_diagnostics_do_not_change_functional_detection(self):
+        frames = {
+            "empty": blank_frame(),
+            "green": frame_with_rgb_zone((0, 200, 0)),
+            "red": frame_with_rgb_zone((220, 0, 0)),
+        }
+        diagnostic_keys = {
+            "greenMedianRgb",
+            "greenMedianHsv",
+            "backgroundMedianRgb",
+            "backgroundMedianHsv",
+            "redMedianRgb",
+            "redMedianHsv",
+            "redBackgroundMedianRgb",
+            "redBackgroundMedianHsv",
+        }
+
+        for name, frame in frames.items():
+            with self.subTest(frame=name):
+                disabled = analyze_rescue_zones(
+                    frame,
+                    collect_color_diagnostics=False,
+                )
+                enabled = analyze_rescue_zones(
+                    frame,
+                    collect_color_diagnostics=True,
+                )
+                for color in ("green", "red"):
+                    disabled_functional = {
+                        key: value
+                        for key, value in disabled[color].items()
+                        if key not in diagnostic_keys and key != "_hull"
+                    }
+                    enabled_functional = {
+                        key: value
+                        for key, value in enabled[color].items()
+                        if key not in diagnostic_keys and key != "_hull"
+                    }
+                    self.assertEqual(disabled_functional, enabled_functional)
+                    self.assertEqual(
+                        disabled[color]["_hull"] is None,
+                        enabled[color]["_hull"] is None,
+                    )
+                    if disabled[color]["_hull"] is not None:
+                        self.assertTrue(
+                            np.array_equal(
+                                disabled[color]["_hull"],
+                                enabled[color]["_hull"],
+                            )
+                        )
+
+    def test_green_channel_metrics_are_computed_once_per_frame(self):
+        frame = frame_with_rgb_zone((0, 200, 0))
+        with mock.patch.object(
+            rescue_zone,
+            "_green_channel_metrics",
+            wraps=rescue_zone._green_channel_metrics,
+        ) as metrics:
+            analyze_rescue_zones(frame, collect_color_diagnostics=False)
+
+        self.assertEqual(metrics.call_count, 1)
+
+    def test_profiling_color_conversion_does_not_change_detection(self):
+        frame = frame_with_rgb_zone((0, 200, 0))
+        timings = {}
+
+        regular = analyze_rescue_zones(frame)
+        profiled = analyze_rescue_zones(frame, profile_timings=timings)
+
+        self.assertIn("colorConversionMs", timings)
+        self.assertGreaterEqual(timings["colorConversionMs"], 0.0)
+        for color in ("green", "red"):
+            self.assertEqual(regular[color]["detected"], profiled[color]["detected"])
+            self.assertEqual(
+                regular[color]["geometryState"],
+                profiled[color]["geometryState"],
+            )
+        self.assertEqual(
+            regular["green"]["strongGreenFraction"],
+            profiled["green"]["strongGreenFraction"],
+        )
 
     def test_zone_labels_do_not_overlap_diagnostic_or_each_other(self):
         diagnostic = (10, 181, 300, 230)

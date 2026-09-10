@@ -514,6 +514,24 @@ void DashboardServer::handleCommand(const std::string& message)
                 AutonomousMission::RescueZoneDetection);
             std::cout << "Autonomous mission selected: rescue_zone_detection\n";
         }
+        else if (message.find("\"mission\":\"rescue_zone_frame\"") != std::string::npos)
+        {
+            const bool targetRed =
+                message.find("\"targetColor\":\"red\"") != std::string::npos;
+            const bool targetGreen =
+                message.find("\"targetColor\":\"green\"") != std::string::npos;
+            if (!targetRed && !targetGreen)
+            {
+                std::cerr << "FRAME_ZONE target color must be green or red\n";
+                return;
+            }
+            robotState_.setAutonomousMission(AutonomousMission::RescueZoneFrame);
+            robotState_.setRescueZoneTargetColor(
+                targetRed ? RescueZoneTargetColor::Red
+                          : RescueZoneTargetColor::Green);
+            std::cout << "Autonomous mission selected: rescue_zone_frame, target="
+                      << (targetRed ? "red" : "green") << '\n';
+        }
         else if (message.find("\"mission\":\"obstacle_avoidance\"") != std::string::npos)
         {
             robotState_.setAutonomousMission(
@@ -853,6 +871,8 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"websocketClientCount\":" << websocketClientCount
          << ",\"mode\":\"" << state.mode << "\""
          << ",\"autonomousMission\":\"" << autonomousMissionName(state.autonomousMission) << "\""
+         << ",\"rescueZoneTargetColor\":\""
+         << rescueZoneTargetColorName(state.rescueZoneTargetColor) << "\""
          << ",\"autonomousRunSequence\":" << state.autonomousRunSequence
          << ",\"rawMotorCommand\":" << (state.rawMotorCommand ? "true" : "false")
          << ",\"autonomousPhase\":\"" << state.autonomousStatus.phase << "\""
@@ -892,6 +912,12 @@ std::string DashboardServer::buildTelemetryJson(
          << (state.autonomousStatus.rescueZoneUltrasonicValid ? "true" : "false")
          << ",\"rescueZoneUltrasonicDistanceCm\":"
          << state.autonomousStatus.rescueZoneUltrasonicDistanceCm
+         << ",\"rescueZoneFrameCompleted\":"
+         << (state.autonomousStatus.rescueZoneFrameCompleted ? "true" : "false")
+         << ",\"rescueZoneFrameFailed\":"
+         << (state.autonomousStatus.rescueZoneFrameFailed ? "true" : "false")
+         << ",\"rescueZoneFrameCompletionReason\":"
+         << std::quoted(state.autonomousStatus.rescueZoneFrameCompletionReason)
           << ",\"left\":" << state.left
           << ",\"right\":" << state.right
          << ",\"requestedLeft\":" << state.left
@@ -1669,6 +1695,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="turn_right_90">GIRO 90° À DIREITA</option>
                 <option value="drive_distance">PERCORRER DISTÂNCIA</option>
                 <option value="rescue_zone_detection">ÁREAS DE RESGATE</option>
+                <option value="rescue_zone_frame">FRAME_ZONE · ENQUADRAR ÁREA</option>
                 <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
                 <option value="servo_initialize">SERVOS · POSE HOME 15/0/0</option>
@@ -1686,6 +1713,14 @@ std::string DashboardServer::dashboardHtml()
                   <strong>cm</strong>
                 </div>
                 <small class="distance-calibration">Calibração real: 3600 contagens = 18,7 cm · 192,51 cont/cm.</small>
+              </div>
+              <div id="rescueZoneFrameSettings" class="distance-mission-settings" hidden>
+                <span class="distance-input-label">Cor alvo obrigatória</span>
+                <select id="rescueZoneTargetColor" aria-label="Cor alvo do FRAME_ZONE">
+                  <option value="green" selected>GREEN</option>
+                  <option value="red">RED</option>
+                </select>
+                <small class="distance-calibration">O modo enquadra somente a cor escolhida e termina parado.</small>
               </div>
               <div id="servoRoutineSettings" class="distance-mission-settings" hidden>
                 <span id="servoRoutineStorageState" class="distance-input-label">Armazenamento interno vazio</span>
@@ -2073,6 +2108,7 @@ std::string DashboardServer::dashboardHtml()
     };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
+    const rescueZoneTargetColor = element("rescueZoneTargetColor");
     const oledTitle = element("oledTitle");
     const oledFirstLine = element("oledFirstLine");
     const oledSecondLine = element("oledSecondLine");
@@ -2234,6 +2270,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Percorrendo a distância selecionada pelos encoders"
           : selectedMission === "rescue_zone_detection"
             ? "Detectando as áreas verde e vermelha; Autônomo mantém os motores parados"
+          : selectedMission === "rescue_zone_frame"
+            ? `Enquadrando a área ${String(data.rescueZoneTargetColor || "green").toUpperCase()} em passos curtos`
           : selectedMission === "rescue_area"
             ? "Detectando, alinhando e aproximando da vítima mais próxima"
           : selectedMission === "obstacle_avoidance"
@@ -2261,6 +2299,10 @@ std::string DashboardServer::dashboardHtml()
         distanceTargetCm.value = formatNumber(data.driveDistanceTargetCm, 1);
       }
       element("distanceMissionSettings").hidden = mission !== "drive_distance";
+      element("rescueZoneFrameSettings").hidden = mission !== "rescue_zone_frame";
+      if (document.activeElement !== rescueZoneTargetColor) {
+        rescueZoneTargetColor.value = String(data.rescueZoneTargetColor || "green");
+      }
       element("servoRoutineSettings").hidden = !mission.startsWith("servo_");
       element("servoRoutineStorageState").textContent =
         data.servoRoutineInternalObjectStored === true
@@ -2280,6 +2322,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Avança os dois lados até o alvo medido pelos encoders."
           : mission === "rescue_zone_detection"
             ? "Mantém a percepção ativa no Manual para enquadramento; no Autônomo, a tração permanece zerada."
+          : mission === "rescue_zone_frame"
+            ? "Tenta melhorar o enquadramento com até três micro-pivôs; aceita best effort, não recua, não alinha nem avança."
           : mission === "rescue_area"
             ? "Preserva o alinhamento e a aproximação para receber as detecções do futuro modelo."
           : mission === "obstacle_avoidance"
@@ -2372,6 +2416,14 @@ std::string DashboardServer::dashboardHtml()
         obstacle_turn_correction_failed: ["DESVIO: CORREÇÃO INSUFICIENTE", "danger", "machineStepFeedback"],
         rescue_esp32_not_ready: ["RESGATE: ESP32 OFFLINE", "danger", "machineStepFeedback"],
         rescue_zone_detection_active: ["ÁREAS: DETECÇÃO ATIVA", "active", "machineStepPerception"],
+        rescue_zone_frame_waiting_vision: ["FRAME_ZONE: AGUARDANDO CAM1", "warn", "machineStepPerception"],
+        rescue_zone_frame_waiting_zone: ["FRAME_ZONE: AGUARDANDO ZONA", "warn", "machineStepPerception"],
+        rescue_zone_frame_turning: ["FRAME_ZONE: MICRO-PIVÔ", "active", "machineStepMotion"],
+        rescue_zone_frame_braking: ["FRAME_ZONE: FRENANDO", "warn", "machineStepFeedback"],
+        rescue_zone_frame_settling: ["FRAME_ZONE: ESTABILIZANDO", "warn", "machineStepFeedback"],
+        rescue_zone_frame_waiting_new_frame: ["FRAME_ZONE: NOVO FRAME", "warn", "machineStepPerception"],
+        rescue_zone_frame_completed: ["FRAME_ZONE CONCLUÍDO", "active", "machineStepFeedback"],
+        rescue_zone_frame_failed: ["FRAME_ZONE FALHOU", "danger", "machineStepFeedback"],
         ball_alignment_waiting_target: ["RESGATE: PROCURANDO VÍTIMA", "warn", "machineStepPerception"],
         ball_alignment_camera_stale: ["RESGATE: VISÃO OFFLINE", "danger", "machineStepFeedback"],
         ball_alignment_target_lost: ["RESGATE: ALVO PERDIDO", "warn", "machineStepPerception"],
@@ -2399,7 +2451,11 @@ std::string DashboardServer::dashboardHtml()
         phase = "waiting_esp32";
         action = "Missão sem comunicação com a ESP32: motores protegidos";
       }
-      const phaseInfo = phases[phase] || [phase.replaceAll("_", " ").toUpperCase(), "idle", "machineStepDecision"];
+      const rescueZoneFrameFailure =
+        data.rescueZoneFrameFailed === true && phase.startsWith("rescue_zone_frame_");
+      const phaseInfo = rescueZoneFrameFailure
+        ? ["FRAME_ZONE FALHOU", "danger", "machineStepFeedback"]
+        : phases[phase] || [phase.replaceAll("_", " ").toUpperCase(), "idle", "machineStepDecision"];
       const card = element("missionStateCard");
       card.dataset.tone = phaseInfo[1];
       element("machineStateBadge").textContent = phaseInfo[0];
@@ -2418,6 +2474,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "drive_distance"
             ? "Percorrer distância"
           : mission === "rescue_zone_detection" ? "Áreas de Resgate"
+          : mission === "rescue_zone_frame" ? `FRAME_ZONE · ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
           : mission === "rescue_area" ? "Resgate · Detectar e seguir"
           : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
           : mission === "servo_initialize" ? "Servos · Inicialização"
@@ -2435,6 +2492,8 @@ std::string DashboardServer::dashboardHtml()
             ? "TESTE DE DISTÂNCIA"
           : mission === "rescue_zone_detection"
             ? "DETECÇÃO DE ÁREAS"
+          : mission === "rescue_zone_frame"
+            ? "ENQUADRAMENTO DE ÁREA"
           : mission === "rescue_area"
             ? "ALINHAMENTO DE VÍTIMA"
           : mission === "obstacle_avoidance"
@@ -3165,8 +3224,14 @@ std::string DashboardServer::dashboardHtml()
       const targetCm = Math.max(1, Math.min(300, Number(distanceTargetCm.value) || 20));
       distanceTargetCm.value = formatNumber(targetCm, 1);
       element("distanceMissionSettings").hidden = autonomousMission.value !== "drive_distance";
+      element("rescueZoneFrameSettings").hidden = autonomousMission.value !== "rescue_zone_frame";
       element("servoRoutineSettings").hidden = !autonomousMission.value.startsWith("servo_");
-      send({ command: "set_autonomous_mission", mission: autonomousMission.value, distanceCm: targetCm });
+      send({
+        command: "set_autonomous_mission",
+        mission: autonomousMission.value,
+        distanceCm: targetCm,
+        targetColor: rescueZoneTargetColor.value
+      });
     }
 
     function confirmServoRoutineAction() {
@@ -4087,6 +4152,7 @@ std::string DashboardServer::dashboardHtml()
       button.addEventListener("click", () => simulateOledPreset(button));
     });
     autonomousMission.addEventListener("change", selectAutonomousMission);
+    rescueZoneTargetColor.addEventListener("change", selectAutonomousMission);
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     element("servoRoutineConfirmButton").addEventListener(
       "click", confirmServoRoutineAction);

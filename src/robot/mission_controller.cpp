@@ -114,8 +114,9 @@ bool MissionController::requiresRescueZoneDetection(
     const bool operationMode =
         snapshot.mode == "autonomous" || snapshot.mode == "manual";
     return operationMode && !snapshot.emergencyStop &&
-           snapshot.autonomousMission ==
-               AutonomousMission::RescueZoneDetection;
+           (snapshot.autonomousMission ==
+                AutonomousMission::RescueZoneDetection ||
+            snapshot.autonomousMission == AutonomousMission::RescueZoneFrame);
 }
 
 void MissionController::update(
@@ -124,7 +125,8 @@ void MissionController::update(
     bool cameraReady,
     const CameraLineSnapshot& cameraLineSnapshot,
     const ForwardLineSnapshot& forwardLineSnapshot,
-    const ForwardBallSnapshot& forwardBallSnapshot)
+    const ForwardBallSnapshot& forwardBallSnapshot,
+    const RescueZoneSnapshot& rescueZoneSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous")
@@ -170,6 +172,15 @@ void MissionController::update(
         distancePhase_ = DistancePhase::Idle;
         mainMission_.reset();
         updateRescueZoneDetection(robotState, esp32Telemetry);
+        return;
+    case AutonomousMission::RescueZoneFrame:
+        testTurnController_.reset();
+        rescueAreaMission_.reset();
+        obstacleAvoidanceTest_.reset();
+        distancePhase_ = DistancePhase::Idle;
+        mainMission_.reset();
+        updateRescueZoneFrame(
+            robotState, snapshot, esp32Telemetry, rescueZoneSnapshot);
         return;
     case AutonomousMission::ObstacleAvoidance:
         testTurnController_.reset();
@@ -317,6 +328,45 @@ void MissionController::updateRescueZoneDetection(
             esp32Telemetry.ultrasonicDistanceCm;
     }
     robotState.updateAutonomousStatus(status);
+}
+
+void MissionController::updateRescueZoneFrame(
+    RobotState& robotState,
+    const RobotSnapshot& snapshot,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const RescueZoneSnapshot& rescueZoneSnapshot)
+{
+    RescueZoneFrameOutput output = rescueZoneFrameMission_.update(
+        rescueZoneSnapshot,
+        esp32Telemetry,
+        snapshot.rescueZoneTargetColor);
+    // O ultrassônico permanece apenas em telemetria/overlay. Estes campos não
+    // entram na máquina de estados nem influenciam qualquer comando de motor.
+    output.status.rescueZoneUltrasonicFresh =
+        esp32Telemetry.sensorFresh && esp32Telemetry.lastSensorAgeMs >= 0 &&
+        esp32Telemetry.lastSensorAgeMs <=
+            config::kRescueZoneUltrasonicFreshnessMs;
+    output.status.rescueZoneUltrasonicValid =
+        std::isfinite(esp32Telemetry.ultrasonicDistanceCm) &&
+        esp32Telemetry.ultrasonicDistanceCm >=
+            config::kRescueZoneUltrasonicMinimumCm &&
+        esp32Telemetry.ultrasonicDistanceCm <=
+            config::kRescueZoneUltrasonicMaximumCm;
+    if (output.status.rescueZoneUltrasonicValid)
+    {
+        output.status.rescueZoneUltrasonicDistanceCm =
+            esp32Telemetry.ultrasonicDistanceCm;
+    }
+    // O módulo calcula apenas comandos normalizados. RobotState preserva clamp,
+    // E-Stop e watchdog antes que qualquer valor alcance a ponte da ESP32.
+    robotState.driveAutonomous(output.leftPower, output.rightPower);
+    robotState.updateAutonomousStatus(output.status);
+    if (output.completed || output.failed)
+    {
+        // Estados terminais encerram o modo e mantêm os motores em zero.
+        robotState.stop();
+        robotState.updateAutonomousStatus(output.status);
+    }
 }
 
 void MissionController::updateObstacleAvoidance(
@@ -647,6 +697,7 @@ void MissionController::resetMissionState()
 {
     mainMission_.reset();
     rescueAreaMission_.reset();
+    rescueZoneFrameMission_.reset();
     obstacleAvoidanceTest_.reset();
     testTurnController_.reset();
     servoRoutine_.resetExecution();

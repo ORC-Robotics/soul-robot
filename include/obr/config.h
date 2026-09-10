@@ -86,6 +86,10 @@ constexpr const char* kRescueZoneDetectionTemporaryControlPath =
 constexpr const char* kRescueZoneStatusPath =
     "/dev/shm/obr_rescue_zone_status.json";
 
+// Idade máxima, em milissegundos, aceita pelo FRAME_ZONE para comandar movimento.
+// Um prazo curto impede que a geometria de um frame antigo mova o robô.
+constexpr int kRescueZoneStatusTimeoutMs = 250;
+
 // Idade máxima, em milissegundos, da distância exibida junto às áreas.
 // Uma leitura mais antiga continua indisponível e nunca deve orientar movimento.
 constexpr int kRescueZoneUltrasonicFreshnessMs = 300;
@@ -247,6 +251,45 @@ constexpr double kMotorRunMinimumPower = 0.61;
 // Ela é menor que o limite do sincronismo porque confirmar rotação não exige uma
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
 constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
+
+// Potência exclusiva dos micro-pivôs do FRAME_ZONE.
+constexpr double kRescueZoneFrameTurnPower = 0.69;
+
+// Duração, em milissegundos, de cada toque lateral antes de zerar o PWM.
+// Este valor pode ser calibrado no robô sem alterar a máquina de estados.
+constexpr int kRescueZoneFrameMicroPivotDurationMs = 80;
+
+// Tempo fixo, em milissegundos, aguardado após cada micro-pivô lateral.
+// A liberação depende apenas deste prazo e de um frame posterior ao movimento.
+constexpr int kRescueZoneFrameLateralSettleMs = 100;
+
+// Quantidade máxima de tentativas laterais antes de aceitar o melhor
+// enquadramento disponível. Um valor baixo evita procurar FULL_BOUNDS sem fim.
+constexpr int kRescueZoneFrameMaximumMicroPivots = 3;
+
+// Limite angular absoluto acumulado dos micro-pivôs visuais.
+// A IMU não define cada pulso; apenas interrompe a operação se ela não convergir.
+constexpr double kRescueZoneFrameMaximumPivotDegrees = 24.0;
+
+// Prazos de segurança do movimento e da aquisição posterior à parada.
+constexpr int kRescueZoneFrameStartupVisionTimeoutMs = 1500;
+constexpr int kRescueZoneFrameTurnTimeoutMs = 2500;
+constexpr int kRescueZoneFrameNewFrameTimeoutMs = 1000;
+
+static_assert(kRescueZoneStatusTimeoutMs > 0 &&
+                  kRescueZoneFrameTurnPower >= kMotorStartMinimumPower &&
+                  kRescueZoneFrameTurnPower <= kMaxMotorOutput &&
+                  kRescueZoneFrameMicroPivotDurationMs > 0 &&
+                  kRescueZoneFrameMicroPivotDurationMs <
+                      kRescueZoneFrameTurnTimeoutMs &&
+                  kRescueZoneFrameLateralSettleMs > 0 &&
+                  kRescueZoneFrameMaximumMicroPivots > 0 &&
+                  kRescueZoneFrameMaximumPivotDegrees > 0.0 &&
+                  kRescueZoneFrameMaximumPivotDegrees <= 180.0 &&
+                  kRescueZoneFrameStartupVisionTimeoutMs > 0 &&
+                  kRescueZoneFrameTurnTimeoutMs > 0 &&
+                  kRescueZoneFrameNewFrameTimeoutMs > 0,
+              "Os limites do FRAME_ZONE devem permanecer seguros.");
 
 // Margem angular, em graus, aceita para considerar a vítima centralizada.
 constexpr double kBallAlignmentDeadbandDegrees = 1.0;
