@@ -32,6 +32,22 @@ bool driveDistanceEncodersReady(const Esp32TelemetrySnapshot& telemetry)
            std::isfinite(telemetry.rightEncoderRate);
 }
 
+bool rescueZoneUltrasonicFresh(const Esp32TelemetrySnapshot& telemetry)
+{
+    return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
+           telemetry.lastSensorAgeMs <=
+               config::kRescueZoneUltrasonicFreshnessMs;
+}
+
+bool rescueZoneUltrasonicValid(const Esp32TelemetrySnapshot& telemetry)
+{
+    return std::isfinite(telemetry.ultrasonicDistanceCm) &&
+           telemetry.ultrasonicDistanceCm >=
+               config::kRescueZoneUltrasonicMinimumCm &&
+           telemetry.ultrasonicDistanceCm <=
+               config::kRescueZoneUltrasonicMaximumCm;
+}
+
 bool selectedMissionReady(
     AutonomousMission mission,
     const Esp32TelemetrySnapshot& telemetry,
@@ -57,8 +73,8 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
-    if (mission == AutonomousMission::RescueDetection ||
-        mission == AutonomousMission::RescueArea)
+    if (mission == AutonomousMission::RescueArea ||
+        mission == AutonomousMission::RescueZoneDetection)
     {
         // A visão pesada é ligada somente depois da partida. A missão começa
         // parada e aguarda um IPC frontal recente antes de mover os motores.
@@ -104,13 +120,13 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     {
         return "encoders";
     }
-    if (mission == AutonomousMission::RescueDetection)
-    {
-        return "forward_ball_detection";
-    }
     if (mission == AutonomousMission::RescueArea)
     {
         return "forward_ball_tx";
+    }
+    if (mission == AutonomousMission::RescueZoneDetection)
+    {
+        return "forward_rescue_zone_detection";
     }
     if (mission == AutonomousMission::ObstacleAvoidance)
     {
@@ -156,6 +172,14 @@ int RobotApplication::run(const std::atomic<bool>& running)
     readyLed.begin();
     motors.begin();
     forwardBallVision.begin();
+    bool rescueZoneGateKnown =
+        cameraMonitor.publishRescueZoneDetectionInput(
+            false, false, false, 0.0);
+    bool rescueZoneGateEnabled = false;
+    bool rescueZoneGateFailureLogged = false;
+    auto lastRescueZoneInputTime =
+        std::chrono::steady_clock::now() -
+        std::chrono::milliseconds(config::kRescueZoneInputPublishIntervalMs);
 
     if (!dashboard.start())
     {
@@ -202,6 +226,49 @@ int RobotApplication::run(const std::atomic<bool>& running)
         }
 
         const RobotSnapshot stateAtLoopStart = robotState.snapshot();
+        const bool rescueZoneDetectionRequired =
+            missionController.requiresRescueZoneDetection(stateAtLoopStart);
+        const bool rescueZoneFresh =
+            rescueZoneUltrasonicFresh(esp32Telemetry);
+        const bool rescueZoneValid =
+            rescueZoneUltrasonicValid(esp32Telemetry);
+        const auto rescueZoneInputTime = std::chrono::steady_clock::now();
+        const bool rescueZoneInputDue =
+            rescueZoneDetectionRequired &&
+            rescueZoneInputTime - lastRescueZoneInputTime >=
+                std::chrono::milliseconds(
+                    config::kRescueZoneInputPublishIntervalMs);
+        if (!rescueZoneGateKnown || rescueZoneInputDue ||
+            rescueZoneDetectionRequired != rescueZoneGateEnabled)
+        {
+            const bool rescueZoneGateChanged =
+                !rescueZoneGateKnown ||
+                rescueZoneDetectionRequired != rescueZoneGateEnabled;
+            if (cameraMonitor.publishRescueZoneDetectionInput(
+                    rescueZoneDetectionRequired,
+                    rescueZoneFresh,
+                    rescueZoneValid,
+                    esp32Telemetry.ultrasonicDistanceCm))
+            {
+                rescueZoneGateKnown = true;
+                rescueZoneGateEnabled = rescueZoneDetectionRequired;
+                rescueZoneGateFailureLogged = false;
+                lastRescueZoneInputTime = rescueZoneInputTime;
+                if (rescueZoneGateChanged)
+                {
+                    std::cout
+                        << "Rescue zone detection "
+                        << (rescueZoneGateEnabled ? "enabled" : "disabled")
+                        << " by isolated-mode gate\n";
+                }
+            }
+            else if (!rescueZoneGateFailureLogged)
+            {
+                rescueZoneGateKnown = false;
+                rescueZoneGateFailureLogged = true;
+                std::cerr << "Rescue zone detection gate could not be published\n";
+            }
+        }
         const bool rescueAreaActive =
             missionController.requiresForwardBallDetection(stateAtLoopStart);
         forwardBallVision.update(
@@ -531,6 +598,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
     // Se o serviço for reiniciado de forma limpa, a OLED informa imediatamente
     // que a Raspberry voltou ao processo de inicialização.
     servos.disableAll();
+    cameraMonitor.publishRescueZoneDetectionInput(
+        false, false, false, 0.0);
     forwardBallVision.stop();
     esp32.sendSystemStarting();
     dashboard.stop();

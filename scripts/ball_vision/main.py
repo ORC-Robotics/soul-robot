@@ -124,78 +124,6 @@ def analyze_frame(
     return BallObservation(candidate, distance, angle_degrees, position), candidates
 
 
-def draw_overlay(frame, observation, candidates):
-    """Desenha candidatos, alvo principal e valores usados na decisão."""
-
-    display = frame.copy()
-    secondary_candidates = candidates[1:] if observation is not None else candidates
-    for candidate in secondary_candidates:
-        center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
-        cv2.circle(
-            display,
-            center,
-            int(round(candidate.radius_pixels)),
-            (0, 180, 255),
-            1,
-            cv2.LINE_AA,
-        )
-
-    if observation is None:
-        cv2.putText(
-            display,
-            "NENHUMA BOLA ENCONTRADA",
-            (20, 35),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        return display
-
-    candidate = observation.candidate
-    is_silver = candidate.ball_type == "silver_ball"
-    ball_label = "BOLA PRATA" if is_silver else "BOLA PRETA"
-    # Verde sempre identifica o alvo travado; todas as outras candidatas ficam
-    # em laranja, independentemente de serem pretas ou pratas.
-    target_color = (0, 255, 0)
-    center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
-    radius = int(round(candidate.radius_pixels))
-    cv2.circle(display, center, radius, target_color, 2, cv2.LINE_AA)
-    cv2.circle(display, center, 4, (255, 0, 255), -1, cv2.LINE_AA)
-    cv2.line(
-        display,
-        (display.shape[1] // 2, 0),
-        (display.shape[1] // 2, display.shape[0]),
-        (255, 120, 0),
-        1,
-        cv2.LINE_AA,
-    )
-
-    extrapolated_text = " (extrapolada)" if observation.distance.extrapolated else ""
-    lines = (
-        ball_label,
-        f"Centro: ({candidate.center_x:.0f}, {candidate.center_y:.0f}) px",
-        f"Raio: {candidate.radius_pixels:.1f} px | Diametro: {candidate.diameter_pixels:.1f} px",
-        f"Area visivel: {candidate.visible_area_pixels:.0f} px",
-        f"Distancia: {observation.distance.distance_cm:.1f} cm{extrapolated_text}",
-        f"Angulo: {observation.angle_degrees:+.1f} graus",
-        f"Posicao: {observation.position}",
-    )
-    for line_index, text in enumerate(lines):
-        cv2.putText(
-            display,
-            text,
-            (20, 35 + line_index * 27),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            target_color,
-            2,
-            cv2.LINE_AA,
-        )
-    return display
-
-
 def parse_arguments(arguments=None):
     parser = argparse.ArgumentParser(
         description=(
@@ -276,8 +204,7 @@ def run(arguments=None):
                     last_json_time = current_time
 
             if not args.headless:
-                display = draw_overlay(frame, observation, candidates)
-                cv2.imshow(WINDOW_TITLE, display)
+                cv2.imshow(WINDOW_TITLE, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q"), ord("Q")):
                     break

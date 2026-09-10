@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <exception>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <string>
 
@@ -772,6 +773,70 @@ bool CameraMonitor::requestForwardBallTargetSequence(
     {
         std::remove(config::kForwardBallTargetSequenceTemporaryControlPath);
         return false;
+    }
+    return true;
+#endif
+}
+
+bool CameraMonitor::publishRescueZoneDetectionInput(
+    bool enabled,
+    bool ultrasonicFresh,
+    bool ultrasonicValid,
+    double ultrasonicDistanceCm) const
+{
+#ifdef _WIN32
+    (void)enabled;
+    (void)ultrasonicFresh;
+    (void)ultrasonicValid;
+    (void)ultrasonicDistanceCm;
+    return true;
+#else
+    // O mesmo arquivo atômico transporta o gate e a profundidade frontal.
+    // O Python ainda revalida idade, faixa e flags antes de desenhar a leitura.
+    {
+        std::ofstream control(
+            config::kRescueZoneDetectionTemporaryControlPath,
+            std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << "{\"enabled\":" << (enabled ? "true" : "false")
+                << ",\"ultrasonicFresh\":"
+                << (ultrasonicFresh ? "true" : "false")
+                << ",\"ultrasonicValid\":"
+                << (ultrasonicValid ? "true" : "false")
+                << ",\"ultrasonicDistanceCm\":";
+        if (ultrasonicValid && std::isfinite(ultrasonicDistanceCm))
+        {
+            control << ultrasonicDistanceCm;
+        }
+        else
+        {
+            control << "null";
+        }
+        // A precisão padrão arredonda o Unix time atual em centenas de
+        // segundos. Isso faria a CAM1 rejeitar imediatamente o heartbeat como
+        // stale e esconder o overlay das áreas.
+        control << ",\"timestamp\":" << std::fixed << std::setprecision(6)
+                << currentUnixSeconds() << "}\n";
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(
+            config::kRescueZoneDetectionTemporaryControlPath,
+            config::kRescueZoneDetectionControlPath) != 0)
+    {
+        std::remove(config::kRescueZoneDetectionTemporaryControlPath);
+        return false;
+    }
+    if (!enabled)
+    {
+        // O C++ também invalida o resultado para que STOP e E-Stop não
+        // dependam do próximo frame da câmera para apagar uma leitura antiga.
+        std::remove(config::kRescueZoneStatusPath);
     }
     return true;
 #endif

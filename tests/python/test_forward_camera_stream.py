@@ -81,102 +81,130 @@ class ForwardCameraStreamTest(unittest.TestCase):
             ):
                 self.assertTrue(forward_camera_stream.requested_enabled())
 
-    def test_ball_detection_control_file_round_trip(self):
+    def test_rescue_zone_gate_defaults_to_disabled(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            control_path = os.path.join(temporary_directory, "ball_enabled")
-            temporary_path = os.path.join(
-                temporary_directory,
-                "ball_enabled.tmp",
-            )
+            missing_path = os.path.join(temporary_directory, "missing")
             with mock.patch.object(
                 forward_camera_stream,
-                "BALL_DETECTION_CONTROL_PATH",
-                control_path,
-            ), mock.patch.object(
-                forward_camera_stream,
-                "TEMP_BALL_DETECTION_CONTROL_PATH",
-                temporary_path,
+                "RESCUE_ZONE_CONTROL_PATH",
+                missing_path,
             ):
-                forward_camera_stream.write_requested_ball_detection_enabled(True)
-                self.assertTrue(
-                    forward_camera_stream.requested_ball_detection_enabled()
-                )
-                forward_camera_stream.write_requested_ball_detection_enabled(False)
                 self.assertFalse(
-                    forward_camera_stream.requested_ball_detection_enabled()
+                    forward_camera_stream.requested_rescue_zone_detection_enabled()
                 )
 
-    def test_disabled_ball_detection_skips_heavy_pipeline(self):
-        frame = np.full((540, 960, 3), 255, dtype=np.uint8)
-        with mock.patch.object(
-            forward_camera_stream.ball_vision_pipeline,
-            "analyze",
-        ) as detector:
-            observation, candidates, status = (
-                forward_camera_stream.analyze_requested_ball_frame(frame, False)
-            )
-
-        detector.assert_not_called()
-        self.assertIsNone(observation)
-        self.assertEqual(candidates, ())
-        self.assertFalse(status["ballDetectionEnabled"])
-        self.assertFalse(status["ballDetected"])
-        self.assertIsNone(status["ballTxDegrees"])
-
-    def test_ball_detection_has_independent_rate_limit(self):
-        interval = 1.0 / forward_camera_stream.BALL_DETECTION_FPS
-
-        self.assertTrue(forward_camera_stream.ball_analysis_due(10.0, 0.0))
-        self.assertFalse(
-            forward_camera_stream.ball_analysis_due(
-                10.0 + interval * 0.5,
-                10.0,
-            )
-        )
-        self.assertTrue(
-            forward_camera_stream.ball_analysis_due(
-                10.0 + interval * 1.1,
-                10.0,
-            )
-        )
-
-    def test_fast_ball_status_contains_only_control_fields(self):
-        ball_status = forward_camera_stream.empty_ball_status()
-        ball_status.update({
-            "ballDetected": True,
-            "ballType": "black_ball",
-            "ballTxDegrees": 7.5,
-            "ballDistanceCm": 42.0,
-            "ballRadiusPixels": 70.0,
-            "visibleAreaPixels": 15000.0,
-            "targetSequence": 8,
-            "targetLocked": True,
-        })
+    def test_rescue_zone_input_validates_freshness_and_ultrasonic_range(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
-            status_path = os.path.join(temporary_directory, "ball.json")
-            temporary_path = os.path.join(temporary_directory, "ball.tmp.json")
+            input_path = os.path.join(temporary_directory, "zones_input.json")
+            with open(input_path, "w", encoding="utf-8") as input_file:
+                json.dump(
+                    {
+                        "enabled": True,
+                        "ultrasonicFresh": True,
+                        "ultrasonicValid": True,
+                        "ultrasonicDistanceCm": 43.7,
+                        "timestamp": 100.0,
+                    },
+                    input_file,
+                )
             with mock.patch.object(
                 forward_camera_stream,
-                "BALL_STATUS_PATH",
+                "RESCUE_ZONE_CONTROL_PATH",
+                input_path,
+            ):
+                current = forward_camera_stream.read_rescue_zone_detection_input(
+                    now=100.1
+                )
+                stale = forward_camera_stream.read_rescue_zone_detection_input(
+                    now=100.4
+                )
+                with open(input_path, "w", encoding="utf-8") as input_file:
+                    json.dump(
+                        {
+                            "enabled": True,
+                            "ultrasonicFresh": True,
+                            "ultrasonicValid": True,
+                            "ultrasonicDistanceCm": 401.0,
+                            "timestamp": 100.0,
+                        },
+                        input_file,
+                    )
+                outside_range = (
+                    forward_camera_stream.read_rescue_zone_detection_input(
+                        now=100.1
+                    )
+                )
+
+        self.assertTrue(current["enabled"])
+        self.assertTrue(current["ultrasonicFresh"])
+        self.assertTrue(current["ultrasonicValid"])
+        self.assertEqual(current["ultrasonicDistanceCm"], 43.7)
+        self.assertFalse(stale["enabled"])
+        self.assertFalse(stale["ultrasonicFresh"])
+        self.assertFalse(outside_range["ultrasonicValid"])
+        self.assertIsNone(outside_range["ultrasonicDistanceCm"])
+
+    def test_rescue_zone_status_is_atomic_and_independent_by_color(self):
+        frame = np.full((240, 320, 3), 255, dtype=np.uint8)
+        cv2.rectangle(frame, (30, 70), (130, 220), (0, 200, 0), -1)
+        cv2.rectangle(frame, (190, 70), (290, 220), (0, 0, 220), -1)
+        candidates = forward_camera_stream.analyze_rescue_zones(frame)
+        temporal_filter = forward_camera_stream.RescueZoneTemporalFilter()
+        temporal_filter.update(candidates)
+        temporal_filter.update(candidates)
+        results = temporal_filter.update(candidates)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            status_path = os.path.join(temporary_directory, "zones.json")
+            temporary_path = os.path.join(temporary_directory, "zones.tmp.json")
+            with mock.patch.object(
+                forward_camera_stream,
+                "RESCUE_ZONE_STATUS_PATH",
                 status_path,
             ), mock.patch.object(
                 forward_camera_stream,
-                "TEMP_BALL_STATUS_PATH",
+                "TEMP_RESCUE_ZONE_STATUS_PATH",
                 temporary_path,
             ):
-                forward_camera_stream.save_ball_control_status(True, ball_status)
-
-            with open(status_path, "r", encoding="utf-8") as status_file:
-                status = json.load(status_file)
+                forward_camera_stream.save_rescue_zone_status(
+                    results,
+                    123.5,
+                    7,
+                    {
+                        "ultrasonicFresh": True,
+                        "ultrasonicValid": True,
+                        "ultrasonicDistanceCm": 43.7,
+                    },
+                )
+                with open(status_path, "r", encoding="utf-8") as status_file:
+                    status = json.load(status_file)
+                forward_camera_stream.clear_rescue_zone_status()
+                self.assertFalse(os.path.exists(status_path))
 
         self.assertTrue(status["active"])
-        self.assertTrue(status["ballDetected"])
-        self.assertEqual(status["ballType"], "black_ball")
-        self.assertEqual(status["ballTxDegrees"], 7.5)
-        self.assertEqual(status["visibleAreaPixels"], 15000.0)
-        self.assertEqual(status["targetSequence"], 8)
-        self.assertTrue(status["targetLocked"])
-        self.assertNotIn("ballPayload", status)
+        self.assertEqual(status["timestamp"], 123.5)
+        self.assertEqual(status["sequence"], 7)
+        self.assertTrue(status["green"]["detected"])
+        self.assertTrue(status["red"]["detected"])
+        self.assertTrue(status["green"]["candidateDetected"])
+        self.assertTrue(status["red"]["candidateDetected"])
+        self.assertEqual(status["green"]["confirmationFrames"], 3)
+        self.assertEqual(status["red"]["confirmationFrames"], 3)
+        self.assertEqual(status["green"]["confirmationRequiredFrames"], 3)
+        self.assertEqual(status["red"]["confirmationRequiredFrames"], 3)
+        self.assertEqual(status["green"]["strongGreenFraction"], 1.0)
+        self.assertNotIn("_hull", status["green"])
+        self.assertTrue(status["ultrasonic"]["fresh"])
+        self.assertTrue(status["ultrasonic"]["valid"])
+        self.assertEqual(status["ultrasonic"]["distanceCm"], 43.7)
+        self.assertEqual(status["greenMedianRgb"], [0, 200, 0])
+        self.assertEqual(status["greenMedianHsv"], [60, 255, 200])
+        self.assertEqual(status["backgroundMedianRgb"], [255, 255, 255])
+        self.assertEqual(status["backgroundMedianHsv"], [0, 0, 255])
+        self.assertEqual(status["redMedianRgb"], [220, 0, 0])
+        self.assertEqual(status["redMedianHsv"], [0, 255, 220])
+        self.assertEqual(status["redBackgroundMedianRgb"], [255, 255, 255])
+        self.assertEqual(status["redBackgroundMedianHsv"], [0, 0, 255])
 
     def test_disabled_status_keeps_forward_profile_without_line_data(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

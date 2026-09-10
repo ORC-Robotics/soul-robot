@@ -17,6 +17,7 @@ class MissionController
 {
 public:
     bool requiresForwardBallDetection(const RobotSnapshot& snapshot) const;
+    bool requiresRescueZoneDetection(const RobotSnapshot& snapshot) const;
     void update(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
@@ -64,9 +65,9 @@ private:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         const ForwardBallSnapshot& forwardBallSnapshot);
-    void updateRescueDetection(
+    void updateRescueZoneDetection(
         RobotState& robotState,
-        const ForwardBallSnapshot& forwardBallSnapshot);
+        const Esp32TelemetrySnapshot& esp32Telemetry);
     void updateObstacleAvoidance(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);

@@ -130,6 +130,11 @@ public:
     ForwardBallSnapshot forwardBallSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;
     bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
+    bool publishRescueZoneDetectionInput(
+        bool enabled,
+        bool ultrasonicFresh,
+        bool ultrasonicValid,
+        double ultrasonicDistanceCm) const;
 
 private:
     std::string forwardLineStatusPath_;

@@ -114,14 +114,15 @@ flowchart LR
 
 1. `MissionController` identifica a missão autônoma selecionada.
 2. `MainMission` coordena segue-faixa, retorno verde e desvio de obstáculo.
-3. A missão isolada `rescue_area` liga o detector de vítimas somente durante sua execução.
+3. A missão isolada `rescue_area` abre o gate reservado ao futuro detector de vítimas.
 4. Cada comportamento atualiza `RobotState`, sem acessar GPIO ou dashboard.
 5. `MotorController` aplica os limites antes de enviar comandos à ESP32.
 6. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
 
 A Missão Principal preserva o segue-faixa geométrico atual e entrega autoridade
 temporária ao desvio quando o ultrassônico confirma um obstáculo. A visão de
-vítimas é uma etapa separada e não consome CPU enquanto o robô segue a linha.
+vítimas será uma etapa separada; o detector antigo não participa mais da
+execução da câmera frontal.
 
 ## 4. Hardware conhecido
 
@@ -781,22 +782,58 @@ obstáculo. A `MainMission` apenas troca de fase e zera os motores nas transiç�
 
 #### `rescue_area`
 
-- É uma etapa explícita: selecionar a missão não liga a visão pesada; pressionar
-  Auto ou o botão físico abre o gate do detector.
-- Detecta vítimas pretas por HSV/contornos e prateadas por Hough, brilho e textura.
-- Mantém o assistente frontal a 30 FPS e limita o detector pesado a 15 análises
-  por segundo enquanto o gate estiver aberto.
-- Escolhe inicialmente a maior área visível, confirma por três frames e mantém o
-  mesmo alvo travado durante toda a execução.
+- É uma etapa explícita: selecionar a missão não abre o gate; pressionar Auto ou
+  o botão físico o libera para o futuro detector.
+- O detector antigo por HSV, contornos e Hough foi retirado da execução da CAM1.
+- O IPC, a sequência da execução e o requisito de alvo travado permanecem como
+  contrato para o futuro modelo.
 - Alinha pelo `tx`, com frenagem antes da confirmação, e aproxima até 5 cm.
 - IPC frontal com mais de 500 ms ou medição inválida mantém os motores zerados.
 - Depois da primeira aquisição, perder o alvo por 1 s encerra a missão.
-- Stop, E-Stop, troca de missão, conclusão e falha desligam o detector e impedem
+- Stop, E-Stop, troca de missão, conclusão e falha fecham o gate e impedem
   reutilizar o alvo de uma execução anterior.
 
 O modo isolado encerra depois da aproximação da vítima. Na Missão Principal, o
 mesmo módulo permanece parado depois dessa etapa até a estratégia validada de
 procura da saída confirmar `rescueExitConfirmed`.
+
+#### `rescue_zone_detection`
+
+O modo `Áreas de Resgate` valida somente a percepção clássica das zonas verde e
+vermelha. A CAM1 segmenta as cores separadamente em HSV, reconstrói fragmentos
+coerentes com convex hull e mede as bordas laterais em várias linhas. O ponto
+`aimX` só é válido no estado `FULL_BOUNDS`; uma cor que preenche o frame continua
+detectada, mas recebe `BOUNDS_UNKNOWN`. O IPC fica em
+`/dev/shm/obr_rescue_zone_status.json` e inclui o objeto `ultrasonic`, com
+`fresh`, `valid` e `distanceCm`. No overlay, a leitura frontal aparece somente ao
+lado do nome da zona como `ULTRA 43.7 cm`; leitura stale, inválida ou fora de 2 a
+400 cm aparece como `ULTRA --`. Quando nenhuma zona gera contorno ou rótulo, o
+ultrassônico permanece visível sozinho no canto do frame. Painéis temporários
+podem exibir a mediana RGB/HSV das máscaras GREEN e RED selecionadas e de margens
+externas aos respectivos hulls. Elas ficam desligadas por padrão e podem ser
+ativadas para uma coleta com
+`OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS=1 ./scripts/run_robot.sh`. Os mesmos
+valores permanecem no IPC como `greenMedianRgb`, `greenMedianHsv`,
+`backgroundMedianRgb`, `backgroundMedianHsv`, `redMedianRgb`, `redMedianHsv`,
+`redBackgroundMedianRgb` e `redBackgroundMedianHsv`. O IPC é removido no modo Parado,
+no E-Stop ou ao selecionar outra missão. Esta etapa não está integrada à
+`MainMission` e ainda não usa a distância para controlar velocidade. Em Autônomo,
+ela renova potência zero; em Manual, conserva a percepção enquanto a tração
+continua sob os comandos manuais e seus timeouts de segurança.
+
+O GREEN possui uma máscara candidata permissiva e uma evidência forte separada.
+Cada componente candidato precisa ter ao menos 20% de pixels com `S >= 120`, G
+dominante, separações normalizadas G-B e G-R de pelo menos 0,04 e cromaticidade
+normalizada de pelo menos 0,12. Depois da validação, a geometria utiliza todos os
+pixels candidatos do componente, preservando bordas fracas e partes lavadas pela
+iluminação. Nenhum desses critérios é aplicado ao RED.
+
+Uma camada posterior confirma GREEN e RED de forma independente. São necessários
+três frames positivos consecutivos para confirmar uma zona e dois negativos para
+removê-la. O IPC separa `candidateDetected` da confirmação em `detected` e publica
+os contadores. No primeiro frame negativo de tolerância, `detected` ainda permanece
+verdadeiro, mas a geometria é a observação vazia atual e `aimValid` fica falso;
+nenhum `aimX` anterior pode orientar uma etapa futura.
 
 #### `obstacle_avoidance`
 

@@ -612,23 +612,50 @@ capturando e publicando sua leitura leve em
 Ela não executa sensores FAR/MEDIUM/NEAR, GREEN, GAP, recovery nem comandos de
 motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
-O mesmo processo contém o detector de vítimas pretas e prateadas, mas o trecho
-pesado de HSV, contornos e Hough permanece desligado por padrão. Ele só é executado
-durante o modo isolado `rescue_area` ou quando a Missão Principal entra na fase de
-resgate. Parar, acionar o E-Stop, trocar de missão, concluir a aproximação no modo
-isolado ou atingir uma falha fecha o gate e limpa a vítima anterior. Os percursos
-de linha, portanto, não pagam continuamente o custo desse detector.
+Os detectores antigos de vítimas por HSV, contornos e Hough não participam mais
+da execução da CAM1, e seu overlay também não é desenhado no stream. O processo
+frontal fica dedicado à captura, ao dataset e ao assistente leve de linha enquanto
+o novo modelo ainda não estiver integrado.
 
-Quando habilitado, o detector pesado é limitado a 15 análises por segundo sem
-reduzir os 30 FPS do assistente frontal. Frames intermediários continuam servindo
-à linha e ao stream, preservando o comportamento desta branch.
+O contrato `/dev/shm/obr_forward_ball_status.json`, o gate de resgate e a sequência
+da execução permanecem reservados ao futuro detector. `ForwardBallSnapshot`,
+`BallAlignmentMission` e `RescueAreaMission` continuam validando idade, identidade
+da execução e alvo travado. Sem um produtor válido, a missão mantém os motores
+zerados.
 
-Durante o resgate, o rastreador escolhe a vítima de maior área visível, exige três
-frames para travá-la e associa o alvo à sequência da execução autônoma. O C++ usa
-o `tx` para alinhar, aguarda o robô parar antes de confirmar o centro e aproxima
-até 5 cm. IPC ausente por mais de 500 ms zera os motores; perder o alvo já travado
-por 1 s encerra a missão. O HUD da câmera frontal expõe tipo, posição, distância,
-ângulo e custo de processamento para calibração.
+O modo isolado `rescue_zone_detection`, exibido como `Áreas de Resgate`, ativa
+somente a segmentação HSV das zonas verde e vermelha. O stream frontal mostra
+o convex hull, o nome de cada cor detectada e, ao lado do nome, `ULTRA 43.7 cm`
+para uma leitura frontal válida e atual ou `ULTRA --` quando ela estiver
+indisponível. Se nenhuma zona estiver visível, o mesmo valor permanece sozinho
+no canto do frame para orientar o operador muito perto da parede. O diagnóstico
+de medianas RGB/HSV dos pixels GREEN, RED e dos respectivos fundos fica desligado
+por padrão. Para uma coleta temporária, inicie com
+`OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS=1 ./scripts/run_robot.sh`. O resultado
+completo continua escrito atomicamente em `/dev/shm/obr_rescue_zone_status.json`, com
+`timestamp`, `sequence`, o objeto `ultrasonic`, objetos independentes `green` e
+`red` e as medianas cromáticas das duas zonas.
+`aimValid` só fica verdadeiro quando as duas bordas laterais possuem fundo
+suficiente em várias linhas do frame. STOP, E-Stop, troca de modo ou falha da CAM1
+removem esse IPC. A distância é somente telemetria nesta etapa e não controla a
+velocidade. Em Autônomo, os motores e servos permanecem desligados; em Manual, a
+percepção continua ativa e a tração responde somente aos comandos do operador.
+
+A classificação GREEN usa duas camadas cromáticas. A candidata preserva o HSV
+amplo e dominâncias normalizadas suaves. Cada componente precisa conter pelo
+menos 20% de pixels strong-green, definidos por `S >= 120`, dominâncias G-B e G-R
+de pelo menos 0,04 e cromaticidade normalizada de pelo menos 0,12. Os pixels
+candidatos mais fracos continuam compondo as bordas e o hull depois que a região
+é validada. Essa separação rejeita MDF/oliva sem estreitar o Hue permitido.
+
+Depois da classificação de cada frame, GREEN e RED possuem confirmação temporal
+independente. Uma zona exige três frames positivos consecutivos para publicar
+`detected=true` e dois negativos consecutivos para perder a confirmação. Durante
+o primeiro negativo, a confirmação permanece, mas `candidateDetected=false` e
+`aimValid=false`; nenhuma geometria antiga é reutilizada. `candidateAimValid`
+preserva separadamente a validade geométrica bruta do frame. O IPC também publica
+`confirmationFrames`, `confirmationRequiredFrames`, `lossFrames` e
+`lossRequiredFrames` dentro de cada cor.
 
 O código também pode solicitar que o stream frontal já fique disponível no início:
 

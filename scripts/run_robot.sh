@@ -58,8 +58,11 @@ if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
   # A CAM1 mantém somente a leitura leve contínua. A visão pesada de vítimas é
   # liberada pelo C++ apenas durante a Área de Resgate. Esta opção controla se o
   # stream de diagnóstico começa disponível e não altera nenhum desses gates.
+  # As medianas cromáticas ficam desligadas por padrão. O operador pode
+  # habilitá-las temporariamente por variável de ambiente para coletar amostras.
   pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
   OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
+  OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS="${OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS:-0}" \
     "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
   FORWARD_CAMERA_PID="$!"
 else

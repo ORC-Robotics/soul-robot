@@ -27,7 +27,7 @@ Esp32TelemetrySnapshot readyTelemetry()
     telemetry.mpuOk = true;
     telemetry.motorSleepPinHigh = true;
     telemetry.lastSensorAgeMs = 0;
-    telemetry.ultrasonicDistanceCm = 6.4;
+    telemetry.ultrasonicDistanceCm = 6.0;
     telemetry.leftEncoderRate = 0.0;
     telemetry.rightEncoderRate = 0.0;
     telemetry.yawZDeg = 0.0;
@@ -182,7 +182,7 @@ void testCompleteMeasuredRouteAndRecoverLine()
         telemetry,
         config::kObstacleReverseDistanceCm);
     require(output.phase == "obstacle_stage_completed",
-            "A ré deve parar depois de 5 cm medidos pelos encoders.");
+            "A ré deve parar depois de 6 cm medidos pelos encoders.");
 
     output = finishStageSettling(avoidance, telemetry);
     require(output.completed && !avoidance.active(),

@@ -24,10 +24,17 @@ except ModuleNotFoundError as error:
 
     def read_dataset_status():
         return {}
-from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 from vision.forward_path import ForwardPathTracker
 from vision.gap_validation import read_json_snapshot
 from vision.camera_config import GAP_VALIDATION_CONFIG, LINE_STATUS_PATH
+from vision.rescue_zone import (
+    RescueZoneTemporalFilter,
+    ULTRASONIC_MAXIMUM_CM,
+    ULTRASONIC_MINIMUM_CM,
+    analyze_rescue_zones,
+    draw_rescue_zone_overlay,
+    serializable_results,
+)
 
 
 CONTROL_PATH = "/dev/shm/obr_forward_camera_enabled"
@@ -36,19 +43,15 @@ STATUS_PATH = "/tmp/obr_forward_camera_status.json"
 TEMP_STATUS_PATH = "/tmp/obr_forward_camera_status.tmp.json"
 FORWARD_LINE_STATUS_PATH = "/dev/shm/obr_forward_line_status.json"
 TEMP_FORWARD_LINE_STATUS_PATH = "/dev/shm/obr_forward_line_status.tmp.json"
-BALL_DETECTION_CONTROL_PATH = "/dev/shm/obr_forward_ball_detection_enabled"
-TEMP_BALL_DETECTION_CONTROL_PATH = (
-    "/dev/shm/obr_forward_ball_detection_enabled.tmp"
-)
-BALL_TARGET_SEQUENCE_CONTROL_PATH = (
-    "/dev/shm/obr_forward_ball_target_sequence"
-)
-BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.json"
-TEMP_BALL_STATUS_PATH = "/dev/shm/obr_forward_ball_status.tmp.json"
+RESCUE_ZONE_CONTROL_PATH = "/dev/shm/obr_rescue_zone_detection_enabled"
+RESCUE_ZONE_STATUS_PATH = "/dev/shm/obr_rescue_zone_status.json"
+TEMP_RESCUE_ZONE_STATUS_PATH = "/dev/shm/obr_rescue_zone_status.tmp.json"
+# O heartbeat do C++ chega a cada 50 ms. Após 300 ms, o gate e o ultrassônico
+# ficam indisponíveis mesmo se o serviço encerrar sem escrever o valor zero.
+RESCUE_ZONE_INPUT_TIMEOUT_SECONDS = 0.30
 STREAM_PORT = 8091
 STREAM_PATH = "/stream.mjpg"
 STATUS_FPS = 5
-BALL_DETECTION_FPS = 15
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
 
@@ -74,116 +77,6 @@ latest_jpeg = None
 latest_jpeg_sequence = 0
 active_stream_clients = 0
 frame_condition = threading.Condition()
-ball_vision_pipeline = BallVisionPipeline()
-active_ball_target_sequence = 0
-
-
-def empty_ball_status(processing_ms=0.0, detection_enabled=False):
-    """Remove qualquer detecção antiga quando o frame atual não tem vítima."""
-
-    return {
-        "ballDetectionEnabled": bool(detection_enabled),
-        "ballDetected": False,
-        "ballType": "",
-        "ballCenterX": None,
-        "ballCenterY": None,
-        "ballRadiusPixels": None,
-        "ballDiameterPixels": None,
-        "ballDistanceCm": None,
-        "ballDistanceExtrapolated": False,
-        "ballAngleDegrees": None,
-        "ballTxDegrees": None,
-        "visibleAreaPixels": None,
-        "targetSequence": active_ball_target_sequence,
-        "targetLocked": ball_vision_pipeline.target_locked,
-        "ballPosition": "nenhuma",
-        "ballCircularity": None,
-        "ballTopClipped": False,
-        "ballDetectionMethod": "",
-        "ballProcessingMs": round(float(processing_ms), 2),
-        "ballPayload": None,
-    }
-
-
-def build_ball_status(observation, processing_ms):
-    """Converte a vítima observada em valores simples para controle e painel."""
-
-    if observation is None:
-        return empty_ball_status(processing_ms, detection_enabled=True)
-    candidate = observation.candidate
-    return {
-        "ballDetectionEnabled": True,
-        "ballDetected": True,
-        "ballType": candidate.ball_type,
-        "ballCenterX": round(float(candidate.center_x), 2),
-        "ballCenterY": round(float(candidate.center_y), 2),
-        "ballRadiusPixels": round(float(candidate.radius_pixels), 2),
-        "ballDiameterPixels": round(float(candidate.diameter_pixels), 2),
-        "ballDistanceCm": round(float(observation.distance.distance_cm), 2),
-        "ballDistanceExtrapolated": bool(observation.distance.extrapolated),
-        "ballAngleDegrees": round(float(observation.angle_degrees), 2),
-        "ballTxDegrees": round(float(observation.angle_degrees), 2),
-        "visibleAreaPixels": round(float(candidate.visible_area_pixels), 2),
-        "targetSequence": active_ball_target_sequence,
-        "targetLocked": ball_vision_pipeline.target_locked,
-        "ballPosition": observation.position,
-        "ballCircularity": round(float(candidate.circularity), 3),
-        "ballTopClipped": bool(candidate.top_clipped),
-        "ballDetectionMethod": candidate.detection_method,
-        "ballProcessingMs": round(float(processing_ms), 2),
-        "ballPayload": build_esp32_payload(
-            candidate.ball_type,
-            observation.distance.distance_cm,
-            observation.angle_degrees,
-        ),
-    }
-
-
-def save_ball_control_status(active, ball_status=None):
-    """Publica em RAM somente os campos usados pelo alinhamento da vítima."""
-
-    current_ball = ball_status or empty_ball_status()
-    status = {
-        "active": bool(active),
-        "timestamp": time.time(),
-        "ballDetected": bool(current_ball["ballDetected"]),
-        "ballType": current_ball["ballType"],
-        "ballTxDegrees": current_ball["ballTxDegrees"],
-        "visibleAreaPixels": current_ball["visibleAreaPixels"],
-        "targetSequence": current_ball["targetSequence"],
-        "targetLocked": current_ball["targetLocked"],
-        "ballDistanceCm": current_ball["ballDistanceCm"],
-        "ballRadiusPixels": current_ball["ballRadiusPixels"],
-    }
-    with open(TEMP_BALL_STATUS_PATH, "w", encoding="utf-8") as status_file:
-        json.dump(status, status_file, allow_nan=False)
-    os.replace(TEMP_BALL_STATUS_PATH, BALL_STATUS_PATH)
-
-
-def analyze_requested_ball_frame(frame, detection_enabled):
-    """Executa o detector pesado somente dentro da etapa Área de Resgate."""
-
-    if not detection_enabled:
-        return None, (), empty_ball_status(detection_enabled=False)
-    processing_started = time.perf_counter()
-    result = ball_vision_pipeline.analyze(frame)
-    processing_ms = (time.perf_counter() - processing_started) * 1000.0
-    return (
-        result.observation,
-        result.candidates,
-        build_ball_status(result.observation, processing_ms),
-    )
-
-
-def ball_analysis_due(current_time, last_analysis_time):
-    """Limita somente a visão pesada sem reduzir os 30 FPS do assistente frontal."""
-
-    return (
-        last_analysis_time <= 0.0
-        or current_time - last_analysis_time >= 1.0 / BALL_DETECTION_FPS
-    )
-
-
 def environment_enabled():
     """Inicia o stream ligado, sem alterar a captura frontal contínua."""
 
@@ -220,64 +113,86 @@ def requested_enabled():
         return False
 
 
-def write_requested_ball_detection_enabled(enabled):
-    """Publica atomicamente se a etapa de resgate autoriza o detector."""
-
-    with open(
-        TEMP_BALL_DETECTION_CONTROL_PATH,
-        "w",
-        encoding="utf-8",
-    ) as control_file:
-        control_file.write("1\n" if enabled else "0\n")
-    os.replace(
-        TEMP_BALL_DETECTION_CONTROL_PATH,
-        BALL_DETECTION_CONTROL_PATH,
-    )
-
-
-def requested_ball_detection_enabled():
-    """Mantém o detector desligado quando o gate está ausente ou inválido."""
+def read_rescue_zone_detection_input(now=None):
+    """Lê o gate e o ultrassônico, recusando heartbeat antigo ou malformado."""
 
     try:
-        with open(
-            BALL_DETECTION_CONTROL_PATH,
-            "r",
-            encoding="utf-8",
-        ) as control_file:
-            return control_file.read().strip() == "1"
-    except OSError:
-        return False
+        with open(RESCUE_ZONE_CONTROL_PATH, "r", encoding="utf-8") as control_file:
+            input_status = json.load(control_file)
+        timestamp = float(input_status["timestamp"])
+        current_time = time.time() if now is None else float(now)
+        heartbeat_fresh = (
+            math.isfinite(timestamp)
+            and 0.0 <= current_time - timestamp <= RESCUE_ZONE_INPUT_TIMEOUT_SECONDS
+        )
+        distance = input_status.get("ultrasonicDistanceCm")
+        distance_valid = (
+            input_status.get("ultrasonicValid") is True
+            and isinstance(distance, (int, float))
+            and not isinstance(distance, bool)
+            and math.isfinite(float(distance))
+            and ULTRASONIC_MINIMUM_CM
+            <= float(distance)
+            <= ULTRASONIC_MAXIMUM_CM
+        )
+        return {
+            "enabled": heartbeat_fresh and input_status.get("enabled") is True,
+            "ultrasonicFresh": (
+                heartbeat_fresh and input_status.get("ultrasonicFresh") is True
+            ),
+            "ultrasonicValid": distance_valid,
+            "ultrasonicDistanceCm": round(float(distance), 2)
+            if distance_valid
+            else None,
+        }
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {
+            "enabled": False,
+            "ultrasonicFresh": False,
+            "ultrasonicValid": False,
+            "ultrasonicDistanceCm": None,
+        }
 
 
-def requested_ball_target_sequence():
-    """Lê a execução autônoma que deve possuir o próximo alvo travado."""
+def requested_rescue_zone_detection_enabled():
+    """Informa somente se o gate atual da percepção está aberto."""
 
-    try:
-        with open(
-            BALL_TARGET_SEQUENCE_CONTROL_PATH,
-            "r",
-            encoding="utf-8",
-        ) as control_file:
-            value = int(control_file.read().strip())
-            return max(0, value)
-    except (OSError, ValueError):
-        return 0
+    return read_rescue_zone_detection_input()["enabled"]
 
 
-def synchronize_ball_target_sequence(target_sequence):
-    """Descarta o alvo quando uma nova execução de resgate começa."""
+def save_rescue_zone_status(results, timestamp, sequence, detection_input):
+    """Publica atomicamente as duas zonas observadas no mesmo frame frontal."""
 
-    global active_ball_target_sequence
-    target_sequence = max(0, int(target_sequence))
-    if target_sequence == active_ball_target_sequence:
-        return False
-    ball_vision_pipeline.reset()
-    active_ball_target_sequence = target_sequence
-    return True
+    status = {
+        "active": True,
+        "timestamp": float(timestamp),
+        "sequence": int(sequence),
+        "ultrasonic": {
+            "fresh": bool(detection_input["ultrasonicFresh"]),
+            "valid": bool(detection_input["ultrasonicValid"]),
+            "distanceCm": detection_input["ultrasonicDistanceCm"],
+        },
+    }
+    status.update(serializable_results(results))
+    with open(TEMP_RESCUE_ZONE_STATUS_PATH, "w", encoding="utf-8") as status_file:
+        json.dump(status, status_file, allow_nan=False)
+    os.replace(TEMP_RESCUE_ZONE_STATUS_PATH, RESCUE_ZONE_STATUS_PATH)
+
+
+def clear_rescue_zone_status():
+    """Invalida imediatamente o IPC ao fechar o gate ou perder a câmera."""
+
+    for path in (RESCUE_ZONE_STATUS_PATH, TEMP_RESCUE_ZONE_STATUS_PATH):
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            print(f"Falha ao remover IPC das áreas de resgate {path}: {error}", flush=True)
 
 
 def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
-                error_message="", processing_active=None, ball_status=None):
+                error_message="", processing_active=None):
     """Expõe saúde da captura sem misturar o novo IPC com o segue-faixa."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
@@ -317,17 +232,12 @@ def save_status(enabled, active, state, fps=0.0, camera_format="", details=None,
         ),
         "transform": "opencv-rotate-180",
         "targetCameraFps": profile["target_fps"],
-        "ballDetectionTargetFps": BALL_DETECTION_FPS,
         "streamPort": STREAM_PORT,
         "streamPath": STREAM_PATH,
-        "silverProcessingScale": ball_vision_pipeline.silver_processing_scale,
         "error": error_message,
         "timestamp": time.time(),
     }
     status.update(read_dataset_status())
-    status.update(ball_status or empty_ball_status(
-        detection_enabled=requested_ball_detection_enabled()
-    ))
     with open(TEMP_STATUS_PATH, "w", encoding="utf-8") as status_file:
         json.dump(status, status_file, allow_nan=False)
     os.replace(TEMP_STATUS_PATH, STATUS_PATH)
@@ -482,50 +392,63 @@ def clear_forward_line_status():
 
 
 def draw_forward_assist_overlay(display_frame, reading):
-    """Exibe previsão e todos os runs, inclusive os rejeitados pela geometria."""
+    """Exibe somente a área analisada, o caminho escolhido e o estado atual."""
 
     x0, y0, x1, y1 = resolve_forward_assist_roi(display_frame.shape)
     right = x1 - 1
     bottom = y1 - 1
-    center_x = int(round((x0 + right) / 2.0))
-    cv2.rectangle(display_frame, (x0, y0), (right, bottom), (0, 255, 255), 1)
-    cv2.line(
+    state = reading.get("forwardPathState", "UNCERTAIN")
+    state_color = {
+        "PRESENT": (0, 210, 0),
+        "UNCERTAIN": (0, 210, 255),
+        "ABSENT": (0, 0, 230),
+    }.get(state, (0, 210, 255))
+
+    # A borda discreta informa exatamente qual parte do frame participa da
+    # leitura frontal sem cobrir a pista com linhas auxiliares.
+    cv2.rectangle(display_frame, (x0, y0), (right, bottom), (150, 150, 150), 1)
+
+    selected_points = [
+        (int(round(band["x"])), int(round(band["y"])))
+        for band in reading.get("selectedBands", [])
+    ]
+    if len(selected_points) > 1:
+        # Apenas o caminho realmente escolhido aparece no stream. Candidatos
+        # rejeitados continuam disponíveis no processamento e na telemetria.
+        cv2.polylines(
+            display_frame,
+            [np.asarray(selected_points, dtype=np.int32)],
+            False,
+            state_color,
+            2,
+            cv2.LINE_AA,
+        )
+
+    confidence = float(reading.get("forwardLineConfidence", 0.0))
+    decision = reading.get("decision", "UNAVAILABLE")
+    label = f"FRENTE {state}  {confidence:.2f}  |  {decision}"
+    label_top = max(0, y0 - 28)
+    label_bottom = max(22, y0 - 4)
+    label_right = min(right, x0 + 370)
+    # A faixa compacta mantém o estado legível sobre pisos claros sem ocupar
+    # a região usada para inspecionar a fita.
+    cv2.rectangle(
         display_frame,
-        (center_x, y0),
-        (center_x, bottom),
-        (255, 255, 0),
+        (x0, label_top),
+        (label_right, label_bottom),
+        (25, 25, 25),
+        -1,
+    )
+    cv2.putText(
+        display_frame,
+        label,
+        (x0 + 6, label_bottom - 6),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.48,
+        state_color,
         1,
         cv2.LINE_AA,
     )
-
-    state = reading.get("forwardPathState", "UNCERTAIN")
-    colors = {"PRESENT": (0, 255, 0), "UNCERTAIN": (0, 255, 255), "ABSENT": (0, 0, 255)}
-    for candidate in reading.get("candidates", []):
-        color = colors[candidate["state"]]
-        x, y, width, height = candidate["box"]
-        cv2.rectangle(display_frame, (x, y), (x + width - 1, y + height - 1), color, 1)
-        points = []
-        for band in candidate["bands"]:
-            x, y, half = round(band["x"]), round(band["y"]), round(band["width"] / 2)
-            ends = ((x, y - half), (x, y + half)) if band["horizontal"] else ((x - half, y), (x + half, y))
-            cv2.line(display_frame, *ends, color, 2)
-            points.append((x, y))
-        if len(points) > 1:
-            cv2.polylines(display_frame, [np.array(points, np.int32)], False, color, 2, cv2.LINE_AA)
-    prediction = reading.get("prediction", [])
-    if len(prediction) > 1:
-        # Ciano é previsão; os candidatos vermelhos permanecem visíveis.
-        cv2.polylines(display_frame, [np.array(prediction, np.int32)], False, (255, 255, 0), 1, cv2.LINE_AA)
-    label_y = max(18, y0 - 86)
-    # Fundo escuro mantém a leitura do diagnóstico sobre o piso branco.
-    cv2.rectangle(display_frame, (x0, label_y - 16), (min(x1 - 1, x0 + 290), label_y + 95), (25, 25, 25), -1)
-    for index, text in enumerate((f"PATH CONF {reading['forwardLineConfidence']:.2f}",
-                                  f"NEAR {reading.get('nearState', 'UNKNOWN')}",
-                                  f"B-FAR {reading.get('bottomFarState', 'UNKNOWN')}", f"FWD {state}",
-                                  f"DECISION {reading.get('decision', 'UNAVAILABLE')}",
-                                  f"SOURCE {reading.get('source', 'UNAVAILABLE')}")):
-        cv2.putText(display_frame, text, (x0 + 4, label_y + index * 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
 
 
 def publish_frame(jpeg):
@@ -701,15 +624,12 @@ def close_forward_camera(camera):
 
 
 def main():
-    global stream_active, active_ball_target_sequence
+    global stream_active
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
     clear_forward_line_status()
-    # O boot nunca herda a autorização de resgate deixada em /dev/shm.
-    # O processo C++ precisa renovar o gate durante a execução correta.
-    write_requested_ball_detection_enabled(False)
-    save_ball_control_status(False)
+    clear_rescue_zone_status()
     if camera_line_frame.Picamera2 is None:
         save_status(
             False,
@@ -732,17 +652,16 @@ def main():
     camera = None
     camera_format = ""
     details = {}
-    ball_detection_active = False
-    active_ball_target_sequence = requested_ball_target_sequence()
-    ball_status = empty_ball_status(detection_enabled=False)
-    observation = None
-    candidates = ()
-    last_ball_analysis_time = 0.0
     previous_time = 0.0
     smoothed_fps = 0.0
     last_status_time = 0.0
     next_retry_time = 0.0
     line_sequence = 0
+    rescue_zone_sequence = 0
+    rescue_zone_active = False
+    rescue_zone_results = None
+    rescue_zone_input = None
+    rescue_zone_temporal_filter = RescueZoneTemporalFilter()
     path_tracker = ForwardPathTracker()
 
     silver_dataset_recorder = None
@@ -831,49 +750,49 @@ def main():
                 line_sequence += 1
                 save_forward_line_status(reading, line_timestamp, line_sequence)
 
-                detection_requested = requested_ball_detection_enabled()
-                target_sequence = requested_ball_target_sequence()
-                target_changed = synchronize_ball_target_sequence(target_sequence)
-                if detection_requested != ball_detection_active:
-                    ball_vision_pipeline.reset()
-                    ball_detection_active = detection_requested
-                    target_changed = True
-                if target_changed:
-                    observation = None
-                    candidates = ()
-                    ball_status = empty_ball_status(
-                        detection_enabled=ball_detection_active
+                rescue_zone_input = read_rescue_zone_detection_input()
+                detection_requested = rescue_zone_input["enabled"]
+                if detection_requested != rescue_zone_active:
+                    rescue_zone_active = detection_requested
+                    rescue_zone_sequence = 0
+                    rescue_zone_results = None
+                    rescue_zone_temporal_filter.reset()
+                    if not rescue_zone_active:
+                        rescue_zone_input = None
+                        clear_rescue_zone_status()
+                if rescue_zone_active:
+                    rescue_zone_candidates = analyze_rescue_zones(frame)
+                    rescue_zone_results = rescue_zone_temporal_filter.update(
+                        rescue_zone_candidates
                     )
-                    last_ball_analysis_time = 0.0
-
-                # A validação frontal continua leve em todos os frames. HSV,
-                # Hough e tracking só entram quando o resgate está autorizado e
-                # no máximo 15 vezes por segundo, preservando os 30 FPS da linha.
-                ball_time = time.monotonic()
-                if not ball_detection_active:
-                    observation, candidates, ball_status = (
-                        analyze_requested_ball_frame(frame, False)
-                    )
-                    save_ball_control_status(False, ball_status)
-                elif ball_analysis_due(ball_time, last_ball_analysis_time):
-                    observation, candidates, ball_status = (
-                        analyze_requested_ball_frame(frame, True)
-                    )
-                    last_ball_analysis_time = ball_time
-                    save_ball_control_status(True, ball_status)
+                    # O gate é relido depois do processamento para reduzir a
+                    # janela entre STOP/E-Stop e a remoção do resultado anterior.
+                    latest_rescue_zone_input = read_rescue_zone_detection_input()
+                    if latest_rescue_zone_input["enabled"]:
+                        rescue_zone_input = latest_rescue_zone_input
+                        rescue_zone_sequence += 1
+                        save_rescue_zone_status(
+                            rescue_zone_results,
+                            line_timestamp,
+                            rescue_zone_sequence,
+                            rescue_zone_input,
+                        )
+                    else:
+                        rescue_zone_active = False
+                        rescue_zone_results = None
+                        rescue_zone_input = None
+                        rescue_zone_temporal_filter.reset()
+                        clear_rescue_zone_status()
             except Exception as error:
                 stream_active = False
                 clear_frame()
                 close_forward_camera(camera)
                 camera = None
-                ball_detection_active = False
                 path_tracker = ForwardPathTracker()
-                ball_status = empty_ball_status(detection_enabled=False)
-                observation = None
-                candidates = ()
-                last_ball_analysis_time = 0.0
-                ball_vision_pipeline.reset()
-                save_ball_control_status(False, ball_status)
+                rescue_zone_results = None
+                rescue_zone_input = None
+                rescue_zone_temporal_filter.reset()
+                clear_rescue_zone_status()
                 next_retry_time = time.monotonic() + ERROR_RETRY_SECONDS
                 save_status(
                     enabled,
@@ -891,12 +810,14 @@ def main():
 
             if enabled and stream_has_clients():
                 display_frame = frame.copy()
-                draw_forward_assist_overlay(display_frame, reading)
-                if ball_detection_active:
-                    display_frame = ball_vision_pipeline.draw(
+                if rescue_zone_active and rescue_zone_results is not None:
+                    display_frame = draw_rescue_zone_overlay(
                         display_frame,
-                        BallVisionResult(observation, tuple(candidates)),
+                        rescue_zone_results,
+                        rescue_zone_input,
                     )
+                else:
+                    draw_forward_assist_overlay(display_frame, reading)
                 jpeg = camera_line_frame.encode_frame(display_frame)
                 if jpeg is not None:
                     publish_frame(jpeg)
@@ -919,7 +840,6 @@ def main():
                     camera_format,
                     details,
                     processing_active=True,
-                    ball_status=ball_status,
                 )
                 last_status_time = current_time
     finally:
@@ -927,15 +847,12 @@ def main():
         close_forward_camera(camera)
         clear_frame()
         clear_forward_line_status()
-        ball_status = empty_ball_status(detection_enabled=False)
-        save_ball_control_status(False, ball_status)
-        write_requested_ball_detection_enabled(False)
+        clear_rescue_zone_status()
         save_status(
             False,
             False,
             "stopped",
             processing_active=False,
-            ball_status=ball_status,
         )
         stream_server.shutdown()
         stream_server.server_close()

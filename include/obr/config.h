@@ -74,9 +74,41 @@ constexpr const char* kForwardCameraStatusPath =
 constexpr const char* kForwardLineStatusPath =
     "/dev/shm/obr_forward_line_status.json";
 
-// Gate explícito do detector de vítimas da câmera frontal. O processo da CAM1
-// continua entregando o assistente leve de linha, mas só executa HSV e Hough
-// quando a missão Área de Resgate está realmente ativa.
+// Gate da percepção das áreas verde e vermelha da sala de resgate.
+// Somente o modo isolado de validação deve mantê-lo ativo nesta etapa.
+constexpr const char* kRescueZoneDetectionControlPath =
+    "/dev/shm/obr_rescue_zone_detection_enabled";
+constexpr const char* kRescueZoneDetectionTemporaryControlPath =
+    "/dev/shm/obr_rescue_zone_detection_enabled.tmp";
+
+// IPC atômico publicado pela CAM1 com resultados independentes por cor.
+// A ausência do arquivo significa que não existe observação atual válida.
+constexpr const char* kRescueZoneStatusPath =
+    "/dev/shm/obr_rescue_zone_status.json";
+
+// Idade máxima, em milissegundos, da distância exibida junto às áreas.
+// Uma leitura mais antiga continua indisponível e nunca deve orientar movimento.
+constexpr int kRescueZoneUltrasonicFreshnessMs = 300;
+
+// Intervalo, em milissegundos, do IPC que leva o ultrassônico até a CAM1.
+// Cinquenta milissegundos mantêm o overlay atual sem escrever a cada ciclo.
+constexpr int kRescueZoneInputPublishIntervalMs = 50;
+
+// Faixa física, em centímetros, aceita para a futura aproximação.
+// Valores fora dela são publicados como inválidos e aparecem como "ULTRA --".
+constexpr double kRescueZoneUltrasonicMinimumCm = 2.0;
+constexpr double kRescueZoneUltrasonicMaximumCm = 400.0;
+
+static_assert(kRescueZoneUltrasonicFreshnessMs > 0 &&
+                  kRescueZoneInputPublishIntervalMs > 0 &&
+                  kRescueZoneUltrasonicMinimumCm > 0.0 &&
+                  kRescueZoneUltrasonicMaximumCm >
+                      kRescueZoneUltrasonicMinimumCm,
+              "A telemetria ultrassônica das áreas exige limites válidos.");
+
+// Gate reservado ao futuro detector de vítimas da câmera frontal. A CAM1
+// continua entregando apenas o assistente leve de linha enquanto nenhum modelo
+// novo estiver integrado. O produtor futuro deverá respeitar este gate.
 constexpr const char* kForwardBallDetectionControlPath =
     "/dev/shm/obr_forward_ball_detection_enabled";
 constexpr const char* kForwardBallDetectionTemporaryControlPath =
@@ -89,7 +121,7 @@ constexpr const char* kForwardBallTargetSequenceControlPath =
 constexpr const char* kForwardBallTargetSequenceTemporaryControlPath =
     "/dev/shm/obr_forward_ball_target_sequence.tmp";
 
-// Resultado rápido do detector de vítimas, publicado somente durante o resgate.
+// Contrato de resultado do futuro detector, publicado somente durante o resgate.
 constexpr const char* kForwardBallStatusPath =
     "/dev/shm/obr_forward_ball_status.json";
 
@@ -401,7 +433,7 @@ constexpr double kEncoderCountsPerCentimeter =
 
 // Duas leituras ultrassônicas dentro deste limite, em centímetros, confirmam
 // um obstáculo. A histerese exige afastamento antes de armar uma nova manobra.
-constexpr double kObstacleDetectionDistanceCm = 8.0;
+constexpr double kObstacleDetectionDistanceCm = 6.0;
 constexpr int kObstacleDetectionConfirmationSamples = 2;
 constexpr double kObstacleRearmDistanceCm = 15.0;
 constexpr int kObstacleRearmConfirmationSamples = 3;

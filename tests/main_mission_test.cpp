@@ -1016,7 +1016,7 @@ void testUnavailableCameraStopsMission()
 void testObstacleTakesControlAndSurvivesCameraLoss()
 {
     MissionFixture fixture;
-    fixture.telemetry.ultrasonicDistanceCm = 6.0;
+    fixture.telemetry.ultrasonicDistanceCm = 5.0;
 
     RobotSnapshot snapshot = fixture.update(
         freshVision(GreenInterpretation::None));
@@ -1072,60 +1072,6 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         "O reset deve restaurar o primeiro percurso sem visão pesada.");
 }
 
-void testRescueDetectionOnlyKeepsMotorsStopped()
-{
-    RobotState robotState;
-    MissionController controller;
-    Esp32TelemetrySnapshot telemetry = readyTelemetry();
-    robotState.setAutonomousMission(AutonomousMission::RescueDetection);
-    robotState.startAutonomous();
-
-    RobotSnapshot snapshot = robotState.snapshot();
-    require(
-        controller.requiresForwardBallDetection(snapshot),
-        "O modo de observação deve ligar o detector frontal.");
-    require(
-        !snapshot.armServoRequested && !snapshot.wristServoRequested &&
-            !snapshot.gripperServoRequested,
-        "O modo de observação não deve acionar os servos ao iniciar.");
-
-    // Simula um comando antigo para verificar que a observação o zera no
-    // primeiro ciclo, mesmo quando existe uma vítima válida fora do centro.
-    robotState.driveAutonomous(0.8, -0.8);
-    ForwardBallSnapshot ball;
-    ball.sourceFresh = true;
-    ball.detected = true;
-    ball.type = "black";
-    ball.txDegrees = 18.0;
-    ball.distanceCm = 24.0;
-    ball.radiusPixels = 30.0;
-    ball.visibleAreaPixels = 2500.0;
-    ball.targetSequence = snapshot.autonomousRunSequence;
-    ball.targetLocked = true;
-    controller.update(robotState, telemetry, false, {}, {}, ball);
-
-    snapshot = robotState.snapshot();
-    require(
-        snapshot.mode == "autonomous" && closeTo(snapshot.left, 0.0) &&
-            closeTo(snapshot.right, 0.0),
-        "Detectar uma vítima não pode comandar alinhamento nem aproximação.");
-    require(
-        snapshot.autonomousStatus.phase == "rescue_detection_found",
-        "Uma vítima válida deve aparecer como detectada no modo de observação.");
-
-    ForwardBallSnapshot noBall;
-    noBall.sourceFresh = true;
-    noBall.targetSequence = snapshot.autonomousRunSequence;
-    noBall.targetLocked = false;
-    controller.update(robotState, telemetry, false, {}, {}, noBall);
-    snapshot = robotState.snapshot();
-    require(
-        snapshot.mode == "autonomous" && closeTo(snapshot.left, 0.0) &&
-            closeTo(snapshot.right, 0.0) &&
-            snapshot.autonomousStatus.phase == "rescue_detection_searching",
-        "A ausência de vítima deve continuar sendo observada com tração zero.");
-}
-
 void testRescueAlignmentModeKeepsExistingMotorAuthority()
 {
     RobotState robotState;
@@ -1153,6 +1099,112 @@ void testRescueAlignmentModeKeepsExistingMotorAuthority()
             snapshot.right < 0.0 &&
             snapshot.autonomousStatus.phase == "ball_alignment_turning",
         "O modo de detectar e alinhar deve conservar a autoridade motora existente.");
+}
+
+void testRescueZoneDetectionOnlyKeepsMotorsStopped()
+{
+    RobotState robotState;
+    MissionController controller;
+    robotState.setAutonomousMission(
+        AutonomousMission::RescueZoneDetection);
+    robotState.startAutonomous();
+
+    RobotSnapshot snapshot = robotState.snapshot();
+    require(
+        controller.requiresRescueZoneDetection(snapshot),
+        "O modo isolado deve abrir o gate das áreas de resgate.");
+    require(
+        !controller.requiresForwardBallDetection(snapshot),
+        "O modo das áreas não deve restaurar o detector de vítimas.");
+    require(
+        !snapshot.armServoRequested && !snapshot.wristServoRequested &&
+            !snapshot.gripperServoRequested,
+        "A validação visual não deve acionar os servos.");
+
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    telemetry.ultrasonicDistanceCm = 43.7;
+
+    robotState.driveAutonomous(0.8, -0.8);
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && closeTo(snapshot.left, 0.0) &&
+            closeTo(snapshot.right, 0.0),
+        "A percepção das áreas deve renovar potência zero a cada ciclo.");
+    require(
+        snapshot.autonomousStatus.phase == "rescue_zone_detection_active",
+        "O modo isolado deve publicar uma fase de diagnóstico própria.");
+    require(
+        snapshot.autonomousStatus.rescueZoneUltrasonicFresh &&
+            snapshot.autonomousStatus.rescueZoneUltrasonicValid &&
+            closeTo(
+                snapshot.autonomousStatus.rescueZoneUltrasonicDistanceCm,
+                43.7),
+        "O status do modo deve expor a distância frontal válida e atual.");
+
+    telemetry.lastSensorAgeMs =
+        config::kRescueZoneUltrasonicFreshnessMs + 1;
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    snapshot = robotState.snapshot();
+    require(
+        !snapshot.autonomousStatus.rescueZoneUltrasonicFresh &&
+            snapshot.autonomousStatus.rescueZoneUltrasonicValid &&
+            closeTo(snapshot.left, 0.0) && closeTo(snapshot.right, 0.0),
+        "Uma leitura stale deve ser marcada no status sem liberar os motores.");
+
+    telemetry.lastSensorAgeMs = 0;
+    telemetry.ultrasonicDistanceCm =
+        config::kRescueZoneUltrasonicMaximumCm + 1.0;
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.autonomousStatus.rescueZoneUltrasonicFresh &&
+            !snapshot.autonomousStatus.rescueZoneUltrasonicValid &&
+            closeTo(snapshot.left, 0.0) && closeTo(snapshot.right, 0.0),
+        "Uma leitura fora da faixa deve ser invalidada sem liberar os motores.");
+
+    robotState.start();
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "manual" &&
+            controller.requiresRescueZoneDetection(snapshot),
+        "O modo Manual deve manter a percepção da área selecionada ativa.");
+    robotState.drive(0.35, -0.25);
+    controller.update(
+        robotState,
+        telemetry,
+        false,
+        CameraLineSnapshot{},
+        ForwardLineSnapshot{},
+        ForwardBallSnapshot{});
+    snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "manual" && closeTo(snapshot.left, 0.35) &&
+            closeTo(snapshot.right, -0.25),
+        "A percepção das áreas não deve zerar comandos manuais.");
+
+    robotState.stop();
+    require(
+        !controller.requiresRescueZoneDetection(robotState.snapshot()),
+        "Stop deve fechar imediatamente o gate das áreas de resgate.");
 }
 }
 
@@ -1185,8 +1237,8 @@ int main()
         testUnavailableCameraStopsMission();
         testObstacleTakesControlAndSurvivesCameraLoss();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
-        testRescueDetectionOnlyKeepsMotorsStopped();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
+        testRescueZoneDetectionOnlyKeepsMotorsStopped();
         std::cout << "main_mission_test: OK\n";
         return 0;
     }

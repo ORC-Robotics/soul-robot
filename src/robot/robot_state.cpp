@@ -39,8 +39,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "drive_distance";
     case AutonomousMission::TurnRight90:
         return "turn_right_90";
-    case AutonomousMission::RescueDetection:
-        return "rescue_detection";
+    case AutonomousMission::RescueZoneDetection:
+        return "rescue_zone_detection";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
@@ -104,10 +104,10 @@ void RobotState::startAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    if (state_.autonomousMission == AutonomousMission::RescueDetection)
+    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection)
     {
-        // A observação da câmera frontal não deve acionar nenhum atuador.
-        // A seleção já desliga os servos; a partida conserva essa condição.
+        // O modo isolado valida somente a percepção. Manter os servos
+        // desligados evita movimentos mecânicos durante o enquadramento manual.
         disableServosLocked();
     }
     else
@@ -137,10 +137,10 @@ bool RobotState::tryStartAutonomous()
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = true;
     state_.servoCalibrationActive = false;
-    if (state_.autonomousMission == AutonomousMission::RescueDetection)
+    if (state_.autonomousMission == AutonomousMission::RescueZoneDetection)
     {
-        // O botão físico inicia somente a percepção neste modo e conserva os
-        // servos desligados, da mesma forma que a partida pelo dashboard.
+        // A partida física aplica a mesma condição segura do dashboard:
+        // somente a câmera fica ativa, sem tracionar nem mover os servos.
         disableServosLocked();
     }
     else

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from .ball_detector import BallDetector
 from .ball_tracker import BallTracker
 from .distance_calibration import DistanceCalibration
-from .main import BallObservation, analyze_frame, draw_overlay
+from .main import BallObservation, analyze_frame
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class BallVisionResult:
 
 
 class BallVisionPipeline:
-    """Detecta, seleciona, mede e desenha bolas sem depender do dashboard."""
+    """Detecta, seleciona e mede bolas sem depender do dashboard."""
 
     def __init__(self, detector=None, calibration=None, tracker=None):
         self.detector = detector or BallDetector()
@@ -54,9 +54,3 @@ class BallVisionPipeline:
             return BallVisionResult(None, ())
 
         return BallVisionResult(tracked_observation, tuple(candidates))
-
-    @staticmethod
-    def draw(frame, result):
-        """Desenha o resultado sem modificar o frame original."""
-
-        return draw_overlay(frame, result.observation, result.candidates)

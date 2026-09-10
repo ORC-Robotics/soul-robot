@@ -12,7 +12,7 @@ enum class AutonomousMission
     MainMission,
     TurnRight90,
     DriveDistance,
-    RescueDetection,
+    RescueZoneDetection,
     RescueArea,
     ObstacleAvoidance,
     ServoInitialize,
@@ -55,6 +55,9 @@ struct AutonomousStatus
     std::string bottomLineControlSource = "UNAVAILABLE";
     int bottomStableFrames = 0;
     bool servoRoutineWaitingForConfirmation = false;
+    bool rescueZoneUltrasonicFresh = false;
+    bool rescueZoneUltrasonicValid = false;
+    double rescueZoneUltrasonicDistanceCm = 0.0;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.

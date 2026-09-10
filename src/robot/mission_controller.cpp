@@ -97,13 +97,25 @@ bool MissionController::requiresForwardBallDetection(
     {
         return false;
     }
-    if (snapshot.autonomousMission == AutonomousMission::RescueDetection ||
-        snapshot.autonomousMission == AutonomousMission::RescueArea)
+    if (snapshot.autonomousMission == AutonomousMission::RescueArea)
     {
         return true;
     }
     return snapshot.autonomousMission == AutonomousMission::MainMission &&
            mainMission_.requiresRescueVision();
+}
+
+bool MissionController::requiresRescueZoneDetection(
+    const RobotSnapshot& snapshot) const
+{
+    // A percepção permanece ativa no Manual para permitir o enquadramento
+    // controlado pelo operador. O gate não concede autoridade aos motores:
+    // somente RobotState::drive() aceita movimento nesse modo.
+    const bool operationMode =
+        snapshot.mode == "autonomous" || snapshot.mode == "manual";
+    return operationMode && !snapshot.emergencyStop &&
+           snapshot.autonomousMission ==
+               AutonomousMission::RescueZoneDetection;
 }
 
 void MissionController::update(
@@ -151,13 +163,13 @@ void MissionController::update(
         updateRescueArea(
             robotState, esp32Telemetry, forwardBallSnapshot);
         return;
-    case AutonomousMission::RescueDetection:
+    case AutonomousMission::RescueZoneDetection:
         testTurnController_.reset();
         rescueAreaMission_.reset();
         obstacleAvoidanceTest_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.reset();
-        updateRescueDetection(robotState, forwardBallSnapshot);
+        updateRescueZoneDetection(robotState, esp32Telemetry);
         return;
     case AutonomousMission::ObstacleAvoidance:
         testTurnController_.reset();
@@ -279,36 +291,32 @@ void MissionController::updateRescueArea(
     robotState.updateAutonomousStatus(output.status);
 }
 
-void MissionController::updateRescueDetection(
+void MissionController::updateRescueZoneDetection(
     RobotState& robotState,
-    const ForwardBallSnapshot& forwardBallSnapshot)
+    const Esp32TelemetrySnapshot& esp32Telemetry)
 {
-    // Este modo existe para observar e validar o detector com o robô parado.
-    // O zero é renovado em todos os ciclos e nenhuma posição visual vira steering.
+    // Este modo valida somente percepção e renova zero em todos os ciclos.
+    // Nenhum valor do IPC das zonas possui autoridade sobre a tração.
     robotState.driveAutonomous(0.0, 0.0);
-
-    const bool currentRun =
-        forwardBallSnapshot.targetSequence == activeAutonomousRunSequence_;
-    if (!forwardBallSnapshot.sourceFresh || !currentRun)
+    AutonomousStatus status = makeAutonomousStatus(
+        "rescue_zone_detection_active",
+        "Detectando áreas verde e vermelha; motores parados");
+    status.rescueZoneUltrasonicFresh =
+        esp32Telemetry.sensorFresh && esp32Telemetry.lastSensorAgeMs >= 0 &&
+        esp32Telemetry.lastSensorAgeMs <=
+            config::kRescueZoneUltrasonicFreshnessMs;
+    status.rescueZoneUltrasonicValid =
+        std::isfinite(esp32Telemetry.ultrasonicDistanceCm) &&
+        esp32Telemetry.ultrasonicDistanceCm >=
+            config::kRescueZoneUltrasonicMinimumCm &&
+        esp32Telemetry.ultrasonicDistanceCm <=
+            config::kRescueZoneUltrasonicMaximumCm;
+    if (status.rescueZoneUltrasonicValid)
     {
-        robotState.updateAutonomousStatus(makeAutonomousStatus(
-            "rescue_detection_waiting_camera",
-            "Aguardando uma leitura frontal da execução atual; motores parados"));
-        return;
+        status.rescueZoneUltrasonicDistanceCm =
+            esp32Telemetry.ultrasonicDistanceCm;
     }
-
-    if (!forwardBallSnapshot.detected)
-    {
-        robotState.updateAutonomousStatus(makeAutonomousStatus(
-            "rescue_detection_searching",
-            "Nenhuma vítima detectada; motores parados"));
-        return;
-    }
-
-    robotState.updateAutonomousStatus(makeAutonomousStatus(
-        "rescue_detection_found",
-        "Vítima detectada; alinhamento e aproximação desativados",
-        100.0));
+    robotState.updateAutonomousStatus(status);
 }
 
 void MissionController::updateObstacleAvoidance(

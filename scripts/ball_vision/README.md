@@ -18,8 +18,6 @@ result = pipeline.analyze(frame_bgr)
 if result.observation is not None:
     ball = result.observation
     print(ball.candidate.ball_type, ball.distance.distance_cm, ball.angle_degrees)
-
-frame_annotated = pipeline.draw(frame_bgr, result)
 ```
 
 Use `pipeline.reset()` quando uma nova missão começar. O chamador fornece um
