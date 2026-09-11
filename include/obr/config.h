@@ -798,6 +798,9 @@ constexpr double kObstacleReverseDistanceCm = 5.0;
 // Potências normalizadas dos deslocamentos para frente e em ré.
 constexpr double kObstacleForwardPower = 0.75;
 constexpr double kObstacleReversePower = 0.75;
+// Limite apenas de transição da ré inicial. Se os encoders não responderem, o
+// desvio continua pela centralização em vez de encerrar a missão autônoma.
+constexpr int kObstacleInitialReverseMaximumMs = 1500;
 
 // Pausa entre etapas e limites de segurança da odometria do desvio.
 constexpr int kObstacleStageSettleMs = 250;
@@ -868,6 +871,7 @@ static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
                   kObstacleForwardPower <= kMaxMotorOutput &&
                   kObstacleReversePower > 0.0 &&
                   kObstacleReversePower <= kMaxMotorOutput &&
+                  kObstacleInitialReverseMaximumMs > 0 &&
                   kObstacleStageSettleMs >= 0 &&
                   kObstacleEncoderFreshnessMs > 0 &&
                   kObstacleDistanceSafetyTimeoutMs > 0 &&

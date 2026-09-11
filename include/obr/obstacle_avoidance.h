@@ -45,6 +45,7 @@ private:
     enum class Phase
     {
         Idle,
+        ReversingBeforeCentering,
         Centering,
         TurningLeftForMeasurement,
         SamplingLeftClearance,
@@ -73,6 +74,9 @@ private:
     long long lastSampleUptimeMs_ = -1;
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;
+    long long reverseStartLeftCount_ = 0;
+    long long reverseStartRightCount_ = 0;
+    std::chrono::steady_clock::time_point reverseStartedAt_{};
     double selectedHeadingYaw_ = std::numeric_limits<double>::quiet_NaN();
     std::chrono::steady_clock::time_point forwardStartedAt_{};
     std::chrono::steady_clock::time_point clearanceSamplingStartedAt_{};
@@ -89,6 +93,10 @@ private:
     ObstacleAvoidanceOutput updateCentering(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput updateInitialReverse(
+        const Esp32TelemetrySnapshot& telemetry);
+    ObstacleAvoidanceOutput startCentering(
+        const std::string& action);
     ObstacleAvoidanceOutput updateTurn(
         const Esp32TelemetrySnapshot& telemetry);
     ObstacleAvoidanceOutput updateClearanceSampling(

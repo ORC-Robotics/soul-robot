@@ -44,6 +44,22 @@ CameraLineSnapshot centeredLine()
     return line;
 }
 
+void completeInitialReverse(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    const long long targetCounts = static_cast<long long>(std::ceil(
+        config::kObstacleReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    telemetry.leftEncoderCount -= targetCounts;
+    telemetry.rightEncoderCount -= targetCounts;
+    const ObstacleAvoidanceOutput completed =
+        avoidance.update(telemetry, line, true);
+    require(completed.phase == "obstacle_reverse_completed",
+            "A ré inicial deve liberar a centralização após 5 cm.");
+}
+
 ObstacleAvoidanceOutput beginAndCenter(
     ObstacleAvoidance& avoidance,
     Esp32TelemetrySnapshot& telemetry,
@@ -54,6 +70,12 @@ ObstacleAvoidanceOutput beginAndCenter(
         avoidance.update(telemetry, line, true);
     require(detected.leftPower == 0.0 && detected.rightPower == 0.0,
             "A confirmação do obstáculo deve zerar os motores.");
+    const ObstacleAvoidanceOutput reversing =
+        avoidance.update(telemetry, line, true);
+    require(reversing.leftPower == -config::kObstacleReversePower &&
+                reversing.rightPower == -config::kObstacleReversePower,
+            "O desvio deve recuar antes da centralização.");
+    completeInitialReverse(avoidance, telemetry, line);
     return avoidance.update(telemetry, line, true);
 }
 
@@ -151,6 +173,8 @@ void testCenteringIsSharedAndPrecedesScan()
 
     avoidance.update(telemetry, line, true);
     avoidance.update(telemetry, line, true);
+    avoidance.update(telemetry, line, true);
+    completeInitialReverse(avoidance, telemetry, line);
     const ObstacleAvoidanceOutput centering =
         avoidance.update(telemetry, line, true);
     require(centering.phase == "obstacle_centering",

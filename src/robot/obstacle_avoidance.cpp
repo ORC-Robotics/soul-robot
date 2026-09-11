@@ -28,6 +28,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     {
     case Phase::Idle:
         return updateIdle(telemetry, line, allowStart);
+    case Phase::ReversingBeforeCentering:
+        return updateInitialReverse(telemetry);
     case Phase::Centering:
         return updateCentering(telemetry, line);
     case Phase::TurningLeftForMeasurement:
@@ -66,6 +68,8 @@ void ObstacleAvoidance::reset()
     lastSampleUptimeMs_ = -1;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
+    reverseStartLeftCount_ = 0;
+    reverseStartRightCount_ = 0;
     selectedHeadingYaw_ = std::numeric_limits<double>::quiet_NaN();
     curveStartLeftCount_ = 0;
     curveStartRightCount_ = 0;
@@ -129,11 +133,78 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
 
     armed_ = false;
     obstacleConfirmationSamples_ = 0;
-    phase_ = Phase::Centering;
-    lineCenteringController_.start();
+    phase_ = Phase::ReversingBeforeCentering;
+    reverseStartLeftCount_ = telemetry.leftEncoderCount;
+    reverseStartRightCount_ = telemetry.rightEncoderCount;
+    reverseStartedAt_ = std::chrono::steady_clock::now();
     return output(
         "obstacle_detected",
         "Obstáculo confirmado: parando antes da centralização");
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::startCentering(
+    const std::string& action)
+{
+    phase_ = Phase::Centering;
+    lineCenteringController_.start();
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_reverse_completed",
+        action);
+    result.progressPercent = 100.0;
+    result.targetDistanceCm = config::kObstacleReverseDistanceCm;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialReverse(
+    const Esp32TelemetrySnapshot& telemetry)
+{
+    const double leftDistanceCm = std::abs(static_cast<double>(
+        telemetry.leftEncoderCount - reverseStartLeftCount_)) /
+        config::kEncoderCountsPerCentimeter;
+    const double rightDistanceCm = std::abs(static_cast<double>(
+        telemetry.rightEncoderCount - reverseStartRightCount_)) /
+        config::kEncoderCountsPerCentimeter;
+    const double usedDistanceCm = std::max(leftDistanceCm, rightDistanceCm);
+    const double progressPercent = std::clamp(
+        usedDistanceCm / config::kObstacleReverseDistanceCm * 100.0,
+        0.0,
+        100.0);
+
+    const bool encoderDataFresh =
+        telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
+        telemetry.lastSensorAgeMs <= config::kObstacleEncoderFreshnessMs;
+    if (encoderDataFresh &&
+        usedDistanceCm >= config::kObstacleReverseDistanceCm)
+    {
+        ObstacleAvoidanceOutput result = startCentering(
+            "Ré inicial concluída: iniciando centralização");
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+
+    if (!encoderDataFresh ||
+        std::chrono::steady_clock::now() - reverseStartedAt_ >=
+            std::chrono::milliseconds(
+                config::kObstacleInitialReverseMaximumMs))
+    {
+        ObstacleAvoidanceOutput result = startCentering(
+            "Ré inicial encerrada sem bloquear o desvio; iniciando centralização");
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_initial_reverse",
+        "Recuando 5 cm antes de iniciar o desvio",
+        -config::kObstacleReversePower,
+        -config::kObstacleReversePower);
+    result.progressPercent = progressPercent;
+    result.targetDistanceCm = config::kObstacleReverseDistanceCm;
+    result.leftDistanceCm = leftDistanceCm;
+    result.rightDistanceCm = rightDistanceCm;
+    return result;
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::updateCentering(
