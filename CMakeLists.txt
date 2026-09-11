@@ -23,6 +23,7 @@ add_executable(robot_test
     src/robot/green_turn_around_maneuver.cpp
     src/robot/imu_turn_controller.cpp
     src/robot/line_course_mission.cpp
+    src/robot/line_centering_controller.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
     src/robot/oled_event_notifier.cpp
@@ -56,6 +57,7 @@ if(BUILD_TESTING)
         src/robot/green_turn_around_maneuver.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/line_course_mission.cpp
+        src/robot/line_centering_controller.cpp
         src/robot/main_mission.cpp
         src/robot/mission_controller.cpp
         src/robot/obstacle_avoidance.cpp
@@ -91,6 +93,7 @@ if(BUILD_TESTING)
     add_executable(obstacle_avoidance_test
         tests/obstacle_avoidance_test.cpp
         src/robot/imu_turn_controller.cpp
+        src/robot/line_centering_controller.cpp
         src/robot/obstacle_avoidance.cpp
     )
     target_include_directories(obstacle_avoidance_test PRIVATE

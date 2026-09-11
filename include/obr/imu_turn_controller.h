@@ -41,7 +41,11 @@ public:
         double targetDegrees,
         ImuTurnDirection direction,
         const Esp32TelemetrySnapshot& telemetry,
-        double completionToleranceDegrees = 0.0);
+        double completionToleranceDegrees = 0.0,
+        int correctionPulseMs = 0,
+        int maximumCorrectionPulses = 0,
+        double commandPower = 0.0,
+        int timeoutMs = 0);
     ImuTurnOutput update(const Esp32TelemetrySnapshot& telemetry);
     void reset();
     bool active() const;
@@ -64,6 +68,10 @@ private:
     double directionSign_ = 1.0;
     double correctionDirection_ = 1.0;
     int correctionPulseCount_ = 0;
+    int correctionPulseMs_ = 0;
+    int maximumCorrectionPulses_ = 0;
+    double commandPower_ = 0.0;
+    int timeoutMs_ = 0;
     std::chrono::steady_clock::time_point startedAt_{};
     std::chrono::steady_clock::time_point phaseStartedAt_{};
 

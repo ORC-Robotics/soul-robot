@@ -80,6 +80,7 @@ void GreenTurnAroundManeuver::reset()
 {
     phase_ = Phase::Idle;
     turnController_.reset();
+    lineCenteringController_.reset();
     armed_ = true;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
@@ -172,31 +173,14 @@ bool GreenTurnAroundManeuver::update(
 
         phase_ = Phase::Centering;
         phaseStartedAt_ = now;
+        lineCenteringController_.start(now);
     }
 
     if (phase_ == Phase::Centering)
     {
-        const bool nearPositionValid =
-            cameraLineSnapshot.lineNearDetected &&
-            std::isfinite(cameraLineSnapshot.lineNearFinePosition) &&
-            std::abs(cameraLineSnapshot.lineNearFinePosition) <= 1.0;
-        const double mediumPosition =
-            cameraLineSnapshot.curveDiagnostics.mediumPosition;
-        const bool mediumPositionValid =
-            cameraLineSnapshot.mediumTrusted &&
-            std::isfinite(mediumPosition) &&
-            std::abs(mediumPosition) <= 1.0;
-        const bool bothCentered =
-            nearPositionValid && mediumPositionValid &&
-            std::abs(cameraLineSnapshot.lineNearFinePosition) <=
-                config::kGreenTurnAroundCenteringTolerance &&
-            std::abs(mediumPosition) <=
-                config::kGreenTurnAroundCenteringTolerance;
-        const bool timedOut =
-            now - phaseStartedAt_ >= std::chrono::milliseconds(
-                config::kGreenTurnAroundCenteringTimeoutMs);
-
-        if (bothCentered || timedOut)
+        const LineCenteringOutput centering =
+            lineCenteringController_.update(cameraLineSnapshot, now);
+        if (centering.completed)
         {
             // O segundo intervalo sempre começa com os motores zerados. Mesmo
             // no timeout, isso interrompe o giro antes do avanço por encoder.
@@ -204,35 +188,15 @@ bool GreenTurnAroundManeuver::update(
             phaseStartedAt_ = now;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeMainMissionStatus(
-                timedOut
+                centering.timedOut
                     ? "turnaround_centering_timeout_delay"
                     : "turnaround_centered_delay",
-                timedOut
+                centering.timedOut
                     ? "Alinhamento expirou: aguardando antes do avanço"
                     : "NEAR e MEDIUM alinhados: aguardando antes do avanço"));
             return true;
         }
-
-        double alignmentPosition = 0.0;
-        bool alignmentDirectionValid = false;
-        if (mediumPositionValid &&
-            std::abs(mediumPosition) >
-                config::kGreenTurnAroundCenteringTolerance)
-        {
-            // O MEDIUM corrige primeiro a orientação futura da faixa. Quando
-            // ele já está central, o NEAR remove o deslocamento restante.
-            alignmentPosition = mediumPosition;
-            alignmentDirectionValid = true;
-        }
-        else if (nearPositionValid &&
-                 std::abs(cameraLineSnapshot.lineNearFinePosition) >
-                     config::kGreenTurnAroundCenteringTolerance)
-        {
-            alignmentPosition = cameraLineSnapshot.lineNearFinePosition;
-            alignmentDirectionValid = true;
-        }
-
-        if (!alignmentDirectionValid)
+        if (centering.state == "WAITING_LINE")
         {
             // Sem posição lateral confiável, permanecer parado é mais seguro
             // do que escolher um lado e iniciar um giro cego.
@@ -242,11 +206,8 @@ bool GreenTurnAroundManeuver::update(
                 "Aguardando NEAR e MEDIUM válidos para concluir o alinhamento"));
             return true;
         }
-
-        const double turnSign = alignmentPosition > 0.0 ? 1.0 : -1.0;
-        const double leftPower =
-            turnSign * config::kGreenTurnAroundCenteringPower;
-        robotState.driveAutonomous(leftPower, -leftPower);
+        robotState.driveAutonomous(
+            centering.leftPower, centering.rightPower);
         robotState.updateAutonomousStatus(makeMainMissionStatus(
             "turnaround_centering",
             "Retorno 180°: alinhando NEAR e MEDIUM antes do avanço"));

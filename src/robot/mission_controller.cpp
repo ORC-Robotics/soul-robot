@@ -223,7 +223,8 @@ void MissionController::update(
         rescueAreaMission_.reset();
         distancePhase_ = DistancePhase::Idle;
         mainMission_.reset();
-        updateObstacleAvoidance(robotState, esp32Telemetry);
+        updateObstacleAvoidance(
+            robotState, esp32Telemetry, cameraLineSnapshot);
         return;
     case AutonomousMission::ServoInitialize:
         updateServoRoutine(
@@ -478,10 +479,12 @@ void MissionController::updateRescueZoneTriangle(
 
 void MissionController::updateObstacleAvoidance(
     RobotState& robotState,
-    const Esp32TelemetrySnapshot& esp32Telemetry)
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    const CameraLineSnapshot& cameraLineSnapshot)
 {
     const ObstacleAvoidanceOutput output = obstacleAvoidanceTest_.update(
         esp32Telemetry,
+        cameraLineSnapshot,
         true);
     robotState.driveAutonomous(output.leftPower, output.rightPower);
 
@@ -494,13 +497,18 @@ void MissionController::updateObstacleAvoidance(
     status.rightDistanceCm = output.rightDistanceCm;
     status.averageDistanceCm =
         (output.leftDistanceCm + output.rightDistanceCm) * 0.5;
-    robotState.updateAutonomousStatus(status);
-
+    status.obstacleYawBase = output.yawBase;
+    status.obstacleLeftClearance = output.leftClearance;
+    status.obstacleRightClearance = output.rightClearance;
+    status.obstacleSelectedSide = output.selectedSide;
     if (output.completed || output.failed)
     {
         // O modo isolado termina parado como as demais ferramentas de teste.
         robotState.stop();
+        robotState.updateAutonomousStatus(status);
+        return;
     }
+    robotState.updateAutonomousStatus(status);
 }
 
 void MissionController::updateTurnRight90(

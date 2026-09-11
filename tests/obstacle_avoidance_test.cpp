@@ -28,186 +28,282 @@ Esp32TelemetrySnapshot readyTelemetry()
     telemetry.motorSleepPinHigh = true;
     telemetry.lastSensorAgeMs = 0;
     telemetry.ultrasonicDistanceCm = 6.0;
-    telemetry.leftEncoderRate = 0.0;
-    telemetry.rightEncoderRate = 0.0;
     telemetry.yawZDeg = 0.0;
     telemetry.gyroZDegPerSec = 0.0;
     return telemetry;
 }
 
+CameraLineSnapshot centeredLine()
+{
+    CameraLineSnapshot line;
+    line.sourceFresh = true;
+    line.lineNearDetected = true;
+    line.lineNearFinePosition = 0.0;
+    line.mediumTrusted = true;
+    line.curveDiagnostics.mediumPosition = 0.0;
+    return line;
+}
+
+ObstacleAvoidanceOutput beginAndCenter(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    avoidance.update(telemetry, line, true);
+    const ObstacleAvoidanceOutput detected =
+        avoidance.update(telemetry, line, true);
+    require(detected.leftPower == 0.0 && detected.rightPower == 0.0,
+            "A confirmação do obstáculo deve zerar os motores.");
+    return avoidance.update(telemetry, line, true);
+}
+
 ObstacleAvoidanceOutput completeTurn(
     ObstacleAvoidance& avoidance,
     Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
     double targetYawDegrees)
 {
     telemetry.yawZDeg = targetYawDegrees;
     telemetry.gyroZDegPerSec = 0.0;
-    avoidance.update(telemetry, true);
+    avoidance.update(telemetry, line, true);
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kTurn90SettleMs + 20));
-    return avoidance.update(telemetry, true);
+    return avoidance.update(telemetry, line, true);
 }
 
-ObstacleAvoidanceOutput finishStageSettling(
-    ObstacleAvoidance& avoidance,
-    Esp32TelemetrySnapshot& telemetry)
-{
-    std::this_thread::sleep_for(std::chrono::milliseconds(
-        config::kObstacleStageSettleMs + 20));
-    return avoidance.update(telemetry, true);
-}
-
-ObstacleAvoidanceOutput completeDistance(
+ObstacleAvoidanceOutput sampleDuringTurn(
     ObstacleAvoidance& avoidance,
     Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    double yawDegrees,
     double distanceCm)
 {
+    ++telemetry.esp32UptimeMs;
+    telemetry.yawZDeg = yawDegrees;
+    telemetry.ultrasonicDistanceCm = distanceCm;
+    return avoidance.update(telemetry, line, true);
+}
+
+ObstacleAvoidanceOutput completeSelectedForward(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
     const long long targetCounts = static_cast<long long>(std::ceil(
-        distanceCm * config::kEncoderCountsPerCentimeter));
+        config::kObstacleSelectedForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
     telemetry.leftEncoderCount += targetCounts;
     telemetry.rightEncoderCount += targetCounts;
-    return avoidance.update(telemetry, true);
+    return avoidance.update(telemetry, line, true);
 }
 
-void testObstacleNeedsTwoConsecutiveReadings()
+ObstacleAvoidanceOutput advanceCurve(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    double distanceCm)
+{
+    const long long counts = static_cast<long long>(std::ceil(
+        distanceCm * config::kEncoderCountsPerCentimeter));
+    telemetry.leftEncoderCount += counts;
+    telemetry.rightEncoderCount += counts;
+    return avoidance.update(telemetry, line, true);
+}
+
+void sampleSideSweep(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    double directionSign,
+    double first,
+    double second,
+    double third)
+{
+    sampleDuringTurn(avoidance, telemetry, line, directionSign * 15.0, first);
+    sampleDuringTurn(avoidance, telemetry, line, directionSign * 30.0, second);
+    sampleDuringTurn(avoidance, telemetry, line, directionSign * 40.0, third);
+}
+
+void testCenteringIsSharedAndPrecedesScan()
 {
     ObstacleAvoidance avoidance;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    CameraLineSnapshot line = centeredLine();
+    line.curveDiagnostics.mediumPosition = 0.6;
 
-    const ObstacleAvoidanceOutput first =
-        avoidance.update(telemetry, true);
-    require(!first.hasControl && !avoidance.active(),
-            "Uma leitura isolada não deve iniciar o desvio.");
+    avoidance.update(telemetry, line, true);
+    avoidance.update(telemetry, line, true);
+    const ObstacleAvoidanceOutput centering =
+        avoidance.update(telemetry, line, true);
+    require(centering.phase == "obstacle_centering",
+            "O desvio deve centralizar antes de medir os lados.");
+    require(centering.leftPower == config::kGreenTurnAroundCenteringPower &&
+                centering.rightPower ==
+                    -config::kGreenTurnAroundCenteringPower,
+            "O obstáculo deve usar a mesma decisão do retorno 180°.");
 
-    const ObstacleAvoidanceOutput second =
-        avoidance.update(telemetry, true);
-    require(second.hasControl && avoidance.active(),
-            "Duas leituras próximas devem iniciar o desvio.");
-    require(second.leftPower == 0.0 && second.rightPower == 0.0,
-            "A detecção deve parar o robô antes de capturar o yaw.");
-
+    line.curveDiagnostics.mediumPosition = 0.0;
     const ObstacleAvoidanceOutput turning =
-        finishStageSettling(avoidance, telemetry);
-    require(turning.leftPower > 0.0 && turning.rightPower < 0.0,
-            "Depois de estabilizar, a primeira etapa deve girar à direita.");
+        avoidance.update(telemetry, line, true);
+    require(turning.leftPower == 0.0 && turning.rightPower == 0.0,
+            "Ao centralizar, deve parar antes do primeiro giro.");
+    require(std::abs(turning.yawBase) < 0.001,
+            "O yaw base deve ser salvo depois da centralização.");
 }
 
-void testStartCanBeBlockedByAnotherManeuver()
+void testContinuousSweepUsesMinimumAndSelectsRight()
 {
     ObstacleAvoidance avoidance;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+    beginAndCenter(avoidance, telemetry, line);
 
-    for (int sample = 0; sample < 3; ++sample)
-    {
-        const ObstacleAvoidanceOutput output =
-            avoidance.update(telemetry, false);
-        require(!output.hasControl && !avoidance.active(),
-                "Outra manobra ativa deve bloquear o início do desvio.");
-    }
-}
-
-void testCompleteMeasuredRouteAndRecoverLine()
-{
-    ObstacleAvoidance avoidance;
-    Esp32TelemetrySnapshot telemetry = readyTelemetry();
-
-    avoidance.update(telemetry, true);
-    avoidance.update(telemetry, true);
-    finishStageSettling(avoidance, telemetry);
-
+    sampleDuringTurn(avoidance, telemetry, line, -5.0, 2.0);
+    sampleSideSweep(avoidance, telemetry, line, -1.0, 18.0, 140.0, 155.0);
     ObstacleAvoidanceOutput output = completeTurn(
-        avoidance,
-        telemetry,
-        config::kObstacleFirstRightTurnDegrees);
-    require(output.phase == "obstacle_first_forward_start",
-            "O giro à direita deve liberar a primeira reta.");
+        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+    require(std::abs(output.leftClearance - 18.0) < 0.001,
+            "A esquerda deve usar a menor leitura entre 10 e 45 graus.");
 
-    output = completeDistance(
-        avoidance,
-        telemetry,
-        config::kObstacleFirstForwardDistanceCm);
-    require(output.hasControl && output.leftPower == 0.0 &&
+    output = completeTurn(avoidance, telemetry, line, 0.0);
+    require(output.phase == "obstacle_measuring_right",
+            "A direita deve começar somente depois do retorno ao yawBase.");
+    sampleDuringTurn(avoidance, telemetry, line, 5.0, 3.0);
+    sampleSideSweep(avoidance, telemetry, line, 1.0, 76.0, 82.0, 79.0);
+    output = completeTurn(
+        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+    require(!output.completed && output.selectedSide == "RIGHT" &&
+                output.phase == "obstacle_selected_forward_start",
+            "O lado com maior clearance deve ser selecionado.");
+    require(std::abs(output.rightClearance - 76.0) < 0.001,
+            "A direita deve usar a menor leitura do setor angular.");
+    output = avoidance.update(telemetry, line, true);
+    require(output.leftPower == config::kObstacleSelectedForwardPower &&
+                output.rightPower == config::kObstacleSelectedForwardPower,
+            "O avanço deve partir em 0,75 no yaw selecionado.");
+    telemetry.yawZDeg = config::kObstacleSideScanDegrees - 5.0;
+    output = avoidance.update(telemetry, line, true);
+    require(output.leftPower > output.rightPower,
+            "Erro positivo de heading deve corrigir suavemente para a direita.");
+    output = completeSelectedForward(avoidance, telemetry, line);
+    require(!output.completed && output.leftPower == 0.0 &&
                 output.rightPower == 0.0,
-            "A primeira reta deve parar antes do giro à esquerda.");
-    finishStageSettling(avoidance, telemetry);
+            "Dez centímetros devem parar antes de iniciar a curva.");
+    require(output.phase == "obstacle_curve_start",
+            "A curva deve começar somente depois dos 10 cm.");
 
+    telemetry.yawZDeg = -5.0;
+    output = advanceCurve(
+        avoidance,
+        telemetry,
+        line,
+        config::kObstacleCurveDistanceCm * 0.5);
+    require(output.leftPower > output.rightPower,
+            "Depois do afastamento inicial, o yaw alvo deve avançar continuamente.");
+    output = advanceCurve(
+        avoidance,
+        telemetry,
+        line,
+        config::kObstacleCurveDistanceCm * 0.5);
+    require(!output.completed && output.leftPower == 0.0 &&
+                output.rightPower == 0.0 &&
+                output.phase == "obstacle_final_pivot_start",
+            "A distância nominal deve parar antes do pivot final.");
     output = completeTurn(
         avoidance,
         telemetry,
-        0.0);
-    require(output.phase == "obstacle_second_forward_start",
-            "O giro de 45 graus à esquerda deve liberar a segunda reta.");
-
-    output = completeDistance(
-        avoidance,
-        telemetry,
-        config::kObstacleSecondForwardDistanceCm);
-    require(output.phase == "obstacle_stage_completed",
-            "A segunda reta deve iniciar o giro de 90 graus à esquerda.");
-    finishStageSettling(avoidance, telemetry);
-
-    output = completeTurn(
-        avoidance,
-        telemetry,
-        -config::kObstacleSecondLeftTurnDegrees);
-    require(output.phase == "obstacle_third_forward_start",
-            "O giro de 90 graus deve liberar a aproximação da linha.");
-
-    output = completeDistance(
-        avoidance,
-        telemetry,
-        config::kObstacleThirdForwardDistanceCm);
-    require(output.phase == "obstacle_stage_completed",
-            "A terceira reta deve liberar a busca visual.");
-
-    output = finishStageSettling(avoidance, telemetry);
-    require(output.hasControl && output.leftPower > 0.0 &&
-                output.rightPower < 0.0,
-            "O último giro deve iniciar para a direita.");
-
-    output = completeTurn(
-        avoidance,
-        telemetry,
-        0.0);
-    require(output.phase == "obstacle_reverse_start",
-            "O giro final de 90 graus deve liberar a ré.");
-
-    output = avoidance.update(telemetry, true);
-    require(output.hasControl && output.leftPower < 0.0 &&
-                output.rightPower < 0.0,
-            "Depois do giro final, os dois lados devem andar em ré.");
-
-    output = completeDistance(
-        avoidance,
-        telemetry,
-        config::kObstacleReverseDistanceCm);
-    require(output.phase == "obstacle_stage_completed",
-            "A ré deve parar depois de 6 cm medidos pelos encoders.");
-
-    output = finishStageSettling(avoidance, telemetry);
-    require(output.completed && !avoidance.active(),
-            "A estabilização depois da ré deve concluir o desvio.");
+        line,
+        -5.0 - config::kObstacleFinalInwardPivotDegrees);
+    require(output.completed && output.leftPower == 0.0 &&
+                output.rightPower == 0.0,
+            "O pivot final para dentro deve concluir com PWM zero.");
 }
 
-void testLostEncoderStopsActiveRoute()
+void testLeftSelectionReturnsToLeftYaw()
 {
     ObstacleAvoidance avoidance;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
-
-    avoidance.update(telemetry, true);
-    avoidance.update(telemetry, true);
-    finishStageSettling(avoidance, telemetry);
+    const CameraLineSnapshot line = centeredLine();
+    beginAndCenter(avoidance, telemetry, line);
+    sampleSideSweep(avoidance, telemetry, line, -1.0, 60.0, 40.0, 50.0);
     completeTurn(
+        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+    completeTurn(avoidance, telemetry, line, 0.0);
+    sampleSideSweep(avoidance, telemetry, line, 1.0, 10.0, 30.0, 20.0);
+    ObstacleAvoidanceOutput output = completeTurn(
+        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+    require(!output.completed && output.selectedSide == "LEFT",
+            "A maior folga esquerda deve iniciar o retorno à esquerda.");
+
+    output = completeTurn(
+        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+    require(!output.completed && output.selectedSide == "LEFT" &&
+                output.phase == "obstacle_selected_forward_start",
+            "O avanço deve iniciar no yaw esquerdo selecionado.");
+    output = completeSelectedForward(avoidance, telemetry, line);
+    require(!output.completed && output.phase == "obstacle_curve_start",
+            "O avanço esquerdo deve transferir para a curva.");
+    telemetry.yawZDeg = config::kObstacleCurveEndOffsetDegrees;
+    output = advanceCurve(
         avoidance,
         telemetry,
-        config::kObstacleFirstRightTurnDegrees);
+        line,
+        config::kObstacleCurveDistanceCm);
+    require(!output.completed &&
+                output.phase == "obstacle_final_pivot_start",
+            "A curva esquerda deve parar antes do pivot final.");
+    output = completeTurn(
+        avoidance,
+        telemetry,
+        line,
+        config::kObstacleCurveEndOffsetDegrees +
+            config::kObstacleFinalInwardPivotDegrees);
+    require(output.completed,
+            "O pivot final esquerdo deve concluir o desvio.");
+    require(output.leftPower == 0.0 && output.rightPower == 0.0,
+            "O posicionamento esquerdo deve terminar com PWM zero.");
+}
 
-    telemetry.lastSensorAgeMs = config::kObstacleEncoderFreshnessMs + 1;
-    const ObstacleAvoidanceOutput output =
-        avoidance.update(telemetry, true);
-    require(output.failed && output.leftPower == 0.0 &&
-                output.rightPower == 0.0,
-            "Perder os encoders durante uma reta deve falhar com saída zero.");
+void testPracticalTieUsesFixedSide()
+{
+    ObstacleAvoidance avoidance;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+    beginAndCenter(avoidance, telemetry, line);
+    sampleSideSweep(avoidance, telemetry, line, -1.0, 30.0, 30.0, 30.0);
+    completeTurn(
+        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+    completeTurn(avoidance, telemetry, line, 0.0);
+    sampleSideSweep(
+        avoidance, telemetry, line, 1.0,
+        30.0 + config::kObstacleClearanceTieCm,
+        30.0 + config::kObstacleClearanceTieCm,
+        30.0 + config::kObstacleClearanceTieCm);
+    const ObstacleAvoidanceOutput output = completeTurn(
+        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+    const std::string expected =
+        config::kObstacleDefaultSideIsRight ? "RIGHT" : "LEFT";
+    require(output.selectedSide == expected,
+            "O empate prático deve usar sempre o lado padrão.");
+}
+
+void testStartCanBeBlockedAndMissingLineStops()
+{
+    ObstacleAvoidance avoidance;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    CameraLineSnapshot line = centeredLine();
+    avoidance.update(telemetry, line, false);
+    avoidance.update(telemetry, line, false);
+    require(!avoidance.active(),
+            "Outra manobra deve poder bloquear o início do desvio.");
+
+    line.sourceFresh = false;
+    avoidance.update(telemetry, line, true);
+    const ObstacleAvoidanceOutput waiting =
+        avoidance.update(telemetry, line, true);
+    require(waiting.hasControl && waiting.leftPower == 0.0 &&
+                waiting.rightPower == 0.0,
+            "Sem visão inferior, o robô deve permanecer parado.");
 }
 }
 
@@ -215,10 +311,11 @@ int main()
 {
     try
     {
-        testObstacleNeedsTwoConsecutiveReadings();
-        testStartCanBeBlockedByAnotherManeuver();
-        testCompleteMeasuredRouteAndRecoverLine();
-        testLostEncoderStopsActiveRoute();
+        testCenteringIsSharedAndPrecedesScan();
+        testContinuousSweepUsesMinimumAndSelectsRight();
+        testLeftSelectionReturnsToLeftYaw();
+        testPracticalTieUsesFixedSide();
+        testStartCanBeBlockedAndMissingLineStops();
         std::cout << "obstacle_avoidance_test: OK\n";
         return 0;
     }

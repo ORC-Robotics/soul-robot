@@ -35,7 +35,11 @@ bool ImuTurnController::start(
     double targetDegrees,
     ImuTurnDirection direction,
     const Esp32TelemetrySnapshot& telemetry,
-    double completionToleranceDegrees)
+    double completionToleranceDegrees,
+    int correctionPulseMs,
+    int maximumCorrectionPulses,
+    double commandPower,
+    int timeoutMs)
 {
     if (completionToleranceDegrees <= 0.0)
     {
@@ -54,6 +58,20 @@ bool ImuTurnController::start(
     const auto now = std::chrono::steady_clock::now();
     targetDegrees_ = targetDegrees;
     completionToleranceDegrees_ = completionToleranceDegrees;
+    correctionPulseMs_ = correctionPulseMs > 0
+                             ? correctionPulseMs
+                             : config::kTurn90CorrectionPulseMs;
+    maximumCorrectionPulses_ = maximumCorrectionPulses > 0
+                                   ? maximumCorrectionPulses
+                                   : config::kTurn90MaximumCorrectionPulses;
+    commandPower_ = commandPower > 0.0
+                        ? commandPower
+                        : config::kTurn90CommandPower;
+    timeoutMs_ = timeoutMs > 0
+                     ? timeoutMs
+                     : (targetDegrees > config::kTurn90TargetDegrees
+                            ? config::kTurn180TimeoutMs
+                            : config::kTurn90TimeoutMs);
     startYawDegrees_ = telemetry.yawZDeg;
     directionSign_ = direction == ImuTurnDirection::Right ? 1.0 : -1.0;
     correctionDirection_ = 1.0;
@@ -80,10 +98,7 @@ ImuTurnOutput ImuTurnController::update(
     const double remainingDegrees = targetDegrees_ - turnedDegrees;
     const double progressPercent = std::clamp(
         turnedDegrees / targetDegrees_ * 100.0, 0.0, 100.0);
-    const int timeoutMs = targetDegrees_ > config::kTurn90TargetDegrees
-                              ? config::kTurn180TimeoutMs
-                              : config::kTurn90TimeoutMs;
-    if (now - startedAt_ > std::chrono::milliseconds(timeoutMs))
+    if (now - startedAt_ > std::chrono::milliseconds(timeoutMs_))
     {
         reset();
         return stoppedOutput(
@@ -124,7 +139,7 @@ ImuTurnOutput ImuTurnController::update(
 
         ImuTurnOutput output;
         output.result = ImuTurnResult::Running;
-        output.leftPower = directionSign_ * config::kTurn90CommandPower;
+        output.leftPower = directionSign_ * commandPower_;
         output.rightPower = -output.leftPower;
         output.progressPercent = progressPercent;
         output.phase = "turning";
@@ -150,12 +165,12 @@ ImuTurnOutput ImuTurnController::update(
                 progressPercent);
         }
         if (now - phaseStartedAt_ <
-            std::chrono::milliseconds(config::kTurn90CorrectionPulseMs))
+            std::chrono::milliseconds(correctionPulseMs_))
         {
             ImuTurnOutput output;
             output.result = ImuTurnResult::Running;
             output.leftPower = directionSign_ * correctionDirection_ *
-                               config::kTurn90CommandPower;
+                               commandPower_;
             output.rightPower = -output.leftPower;
             output.progressPercent = progressPercent;
             output.phase = "turn_correction";
@@ -186,7 +201,7 @@ ImuTurnOutput ImuTurnController::update(
             "Giro pelo MPU6050 concluído",
             100.0);
     }
-    if (correctionPulseCount_ >= config::kTurn90MaximumCorrectionPulses)
+    if (correctionPulseCount_ >= maximumCorrectionPulses_)
     {
         reset();
         return stoppedOutput(
@@ -209,6 +224,10 @@ void ImuTurnController::reset()
     targetDegrees_ = 0.0;
     completionToleranceDegrees_ = 0.0;
     correctionPulseCount_ = 0;
+    correctionPulseMs_ = 0;
+    maximumCorrectionPulses_ = 0;
+    commandPower_ = 0.0;
+    timeoutMs_ = 0;
 }
 
 bool ImuTurnController::active() const

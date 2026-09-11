@@ -575,6 +575,16 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
         status.phase == "obstacle_turn_timeout" ||
         status.phase == "obstacle_turn_imu_lost" ||
         status.phase == "obstacle_turn_correction_failed" ||
+        status.phase == "obstacle_centering_timeout" ||
+        status.phase == "obstacle_imu_lost" ||
+        status.phase == "obstacle_side_selection_completed" ||
+        status.phase == "obstacle_selected_forward_completed" ||
+        status.phase == "obstacle_selected_forward_sensors_lost" ||
+        status.phase == "obstacle_selected_forward_timeout" ||
+        status.phase == "obstacle_curve_completed" ||
+        status.phase == "obstacle_curve_sensors_lost" ||
+        status.phase == "obstacle_curve_timeout" ||
+        status.phase == "obstacle_completed" ||
         status.phase == "obstacle_encoder_lost" ||
         status.phase == "obstacle_distance_timeout";
     const bool terminalRescueZoneAlignStatus =

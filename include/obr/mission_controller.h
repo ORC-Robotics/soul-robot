@@ -98,7 +98,8 @@ private:
         const RescueZoneSnapshot& rescueZoneSnapshot);
     void updateObstacleAvoidance(
         RobotState& robotState,
-        const Esp32TelemetrySnapshot& esp32Telemetry);
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        const CameraLineSnapshot& cameraLineSnapshot);
     void updateServoRoutine(
         RobotState& robotState,
         ServoRoutineKind kind,

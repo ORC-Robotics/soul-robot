@@ -529,12 +529,51 @@ constexpr int kObstacleDetectionConfirmationSamples = 2;
 constexpr double kObstacleRearmDistanceCm = 15.0;
 constexpr int kObstacleRearmConfirmationSamples = 3;
 
+// A seleção inicial mede o espaço a 45 graus de cada lado do yaw base.
+constexpr double kObstacleSideScanDegrees = 45.0;
+// Os primeiros 10 graus ainda apontam para o obstáculo frontal e não devem
+// contaminar a medição do corredor lateral.
+constexpr double kObstacleClearanceIgnoreDegrees = 10.0;
+
+// Diferenças de até 2 cm são tratadas como empate prático. O lado direito
+// preserva uma decisão fixa e repetível quando as duas passagens estão livres.
+constexpr double kObstacleClearanceTieCm = 2.0;
+constexpr bool kObstacleDefaultSideIsRight = true;
+
+// Idade máxima, em milissegundos, aceita para cada eco da varredura lateral.
+// Uma leitura antiga nunca deve influenciar a escolha do lado do obstáculo.
+constexpr int kObstacleUltrasonicFreshnessMs = 300;
+
 // Ângulos, em graus, executados na ordem da máquina de desvio.
 constexpr double kObstacleFirstRightTurnDegrees = 45.0;
 constexpr double kObstacleFirstLeftTurnDegrees = 45.0;
 constexpr double kObstacleSecondLeftTurnDegrees = 90.0;
 constexpr double kObstacleFinalRightTurnDegrees = 90.0;
-constexpr double kObstacleTurnToleranceDegrees = 4.0;
+// A faixa de ±5 graus aceita um giro real entre 40 e 50 graus no alvo de 45.
+constexpr double kObstacleTurnToleranceDegrees = 5.0;
+// Potência e micropulsos exclusivos da varredura lateral. O valor 0,73 ainda
+// vence o atrito estático, mas reduz a inércia observada com 0,75.
+constexpr double kObstacleTurnCommandPower = 0.73;
+constexpr int kObstacleTurnCorrectionPulseMs = 30;
+constexpr int kObstacleTurnMaximumCorrectionPulses = 8;
+// A seleção pode corrigir sem pressa; o limite continua impedindo giro eterno.
+constexpr int kObstacleTurnTimeoutMs = 12000;
+
+// Primeira reta experimental após a escolha do lado. O alvo de heading é o
+// yaw realmente alcançado no posicionamento lateral, não o yaw base.
+constexpr double kObstacleSelectedForwardDistanceCm = 10.0;
+constexpr double kObstacleSelectedForwardPower = 0.75;
+constexpr double kObstacleSelectedForwardMaximumHeadingCorrection = 0.04;
+constexpr double kObstacleSelectedForwardFullHeadingErrorDegrees = 10.0;
+
+// Comprimento calibrável da curva nominal executada após a primeira reta.
+constexpr double kObstacleCurveDistanceCm = 20.0;
+constexpr double kObstacleCurveEndOffsetDegrees = 45.0;
+constexpr double kObstacleCurveBasePower = 0.75;
+constexpr double kObstacleCurveMaximumHeadingCorrection = 0.06;
+constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
+// Depois da curva validada, este pivot apenas aponta a câmera mais para dentro.
+constexpr double kObstacleFinalInwardPivotDegrees = 45.0;
 
 // Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
 constexpr double kObstacleFirstForwardDistanceCm = 25.0;
@@ -559,13 +598,44 @@ static_assert(kObstacleDetectionDistanceCm > 0.0 &&
                   kObstacleDetectionConfirmationSamples > 0 &&
                   kObstacleRearmConfirmationSamples > 0,
               "A detecção de obstáculo deve possuir histerese válida.");
+static_assert(kObstacleSideScanDegrees > 0.0 &&
+                  kObstacleSideScanDegrees <= 90.0 &&
+                  kObstacleClearanceIgnoreDegrees >= 0.0 &&
+                  kObstacleClearanceIgnoreDegrees <
+                      kObstacleSideScanDegrees &&
+                  kObstacleClearanceTieCm >= 0.0 &&
+                  kObstacleUltrasonicFreshnessMs > 0,
+              "A varredura lateral do obstáculo deve permanecer válida.");
 static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                   kObstacleFirstLeftTurnDegrees > 0.0 &&
                   kObstacleSecondLeftTurnDegrees > 0.0 &&
                   kObstacleSecondLeftTurnDegrees <= 180.0 &&
                   kObstacleFinalRightTurnDegrees > 0.0 &&
                   kObstacleFinalRightTurnDegrees <= 180.0 &&
-                  kObstacleTurnToleranceDegrees > 0.0,
+                  kObstacleTurnToleranceDegrees > 0.0 &&
+                  kObstacleTurnCommandPower > 0.0 &&
+                  kObstacleTurnCommandPower <= kMaxMotorOutput &&
+                  kObstacleTurnCorrectionPulseMs > 0 &&
+                  kObstacleTurnMaximumCorrectionPulses > 0 &&
+                  kObstacleTurnTimeoutMs > 0 &&
+                  kObstacleSelectedForwardDistanceCm > 0.0 &&
+                  kObstacleSelectedForwardPower > 0.0 &&
+                  kObstacleSelectedForwardPower +
+                          kObstacleSelectedForwardMaximumHeadingCorrection <=
+                      kMaxMotorOutput &&
+                  kObstacleSelectedForwardMaximumHeadingCorrection > 0.0 &&
+                  kObstacleSelectedForwardFullHeadingErrorDegrees > 0.0 &&
+                  kObstacleCurveDistanceCm > 0.0 &&
+                  kObstacleCurveEndOffsetDegrees > 0.0 &&
+                  kObstacleCurveEndOffsetDegrees <= 90.0 &&
+                  kObstacleCurveBasePower > 0.0 &&
+                  kObstacleCurveBasePower +
+                          kObstacleCurveMaximumHeadingCorrection <=
+                      kMaxMotorOutput &&
+                  kObstacleCurveMaximumHeadingCorrection > 0.0 &&
+                  kObstacleCurveFullHeadingErrorDegrees > 0.0 &&
+                  kObstacleFinalInwardPivotDegrees > 0.0 &&
+                  kObstacleFinalInwardPivotDegrees <= 45.0,
               "Os ângulos do desvio devem permanecer válidos.");
 static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
                   kObstacleSecondForwardDistanceCm > 0.0 &&

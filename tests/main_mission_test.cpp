@@ -1013,7 +1013,7 @@ void testUnavailableCameraStopsMission()
         "Câmera indisponível deve encerrar a missão com motores zerados.");
 }
 
-void testObstacleTakesControlAndSurvivesCameraLoss()
+void testObstaclePausesIfBottomCameraBecomesUnavailable()
 {
     MissionFixture fixture;
     fixture.telemetry.ultrasonicDistanceCm = 5.0;
@@ -1029,13 +1029,15 @@ void testObstacleTakesControlAndSurvivesCameraLoss()
             snapshot.autonomousStatus.phase == "obstacle_detected",
         "Duas leituras ultrassônicas devem parar antes de iniciar o desvio.");
 
-    snapshot = fixture.update(
-        freshVision(GreenInterpretation::None), false);
+    CameraLineSnapshot staleLine = freshVision(GreenInterpretation::None);
+    staleLine.sourceFresh = false;
+    snapshot = fixture.update(staleLine, false);
     require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "obstacle_settling",
-        "O desvio iniciado deve manter autoridade se a câmera ficar indisponível.");
+            snapshot.autonomousStatus.phase ==
+                "obstacle_centering_waiting_line",
+        "A centralização do desvio deve pausar com PWM zero sem perder a manobra.");
 }
 
 void testConfirmedCourseMarkersControlOnlyExpectedPhase()
@@ -1346,7 +1348,7 @@ int main()
         testGapAndGreenKeepNativeAuthorityWithoutImu();
         testForwardIpcAcceptsGeometryWithoutPowersAndRejectsInvalidSources();
         testUnavailableCameraStopsMission();
-        testObstacleTakesControlAndSurvivesCameraLoss();
+        testObstaclePausesIfBottomCameraBecomesUnavailable();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();

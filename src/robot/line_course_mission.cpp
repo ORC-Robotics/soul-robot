@@ -31,6 +31,10 @@ AutonomousStatus makeObstacleStatus(
     status.rightDistanceCm = output.rightDistanceCm;
     status.averageDistanceCm =
         (output.leftDistanceCm + output.rightDistanceCm) * 0.5;
+    status.obstacleYawBase = output.yawBase;
+    status.obstacleLeftClearance = output.leftClearance;
+    status.obstacleRightClearance = output.rightClearance;
+    status.obstacleSelectedSide = output.selectedSide;
     return status;
 }
 }
@@ -69,9 +73,10 @@ void LineCourseMission::update(
     }
 
     // O desvio só pode iniciar fora do retorno verde. Depois de iniciado, ele
-    // mantém autoridade até terminar a ré final ou falhar com os motores zerados.
+    // mantém autoridade até escolher o lado e parar no yaw correspondente.
     const ObstacleAvoidanceOutput obstacleOutput = obstacleAvoidance_.update(
         esp32Telemetry,
+        cameraLineSnapshot,
         !greenTurnAroundManeuver_.active() && cameraReady &&
             cameraLineSnapshot.sourceFresh);
     if (obstacleOutput.failed)
@@ -94,8 +99,8 @@ void LineCourseMission::update(
         return;
     }
 
-    // A câmera não participa dos giros nem dos deslocamentos do desvio. Sua
-    // disponibilidade volta a ser obrigatória quando o módulo devolve o controle.
+    // A câmera inferior participa da centralização inicial e volta a ser
+    // obrigatória para o segue-linha quando o módulo devolve o controle.
     if (!cameraReady || !cameraLineSnapshot.sourceFresh)
     {
         const std::string phase =

@@ -3,6 +3,7 @@
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
+#include "obr/line_centering_controller.h"
 #include "obr/robot_state.h"
 
 #include <chrono>
@@ -36,6 +37,7 @@ private:
 
     Phase phase_ = Phase::Idle;
     ImuTurnController turnController_;
+    LineCenteringController lineCenteringController_;
     bool armed_ = true;
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;

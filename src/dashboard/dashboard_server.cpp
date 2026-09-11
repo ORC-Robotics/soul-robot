@@ -898,6 +898,12 @@ std::string DashboardServer::buildTelemetryJson(
         state.autonomousStatus.rescueZoneApproachLockedHeading);
     const bool rescueZoneApproachErrorAvailable = std::isfinite(
         state.autonomousStatus.rescueZoneApproachHeadingError);
+    const bool obstacleYawBaseAvailable =
+        std::isfinite(state.autonomousStatus.obstacleYawBase);
+    const bool obstacleLeftClearanceAvailable =
+        std::isfinite(state.autonomousStatus.obstacleLeftClearance);
+    const bool obstacleRightClearanceAvailable =
+        std::isfinite(state.autonomousStatus.obstacleRightClearance);
 
     std::ostringstream json;
     json << std::fixed << std::setprecision(2)
@@ -924,6 +930,26 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"autonomousLeftDistanceCm\":" << state.autonomousStatus.leftDistanceCm
          << ",\"autonomousRightDistanceCm\":" << state.autonomousStatus.rightDistanceCm
          << ",\"autonomousAverageDistanceCm\":" << state.autonomousStatus.averageDistanceCm
+         << ",\"obstacleYawBase\":"
+         << (obstacleYawBaseAvailable
+                 ? state.autonomousStatus.obstacleYawBase
+                 : 0.0)
+         << ",\"obstacleYawBaseAvailable\":"
+         << (obstacleYawBaseAvailable ? "true" : "false")
+         << ",\"obstacleLeftClearance\":"
+         << (obstacleLeftClearanceAvailable
+                 ? state.autonomousStatus.obstacleLeftClearance
+                 : 0.0)
+         << ",\"obstacleLeftClearanceAvailable\":"
+         << (obstacleLeftClearanceAvailable ? "true" : "false")
+         << ",\"obstacleRightClearance\":"
+         << (obstacleRightClearanceAvailable
+                 ? state.autonomousStatus.obstacleRightClearance
+                 : 0.0)
+         << ",\"obstacleRightClearanceAvailable\":"
+         << (obstacleRightClearanceAvailable ? "true" : "false")
+         << ",\"obstacleSelectedSide\":\""
+         << state.autonomousStatus.obstacleSelectedSide << "\""
          << ",\"servoRoutineWaitingForConfirmation\":"
          << (state.autonomousStatus.servoRoutineWaitingForConfirmation ? "true" : "false")
          << ",\"servoRoutineInternalObjectStored\":"
@@ -1838,6 +1864,9 @@ std::string DashboardServer::dashboardHtml()
                   <div class="machine-metric"><span>Alvo de distância</span><strong id="machineDistanceTarget">-- cm</strong></div>
                   <div class="machine-metric"><span>Distância E / D</span><strong id="machineDistanceSides">-- / -- cm</strong></div>
                   <div class="machine-metric"><span>Média percorrida</span><strong id="machineDistanceAverage">-- cm</strong></div>
+                  <div class="machine-metric"><span>Yaw base do obstáculo</span><strong id="machineObstacleYawBase">--°</strong></div>
+                  <div class="machine-metric"><span>Folga esquerda / direita</span><strong id="machineObstacleClearance">-- / -- cm</strong></div>
+                  <div class="machine-metric"><span>Lado escolhido</span><strong id="machineObstacleSide">--</strong></div>
                   <div class="machine-metric"><span>Modo</span><strong id="machineMode">PARADO</strong></div>
                 </div>
               </div>
@@ -2494,6 +2523,27 @@ std::string DashboardServer::dashboardHtml()
         distance_invalid_target: ["ALVO INVÁLIDO", "danger", "machineStepFeedback"],
         obstacle_detected: ["OBSTÁCULO CONFIRMADO", "warn", "machineStepFeedback"],
         obstacle_waiting_sensors: ["DESVIO: SENSORES", "warn", "machineStepPerception"],
+        obstacle_centering: ["CENTRALIZANDO", "active", "machineStepMotion"],
+        obstacle_centering_waiting_line: ["CENTRALIZANDO: AGUARDANDO LINHA", "warn", "machineStepPerception"],
+        obstacle_centered: ["CENTRALIZADO", "warn", "machineStepFeedback"],
+        obstacle_measuring_left: ["MEDINDO ESQUERDA", "warn", "machineStepPerception"],
+        obstacle_left_measured: ["ESQUERDA MEDIDA", "warn", "machineStepFeedback"],
+        obstacle_measuring_right: ["MEDINDO DIREITA", "warn", "machineStepPerception"],
+        obstacle_side_selected: ["LADO ESCOLHIDO", "active", "machineStepMotion"],
+        obstacle_side_selection_completed: ["LADO ESCOLHIDO: POSICIONADO", "active", "machineStepFeedback"],
+        obstacle_selected_forward_start: ["AVANÇO 10 CM: INICIANDO", "warn", "machineStepFeedback"],
+        obstacle_selected_forward: ["AVANÇO 10 CM", "active", "machineStepMotion"],
+        obstacle_selected_forward_completed: ["AVANÇO 10 CM CONCLUÍDO", "active", "machineStepFeedback"],
+        obstacle_selected_forward_sensors_lost: ["AVANÇO: SENSORES PERDIDOS", "danger", "machineStepFeedback"],
+        obstacle_selected_forward_timeout: ["AVANÇO: TIMEOUT", "danger", "machineStepFeedback"],
+        obstacle_curve_start: ["CURVA: INICIANDO", "warn", "machineStepFeedback"],
+        obstacle_curving: ["CURVA SUAVE", "active", "machineStepMotion"],
+        obstacle_curve_completed: ["CURVA CONCLUÍDA", "active", "machineStepFeedback"],
+        obstacle_curve_sensors_lost: ["CURVA: SENSORES PERDIDOS", "danger", "machineStepFeedback"],
+        obstacle_curve_timeout: ["CURVA: TIMEOUT", "danger", "machineStepFeedback"],
+        obstacle_final_pivot_start: ["PIVOT FINAL: INICIANDO", "warn", "machineStepFeedback"],
+        obstacle_centering_timeout: ["CENTRALIZAÇÃO EXPIRADA", "danger", "machineStepFeedback"],
+        obstacle_imu_lost: ["DESVIO: IMU PERDIDA", "danger", "machineStepFeedback"],
         obstacle_settling: ["DESVIO: ESTABILIZANDO", "warn", "machineStepFeedback"],
         obstacle_turning: ["DESVIO: GIRANDO", "active", "machineStepMotion"],
         obstacle_turn_settling: ["DESVIO: ESTABILIZANDO GIRO", "warn", "machineStepFeedback"],
@@ -2639,6 +2689,20 @@ std::string DashboardServer::dashboardHtml()
         : "-- / -- cm";
       element("machineDistanceAverage").textContent = distanceMission ? `${formatNumber(data.autonomousAverageDistanceCm, 1)} cm` : "-- cm";
       element("machineEncoderCalibration").textContent = distanceMission ? `${formatNumber(data.encoderCountsPerCentimeter, 2)} cont/cm` : "-- cont/cm";
+      const obstacleTelemetry = mission === "obstacle_avoidance" || obstacleActive;
+      element("machineObstacleYawBase").textContent = obstacleTelemetry && data.obstacleYawBaseAvailable
+        ? `${formatNumber(data.obstacleYawBase, 1)}°`
+        : "--°";
+      const leftClearance = obstacleTelemetry && data.obstacleLeftClearanceAvailable
+        ? formatNumber(data.obstacleLeftClearance, 1)
+        : "--";
+      const rightClearance = obstacleTelemetry && data.obstacleRightClearanceAvailable
+        ? formatNumber(data.obstacleRightClearance, 1)
+        : "--";
+      element("machineObstacleClearance").textContent = `${leftClearance} / ${rightClearance} cm`;
+      element("machineObstacleSide").textContent = obstacleTelemetry
+        ? String(data.obstacleSelectedSide || "NONE")
+        : "--";
       const modeLabels = { manual: "MANUAL", autonomous: "AUTÔNOMO", stopped: "PARADO", emergency: "EMERGÊNCIA", servo_calibration: "CALIBRAÇÃO DE SERVO" };
       element("machineMode").textContent = modeLabels[data.mode] || String(data.mode || "--").toUpperCase();
     }

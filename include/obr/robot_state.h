@@ -49,6 +49,10 @@ struct AutonomousStatus
     double leftDistanceCm = 0.0;
     double rightDistanceCm = 0.0;
     double averageDistanceCm = 0.0;
+    double obstacleYawBase = std::numeric_limits<double>::quiet_NaN();
+    double obstacleLeftClearance = std::numeric_limits<double>::quiet_NaN();
+    double obstacleRightClearance = std::numeric_limits<double>::quiet_NaN();
+    std::string obstacleSelectedSide = "NONE";
     std::string forwardAssistState = "BOTTOM";
     std::string forwardAssistDirection = "NONE";
     std::string forwardAssistLatchedDirection = "NONE";
