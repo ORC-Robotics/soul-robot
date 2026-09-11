@@ -50,6 +50,26 @@ Uma câmera ausente não pode fazer a outra assumir seu papel automaticamente.
 - O controlador normal registrado nas evidências históricas foi removido; esses
   números não descrevem o ponto de extensão atual, que mantém os motores parados.
 
+## Validação física dos verdes em 11 de setembro de 2026
+
+- Os verdes direcionais à esquerda e à direita foram validados fisicamente.
+  Depois da confirmação, um pivô inicial curto impede avanço reto; o controle é
+  entregue ao Fusion quando o FAR encontra a continuação do ramo selecionado.
+- A ROI lateral dos verdes direcionais usa 18% de preto para tolerar a chegada
+  diagonal, sem reduzir os 25% exigidos pela ROI superior ligada à faixa.
+- O retorno de 180 graus foi validado fisicamente com 140 graus iniciais
+  controlados pelo MPU6050. O restante do giro procura a faixa pela câmera e é
+  encerrado após duas confirmações consecutivas por NEAR ou Fusion.
+- Durante a estabilização após os 140 graus, uma faixa válida tem prioridade
+  sobre a espera do giroscópio. Isso devolve imediatamente o controle ao
+  segue-faixa quando o robô já está sobre a linha.
+- O MPU6050 não apresentou falhas nas outras manobras. A espera angular que
+  ocorreu neste ensaio ficou restrita ao retorno e foi resolvida pela prioridade
+  visual, sem alterar globalmente os limites do controlador da IMU.
+- Caso conhecido para a próxima etapa: dois verdes pertencentes a faixas
+  diferentes ainda podem formar um falso retorno de 180 graus. Esse caso não
+  foi alterado neste checkpoint para preservar os comportamentos já validados.
+
 ## Validação ainda obrigatória antes de novos testes no chão
 
 1. Manter o robô suspenso e o E-Stop disponível no primeiro ensaio após deploy.

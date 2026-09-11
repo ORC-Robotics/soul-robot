@@ -756,6 +756,20 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(result["interpretation"], "AMBIGUO")
         self.assertFalse(result["markers"][0]["upper"]["measured"])
 
+    def test_green_side_roi_accepts_diagonal_black_fraction(self):
+        mask = np.zeros((10, 100), dtype=np.uint8)
+        mask[:, :20] = 255
+
+        upper = camera_line_frame.measure_black_roi(mask, (0, 0, 100, 10))
+        side = camera_line_frame.measure_black_roi(
+            mask,
+            (0, 0, 100, 10),
+            camera_line_frame.GREEN_SIDE_ROI_MIN_BLACK_RATIO,
+        )
+
+        self.assertFalse(upper["valid"])
+        self.assertTrue(side["valid"])
+
     def test_missing_upper_measurement_blocks_other_marker_decision(self):
         unmeasured = rectangle_contour(80, 0, 130, 30)
         measured = rectangle_contour(300, 180, 350, 230)
@@ -846,6 +860,28 @@ class CameraProfilesTest(unittest.TestCase):
         )
         self.assertEqual(result["interpretation"], "AMBIGUO")
         self.assertFalse(result["pair_compatible"])
+
+    def test_diagonal_pair_does_not_require_lateral_confirmation(self):
+        left_marker = rectangle_contour(70, 165, 125, 220)
+        right_marker = rectangle_contour(285, 100, 340, 155)
+        black_mask = marker_mask(
+            (319, 480),
+            [
+                (left_marker, ("upper",)),
+                (right_marker, ("upper",)),
+            ],
+        )
+
+        result = analyze_green_marker_contours(
+            [left_marker, right_marker],
+            black_mask,
+            480,
+            319,
+        )
+
+        self.assertEqual(result["interpretation"], "RETORNO_180")
+        self.assertTrue(result["pair_compatible"])
+        self.assertTrue(result["path_black_valid"])
 
     def test_green_tracker_requires_new_consecutive_frames(self):
         tracker = camera_line_frame.GreenObservationTracker()

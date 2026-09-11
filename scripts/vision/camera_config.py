@@ -236,8 +236,11 @@ GREEN_UPPER_ROI_HALF_WIDTH_SCALE = 1.25
 # Pelo menos metade da ROI nominal deve existir dentro da imagem. Uma amostra
 # menor poderia aceitar ruído de borda como se fosse a faixa preta.
 GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
-# Fração mínima de pixels ativos do componente preto em cada ROI.
+# Fração mínima de preto na ROI superior, que valida a associação com a faixa.
 GREEN_ROI_MIN_BLACK_RATIO = 0.25
+# A ROI lateral aceita uma fração menor porque a faixa ocupa uma área triangular
+# quando o robô chega inclinado. Isso altera somente a direção do verde.
+GREEN_SIDE_ROI_MIN_BLACK_RATIO = 0.18
 # Mantém a orientação durante meio segundo depois da última leitura válida.
 GREEN_DIRECTION_RETENTION_SECONDS = 0.3
 # Dois marcadores só representam retorno quando estão na mesma altura local.
@@ -686,6 +689,13 @@ QUADROS_PARA_REARMAR_VERDE = 5
 # A curva é considerada iniciada quando a posição fina local se desloca
 # suficientemente para o lado escolhido, com presença confirmada no NEAR-C.
 LIMIAR_CURVA_VERDE_INICIADA = 0.20
+
+# Limita o pivô obrigatório usado apenas para iniciar a entrada no ramo verde.
+# Em 30 FPS, oito quadros correspondem a aproximadamente 270 milissegundos.
+GREEN_ENTRY_PIVOT_MAX_FRAMES = 8
+# O alvo FAR precisa apontar claramente para o ramo escolhido antes de receber
+# o controle. Valores menores ainda podem representar a faixa reta do cruzamento.
+GREEN_ENTRY_FUSION_MIN_STEERING = 0.10
 
 # Após a curva ter começado, o retorno da posição fina para esta região central
 # indica que o robô entrou e se alinhou com a nova faixa.

@@ -6,6 +6,8 @@ from .camera_config import (
     GAP_NEAR_HISTORY_FRAMES,
     GEOMETRIC_GAP_FORWARD_MAX_FRAMES,
     GEOMETRIC_GAP_REACQUIRE_FRAMES,
+    GREEN_ENTRY_FUSION_MIN_STEERING,
+    GREEN_ENTRY_PIVOT_MAX_FRAMES,
     GREEN_MANEUVER_TIMEOUT_FRAMES,
     NORMAL_BASE_POWER,
     NORMAL_FULL_STEERING_ERROR,
@@ -740,6 +742,7 @@ def calculate_line_follower_command(
     blind_search_preferred_direction=None,
     local_line_lost=False,
     gap_fusion_reacquire_active=False,
+    green_active_frames=0,
 ):
     """
     Aplica o seguidor virtual validado pela câmera inferior.
@@ -853,7 +856,35 @@ def calculate_line_follower_command(
             virtual_turn_tracker.reset()
         if line_search_tracker is not None:
             line_search_tracker.stop()
-        if fusion_steering_error is not None:
+        fusion_branch_ready = (
+            fusion_steering_error is not None
+            and (
+                (
+                    direcao_verde_ativa == "DIREITA"
+                    and fusion_steering_error
+                    >= GREEN_ENTRY_FUSION_MIN_STEERING
+                )
+                or (
+                    direcao_verde_ativa == "ESQUERDA"
+                    and fusion_steering_error
+                    <= -GREEN_ENTRY_FUSION_MIN_STEERING
+                )
+            )
+        )
+        if (
+            not curva_verde_iniciada
+            and int(green_active_frames) <= GREEN_ENTRY_PIVOT_MAX_FRAMES
+            and not fusion_branch_ready
+        ):
+            # O marcador confirmado deve realmente iniciar a entrada no ramo.
+            # O pivô termina quando o FAR encontra a continuação escolhida ou
+            # quando a janela curta expira, evitando uma rotação excessiva.
+            steering_error = (
+                -1.0 if direcao_verde_ativa == "ESQUERDA" else 1.0
+            )
+            fusion_control_status["fusionControlActive"] = False
+            control_source = "green-entry-pivot"
+        elif fusion_steering_error is not None:
             steering_error = fusion_steering_error
             fusion_control_status["fusionControlActive"] = True
             control_source = "fusion-green"
@@ -1528,6 +1559,7 @@ class LineFollowerController:
         blind_search_preferred_direction=None,
         local_line_lost=False,
         gap_fusion_reacquire_active=False,
+        green_active_frames=0,
     ):
         """Calcula o comando reutilizando o mesmo estado entre frames."""
 
@@ -1548,4 +1580,5 @@ class LineFollowerController:
             blind_search_preferred_direction=blind_search_preferred_direction,
             local_line_lost=local_line_lost,
             gap_fusion_reacquire_active=gap_fusion_reacquire_active,
+            green_active_frames=green_active_frames,
         )

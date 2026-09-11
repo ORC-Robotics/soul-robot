@@ -611,6 +611,7 @@ class DownwardCameraApplication:
                         gap_fusion_reacquire_active=(
                             maneuver_state.gap_fusion_reacquire_active
                         ),
+                        green_active_frames=maneuver_state.green_active_frames,
                     )
                 )
                 green_candidate_hold = apply_green_candidate_fusion_hold(

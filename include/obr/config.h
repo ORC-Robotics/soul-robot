@@ -955,8 +955,9 @@ constexpr int kGreenTurnAroundEncoderDataTimeoutMs = 1000;
 // Ele não controla a distância; apenas impede movimento indefinido se uma
 // contagem congelada continuar chegando como telemetria aparentemente válida.
 constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
-// Ângulo, em graus, controlado pelo MPU6050 antes da busca visual da linha.
-constexpr double kGreenTurnAroundImuDegrees = 166.0;
+// Ângulo inicial, em graus, controlado pelo MPU6050. Depois deste trecho, o
+// robô continua o giro normalmente e encerra ao reencontrar a faixa pela câmera.
+constexpr double kGreenTurnAroundImuDegrees = 140.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
 constexpr double kGreenTurnAroundImuToleranceDegrees = 8.0;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
@@ -964,7 +965,7 @@ constexpr bool kGreenTurnAroundTurnsRight = true;
 // Potência normalizada do pivot que continua até o NEAR encontrar a linha.
 constexpr double kGreenTurnAroundLineSearchPower = kTurn90CommandPower;
 // Giro adicional máximo, em graus, permitido durante a busca visual da linha.
-// Com o alvo atual, ele limita o retorno a aproximadamente 195° se a câmera
+// Com o alvo atual, ele limita o retorno a aproximadamente 185° se a câmera
 // não recuperar a linha pelo NEAR ou Fusion, evitando uma volta quase completa.
 constexpr double kGreenTurnAroundLineSearchMaximumDegrees = 45.0;
 // Quantidade de confirmações consecutivas com NEAR ou Fusion válido para

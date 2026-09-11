@@ -341,6 +341,34 @@ bool GreenTurnAroundManeuver::update(
     {
         const ImuTurnOutput output =
             turnController_.update(esp32Telemetry);
+        const bool fusionLineRecovered =
+            cameraLineSnapshot.lineControlSource == "fusion" &&
+            cameraLineSnapshot.normalSteeringValid;
+        const bool lineRecovered =
+            cameraLineSnapshot.lineNearDetected || fusionLineRecovered;
+
+        if (output.phase == "turn_settling" && lineRecovered)
+        {
+            // A faixa visível tem prioridade sobre a espera de estabilização do
+            // giroscópio. O robô já alcançou o objetivo real do retorno e deve
+            // devolver imediatamente o controle ao segue-faixa.
+            phase_ = Phase::Idle;
+            turnController_.reset();
+            robotState.driveAutonomous(
+                cameraLineSnapshot.lineFollowerLeftPower,
+                cameraLineSnapshot.lineFollowerRightPower,
+                !(
+                    cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+                    cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL" &&
+                    cameraLineSnapshot.normalSteeringValid));
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "line_following",
+                fusionLineRecovered
+                    ? "Retorno 180° concluído: Fusion recuperado durante a parada"
+                    : "Retorno 180° concluído: linha próxima recuperada durante a parada",
+                100.0));
+            return true;
+        }
         if (output.result == ImuTurnResult::Failed)
         {
             robotState.stop();

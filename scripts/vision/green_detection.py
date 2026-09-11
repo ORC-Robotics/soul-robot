@@ -42,6 +42,7 @@ from .camera_config import (
     GREEN_ROI_HALF_SIZE_DIVISOR,
     GREEN_ROI_MIN_BLACK_RATIO,
     GREEN_ROI_MIN_VISIBLE_RATIO,
+    GREEN_SIDE_ROI_MIN_BLACK_RATIO,
     GREEN_SATURATION_MIN,
     GREEN_SINGLE_OBSERVATION_FRAMES,
     GREEN_UPPER_ROI_HALF_WIDTH_SCALE,
@@ -882,7 +883,11 @@ def green_marker_roi_geometry(contour, frame_width):
     }
 
 
-def measure_black_roi(black_mask, roi):
+def measure_black_roi(
+    black_mask,
+    roi,
+    minimum_black_ratio=GREEN_ROI_MIN_BLACK_RATIO,
+):
     """Mede preto somente quando ao menos metade da ROI permanece na imagem."""
 
     x1, y1, x2, y2 = (int(value) for value in roi)
@@ -917,7 +922,7 @@ def measure_black_roi(black_mask, roi):
     black_ratio = float(np.count_nonzero(region > 0)) / visible_area
     return {
         "measured": True,
-        "valid": black_ratio >= GREEN_ROI_MIN_BLACK_RATIO,
+        "valid": black_ratio >= minimum_black_ratio,
         "black_ratio": black_ratio,
         "visible_ratio": visible_ratio,
     }
@@ -931,10 +936,12 @@ def measure_horizontal_black_roi(black_mask, geometry):
     left = measure_black_roi(
         black_mask,
         (x1, y1, marker_left_x, y2),
+        GREEN_SIDE_ROI_MIN_BLACK_RATIO,
     )
     right = measure_black_roi(
         black_mask,
         (marker_right_x, y1, x2, y2),
+        GREEN_SIDE_ROI_MIN_BLACK_RATIO,
     )
     return {
         "measured": left["measured"] and right["measured"],
@@ -1025,17 +1032,12 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
             GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS
             * max(1.0, first_height, second_height)
         )
-        directions = {
-            first["interpretation"],
-            second["interpretation"],
-        }
+        # Dois marcadores já associados à faixa pela ROI superior definem o
+        # retorno. A ROI lateral não é confiável quando o robô chega diagonal.
         pair_compatible = (
-            directions == {"ESQUERDA", "DIREITA"}
-            and abs(float(first_center[1] - second_center[1]))
+            abs(float(first_center[1] - second_center[1]))
             <= vertical_tolerance
         )
-        result["left_seen"] = "ESQUERDA" in directions
-        result["right_seen"] = "DIREITA" in directions
         result["pair_compatible"] = pair_compatible
         if not pair_compatible:
             result["interpretation"] = "AMBIGUO"

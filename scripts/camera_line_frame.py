@@ -104,6 +104,7 @@ from vision.camera_config import (
     GREEN_ROI_HALF_SIZE_DIVISOR,
     GREEN_ROI_MIN_BLACK_RATIO,
     GREEN_ROI_MIN_VISIBLE_RATIO,
+    GREEN_SIDE_ROI_MIN_BLACK_RATIO,
     GREEN_SATURATION_MIN,
     GREEN_SINGLE_OBSERVATION_FRAMES,
     GREEN_TRUSTED_POSITION_CENTER_LIMIT,
@@ -481,6 +482,7 @@ def calculate_line_follower_command(
     curva_verde_iniciada=False,
     blind_search_preferred_direction=None,
     gap_fusion_reacquire_active=False,
+    green_active_frames=0,
 ):
     _line_control.read_virtual_line_sensors = read_virtual_line_sensors
     return _line_control.calculate_line_follower_command(
@@ -491,6 +493,7 @@ def calculate_line_follower_command(
         sensor_recovery_requested, fusion_style_line,
         curva_verde_iniciada, blind_search_preferred_direction,
         gap_fusion_reacquire_active=gap_fusion_reacquire_active,
+        green_active_frames=green_active_frames,
     )
 
 def create_camera(camera_profile, camera_index):
