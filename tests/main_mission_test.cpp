@@ -1054,22 +1054,58 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         "O percurso inicial não deve ligar a visão de resgate.");
 
     CameraLineSnapshot gray = freshVision(GreenInterpretation::None);
+    gray.silverCandidateDetected = true;
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.mode == "autonomous" &&
+            closeTo(snapshot.left, config::kSilverEntryAdvancePower) &&
+            closeTo(snapshot.right, config::kSilverEntryAdvancePower) &&
+            snapshot.autonomousStatus.phase == "silver_entry_advancing",
+        "A faixa cinza deve iniciar o avanço reto de 5 cm.");
+
     gray.courseMarkerConfirmed = true;
     gray.courseMarker = CourseMarker::Gray;
     snapshot = fixture.update(gray);
     require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "rescue_area_entering",
-        "A faixa cinza confirmada deve entrar no resgate com os motores parados.");
+            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
+        "A confirmação deve parar o robô antes de completar os 5 cm.");
     require(
-        fixture.mission.requiresRescueVision(),
-        "A fase de resgate deve solicitar a visão frontal de vítimas.");
+        !fixture.mission.requiresRescueVision(),
+        "Confirmar a área não deve ligar a visão frontal de vítimas.");
+
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.left == 0.0 && snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
+        "A área confirmada deve permanecer parada nos ciclos seguintes.");
 
     fixture.mission.reset();
     require(
         !fixture.mission.requiresRescueVision(),
         "O reset deve restaurar o primeiro percurso sem visão pesada.");
+
+    MissionFixture rejectedFixture;
+    CameraLineSnapshot candidate = freshVision(GreenInterpretation::None);
+    candidate.silverCandidateDetected = true;
+    snapshot = rejectedFixture.update(candidate);
+    require(
+        snapshot.autonomousStatus.phase == "silver_entry_advancing",
+        "A candidata deve abrir a janela de avanço.");
+
+    const long long entryCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryAdvanceDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    rejectedFixture.telemetry.leftEncoderCount = entryCounts;
+    rejectedFixture.telemetry.rightEncoderCount = entryCounts;
+    snapshot = rejectedFixture.update(freshVision(GreenInterpretation::None));
+    requireFollowingLine(
+        snapshot,
+        "Sem quatro frames dentro de 5 cm");
+    require(
+        !rejectedFixture.mission.requiresRescueVision(),
+        "Uma candidata não confirmada não deve iniciar o resgate.");
 }
 
 void testRescueAlignmentModeKeepsExistingMotorAuthority()

@@ -28,11 +28,13 @@ void MainMission::reset()
 {
     phase_ = Phase::InitialLineCourse;
     lineCourseMission_.reset();
+    silverEntryManeuver_.reset();
     rescueAreaMission_.reset();
 }
 
 bool MainMission::requiresRescueVision() const
 {
+    // Confirmar a entrada não liga automaticamente a busca de vítimas.
     return phase_ == Phase::RescueArea;
 }
 
@@ -88,20 +90,47 @@ void MainMission::update(
         return;
     }
 
-    if (phase_ == Phase::InitialLineCourse &&
-        cameraReady &&
-        confirmedMarker(cameraLineSnapshot, CourseMarker::Gray))
+    if (phase_ == Phase::RescueAreaConfirmed)
     {
-        // A faixa cinza termina o primeiro percurso. O resgate começa parado
-        // para que o gate da visão frontal seja aberto no próximo ciclo.
-        lineCourseMission_.reset();
-        rescueAreaMission_.reset();
-        phase_ = Phase::RescueArea;
+        // Este estado é intencionalmente terminal por enquanto. A confirmação
+        // da área não concede autoridade à busca nem à aproximação de vítimas.
         robotState.driveAutonomous(0.0, 0.0);
         robotState.updateAutonomousStatus(makeStatus(
-            "rescue_area_entering",
-            "Faixa cinza confirmada: iniciando a área de resgate"));
+            "rescue_area_confirmed",
+            "Área de resgate confirmada: robô parado",
+            100.0));
         return;
+    }
+
+    if (phase_ == Phase::InitialLineCourse && cameraReady)
+    {
+        const SilverEntryOutput silverEntry = silverEntryManeuver_.update(
+            cameraLineSnapshot,
+            esp32Telemetry);
+        if (silverEntry.completed)
+        {
+            // O resgate começa parado depois do avanço para que a visão frontal
+            // seja habilitada sem reaproveitar um comando de movimento antigo.
+            lineCourseMission_.reset();
+            silverEntryManeuver_.reset();
+            rescueAreaMission_.reset();
+            phase_ = Phase::RescueAreaConfirmed;
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeStatus(
+                "rescue_area_confirmed",
+                "Área de resgate confirmada: robô parado",
+                100.0));
+            return;
+        }
+        if (silverEntry.hasControl)
+        {
+            lineCourseMission_.reset();
+            robotState.driveAutonomous(
+                silverEntry.leftPower,
+                silverEntry.rightPower);
+            robotState.updateAutonomousStatus(silverEntry.status);
+            return;
+        }
     }
 
     if (phase_ == Phase::RescueArea)

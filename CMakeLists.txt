@@ -34,6 +34,7 @@ add_executable(robot_test
     src/robot/rescue_zone_triangle_mission.cpp
     src/robot/servo_controller.cpp
     src/robot/servo_routine.cpp
+    src/robot/silver_entry_maneuver.cpp
     src/robot/obstacle_avoidance.cpp
     src/telemetry/telemetry.cpp
 )
@@ -67,6 +68,7 @@ if(BUILD_TESTING)
         src/robot/rescue_zone_triangle_mission.cpp
         src/robot/robot_state.cpp
         src/robot/servo_routine.cpp
+        src/robot/silver_entry_maneuver.cpp
     )
     target_include_directories(main_mission_test PRIVATE
         include

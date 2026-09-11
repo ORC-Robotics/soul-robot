@@ -16,12 +16,14 @@ de resgate. Por isso, o modelo precisa ser validado na pista antes da operação
 
 ## Estado operacional temporário
 
-O detector está desativado por padrão em `vision.camera_config`, por meio de
-`SILVER_DETECTION_ENABLED=False`. Nessa condição, a câmera não carrega nem
-executa o modelo TFLite e publica `courseMarkerConfirmed=false` e
-`courseMarker=NONE`. A coleta do dataset e as ferramentas de inferência offline
-continuam disponíveis. Para um ensaio controlado, a variável de ambiente
-`SILVER_DETECTION_ENABLED=1` reativa o detector sem alterar o código.
+O detector e a confirmação da entrada no resgate ficam ativos por padrão.
+No primeiro positivo válido, o robô interrompe o segue-faixa e inicia uma janela
+de avanço reto de até 5 cm em baixa velocidade, medida pelos encoders. Quatro
+positivos consecutivos publicam `GRAY`, confirmam a entrada e param o robô. A
+busca de vítimas não é iniciada automaticamente. Se o avanço terminar sem
+confirmação, a candidata é descartada e o segue-linha volta.
+`SILVER_DETECTION_ENABLED=0` desliga a inferência. O modo shadow está fixado
+como falso em `vision.camera_config` enquanto esta integração é validada.
 
 O desligamento foi motivado por falsos positivos observados em pista sobre uma
 faixa preta sem cinza aparente. O modelo chegou a 85,1% de probabilidade de
@@ -130,7 +132,12 @@ python3 training/training_silver_classifier.py --camera forward
 ```
 
 O treinamento usa MobileNetV3Small com pesos ImageNet (o primeiro uso precisa
-baixá-los). `--fine-tune` habilita a segunda fase. `--roi LEFT TOP RIGHT BOTTOM`
+baixá-los). A fase inicial permite até 60 épocas e o fine-tuning até 40, mas o
+EarlyStopping encerra antes quando a validação deixa de melhorar. `--epochs` e
+`--fine-tune-epochs` alteram esses limites. Por padrão, ele aguarda 12 épocas
+sem melhora; `--early-stopping-patience` altera essa janela e `--lr-patience`
+controla quando reduzir o learning rate. `--fine-tune` habilita a segunda fase.
+`--roi LEFT TOP RIGHT BOTTOM`
 define um recorte normalizado; se utilizado, a inferência futura deverá aplicar
 o mesmo recorte no `SilverLineDetector`. O padrão é a imagem inteira. Os modelos
 existentes de teste em `assets/models/` não demonstram qualidade de classificação

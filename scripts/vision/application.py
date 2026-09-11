@@ -35,6 +35,7 @@ from .camera_config import (
     Picamera2,
     QUADROS_CENTRALIZADO_PARA_CONCLUIR,
     SILVER_DETECTION_ENABLED,
+    SILVER_DETECTION_SHADOW_ONLY,
     SNAPSHOT_FRAME_FPS,
     STATUS_FPS,
     Transform,
@@ -255,7 +256,10 @@ class DownwardCameraApplication:
                     print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
 
             if SILVER_DETECTION_ENABLED:
-                silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
+                silver_shadow_monitor = SilverShadowMonitor.from_camera_model(
+                    "down",
+                    publish_course_marker=not SILVER_DETECTION_SHADOW_ONLY,
+                )
             else:
                 print(
                     "Detector da faixa prata desativado por configuração; "

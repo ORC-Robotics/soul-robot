@@ -45,6 +45,7 @@ from .virtual_sensors import (
     virtual_sensor_trust_is_active,
 )
 
+
 def save_line_status(
     line_follower_command,
     line_timestamp,
@@ -74,6 +75,7 @@ def save_line_status(
         ):
             raise ValueError("Comando visual fora da faixa normalizada")
 
+        marker_status = silver_status if isinstance(silver_status, dict) else {}
         repair_status = specular_repair_status or {}
         far_trusted = virtual_sensor_trust_is_active(
             line_follower_command,
@@ -191,9 +193,14 @@ def save_line_status(
                     "bottomFusionReacquireReady", "forwardPresenceState"):
             if key in line_follower_command:
                 line_status[key] = line_follower_command[key]
-        marker_status = silver_status if isinstance(silver_status, dict) else {}
         line_status["courseMarkerConfirmed"] = (
             marker_status.get("courseMarkerConfirmed") is True
+        )
+        # A candidata preliminar autoriza somente o avanço curto por encoder.
+        # No modo shadow ela permanece restrita à telemetria e não move o robô.
+        line_status["silverCandidateDetected"] = (
+            marker_status.get("silverShadowDetected") is True
+            and marker_status.get("silverShadowOnly") is not True
         )
         line_status["courseMarker"] = (
             "GRAY"

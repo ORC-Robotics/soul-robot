@@ -59,6 +59,8 @@ def empty_silver_shadow_status(error_message=""):
         "silverConfirmationFrames": 0,
         "silverConfirmationRequiredFrames": SILVER_CONFIRMATION_FRAMES,
         "silverInferenceTargetFps": 0.0,
+        "silverShadowOnly": True,
+        "silverShadowConfirmed": False,
         "courseMarkerConfirmed": False,
         "courseMarker": "NONE",
     }
@@ -179,8 +181,9 @@ class SilverLineDetector:
 class SilverShadowMonitor:
     """Confirma a faixa prata antes de sinalizar a entrada no resgate."""
 
-    def __init__(self, detector=None, error_message=""):
+    def __init__(self, detector=None, error_message="", publish_course_marker=True):
         self.detector = detector
+        self.publish_course_marker = bool(publish_course_marker)
         self.status = empty_silver_shadow_status(error_message)
         self.last_detected = False
         self.last_marker_confirmed = False
@@ -191,7 +194,7 @@ class SilverShadowMonitor:
             self.status["silverInferenceTargetFps"] = self.target_fps
 
     @classmethod
-    def from_camera_model(cls, camera_role="down"):
+    def from_camera_model(cls, camera_role="down", publish_course_marker=True):
         """Tenta carregar o modelo sem impedir a inicialização da câmera."""
 
         try:
@@ -201,13 +204,21 @@ class SilverShadowMonitor:
                 f"Detector da faixa prata indisponível: {error}",
                 flush=True,
             )
-            return cls(error_message=error)
+            return cls(
+                error_message=error,
+                publish_course_marker=publish_course_marker,
+            )
 
         print(
             "Detector da faixa prata ativo: busca a 6 FPS e confirmação a 15 FPS.",
             flush=True,
         )
-        return cls(detector=detector)
+        mode = "controle ativo" if publish_course_marker else "somente shadow"
+        print(f"Modo da faixa prata: {mode}.", flush=True)
+        return cls(
+            detector=detector,
+            publish_course_marker=publish_course_marker,
+        )
 
     def process(self, frame_bgr, sequence, timestamp, monotonic_time=None):
         """Executa a inferência na cadência atual e confirma quatro positivos."""
@@ -248,12 +259,13 @@ class SilverShadowMonitor:
         else:
             self.confirmation_frames = 0
 
-        marker_confirmed = (
+        shadow_confirmed = (
             self.confirmation_frames >= SILVER_CONFIRMATION_FRAMES
         )
+        marker_confirmed = shadow_confirmed and self.publish_course_marker
         self.target_fps = (
             SILVER_CONFIRMATION_FPS
-            if result.detected and not marker_confirmed
+            if result.detected and not shadow_confirmed
             else SILVER_SEARCH_FPS
         )
 
@@ -273,13 +285,19 @@ class SilverShadowMonitor:
             "silverConfirmationFrames": self.confirmation_frames,
             "silverConfirmationRequiredFrames": SILVER_CONFIRMATION_FRAMES,
             "silverInferenceTargetFps": self.target_fps,
+            "silverShadowOnly": not self.publish_course_marker,
+            "silverShadowConfirmed": shadow_confirmed,
             "courseMarkerConfirmed": marker_confirmed,
             "courseMarker": "GRAY" if marker_confirmed else "NONE",
         }
 
-        if marker_confirmed and not self.last_marker_confirmed:
+        if shadow_confirmed and not self.last_marker_confirmed:
             print(
-                "Entrada na área de resgate confirmada por quatro frames de prata.",
+                (
+                    "Shadow confirmou quatro frames de prata; missão preservada."
+                    if not self.publish_course_marker
+                    else "Entrada na área de resgate confirmada por quatro frames de prata."
+                ),
                 flush=True,
             )
 
@@ -292,5 +310,5 @@ class SilverShadowMonitor:
                 flush=True,
             )
         self.last_detected = result.detected
-        self.last_marker_confirmed = marker_confirmed
+        self.last_marker_confirmed = shadow_confirmed
         return self.status

@@ -28,12 +28,14 @@ TEST_RATIO = 0.15
 
 DEFAULT_SEED = 42
 
-PHASE1_EPOCHS = 20
+PHASE1_EPOCHS = 60
 PHASE1_LEARNING_RATE = 1e-3
 
-FINETUNE_EPOCHS = 15
+FINETUNE_EPOCHS = 40
 FINETUNE_LEARNING_RATE = 1e-5
 FINETUNE_LAYERS = 30
+EARLY_STOPPING_PATIENCE = 12
+LR_REDUCTION_PATIENCE = 4
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -44,6 +46,10 @@ def parse_arguments():
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT, help="Diretório contendo forward/ e down/.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed usada para dividir as sessões.")
     parser.add_argument("--fine-tune", action="store_true", help="Executa uma segunda fase descongelando parte da MobileNet.")
+    parser.add_argument("--epochs", type=int, default=PHASE1_EPOCHS, help="Limite de épocas da fase inicial; o EarlyStopping pode encerrar antes.")
+    parser.add_argument("--fine-tune-epochs", type=int, default=FINETUNE_EPOCHS, help="Limite de épocas do fine-tuning.")
+    parser.add_argument("--early-stopping-patience", type=int, default=EARLY_STOPPING_PATIENCE, help="Épocas sem melhora do val_loss antes de encerrar a fase.")
+    parser.add_argument("--lr-patience", type=int, default=LR_REDUCTION_PATIENCE, help="Épocas sem melhora antes de reduzir o learning rate.")
     parser.add_argument("--validate-only", action="store_true", help="Confere classes e sessões sem treinar nem exigir TensorFlow.")
     parser.add_argument(
         "--roi",
@@ -61,6 +67,14 @@ def validate_roi(roi):
 
     if not (0.0 <= left < right <= 1.0 and 0.0 <= top < bottom <= 1.0):
         raise ValueError("ROI inválida. Use LEFT TOP RIGHT BOTTOM normalizados entre 0 e 1.")
+
+
+def validate_training_limits(epochs, fine_tune_epochs, early_stopping_patience, lr_patience):
+    values = (epochs, fine_tune_epochs, early_stopping_patience, lr_patience)
+    if any(value <= 0 for value in values):
+        raise ValueError("Épocas e paciências devem ser valores positivos.")
+    if lr_patience >= early_stopping_patience:
+        raise ValueError("--lr-patience deve ser menor que --early-stopping-patience.")
 
 
 def discover_sessions(camera_dir):
@@ -214,13 +228,17 @@ def compile_model(model, learning_rate):
     )
 
 
-def create_callbacks():
+def create_callbacks(early_stopping_patience, lr_patience):
     return [
-        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True),
+        tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=early_stopping_patience,
+            restore_best_weights=True,
+        ),
         tf.keras.callbacks.ReduceLROnPlateau(
             monitor="val_loss",
             factor=0.5,
-            patience=2,
+            patience=lr_patience,
             min_lr=1e-7,
             verbose=1,
         ),
@@ -358,6 +376,12 @@ def main():
 
     roi = tuple(args.roi)
     validate_roi(roi)
+    validate_training_limits(
+        args.epochs,
+        args.fine_tune_epochs,
+        args.early_stopping_patience,
+        args.lr_patience,
+    )
 
     camera_dir = args.dataset_root / args.camera
     output_dir = OUTPUTS_DIR / f"silver_{args.camera}"
@@ -411,8 +435,11 @@ def main():
     history_phase1 = model.fit(
         train_dataset,
         validation_data=validation_dataset,
-        epochs=PHASE1_EPOCHS,
-        callbacks=create_callbacks(),
+        epochs=args.epochs,
+        callbacks=create_callbacks(
+            args.early_stopping_patience,
+            args.lr_patience,
+        ),
     )
 
     history_phase2 = None
@@ -426,8 +453,11 @@ def main():
         history_phase2 = model.fit(
             train_dataset,
             validation_data=validation_dataset,
-            epochs=FINETUNE_EPOCHS,
-            callbacks=create_callbacks(),
+            epochs=args.fine_tune_epochs,
+            callbacks=create_callbacks(
+                args.early_stopping_patience,
+                args.lr_patience,
+            ),
         )
 
     print("\nAVALIANDO TESTE INDEPENDENTE...")

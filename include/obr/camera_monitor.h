@@ -59,6 +59,9 @@ struct CameraLineSnapshot
     // feita pela visão. A ausência destes campos preserva o percurso atual.
     bool courseMarkerConfirmed = false;
     CourseMarker courseMarker = CourseMarker::None;
+    // Expõe a candidata ainda não confirmada para a manobra curta de entrada.
+    // Esse campo sozinho nunca autoriza a troca para a área de resgate.
+    bool silverCandidateDetected = false;
     bool rescueExitConfirmed = false;
 
     double lineTimestamp = 0.0;

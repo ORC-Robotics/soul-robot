@@ -176,10 +176,13 @@ def log_camera_inventory(camera_infos, assignments):
 # Esta chave permite desativar apenas o diagnóstico verde sem alterar a câmera.
 GREEN_PROCESSING_ENABLED = environment_flag("GREEN_PROCESSING_ENABLED", True)
 
-# Mantém temporariamente o classificador de prata fora do loop principal.
-# Enquanto estiver desativado, nenhum marcador cinza será publicado para a
-# missão e o modelo TFLite não consumirá tempo de processamento da câmera.
-SILVER_DETECTION_ENABLED = environment_flag("SILVER_DETECTION_ENABLED", False)
+# Mantém a inferência da faixa prata ativa para telemetria e calibração.
+SILVER_DETECTION_ENABLED = environment_flag("SILVER_DETECTION_ENABLED", True)
+
+# A confirmação da faixa prata está liberada para controlar a missão.
+# Manter este valor falso garante que uma variável antiga do serviço não deixe
+# o detector preso em shadow depois do deploy.
+SILVER_DETECTION_SHADOW_ONLY = False
 
 # O diagnóstico legado é opt-in porque o extractor por scanlines e seus
 # desenhos aumentam o custo e escondem o vetor Fusion-style no uso normal.

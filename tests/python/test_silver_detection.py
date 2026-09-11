@@ -184,6 +184,34 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertEqual(reset["courseMarker"], "NONE")
         self.assertEqual(reset["silverInferenceTargetFps"], 6.0)
 
+    def test_shadow_only_never_publishes_gray_to_mission(self):
+        positive_detector = SilverLineDetector(
+            FixedClassifier(classification(0.05, 0.10, 0.85))
+        )
+        positive = positive_detector.detect(
+            np.zeros((10, 20, 3), dtype=np.uint8)
+        )
+        monitor = SilverShadowMonitor(
+            SequenceDetector([positive] * 4),
+            publish_course_marker=False,
+        )
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+        with mock.patch("builtins.print"):
+            for index in range(4):
+                status = monitor.process(
+                    frame,
+                    index + 1,
+                    10.0 + index,
+                    monotonic_time=index * 0.11,
+                )
+
+        self.assertTrue(status["silverShadowDetected"])
+        self.assertTrue(status["silverShadowConfirmed"])
+        self.assertTrue(status["silverShadowOnly"])
+        self.assertFalse(status["courseMarkerConfirmed"])
+        self.assertEqual(status["courseMarker"], "NONE")
+
 
 if __name__ == "__main__":
     unittest.main()

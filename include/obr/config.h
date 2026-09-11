@@ -259,6 +259,21 @@ constexpr double kMotorRunMinimumPower = 0.61;
 // medição de eficiência tão precisa quanto corrigir a assimetria entre os lados.
 constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
 
+// Avanço reto executado ao encontrar a faixa cinza pela primeira vez.
+// A distância é medida pelos encoders e a potência baixa reduz o risco de
+// atravessar rapidamente o limite antes da confirmação visual.
+constexpr double kSilverEntryAdvanceDistanceCm = 5.0;
+constexpr double kSilverEntryAdvancePower = 0.68;
+constexpr int kSilverEntryEncoderFreshnessMs = 300;
+constexpr int kSilverEntryAdvanceTimeoutMs = 2500;
+
+static_assert(kSilverEntryAdvanceDistanceCm > 0.0 &&
+                  kSilverEntryAdvancePower >= kMotorStartMinimumPower &&
+                  kSilverEntryAdvancePower <= kMaxMotorOutput &&
+                  kSilverEntryEncoderFreshnessMs > 0 &&
+                  kSilverEntryAdvanceTimeoutMs > 0,
+              "O avanço da entrada cinza deve permanecer em limites seguros.");
+
 // Faixa central normalizada aceita pelo ALIGN_ZONE. O valor corresponde a
 // dez por cento para cada lado do centro publicado pela visão frontal.
 constexpr double kRescueZoneAlignDeadbandNormalized = 0.10;

@@ -555,6 +555,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
         }
         tryGetJsonBool(
+            json, "silverCandidateDetected", candidate.silverCandidateDetected);
+        tryGetJsonBool(
             json, "rescueExitConfirmed", candidate.rescueExitConfirmed);
 
         // A origem do controle é opcional para manter compatibilidade com um
