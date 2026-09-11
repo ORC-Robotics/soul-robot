@@ -1,0 +1,13 @@
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names: ['black_ball', 'silver_ball']
+
+roboflow:
+  workspace: gabriel-alves-de-almeida
+  project: evacuation-zone-rn9l0
+  version: 1
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/gabriel-alves-de-almeida/evacuation-zone-rn9l0/dataset/1

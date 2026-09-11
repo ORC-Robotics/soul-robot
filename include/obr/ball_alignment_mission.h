@@ -35,7 +35,7 @@ private:
     {
         Tracking,
         SettlingForVerification,
-        FineCorrectionPulse,
+        CorrectionPulse,
         Approaching,
         Completed,
         Failed
@@ -43,17 +43,24 @@ private:
 
     Phase phase_ = Phase::Tracking;
     std::uint64_t expectedTargetSequence_ = 0;
-    double lastTurnDirection_ = 0.0;
     double phaseStartBallTimestamp_ = 0.0;
     double lastStableBallTimestamp_ = 0.0;
-    double fineCorrectionDirection_ = 0.0;
+    double lastApproachBallTimestamp_ = 0.0;
+    double correctionDirection_ = 0.0;
+    double correctionStartYawDegrees_ = 0.0;
+    double correctionMaximumYawDegrees_ = 0.0;
+    double lockedHeadingDegrees_ = 0.0;
+    int correctionPulseDurationMs_ = 0;
     int stableFrameCount_ = 0;
     std::string failurePhase_;
     std::string failureAction_;
     bool targetAcquired_ = false;
     bool targetLossActive_ = false;
-    bool startCommandIssued_ = false;
-    bool motionConfirmed_ = false;
+    bool headingLocked_ = false;
+    bool correctionApplied_ = false;
+    bool fineCorrectionActive_ = false;
+    bool correctionYawAvailable_ = false;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
+    std::chrono::steady_clock::time_point correctionAppliedAt_{};
     std::chrono::steady_clock::time_point targetLostAt_{};
 };

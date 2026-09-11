@@ -860,6 +860,26 @@ void DashboardServer::handleCommand(const std::string& message)
                       << (enabled ? "enabled" : "disabled") << "\n";
         }
     }
+    else if (message.find("\"command\":\"set_dataset_capture\"") != std::string::npos)
+    {
+        bool active = false;
+        const std::string camera = getJsonString(message, "camera", "");
+        const std::string session = getJsonString(message, "session", "");
+        const std::string label = getJsonString(message, "label", "");
+        const std::string captureId = getJsonString(message, "captureId", "");
+        const double fps = getJsonNumber(message, "fps", 4.0);
+        if (!getJsonBool(message, "active", active) ||
+            !setDatasetCapture(active, camera, session, label, fps, captureId))
+        {
+            std::cerr << "Dataset capture command ignored: invalid values\n";
+        }
+        else
+        {
+            std::cout << "Dataset capture " << (active ? "started" : "paused")
+                      << ": camera=" << camera << " label=" << label
+                      << " session=" << session << "\n";
+        }
+    }
     else if (message.find("\"command\":\"drive_raw\"") != std::string::npos)
     {
         const double left = getJsonNumber(message, "left", 0.0);
@@ -1277,6 +1297,9 @@ std::string DashboardServer::dashboardHtml()
     .dataset-capture-strip span { min-width: 0; font-size: .62rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
     .dataset-capture-strip[data-state="active"] strong { color: var(--green); }
     .dataset-capture-strip[data-state="stale"] strong { color: var(--yellow); }
+    .dataset-capture-controls { display: grid; grid-template-columns: 1.3fr .8fr .6fr .8fr repeat(4, auto); gap: var(--space-1); margin: 0 0 var(--space-2); }
+    .dataset-capture-controls input, .dataset-capture-controls select, .dataset-capture-controls button { min-height: 32px; font-size: .62rem; }
+    .dataset-capture-controls button.active { color: var(--green); border-color: var(--green); }
     .camera-feed-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
     .camera-feed-grid[data-view="dual"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
     .camera-feed-card { min-width: 0; padding: var(--space-2); border: 1px solid var(--line-soft); border-radius: 13px; background: var(--bg-primary); }
@@ -1730,6 +1753,16 @@ std::string DashboardServer::dashboardHtml()
             <strong id="datasetCaptureState">Dataset pausado</strong>
             <span id="datasetCaptureDetails">Nenhuma coleta configurada.</span>
           </div>
+          <div class="dataset-capture-controls" aria-label="Captura do dataset de bolas">
+            <input id="datasetSession" type="text" maxlength="64" placeholder="sessao_01" aria-label="Nome da sessão">
+            <select id="datasetCamera" aria-label="Câmera do dataset"><option value="forward">Frontal</option><option value="down">Inferior</option></select>
+            <input id="datasetFps" type="number" min="0.5" max="10" step="0.5" value="4" aria-label="FPS da captura">
+            <select id="datasetCaptureMode" aria-label="Modo de captura do dataset"><option value="single">Uma foto</option><option value="continuous">Contínuo</option></select>
+            <button type="button" data-dataset-label="black" title="Capturar como bola preta (tecla B)">B · Preta</button>
+            <button type="button" data-dataset-label="silver" title="Capturar como bola prata (tecla P)">P · Prata</button>
+            <button type="button" data-dataset-label="other" title="Capturar imagem sem bola (tecla O)">O · Outros</button>
+            <button id="datasetPause" type="button">Pausar</button>
+          </div>
           <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
           <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
             <div class="camera-hud-header">
@@ -2177,6 +2210,13 @@ std::string DashboardServer::dashboardHtml()
     const datasetCaptureStatus = element("datasetCaptureStatus");
     const datasetCaptureState = element("datasetCaptureState");
     const datasetCaptureDetails = element("datasetCaptureDetails");
+    const datasetSession = element("datasetSession");
+    const datasetCamera = element("datasetCamera");
+    const datasetFps = element("datasetFps");
+    const datasetCaptureMode = element("datasetCaptureMode");
+    const datasetPause = element("datasetPause");
+    const datasetLabelButtons = Array.from(document.querySelectorAll("[data-dataset-label]"));
+    let activeDatasetKey = "";
     const cameraHudFps = element("cameraHudFps");
     const downwardCameraTelemetry = element("downwardCameraTelemetry");
     const forwardAssistDiagnostic = element("forwardAssistDiagnostic");
@@ -2425,7 +2465,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "rescue_zone_triangle"
             ? "Orquestra SEARCH_ZONE, ALIGN_ZONE e APPROACH_ZONE sem duplicar seus controles."
           : mission === "rescue_area"
-            ? "Preserva o alinhamento e a aproximação para receber as detecções do futuro modelo."
+            ? "Liga o detector frontal, alinha, aproxima e conclui com um avanço curto pelos encoders."
           : mission === "obstacle_avoidance"
             ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
           : mission === "servo_initialize"
@@ -2542,12 +2582,23 @@ std::string DashboardServer::dashboardHtml()
         ball_alignment_camera_stale: ["RESGATE: VISÃO OFFLINE", "danger", "machineStepFeedback"],
         ball_alignment_target_lost: ["RESGATE: ALVO PERDIDO", "warn", "machineStepPerception"],
         ball_alignment_target_lost_timeout: ["RESGATE: TIMEOUT DO ALVO", "danger", "machineStepFeedback"],
+        ball_alignment_motion_timeout: ["RESGATE: GIRO NÃO CONFIRMADO", "danger", "machineStepFeedback"],
         ball_alignment_turning: ["RESGATE: ALINHANDO", "active", "machineStepMotion"],
+        ball_alignment_correction_pulse: ["RESGATE: ALINHANDO", "active", "machineStepMotion"],
         ball_alignment_braking: ["RESGATE: ESTABILIZANDO", "warn", "machineStepFeedback"],
         ball_alignment_verifying: ["RESGATE: CONFIRMANDO", "warn", "machineStepPerception"],
         ball_alignment_fine_correction: ["RESGATE: CORREÇÃO FINA", "active", "machineStepMotion"],
         ball_approach_waiting_distance: ["RESGATE: SEM DISTÂNCIA", "warn", "machineStepPerception"],
+        ball_approach_waiting_imu: ["RESGATE: SEM HEADING", "warn", "machineStepPerception"],
         ball_approaching: ["RESGATE: APROXIMANDO", "active", "machineStepMotion"],
+        victim_collection_preparing: ["RESGATE: PREPARANDO COLETA", "warn", "machineStepFeedback"],
+        victim_collection_advancing: ["RESGATE: GARANTINDO COLETA", "active", "machineStepMotion"],
+        victim_collection_settling: ["RESGATE: ESTABILIZANDO COLETA", "warn", "machineStepFeedback"],
+        victim_collection_preparation_timeout: ["RESGATE: ROBÔ NÃO ESTABILIZOU", "danger", "machineStepFeedback"],
+        victim_collection_encoder_lost: ["RESGATE: ENCODERS PERDIDOS", "danger", "machineStepFeedback"],
+        victim_collection_encoder_mismatch: ["RESGATE: RODAS DIVERGENTES", "danger", "machineStepFeedback"],
+        victim_collection_stall: ["RESGATE: AVANÇO TRAVADO", "danger", "machineStepFeedback"],
+        victim_collection_timeout: ["RESGATE: TIMEOUT DA COLETA", "danger", "machineStepFeedback"],
         ball_reached: ["RESGATE: VÍTIMA ALCANÇADA", "active", "machineStepFeedback"]
       };
       let phase = String(data.autonomousPhase || "stopped");
@@ -3217,6 +3268,53 @@ std::string DashboardServer::dashboardHtml()
       updateKeyboardIndicators();
     }
 
+    function normalizedDatasetSession() {
+      const value = String(datasetSession.value || "").trim().replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64);
+      if (value) return value;
+      const generated = `session_${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15)}`;
+      datasetSession.value = generated;
+      return generated;
+    }
+
+    function setDatasetCapture(active, label) {
+      const fps = Math.max(0.5, Math.min(10, Number(datasetFps.value) || 4));
+      const selectedLabel = label || "other";
+      datasetFps.value = String(fps);
+      datasetLabelButtons.forEach(button => button.classList.toggle(
+        "active", active && button.dataset.datasetLabel === selectedLabel));
+      return send({ command: "set_dataset_capture", active,
+        camera: datasetCamera.value, session: normalizedDatasetSession(),
+        label: selectedLabel, fps });
+    }
+
+    function captureDatasetFrame(label) {
+      const fps = Math.max(0.5, Math.min(10, Number(datasetFps.value) || 4));
+      const captureId = `dash_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      datasetLabelButtons.forEach(button => button.classList.toggle(
+        "active", button.dataset.datasetLabel === label));
+      window.setTimeout(() => datasetLabelButtons.forEach(
+        button => button.classList.remove("active")), 250);
+      return send({ command: "set_dataset_capture", active: false,
+        camera: datasetCamera.value, session: normalizedDatasetSession(),
+        label, fps, captureId });
+    }
+
+    function triggerDatasetCapture(label) {
+      // No modo contínuo, a câmera salva na frequência escolhida até receber Pausar.
+      // O modo de uma foto mantém o comportamento seguro para capturas pontuais.
+      if (datasetCaptureMode.value === "continuous") {
+        return setDatasetCapture(true, label);
+      }
+      return captureDatasetFrame(label);
+    }
+
+    function datasetLabelForKey(code) {
+      if (code === "KeyB") return "black";
+      if (code === "KeyP") return "silver";
+      if (code === "KeyO") return "other";
+      return "";
+    }
+
     function sanitizeOledText(value, maximumLength) {
       return String(value || "")
         .normalize("NFD")
@@ -3513,6 +3611,7 @@ std::string DashboardServer::dashboardHtml()
         return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
       };
       const camera = typeof data.datasetCaptureCamera === "string" ? data.datasetCaptureCamera : "";
+      const datasetKind = typeof data.datasetCaptureKind === "string" ? data.datasetCaptureKind : "";
       const session = typeof data.datasetCaptureSession === "string" ? data.datasetCaptureSession : "";
       const label = typeof data.datasetCaptureLabel === "string" ? data.datasetCaptureLabel : "";
       const fps = Number(data.datasetCaptureFps);
@@ -3538,6 +3637,7 @@ std::string DashboardServer::dashboardHtml()
       }
 
       const details = [
+        datasetKind === "yolo_ball" ? "YOLO BALL" : "CLASSIFICADOR",
         (camera || "--").toUpperCase(),
         (label || "--").toUpperCase(),
       ];
@@ -4206,6 +4306,14 @@ std::string DashboardServer::dashboardHtml()
     cameraViewButtons.forEach(button => {
       button.addEventListener("click", () => renderCameraView(button.dataset.cameraView));
     });
+    datasetLabelButtons.forEach(button => {
+      button.addEventListener("click", () => triggerDatasetCapture(button.dataset.datasetLabel));
+    });
+    datasetPause.addEventListener("click", () => setDatasetCapture(false, "other"));
+    datasetCaptureMode.addEventListener("change", () => {
+      // Trocar para captura pontual também interrompe uma sequência que ficou ativa.
+      if (datasetCaptureMode.value === "single") setDatasetCapture(false, "other");
+    });
     manualDrivePower.addEventListener("input", updateManualPowerSettings);
     manualTurnPower.addEventListener("input", updateManualPowerSettings);
     leftValue.addEventListener("change", updateDriveFromExactInputs);
@@ -4278,6 +4386,16 @@ std::string DashboardServer::dashboardHtml()
     element("servoRoutineConfirmButton").addEventListener(
       "click", confirmServoRoutineAction);
     document.addEventListener("keydown", event => {
+      const datasetLabel = datasetLabelForKey(event.code);
+      const editingField = ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName);
+      if (datasetLabel && !editingField && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        if (!event.repeat && !activeDatasetKey) {
+          activeDatasetKey = event.code;
+          triggerDatasetCapture(datasetLabel);
+        }
+        return;
+      }
       if (!driveKeyCodes.includes(event.code) || event.ctrlKey || event.altKey || event.metaKey) return;
       event.preventDefault();
       if (!manualEnabled) { updateKeyboardIndicators(); return; }
@@ -4288,6 +4406,11 @@ std::string DashboardServer::dashboardHtml()
       }
     });
     document.addEventListener("keyup", event => {
+      if (event.code === activeDatasetKey) {
+        event.preventDefault();
+        activeDatasetKey = "";
+        return;
+      }
       if (!driveKeyCodes.includes(event.code)) return;
       event.preventDefault();
       if (pressedDriveKeys.delete(event.code)) {
@@ -4295,7 +4418,12 @@ std::string DashboardServer::dashboardHtml()
         if (manualEnabled) applyKeyboardDrive();
       }
     });
-    window.addEventListener("blur", stopDriveOnFocusLoss);
+    window.addEventListener("blur", () => {
+      stopDriveOnFocusLoss();
+      if (activeDatasetKey) {
+        activeDatasetKey = "";
+      }
+    });
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopDriveOnFocusLoss();
     });
@@ -4630,6 +4758,58 @@ bool DashboardServer::setLineCameraEnabled(bool enabled)
                     config::kLineCameraControlPath) != 0)
     {
         std::remove(config::kLineCameraTemporaryControlPath);
+        return false;
+    }
+    return true;
+}
+
+bool DashboardServer::setDatasetCapture(bool active, const std::string& camera,
+                                        const std::string& session,
+                                        const std::string& label, double fps,
+                                        const std::string& captureId)
+{
+    const auto safeName = [](const std::string& value) {
+        return !value.empty() && value.size() <= 64 &&
+               std::all_of(value.begin(), value.end(), [](unsigned char character) {
+                   return std::isalnum(character) || character == '_' || character == '-';
+               });
+    };
+    if ((camera != "forward" && camera != "down") ||
+        (label != "black" && label != "silver" && label != "other") ||
+        !safeName(session) || (!captureId.empty() && !safeName(captureId)) ||
+        !std::isfinite(fps) || fps < 0.5 || fps > 10.0)
+    {
+        return false;
+    }
+
+    // A escrita atômica evita que a thread da câmera leia JSON incompleto.
+    {
+        std::ofstream control(config::kDatasetCaptureTemporaryControlPath,
+                              std::ios::trunc);
+        if (!control)
+        {
+            return false;
+        }
+        control << "{\"active\":" << (active ? "true" : "false")
+                << ",\"dataset\":\"yolo_ball\""
+                << ",\"camera\":\"" << camera
+                << "\",\"session\":\"" << session
+                << "\",\"label\":\"" << label
+                << "\",\"fps\":" << fps;
+        if (!captureId.empty())
+        {
+            control << ",\"captureId\":\"" << captureId << "\"";
+        }
+        control << "}";
+        if (!control)
+        {
+            return false;
+        }
+    }
+    if (std::rename(config::kDatasetCaptureTemporaryControlPath,
+                    config::kDatasetCaptureControlPath) != 0)
+    {
+        std::remove(config::kDatasetCaptureTemporaryControlPath);
         return false;
     }
     return true;

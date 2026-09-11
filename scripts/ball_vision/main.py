@@ -19,6 +19,7 @@ try:
     from .camera import CameraConfig, FrontCamera
     from .ball_tracker import BallTracker
     from .distance_calibration import DistanceCalibration, DistanceEstimate
+    from .yolo_detector import YoloBallDetector
 except ImportError:
     from ball_detector import (
         BallCandidate,
@@ -29,6 +30,7 @@ except ImportError:
     from camera import CameraConfig, FrontCamera
     from ball_tracker import BallTracker
     from distance_calibration import DistanceCalibration, DistanceEstimate
+    from yolo_detector import YoloBallDetector
 
 
 WINDOW_TITLE = "OBR - Detecção de bolas"
@@ -108,7 +110,7 @@ def analyze_frame(
     detected_candidates = detector.detect(frame)
     candidates = detected_candidates
     if tracker is not None:
-        candidates = tracker.update(detected_candidates)
+        candidates = tracker.update(detected_candidates, frame.shape[1])
     if not candidates:
         # Durante a aquisição ou perda do alvo, mantém os candidatos somente
         # para desenhá-los em laranja; nenhum deles é publicado como alvo.
@@ -122,6 +124,114 @@ def analyze_frame(
     )
     position = classify_position(angle_degrees, center_angle_degrees)
     return BallObservation(candidate, distance, angle_degrees, position), candidates
+
+
+def draw_overlay(frame, observation, candidates):
+    """Desenha candidatos, alvo principal e valores usados na decisão."""
+
+    display = frame.copy()
+
+    def draw_candidate(candidate, color, thickness, show_label):
+        """Desenha a caixa YOLO quando disponível, sem perder o overlay legado."""
+
+        if candidate.bounding_box is not None:
+            left, top, width, height = candidate.bounding_box
+            start = (int(round(left)), int(round(top)))
+            end = (
+                int(round(left + width)),
+                int(round(top + height)),
+            )
+            cv2.rectangle(display, start, end, color, thickness, cv2.LINE_AA)
+            if show_label:
+                label = (
+                    ("PRATA" if candidate.ball_type == "silver_ball" else "PRETA") +
+                    f" {candidate.circle_fill_ratio:.0%}"
+                )
+                cv2.putText(
+                    display,
+                    label,
+                    (start[0], max(22, start[1] - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+            return
+
+        # Mantém o círculo para o detector legado e para diagnósticos antigos.
+        center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
+        cv2.circle(
+            display,
+            center,
+            int(round(candidate.radius_pixels)),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+
+    secondary_candidates = candidates[1:] if observation is not None else candidates
+    for candidate in secondary_candidates:
+        draw_candidate(candidate, (0, 180, 255), 1, True)
+
+    if observation is None:
+        has_unconfirmed_candidate = bool(candidates)
+        cv2.putText(
+            display,
+            (
+                "CONFIRMANDO ALVO"
+                if has_unconfirmed_candidate
+                else "NENHUMA BOLA ENCONTRADA"
+            ),
+            (20, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 180, 255) if has_unconfirmed_candidate else (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        return display
+
+    candidate = observation.candidate
+    is_silver = candidate.ball_type == "silver_ball"
+    ball_label = "BOLA PRATA" if is_silver else "BOLA PRETA"
+    # Verde sempre identifica o alvo travado; todas as outras candidatas ficam
+    # em laranja, independentemente de serem pretas ou pratas.
+    target_color = (0, 255, 0)
+    center = (int(round(candidate.center_x)), int(round(candidate.center_y)))
+    draw_candidate(candidate, target_color, 2, True)
+    cv2.circle(display, center, 4, (255, 0, 255), -1, cv2.LINE_AA)
+    cv2.line(
+        display,
+        (display.shape[1] // 2, 0),
+        (display.shape[1] // 2, display.shape[0]),
+        (255, 120, 0),
+        1,
+        cv2.LINE_AA,
+    )
+
+    extrapolated_text = " (extrapolada)" if observation.distance.extrapolated else ""
+    lines = (
+        ball_label,
+        f"Centro: ({candidate.center_x:.0f}, {candidate.center_y:.0f}) px",
+        f"Raio: {candidate.radius_pixels:.1f} px | Diametro: {candidate.diameter_pixels:.1f} px",
+        f"Area visivel: {candidate.visible_area_pixels:.0f} px",
+        f"Distancia: {observation.distance.distance_cm:.1f} cm{extrapolated_text}",
+        f"Angulo: {observation.angle_degrees:+.1f} graus",
+        f"Posicao: {observation.position}",
+    )
+    for line_index, text in enumerate(lines):
+        cv2.putText(
+            display,
+            text,
+            (20, 35 + line_index * 27),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            target_color,
+            2,
+            cv2.LINE_AA,
+        )
+    return display
 
 
 def parse_arguments(arguments=None):
@@ -159,12 +269,11 @@ def run(arguments=None):
             camera_index=args.camera_index,
             downward_camera_index=camera_config.downward_camera_index,
         )
-    detector = BallDetector(black_detector=BlackBallDetector(BallDetectorConfig(
-        maximum_value=args.maximum_value,
-        minimum_circularity=args.minimum_circularity,
-    )))
+    # O utilitário local precisa mostrar exatamente o mesmo modelo do robô.
+    # Os argumentos geométricos permanecem aceitos apenas por compatibilidade.
+    detector = YoloBallDetector()
     calibration = DistanceCalibration()
-    tracker = BallTracker()
+    tracker = BallTracker(distance_estimator=calibration.estimate)
     camera = FrontCamera(camera_config)
     running = True
 

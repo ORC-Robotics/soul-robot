@@ -9,8 +9,10 @@ import numpy as np
 from . import stream_display
 try:
     from silver_dataset_recorder import SilverDatasetRecorder
+    from yolo_ball_recorder import YoloBallRecorder
 except ImportError:
     SilverDatasetRecorder = None
+    YoloBallRecorder = None
 from .calibration_capture import CalibrationCapture
 from .gap_validation import GapValidator, read_json_snapshot, FORWARD_STATUS_PATH
 from .line_presence import draw_near_presence_overlay
@@ -123,7 +125,7 @@ class DownwardCameraApplication:
         vision_profile = camera_profile["vision"]
         camera_details = {}
         status_publisher = LineStatusPublisher()
-        self.dataset_recorder = None
+        self.dataset_recorders = []
         silver_shadow_monitor = None
         silver_shadow_status = empty_silver_shadow_status(
             "Detector da faixa prata desativado por configuração."
@@ -244,9 +246,11 @@ class DownwardCameraApplication:
             )
 
             # A coleta compartilha os frames da câmera e falha sem interromper a visão.
-            if SilverDatasetRecorder is not None:
+            for recorder_class in (SilverDatasetRecorder, YoloBallRecorder):
+                if recorder_class is None:
+                    continue
                 try:
-                    self.dataset_recorder = SilverDatasetRecorder("down")
+                    self.dataset_recorders.append(recorder_class("down"))
                 except Exception as error:
                     print(f"Coleta do dataset inferior indisponível: {error}", flush=True)
 
@@ -274,12 +278,13 @@ class DownwardCameraApplication:
                 else:
                     raw_frame = picam2.capture_array()
 
-                if self.dataset_recorder is not None:
+                if self.dataset_recorders:
                     try:
-                        self.dataset_recorder.submit(raw_frame)
+                        for dataset_recorder in self.dataset_recorders:
+                            dataset_recorder.submit(raw_frame)
                     except Exception as error:
                         print(f"Coleta do dataset inferior desativada após erro inesperado: {error}", flush=True)
-                        self.dataset_recorder = None
+                        self.dataset_recorders = []
 
                 frame_height = raw_frame.shape[0]
                 vision_geometry = resolve_vision_geometry(

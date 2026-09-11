@@ -1,8 +1,12 @@
+# Build e ambientes locais.
 build/
 .codex
 __pycache__/
 *.pyc
+*.cache
+.venv*/
 
+# Saídas de diagnóstico da câmera.
 camera_fov_test/**/__pycache__/
 camera_fov_test/**/*.pyc
 camera_fov_test/**/*.npy
@@ -10,6 +14,26 @@ camera_fov_test/**/*.png
 camera_fov_test/**/*.jpg
 camera_fov_test/**/*.json
 camera_fov_test/**/*.log
-.venv*/
+
+# Dataset e resultados do classificador Silver legado.
 dataset/
 training_outputs/
+
+# Dados capturados, anotados e preparados para o YOLO.
+# Scripts, documentação e data.yaml continuam versionáveis.
+yolo_ball/datasets/images/raw/
+yolo_ball/datasets/annotated/
+yolo_ball/datasets/train/images/
+yolo_ball/datasets/train/labels/
+yolo_ball/datasets/valid/images/
+yolo_ball/datasets/valid/labels/
+yolo_ball/datasets/test/images/
+yolo_ball/datasets/test/labels/
+# Experimentos de uma sessão são artefatos locais e não fazem parte do fluxo
+# reproduzível. O dataset oficial usa yolo_ball/datasets/data.yaml.
+yolo_ball/datasets/experiments/
+yolo_ball/datasets/split_manifest.json
+
+# Pesos e resultados de treinamento são artefatos locais.
+*.pt
+yolo_ball/runs/

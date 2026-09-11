@@ -5,6 +5,7 @@
 #include "obr/esp32_bridge.h"
 #include "obr/robot_state.h"
 
+#include <chrono>
 #include <cstdint>
 
 struct RescueAreaOutput
@@ -26,12 +27,42 @@ public:
         const Esp32TelemetrySnapshot& esp32Telemetry,
         std::uint64_t autonomousRunSequence,
         bool rescueExitConfirmed,
-        bool finishAfterVictim);
+        bool finishAfterVictim,
+        std::chrono::steady_clock::time_point now =
+            std::chrono::steady_clock::now());
     void reset();
 
 private:
+    enum class Phase
+    {
+        Searching,
+        Aligning,
+        PreparingCollectionAdvance,
+        AdvancingForCollection,
+        SettlingAfterCollectionAdvance,
+        VictimReached,
+        Failed
+    };
+
+    enum class SearchPhase
+    {
+        Ready,
+        Pivoting,
+        Settling,
+        WaitingForFrame
+    };
+
     BallAlignmentMission ballAlignmentMission_;
-    bool victimReached_ = false;
-    bool failed_ = false;
+    Phase phase_ = Phase::Searching;
+    SearchPhase searchPhase_ = SearchPhase::Ready;
+    std::chrono::steady_clock::time_point searchPhaseStartedAt_{};
+    std::chrono::steady_clock::time_point collectionPhaseStartedAt_{};
+    std::chrono::steady_clock::time_point collectionLastProgressAt_{};
+    double searchFrameBeforeMotionTimestamp_ = 0.0;
+    double collectionLastProgressCounts_ = 0.0;
+    long long collectionStartLeftCount_ = 0;
+    long long collectionStartRightCount_ = 0;
+    long long collectionLastUptimeMs_ = 0;
+    int collectionDifferenceSamples_ = 0;
     AutonomousStatus failureStatus_;
 };

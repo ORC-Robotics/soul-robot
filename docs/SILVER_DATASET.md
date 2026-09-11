@@ -74,7 +74,22 @@ Os JPEGs ficam em `dataset/raw/<camera>/<session>/<classe>/`. A gravação ocorr
 na thread do recorder com fila de dois frames. Falhas da coleta não interrompem
 a visão. Ao abrir uma sessão, novos frames aguardam a contagem inicial sem
 serem contabilizados como descartes. O dashboard mostra coleta ativa, pausada
-ou sem atualização (4 segundos). O painel não controla a coleta.
+ou sem atualização (4 segundos). Na seção das câmeras, cada clique ou toque
+em `B` (preta), `P` (prata) ou `O` (outros) salva exatamente um frame YOLO.
+Essa coleta fica separada em
+`yolo_ball/datasets/images/raw/<camera>/<sessão>/<classe>/`; os frames precisam
+ser anotados antes de serem movidos para `images/train` ou `images/val`.
+
+Para receber automaticamente no computador cada imagem capturada pela dashboard,
+deixe este comando aberto no PowerShell, na raiz do projeto:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/camera/sync_yolo_dataset.ps1
+```
+
+O sincronizador consulta a Raspberry a cada dois segundos e copia somente JPEGs
+novos para `yolo_ball/datasets/images/raw/`. Ele usa a mesma chave SSH do deploy,
+nunca remove arquivos locais ou remotos e pode ser encerrado com `Ctrl+C`.
 
 Faça pelo menos três sessões independentes **por câmera**, cada uma com as três
 classes. Varie posição e iluminação entre sessões. O treino separa sessões

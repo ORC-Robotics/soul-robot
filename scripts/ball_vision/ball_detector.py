@@ -1,10 +1,48 @@
 """Detecta bolas pretas e pratas sem redes neurais."""
 
 from dataclasses import dataclass
+import logging
 import math
 
 import cv2  # type: ignore
 import numpy as np
+
+
+LOGGER = logging.getLogger(__name__)
+
+# Margens de segurança, em pixels, usadas antes de aceitar uma bola.
+# A margem inferior permanece zero porque bolas próximas ao robô podem tocar
+# a base da imagem e ainda representar um alvo válido.
+BORDER_MARGIN_X = 50
+BORDER_MARGIN_Y = 80
+MIN_VISIBLE_RATIO = 0.70
+
+
+@dataclass(frozen=True)
+class BallValidationConfig:
+    """Centraliza a validação final comum aos dois tipos de bola."""
+
+    border_margin_x: int = BORDER_MARGIN_X
+    border_margin_y: int = BORDER_MARGIN_Y
+    minimum_visible_ratio: float = MIN_VISIBLE_RATIO
+    # Pontos normalizados da região permitida, na ordem do contorno.
+    # Valores entre 0 e 1 tornam a ROI independente da resolução da câmera.
+    arena_roi: tuple = ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0))
+
+    def validate(self):
+        """Rejeita limites que tornariam a validação ambígua."""
+
+        if self.border_margin_x < 0 or self.border_margin_y < 0:
+            raise ValueError("As margens da borda não podem ser negativas.")
+        if not 0.0 <= self.minimum_visible_ratio <= 1.0:
+            raise ValueError("minimum_visible_ratio deve estar entre 0 e 1.")
+        if len(self.arena_roi) < 3:
+            raise ValueError("arena_roi deve possuir ao menos três pontos.")
+        if any(
+            len(point) != 2 or any(not 0.0 <= float(value) <= 1.0 for value in point)
+            for point in self.arena_roi
+        ):
+            raise ValueError("Os pontos de arena_roi devem estar entre 0 e 1.")
 
 
 @dataclass(frozen=True)
@@ -79,6 +117,9 @@ class BallCandidate:
     top_clipped: bool
     detection_method: str
     visible_area_pixels: float = 0.0
+    # Caixa original do detector, em pixels: esquerda, topo, largura e altura.
+    # Detectores geométricos não possuem essa informação e deixam o campo vazio.
+    bounding_box: tuple[float, float, float, float] | None = None
 
 
 class BlackBallDetector:
@@ -445,9 +486,16 @@ class SilverBallDetector:
 class BallDetector:
     """Combina bolas pretas e pratas sem duplicar o mesmo alvo geométrico."""
 
-    def __init__(self, black_detector=None, silver_detector=None):
+    def __init__(
+        self,
+        black_detector=None,
+        silver_detector=None,
+        validation_config=None,
+    ):
         self.black_detector = black_detector or BlackBallDetector()
         self.silver_detector = silver_detector or SilverBallDetector()
+        self.validation_config = validation_config or BallValidationConfig()
+        self.validation_config.validate()
 
     @staticmethod
     def _overlap_ratio(first, second):
@@ -457,11 +505,87 @@ class BallDetector:
         )
         return center_distance / max(first.radius_pixels, second.radius_pixels)
 
+    @staticmethod
+    def _visible_ratio(candidate):
+        expected_area = math.pi * candidate.radius_pixels ** 2
+        if expected_area <= 0.0:
+            return 0.0
+        return min(1.0, candidate.visible_area_pixels / expected_area)
+
+    @staticmethod
+    def _confidence(candidate):
+        """Expõe a melhor métrica atual sem mudar a interface do candidato."""
+
+        if candidate.detection_method == "hough":
+            return candidate.circularity
+        return candidate.circle_fill_ratio
+
+    def _rejection_reason(self, candidate, frame_shape, visible_ratio):
+        height, width = frame_shape[:2]
+        config = self.validation_config
+        if candidate.center_y < config.border_margin_y:
+            return "BORDER_TOP"
+        if candidate.center_x < config.border_margin_x:
+            return "BORDER_LEFT"
+        if candidate.center_x > width - config.border_margin_x:
+            return "BORDER_RIGHT"
+        if visible_ratio < config.minimum_visible_ratio:
+            return "VISIBLE_RATIO"
+
+        roi = np.asarray([
+            (round(x * (width - 1)), round(y * (height - 1)))
+            for x, y in config.arena_roi
+        ], dtype=np.int32)
+        if cv2.pointPolygonTest(
+            roi,
+            (float(candidate.center_x), float(candidate.center_y)),
+            False,
+        ) < 0:
+            return "OUTSIDE_ARENA_ROI"
+        return None
+
+    def _log_rejection(self, candidate, reason, visible_ratio):
+        LOGGER.warning(
+            "BALL REJECTED\n"
+            "reason: %s\n"
+            "center: (%.1f,%.1f)\n"
+            "radius: %.1f\n"
+            "area: %.1f\n"
+            "visible_ratio: %.2f\n"
+            "confidence: %.2f",
+            reason,
+            candidate.center_x,
+            candidate.center_y,
+            candidate.radius_pixels,
+            candidate.contour_area_pixels,
+            visible_ratio,
+            self._confidence(candidate),
+        )
+
+    def _valid_candidates(self, candidates, frame_shape):
+        """Remove candidatos inseguros antes que cheguem ao rastreador."""
+
+        valid = []
+        for candidate in candidates:
+            visible_ratio = self._visible_ratio(candidate)
+            reason = self._rejection_reason(candidate, frame_shape, visible_ratio)
+            if reason is not None:
+                self._log_rejection(candidate, reason, visible_ratio)
+                continue
+            valid.append(candidate)
+        return valid
+
     def detect(self, frame):
         """Prioriza preto em sobreposições e preserva bolas distintas."""
 
-        black_candidates = self.black_detector.detect(frame)
-        silver_candidates = self.silver_detector.detect(frame)
+        black_candidates = self._valid_candidates(
+            self.black_detector.detect(frame),
+            frame.shape,
+        )
+        silver_candidates = self._valid_candidates(
+            self.silver_detector.detect(frame),
+            frame.shape,
+        )
         unique_silver = [
             candidate
             for candidate in silver_candidates

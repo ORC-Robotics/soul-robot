@@ -119,6 +119,9 @@ void MainMission::update(
         {
             phase_ = Phase::Failed;
             robotState.stop();
+            // stop() aplica primeiro a saída segura e substitui o texto do
+            // painel. Publicar a falha novamente preserva a causa específica.
+            robotState.updateAutonomousStatus(output.status);
             return;
         }
         if (output.completed)

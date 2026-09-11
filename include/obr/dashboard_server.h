@@ -168,6 +168,10 @@ private:
     static bool sendCameraStatus(SocketHandle client, const char* statusPath);
     static bool setForwardCameraEnabled(bool enabled);
     static bool setLineCameraEnabled(bool enabled);
+    static bool setDatasetCapture(bool active, const std::string& camera,
+                                  const std::string& session,
+                                  const std::string& label, double fps,
+                                  const std::string& captureId = "");
     static bool sendAll(SocketHandle client, const char* data, size_t size);
     static std::string getHeaderValue(const std::string& request, const std::string& header);
     static bool sendWebSocketText(SocketHandle client, const std::string& message);
