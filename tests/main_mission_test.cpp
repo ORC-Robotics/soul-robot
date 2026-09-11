@@ -1079,10 +1079,28 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
     gray.courseMarker = CourseMarker::Gray;
     snapshot = fixture.update(gray);
     require(
+        closeTo(snapshot.left, -config::kSilverEntryReversePower) &&
+            closeTo(snapshot.right, -config::kSilverEntryReversePower) &&
+            snapshot.autonomousStatus.phase == "silver_entry_backing_up",
+        "A faixa cinza confirmada deve recuar antes de alinhar.");
+
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = reverseCounts;
+    fixture.telemetry.rightEncoderCount = reverseCounts;
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.autonomousStatus.phase == "silver_entry_aligning_line" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "A primeira leitura central deve confirmar a linha inferior.");
+
+    snapshot = fixture.update(gray);
+    require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
             snapshot.autonomousStatus.phase == "rescue_area_confirmed",
-        "A faixa cinza confirmada deve parar a missão principal.");
+        "Duas leituras centrais devem confirmar a área de resgate.");
     require(
         !fixture.mission.requiresRescueVision(),
         "A faixa cinza não deve ligar automaticamente a visão de vítimas.");
@@ -1119,6 +1137,47 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
     require(
         !rejectedFixture.mission.requiresRescueVision(),
         "Uma candidata não confirmada não deve iniciar o resgate.");
+
+    MissionFixture reverseFixture;
+    CameraLineSnapshot reverseCandidate = freshVision(GreenInterpretation::None);
+    reverseCandidate.silverCandidateDetected = true;
+    reverseFixture.update(reverseCandidate);
+
+    CameraLineSnapshot noLine = reverseCandidate;
+    noLine.courseMarkerConfirmed = true;
+    noLine.courseMarker = CourseMarker::Gray;
+    noLine.lineNearDetected = false;
+    noLine.lineNearFinePosition = std::numeric_limits<double>::quiet_NaN();
+    snapshot = reverseFixture.update(noLine);
+    require(
+        closeTo(snapshot.left, -config::kSilverEntryReversePower) &&
+            closeTo(snapshot.right, -config::kSilverEntryReversePower) &&
+            snapshot.autonomousStatus.phase == "silver_entry_backing_up",
+        "Sem linha preta, a entrada deve iniciar uma ré curta.");
+
+    const long long delayedReverseCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    reverseFixture.telemetry.leftEncoderCount = delayedReverseCounts;
+    reverseFixture.telemetry.rightEncoderCount = delayedReverseCounts;
+    snapshot = reverseFixture.update(noLine);
+    require(
+        snapshot.left == 0.0 && snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "silver_entry_waiting_line",
+        "Depois da ré sem linha, o robô deve aguardar parado.");
+
+    CameraLineSnapshot alignedLine = noLine;
+    alignedLine.lineNearDetected = true;
+    alignedLine.lineNearFinePosition = 0.0;
+    snapshot = reverseFixture.update(alignedLine);
+    require(
+        snapshot.autonomousStatus.phase == "silver_entry_aligning_line",
+        "A primeira leitura NEAR central deve aguardar confirmação.");
+    snapshot = reverseFixture.update(alignedLine);
+    require(
+        snapshot.autonomousStatus.phase == "rescue_area_confirmed" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "A linha recuperada e centralizada deve confirmar a área de resgate.");
 }
 
 void testRescueAlignmentModeKeepsExistingMotorAuthority()

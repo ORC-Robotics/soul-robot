@@ -9,7 +9,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from silver_classifier import SilverClassification
-from vision.silver_detection import SilverLineDetector, SilverShadowMonitor
+from vision.silver_detection import (
+    SILVER_CONFIRMATION_FPS,
+    SILVER_SEARCH_FPS,
+    SilverLineDetector,
+    SilverShadowMonitor,
+)
 
 
 class FixedClassifier:
@@ -138,7 +143,7 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertIsNone(monitor.detector)
         print_mock.assert_called_once()
 
-    def test_shadow_uses_fast_cadence_and_confirms_four_positive_frames(self):
+    def test_shadow_uses_30_fps_cadence_and_confirms_four_positive_frames(self):
         positive_detector = SilverLineDetector(
             FixedClassifier(classification(0.05, 0.10, 0.85))
         )
@@ -149,21 +154,23 @@ class SilverLineDetectorTest(unittest.TestCase):
         monitor = SilverShadowMonitor(detector)
         frame = np.zeros((10, 20, 3), dtype=np.uint8)
 
+        self.assertEqual(monitor.target_fps, SILVER_SEARCH_FPS)
+
         with mock.patch("builtins.print"):
             first = monitor.process(frame, 1, 10.0, monotonic_time=0.0)
-            skipped = monitor.process(frame, 2, 10.05, monotonic_time=0.05)
-            second = monitor.process(frame, 3, 10.11, monotonic_time=0.11)
-            third = monitor.process(frame, 4, 10.22, monotonic_time=0.22)
-            confirmed = monitor.process(frame, 5, 10.33, monotonic_time=0.33)
+            skipped = monitor.process(frame, 2, 10.02, monotonic_time=0.02)
+            second = monitor.process(frame, 3, 10.04, monotonic_time=0.04)
+            third = monitor.process(frame, 4, 10.08, monotonic_time=0.08)
+            confirmed = monitor.process(frame, 5, 10.12, monotonic_time=0.12)
 
         self.assertEqual(first["silverConfirmationFrames"], 1)
-        self.assertEqual(first["silverInferenceTargetFps"], 15.0)
+        self.assertEqual(first["silverInferenceTargetFps"], SILVER_CONFIRMATION_FPS)
         self.assertIs(skipped, first)
         self.assertEqual(second["silverConfirmationFrames"], 2)
         self.assertEqual(third["silverConfirmationFrames"], 3)
         self.assertTrue(confirmed["courseMarkerConfirmed"])
         self.assertEqual(confirmed["courseMarker"], "GRAY")
-        self.assertEqual(confirmed["silverInferenceTargetFps"], 6.0)
+        self.assertEqual(confirmed["silverInferenceTargetFps"], SILVER_SEARCH_FPS)
         self.assertEqual(detector.calls, 4)
 
     def test_shadow_negative_resets_confirmation_and_search_cadence(self):
@@ -182,7 +189,7 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertEqual(reset["silverConfirmationFrames"], 0)
         self.assertFalse(reset["courseMarkerConfirmed"])
         self.assertEqual(reset["courseMarker"], "NONE")
-        self.assertEqual(reset["silverInferenceTargetFps"], 6.0)
+        self.assertEqual(reset["silverInferenceTargetFps"], SILVER_SEARCH_FPS)
 
 
 if __name__ == "__main__":

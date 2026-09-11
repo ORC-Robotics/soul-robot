@@ -11,8 +11,11 @@ O treinamento permanece offline, separado do ciclo do robô. TensorFlow não é
 uma dependência das câmeras. O classificador distingue `black`, `other` e
 `silver`; ele não substitui o seguidor geométrico nem calcula comandos dos
 motores. Quando quatro inferências consecutivas confirmam `silver`, porém, a
-câmera publica `courseMarkerConfirmed=GRAY` e a missão principal para o robô.
-A busca de vítimas não é iniciada automaticamente.
+câmera publica `courseMarkerConfirmed=GRAY`. Antes de confirmar a entrada, a
+missão recua primeiro 3 cm pelos encoders e então centraliza a linha preta
+anterior somente pelo sensor virtual `NEAR`, na parte inferior da imagem. Se a
+linha não aparecer, aguarda parada por um frame válido; a busca de vítimas não
+é iniciada automaticamente.
 
 ## Estado operacional temporário
 

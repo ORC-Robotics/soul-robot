@@ -26,9 +26,20 @@ public:
         const Esp32TelemetrySnapshot& telemetry);
 
 private:
+    enum class Phase
+    {
+        CandidateAdvance,
+        BackingUpForLine,
+        WaitingForLine,
+        CenteringLine,
+        AlignmentTimeout
+    };
+
     bool active_ = false;
     bool visionConfirmed_ = false;
+    Phase phase_ = Phase::CandidateAdvance;
     long long startLeftCount_ = 0;
     long long startRightCount_ = 0;
     std::chrono::steady_clock::time_point startTime_{};
+    int nearCenteredFrames_ = 0;
 };

@@ -271,13 +271,32 @@ constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
 // A distância é medida pelos encoders e a potência baixa reduz o risco de
 // atravessar rapidamente o limite antes da confirmação visual.
 constexpr double kSilverEntryAdvanceDistanceCm = 5.0;
-constexpr double kSilverEntryAdvancePower = 0.68;
+constexpr double kSilverEntryAdvancePower = 0.67;
+// Ré única executada após confirmar o cinza. A distância curta leva a faixa
+// preta anterior ao sensor NEAR sem sair da região recém-identificada.
+constexpr double kSilverEntryReverseDistanceCm = 3.0;
+constexpr double kSilverEntryReversePower = 0.68;
+// O alinhamento após a ré usa somente o sensor virtual NEAR, localizado na
+// parte inferior da imagem. Duas leituras centrais evitam concluir por ruído.
+constexpr double kSilverEntryNearCenterTolerance = 0.12;
+constexpr int kSilverEntryNearStableFrames = 2;
+constexpr double kSilverEntryNearCenteringPower = 0.69;
+constexpr int kSilverEntryAlignmentTimeoutMs = 3000;
 constexpr int kSilverEntryEncoderFreshnessMs = 300;
 constexpr int kSilverEntryAdvanceTimeoutMs = 2500;
 
 static_assert(kSilverEntryAdvanceDistanceCm > 0.0 &&
                   kSilverEntryAdvancePower >= kMotorStartMinimumPower &&
                   kSilverEntryAdvancePower <= kMaxMotorOutput &&
+                  kSilverEntryReverseDistanceCm > 0.0 &&
+                  kSilverEntryReversePower >= kMotorStartMinimumPower &&
+                  kSilverEntryReversePower <= kMaxMotorOutput &&
+                  kSilverEntryNearCenterTolerance > 0.0 &&
+                  kSilverEntryNearCenterTolerance <= 1.0 &&
+                  kSilverEntryNearStableFrames > 0 &&
+                  kSilverEntryNearCenteringPower >= kMotorStartMinimumPower &&
+                  kSilverEntryNearCenteringPower <= kMaxMotorOutput &&
+                  kSilverEntryAlignmentTimeoutMs > 0 &&
                   kSilverEntryEncoderFreshnessMs > 0 &&
                   kSilverEntryAdvanceTimeoutMs > 0,
               "O avanço da entrada cinza deve permanecer em limites seguros.");

@@ -20,10 +20,12 @@ FULL_FRAME_ROI = (0.0, 0.0, 1.0, 1.0)
 DEFAULT_SILVER_CONFIDENCE = 0.70
 DEFAULT_SILVER_MARGIN = 0.15
 
-# A busca economiza CPU; o primeiro positivo abre uma confirmação mais rápida.
+# A busca e a confirmação usam até 30 inferências por segundo. Essa cadência
+# reduz a distância percorrida entre o primeiro indício e a confirmação da
+# faixa; o laço ainda fica limitado pelo FPS real da câmera e pelo TFLite.
 # Quatro positivos consecutivos evitam que um reflexo isolado inicie o resgate.
-SILVER_SEARCH_FPS = 6.0
-SILVER_CONFIRMATION_FPS = 15.0
+SILVER_SEARCH_FPS = 30.0
+SILVER_CONFIRMATION_FPS = 30.0
 SILVER_CONFIRMATION_FRAMES = 4
 
 
@@ -204,7 +206,7 @@ class SilverShadowMonitor:
             return cls(error_message=error)
 
         print(
-            "Detector da faixa prata ativo: busca a 6 FPS e confirmação a 15 FPS.",
+            "Detector da faixa prata ativo: busca e confirmação até 30 FPS.",
             flush=True,
         )
         return cls(detector=detector)
