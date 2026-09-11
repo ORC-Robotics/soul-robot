@@ -228,14 +228,29 @@ constexpr double kMaxMotorOutput = 1.0;
 // Compensa somente o seguimento NORMAL quando a inclinação recente da IMU
 // indica subida ou descida. Pela convenção operacional atual, valores positivos
 // representam a frente do robô levantada; a faixa intermediária não altera a potência.
-constexpr double kLineFollowingUphillThresholdDeg = 9.0;
+constexpr double kLineFollowingUphillThresholdDeg = 5.0;
+constexpr double kLineFollowingSteepUphillThresholdDeg = 10.0;
 constexpr double kLineFollowingDownhillThresholdDeg = -6.0;
-constexpr double kLineFollowingUphillPowerOffset = 0.15;
+// Entre 5 e 10 graus, a reta nominal passa de 0,75 para 0,80. A partir de
+// 10 graus, passa para 0,85. Os tetos também limitam a roda externa nas curvas.
+constexpr double kLineFollowingUphillPowerOffset = 0.05;
+constexpr double kLineFollowingSteepUphillPowerOffset = 0.10;
+constexpr double kLineFollowingUphillMaximumPower = 0.80;
+constexpr double kLineFollowingSteepUphillMaximumPower = 0.85;
 constexpr double kLineFollowingDownhillPowerOffset = -0.05;
 
 static_assert(kLineFollowingUphillThresholdDeg > 0.0 &&
+                  kLineFollowingSteepUphillThresholdDeg >
+                      kLineFollowingUphillThresholdDeg &&
                   kLineFollowingDownhillThresholdDeg < 0.0 &&
                   kLineFollowingUphillPowerOffset > 0.0 &&
+                  kLineFollowingSteepUphillPowerOffset >
+                      kLineFollowingUphillPowerOffset &&
+                  kLineFollowingUphillMaximumPower > 0.0 &&
+                  kLineFollowingUphillMaximumPower <
+                      kLineFollowingSteepUphillMaximumPower &&
+                  kLineFollowingSteepUphillMaximumPower <=
+                      kMaxMotorOutput &&
                   kLineFollowingDownhillPowerOffset < 0.0,
               "A compensação de rampa deve respeitar os sentidos de subida e descida.");
 

@@ -339,11 +339,20 @@ void testNormalLineFollowerCompensatesRampPower()
     MissionFixture uphillFixture;
     uphillFixture.telemetry.rampAngleDeg =
         config::kLineFollowingUphillThresholdDeg;
-    RobotSnapshot snapshot = uphillFixture.update(normalLineVision(0.70, 0.76));
+    RobotSnapshot snapshot = uphillFixture.update(normalLineVision(0.75, 0.75));
     require(
-        closeTo(snapshot.left, 0.85) && closeTo(snapshot.right, 0.91) &&
+        closeTo(snapshot.left, 0.80) && closeTo(snapshot.right, 0.80) &&
             !snapshot.encoderSynchronizationAllowed,
-        "Subida deve somar o mesmo offset aos dois lados do segue-linha NORMAL.");
+        "A partir de 5 graus, a subida deve limitar a potência em 0,80.");
+
+    MissionFixture steepUphillFixture;
+    steepUphillFixture.telemetry.rampAngleDeg =
+        config::kLineFollowingSteepUphillThresholdDeg;
+    snapshot = steepUphillFixture.update(normalLineVision(0.75, 0.75));
+    require(
+        closeTo(snapshot.left, 0.85) && closeTo(snapshot.right, 0.85) &&
+            !snapshot.encoderSynchronizationAllowed,
+        "A partir de 10 graus, a subida deve liberar até 0,85.");
 
     MissionFixture downhillFixture;
     downhillFixture.telemetry.rampAngleDeg =
@@ -355,12 +364,13 @@ void testNormalLineFollowerCompensatesRampPower()
         "Descida deve reduzir igualmente os dois lados do segue-linha NORMAL.");
 
     MissionFixture levelFixture;
-    levelFixture.telemetry.rampAngleDeg = 2.0;
+    levelFixture.telemetry.rampAngleDeg =
+        config::kLineFollowingUphillThresholdDeg - 0.1;
     snapshot = levelFixture.update(normalLineVision(0.70, 0.76));
     require(
         closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
             !snapshot.encoderSynchronizationAllowed,
-        "Inclinação entre os limiares não deve alterar o segue-linha.");
+        "Inclinação imediatamente abaixo de 5 graus não deve acelerar.");
 }
 
 void testRampCompensationRequiresFreshValidImu()
@@ -421,8 +431,8 @@ void testRampCompensationClampsFinalMotorCommands()
     fixture.telemetry.rampAngleDeg = 12.0;
     const RobotSnapshot snapshot = fixture.update(normalLineVision(0.90, 0.98));
     require(
-        closeTo(snapshot.left, 1.0) && closeTo(snapshot.right, 1.0),
-        "Compensação de subida deve respeitar o clamp final dos motores.");
+        closeTo(snapshot.left, 0.85) && closeTo(snapshot.right, 0.85),
+        "Compensação de subida forte deve respeitar o teto de 0,85.");
 }
 
 void testNonReturnGreenDoesNotStartSequence()
@@ -1062,11 +1072,18 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
     require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "rescue_area_entering",
-        "A faixa cinza confirmada deve entrar no resgate com os motores parados.");
+            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
+        "A faixa cinza confirmada deve parar a missão principal.");
     require(
-        fixture.mission.requiresRescueVision(),
-        "A fase de resgate deve solicitar a visão frontal de vítimas.");
+        !fixture.mission.requiresRescueVision(),
+        "A faixa cinza não deve ligar automaticamente a visão de vítimas.");
+
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
+        "Depois da faixa cinza, o robô deve permanecer parado.");
 
     fixture.mission.reset();
     require(

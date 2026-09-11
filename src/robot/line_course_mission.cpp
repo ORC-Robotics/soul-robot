@@ -152,10 +152,20 @@ void LineCourseMission::update(
         leftPower > 0.0 && rightPower > 0.0)
     {
         double rampPowerOffset = 0.0;
+        double rampMaximumPower = config::kMaxMotorOutput;
         if (esp32Telemetry.rampAngleDeg >=
+            config::kLineFollowingSteepUphillThresholdDeg)
+        {
+            rampPowerOffset =
+                config::kLineFollowingSteepUphillPowerOffset;
+            rampMaximumPower =
+                config::kLineFollowingSteepUphillMaximumPower;
+        }
+        else if (esp32Telemetry.rampAngleDeg >=
             config::kLineFollowingUphillThresholdDeg)
         {
             rampPowerOffset = config::kLineFollowingUphillPowerOffset;
+            rampMaximumPower = config::kLineFollowingUphillMaximumPower;
         }
         else if (esp32Telemetry.rampAngleDeg <=
                  config::kLineFollowingDownhillThresholdDeg)
@@ -163,16 +173,16 @@ void LineCourseMission::update(
             rampPowerOffset = config::kLineFollowingDownhillPowerOffset;
         }
 
-        // O mesmo offset preserva o diferencial do Fusion. O clamp final
-        // impede que a compensação ultrapasse o protocolo dos motores.
+        // O mesmo offset preserva o diferencial do Fusion até que a roda
+        // externa alcance o teto seguro definido para cada faixa da rampa.
         leftPower = std::clamp(
             leftPower + rampPowerOffset,
             config::kMinMotorOutput,
-            config::kMaxMotorOutput);
+            rampMaximumPower);
         rightPower = std::clamp(
             rightPower + rampPowerOffset,
             config::kMinMotorOutput,
-            config::kMaxMotorOutput);
+            rampMaximumPower);
     }
     robotState.driveAutonomous(
         leftPower,

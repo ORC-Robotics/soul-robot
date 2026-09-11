@@ -11,17 +11,15 @@ O treinamento permanece offline, separado do ciclo do robô. TensorFlow não é
 uma dependência das câmeras. O classificador distingue `black`, `other` e
 `silver`; ele não substitui o seguidor geométrico nem calcula comandos dos
 motores. Quando quatro inferências consecutivas confirmam `silver`, porém, a
-câmera publica `courseMarkerConfirmed=GRAY` e a missão principal entra na área
-de resgate. Por isso, o modelo precisa ser validado na pista antes da operação.
+câmera publica `courseMarkerConfirmed=GRAY` e a missão principal para o robô.
+A busca de vítimas não é iniciada automaticamente.
 
 ## Estado operacional temporário
 
-O detector está desativado por padrão em `vision.camera_config`, por meio de
-`SILVER_DETECTION_ENABLED=False`. Nessa condição, a câmera não carrega nem
-executa o modelo TFLite e publica `courseMarkerConfirmed=false` e
-`courseMarker=NONE`. A coleta do dataset e as ferramentas de inferência offline
-continuam disponíveis. Para um ensaio controlado, a variável de ambiente
-`SILVER_DETECTION_ENABLED=1` reativa o detector sem alterar o código.
+O detector está ativo por padrão em `vision.camera_config`. A variável de
+ambiente `SILVER_DETECTION_ENABLED=0` desliga a inferência durante diagnósticos.
+Quando desligado, a câmera publica `courseMarkerConfirmed=false` e
+`courseMarker=NONE`; a visão de linha continua funcionando.
 
 O desligamento foi motivado por falsos positivos observados em pista sobre uma
 faixa preta sem cinza aparente. O modelo chegou a 85,1% de probabilidade de
@@ -37,7 +35,7 @@ que o classificador aprenda iluminação e contexto da cena em vez do material
 prateado. Também não há resultado versionado de uma validação independente em
 runs completas.
 
-Antes de reativar o marcador na missão principal:
+Para continuar melhorando o marcador:
 
 1. grave como exemplos `black` os falsos positivos reais, além de sombras,
    reflexos, curvas, interseções e diferentes trechos de fita;

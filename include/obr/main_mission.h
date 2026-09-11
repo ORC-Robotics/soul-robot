@@ -34,6 +34,7 @@ private:
     enum class Phase
     {
         InitialLineCourse,
+        RescueAreaConfirmed,
         RescueArea,
         FinalLineCourse,
         Completed,

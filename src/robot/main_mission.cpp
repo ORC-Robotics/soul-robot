@@ -33,6 +33,7 @@ void MainMission::reset()
 
 bool MainMission::requiresRescueVision() const
 {
+    // Confirmar a faixa cinza não liga automaticamente a busca de vítimas.
     return phase_ == Phase::RescueArea;
 }
 
@@ -88,19 +89,32 @@ void MainMission::update(
         return;
     }
 
+    if (phase_ == Phase::RescueAreaConfirmed)
+    {
+        // Este estado é terminal por enquanto. A confirmação da faixa cinza
+        // para o robô, mas não concede autoridade à missão de resgate.
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeStatus(
+            "rescue_area_confirmed",
+            "Faixa cinza confirmada: robô parado",
+            100.0));
+        return;
+    }
+
     if (phase_ == Phase::InitialLineCourse &&
         cameraReady &&
         confirmedMarker(cameraLineSnapshot, CourseMarker::Gray))
     {
-        // A faixa cinza termina o primeiro percurso. O resgate começa parado
-        // para que o gate da visão frontal seja aberto no próximo ciclo.
+        // A faixa cinza termina o primeiro percurso e mantém os motores
+        // parados. A entrada automática no resgate será ligada posteriormente.
         lineCourseMission_.reset();
         rescueAreaMission_.reset();
-        phase_ = Phase::RescueArea;
+        phase_ = Phase::RescueAreaConfirmed;
         robotState.driveAutonomous(0.0, 0.0);
         robotState.updateAutonomousStatus(makeStatus(
-            "rescue_area_entering",
-            "Faixa cinza confirmada: iniciando a área de resgate"));
+            "rescue_area_confirmed",
+            "Faixa cinza confirmada: robô parado",
+            100.0));
         return;
     }
 

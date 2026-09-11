@@ -2494,6 +2494,7 @@ std::string DashboardServer::dashboardHtml()
         waiting_imu: ["AGUARDANDO IMU", "warn", "machineStepPerception"],
         line_follower_pending: ["SEGUE-FAIXA PENDENTE", "warn", "machineStepDecision"],
         line_following: ["SEGUINDO LINHA", "active", "machineStepMotion"],
+        rescue_area_confirmed: ["ÁREA DE RESGATE CONFIRMADA", "active", "machineStepFeedback"],
         turnaround_waiting_sensors: ["RETORNO: SENSORES", "warn", "machineStepPerception"],
         turnaround_forward: ["RETORNO: AVANÇO", "active", "machineStepMotion"],
         turnaround_forward_settling: ["RETORNO: ESTABILIZANDO", "warn", "machineStepFeedback"],
