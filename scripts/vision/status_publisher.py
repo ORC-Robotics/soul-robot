@@ -195,6 +195,10 @@ def save_line_status(
         line_status["courseMarkerConfirmed"] = (
             marker_status.get("courseMarkerConfirmed") is True
         )
+        # A candidata preliminar autoriza somente o avanço curto por encoder.
+        line_status["silverCandidateDetected"] = (
+            marker_status.get("silverShadowDetected") is True
+        )
         line_status["courseMarker"] = (
             "GRAY"
             if line_status["courseMarkerConfirmed"]

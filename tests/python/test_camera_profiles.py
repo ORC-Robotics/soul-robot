@@ -930,6 +930,7 @@ class CameraProfilesTest(unittest.TestCase):
                     7,
                     status,
                     silver_status={
+                        "silverShadowDetected": True,
                         "courseMarkerConfirmed": True,
                         "courseMarker": "GRAY",
                     },
@@ -948,6 +949,7 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertTrue(published["lineNearDetected"])
         self.assertEqual(published["lineControlSource"], "virtual")
         self.assertTrue(published["courseMarkerConfirmed"])
+        self.assertTrue(published["silverCandidateDetected"])
         self.assertEqual(published["courseMarker"], "GRAY")
         self.assertEqual(published["fusionAngle"], 108.0)
         self.assertEqual(published["filteredFusionAngle"], 108.0)
@@ -1008,6 +1010,7 @@ class CameraProfilesTest(unittest.TestCase):
             "illuminationDarkPixelsPreserved",
             "courseMarkerConfirmed",
             "courseMarker",
+            "silverCandidateDetected",
         }
         self.assertEqual(set(published), expected_keys)
 

@@ -406,6 +406,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.greenInterpretation = GreenInterpretation::None;
     snapshot.courseMarkerConfirmed = false;
     snapshot.courseMarker = CourseMarker::None;
+    snapshot.silverCandidateDetected = false;
     snapshot.rescueExitConfirmed = false;
     if (hasCachedSnapshot)
     {
@@ -554,6 +555,8 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             return unavailableLineSnapshot(
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
         }
+        tryGetJsonBool(
+            json, "silverCandidateDetected", candidate.silverCandidateDetected);
         tryGetJsonBool(
             json, "rescueExitConfirmed", candidate.rescueExitConfirmed);
 
