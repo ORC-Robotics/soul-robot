@@ -28,6 +28,7 @@ void MainMission::reset()
 {
     phase_ = Phase::InitialLineCourse;
     lineCourseMission_.reset();
+    silverEntryManeuver_.reset();
     rescueAreaMission_.reset();
 }
 
@@ -101,21 +102,35 @@ void MainMission::update(
         return;
     }
 
-    if (phase_ == Phase::InitialLineCourse &&
-        cameraReady &&
-        confirmedMarker(cameraLineSnapshot, CourseMarker::Gray))
+    if (phase_ == Phase::InitialLineCourse && cameraReady)
     {
-        // A faixa cinza termina o primeiro percurso e mantém os motores
-        // parados. A entrada automática no resgate será ligada posteriormente.
-        lineCourseMission_.reset();
-        rescueAreaMission_.reset();
-        phase_ = Phase::RescueAreaConfirmed;
-        robotState.driveAutonomous(0.0, 0.0);
-        robotState.updateAutonomousStatus(makeStatus(
-            "rescue_area_confirmed",
-            "Faixa cinza confirmada: robô parado",
-            100.0));
-        return;
+        const SilverEntryOutput silverEntry = silverEntryManeuver_.update(
+            cameraLineSnapshot,
+            esp32Telemetry);
+        if (silverEntry.completed)
+        {
+            // A confirmação termina o avanço com PWM zero. A busca de vítimas
+            // permanece desabilitada até a equipe ligar essa fase futuramente.
+            lineCourseMission_.reset();
+            silverEntryManeuver_.reset();
+            rescueAreaMission_.reset();
+            phase_ = Phase::RescueAreaConfirmed;
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeStatus(
+                "rescue_area_confirmed",
+                "Faixa cinza confirmada: robô parado",
+                100.0));
+            return;
+        }
+        if (silverEntry.hasControl)
+        {
+            lineCourseMission_.reset();
+            robotState.driveAutonomous(
+                silverEntry.leftPower,
+                silverEntry.rightPower);
+            robotState.updateAutonomousStatus(silverEntry.status);
+            return;
+        }
     }
 
     if (phase_ == Phase::RescueArea)

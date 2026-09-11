@@ -991,10 +991,17 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
             texts,
         )
         self.assertIn("F TARGET", texts)
-        self.assertIn(
-            f"Fusion VALID {fusion_line['processingMs']:.2f} ms",
-            texts,
-        )
+        timing_text = f"{fusion_line['processingMs']:.2f} ms"
+        self.assertIn(timing_text, texts)
+        timing_calls = [
+            call for call in put_text.call_args_list
+            if call.args[1] == timing_text
+        ]
+        self.assertEqual(len(timing_calls), 2)
+        self.assertTrue(all(
+            call.args[2][0] > frame.shape[1] // 2 and call.args[2][1] == 20
+            for call in timing_calls
+        ))
         self.assertIn("Source legacy_normal", texts)
         self.assertIn("Powers L +0.42 R +0.31", texts)
 

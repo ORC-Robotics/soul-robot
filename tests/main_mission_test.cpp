@@ -1066,6 +1066,15 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         "O percurso inicial não deve ligar a visão de resgate.");
 
     CameraLineSnapshot gray = freshVision(GreenInterpretation::None);
+    gray.silverCandidateDetected = true;
+    snapshot = fixture.update(gray);
+    require(
+        snapshot.mode == "autonomous" &&
+            closeTo(snapshot.left, config::kSilverEntryAdvancePower) &&
+            closeTo(snapshot.right, config::kSilverEntryAdvancePower) &&
+            snapshot.autonomousStatus.phase == "silver_entry_advancing",
+        "A candidata cinza deve iniciar o avanço reto de até 5 cm.");
+
     gray.courseMarkerConfirmed = true;
     gray.courseMarker = CourseMarker::Gray;
     snapshot = fixture.update(gray);
@@ -1089,6 +1098,27 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
     require(
         !fixture.mission.requiresRescueVision(),
         "O reset deve restaurar o primeiro percurso sem visão pesada.");
+
+    MissionFixture rejectedFixture;
+    CameraLineSnapshot candidate = freshVision(GreenInterpretation::None);
+    candidate.silverCandidateDetected = true;
+    snapshot = rejectedFixture.update(candidate);
+    require(
+        snapshot.autonomousStatus.phase == "silver_entry_advancing",
+        "A candidata deve abrir a janela de avanço.");
+
+    const long long entryCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryAdvanceDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    rejectedFixture.telemetry.leftEncoderCount = entryCounts;
+    rejectedFixture.telemetry.rightEncoderCount = entryCounts;
+    snapshot = rejectedFixture.update(freshVision(GreenInterpretation::None));
+    requireFollowingLine(
+        snapshot,
+        "Sem confirmação dentro de 5 cm");
+    require(
+        !rejectedFixture.mission.requiresRescueVision(),
+        "Uma candidata não confirmada não deve iniciar o resgate.");
 }
 
 void testRescueAlignmentModeKeepsExistingMotorAuthority()

@@ -13,7 +13,6 @@ except ImportError:
     SilverDatasetRecorder = None
 from .calibration_capture import CalibrationCapture
 from .gap_validation import GapValidator, read_json_snapshot, FORWARD_STATUS_PATH
-from .line_presence import draw_near_presence_overlay
 from .line_control import LineFollowerController
 from .maneuver_state import LineManeuverState
 from .status_publisher import LineStatusPublisher
@@ -94,7 +93,6 @@ from .stream_display import (
     draw_green_roi_overlays,
     draw_line_illumination_overlay,
     draw_line_mode_green_overlays,
-    draw_silver_shadow_overlay,
     encode_frame,
     get_display_mode,
     handle_signal,
@@ -829,17 +827,18 @@ class DownwardCameraApplication:
                     structural_mask,
                 )
 
-                _illumination_gain, illumination_zone, _illumination_cached = (
-                    line_illumination_data(vision_profile, raw_frame.shape)
-                )
-                draw_line_illumination_overlay(
-                    frame,
-                    line_candidate_mask,
-                    illumination_zone,
-                    specular_repair_status,
-                    display_mode,
-                    uncorrected_line_candidate_mask,
-                )
+                if camera_profile["role"] != "down":
+                    _illumination_gain, illumination_zone, _illumination_cached = (
+                        line_illumination_data(vision_profile, raw_frame.shape)
+                    )
+                    draw_line_illumination_overlay(
+                        frame,
+                        line_candidate_mask,
+                        illumination_zone,
+                        specular_repair_status,
+                        display_mode,
+                        uncorrected_line_candidate_mask,
+                    )
 
                 if camera_profile["role"] == "down":
                     if LEGACY_LINE_DEBUG_ENABLED:
@@ -932,10 +931,6 @@ class DownwardCameraApplication:
                         fusion_style_line,
                         line_follower_command,
                     )
-                    draw_near_presence_overlay(frame, gap_validator.near, line_follower_command)
-                    # O shadow é desenhado somente na cópia exibida. O frame bruto
-                    # usado pela visão, pelo modelo e pelo dataset permanece intacto.
-                    draw_silver_shadow_overlay(frame, silver_shadow_status)
 
                 now = time.monotonic()
                 elapsed = now - previous_time

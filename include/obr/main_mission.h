@@ -5,6 +5,7 @@
 #include "obr/line_course_mission.h"
 #include "obr/rescue_area_mission.h"
 #include "obr/robot_state.h"
+#include "obr/silver_entry_maneuver.h"
 
 #include <cstdint>
 
@@ -43,5 +44,6 @@ private:
 
     Phase phase_ = Phase::InitialLineCourse;
     LineCourseMission lineCourseMission_;
+    SilverEntryManeuver silverEntryManeuver_;
     RescueAreaMission rescueAreaMission_;
 };

@@ -1142,12 +1142,7 @@ def draw_fusion_style_line_overlay(
         processing_ms = 0.0
     if not math.isfinite(processing_ms) or processing_ms < 0.0:
         processing_ms = 0.0
-    validity_text = (
-        "Fusion VALID"
-        if fusion_style_line.get("valid") is True
-        else "Fusion INVALID"
-    )
-    validity_text = f"{validity_text} {processing_ms:.2f} ms"
+    processing_text = f"{processing_ms:.2f} ms"
 
     command = (
         line_follower_command
@@ -1170,7 +1165,6 @@ def draw_fusion_style_line_overlay(
 
     overlay_texts = (
         angle_text,
-        validity_text,
         source_text,
         powers_text,
     )
@@ -1196,6 +1190,37 @@ def draw_fusion_style_line_overlay(
             1,
             cv2.LINE_AA,
         )
+
+    processing_text_size = cv2.getTextSize(
+        processing_text,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        1,
+    )[0]
+    processing_text_origin = (
+        max(8, frame.shape[1] - processing_text_size[0] - 8),
+        20,
+    )
+    cv2.putText(
+        frame,
+        processing_text,
+        processing_text_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (0, 0, 0),
+        3,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        processing_text,
+        processing_text_origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        angle_color,
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def fusion_target_is_valid(point):

@@ -1407,23 +1407,6 @@ std::string DashboardServer::dashboardHtml()
     .camera-details[open] summary::after { content: "−"; }
     .camera-technical-metadata { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); padding: 0 0 var(--space-3); }
     .camera-technical-metadata .meta-chip { padding: 0; border: 0; background: transparent; font-size: .59rem; }
-    .camera-hud { position: absolute; inset: var(--space-2); z-index: 3; display: flex; flex-direction: column; justify-content: space-between; gap: var(--space-2); pointer-events: none; }
-    .camera-hud[hidden], .camera-frame:not(.online) .camera-hud { display: none; }
-    .camera-hud-header { display: flex; flex-direction: column; align-items: flex-end; justify-content: flex-start; gap: var(--space-1); }
-    .camera-hud-header > * { padding: 5px 8px; border: 1px solid var(--border-primary); border-radius: 6px; color: var(--text); background: var(--bg-overlay); font-size: .62rem; font-weight: 900; letter-spacing: .07em; }
-    .camera-hud-line.valid { color: var(--green); border-color: var(--green); }
-    .camera-hud-line.invalid { color: var(--danger); border-color: var(--danger); }
-    .camera-hud-line.searching { color: var(--yellow); border-color: var(--yellow); }
-    .camera-hud-values { display: grid; grid-template-columns: .8fr .8fr repeat(3, 1fr) 1.45fr; border: 1px solid var(--border-primary); border-radius: 7px; background: var(--bg-overlay); overflow: hidden; }
-    .camera-hud-value { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-right: 1px solid var(--border-subtle); }
-    .camera-hud-value:last-child { border-right: 0; }
-    .camera-hud-value > span { color: var(--text-muted); font-size: .5rem; font-weight: 850; letter-spacing: .08em; text-transform: uppercase; }
-    .camera-hud-value strong { color: var(--text); font-size: .76rem; line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .camera-hud-value small { color: var(--muted); font-size: .5rem; }
-    .camera-hud-value.pipeline { grid-column: span 2; }
-    .camera-hud-value.green-status strong,
-    .camera-hud-value.path-status strong { color: var(--text-primary); }
-    .camera-hud-value.speed strong { color: var(--text-primary); font-size: .67rem; }
     .camera-message { align-content: center; justify-items: center; gap: 6px; }
     .camera-message strong { color: var(--text); font-size: .78rem; letter-spacing: .08em; text-transform: uppercase; }
     .camera-message span { max-width: 320px; color: var(--muted); font-size: .66rem; line-height: 1.4; }
@@ -1658,9 +1641,6 @@ std::string DashboardServer::dashboardHtml()
       .operation-overview > div:last-child { grid-column: 1 / -1; border-right: 0; }
       .operation-camera-header { flex-direction: column; }
       .operation-camera-panel .camera-meta { align-self: stretch; justify-content: flex-start; }
-      .camera-hud-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .camera-hud-value:nth-child(3) { border-right: 0; }
-      .camera-hud-value:nth-child(-n + 3) { border-bottom: 1px solid var(--border-subtle); }
       .operation-mission-summary, .operation-drive-summary { gap: var(--space-2); }
       .operation-mode-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .diagnostic-communication-alert { grid-template-columns: 1fr; gap: var(--space-2); }
@@ -1757,21 +1737,6 @@ std::string DashboardServer::dashboardHtml()
             <span id="datasetCaptureDetails">Nenhuma coleta configurada.</span>
           </div>
           <div id="cameraFeeds" class="camera-feed-grid" data-view="downward" aria-live="polite"></div>
-          <div id="downwardCameraTelemetry" class="camera-hud" aria-label="Estado da visão inferior" hidden>
-            <div class="camera-hud-header">
-              <strong id="cameraLineFollowerState" class="camera-hud-line">CONTROLE PENDENTE</strong>
-              <strong id="forwardAssistDiagnostic">NEAR UNKNOWN | FWD UNCERTAIN | DECISION NORMAL | SOURCE UNAVAILABLE | CONTROLE INFERIOR</strong>
-              <span id="cameraHudFps">-- FPS</span>
-            </div>
-            <div class="camera-hud-values">
-              <div class="camera-hud-value green-status"><span>Verde</span><strong id="operationGreenInterpretation">SEM DECISÃO</strong><small id="operationGreenConfirmed">NÃO CONFIRMADO</small></div>
-              <div class="camera-hud-value path-status"><span>Faixa associada</span><strong id="operationGreenPathBlackValid">NÃO</strong><small id="operationLineSequence">—</small></div>
-              <div class="camera-hud-value"><span>Reparo da máscara</span><strong id="operationSpecularRepair">—</strong></div>
-              <div class="camera-hud-value speed"><span>Speed</span><strong id="machineEncoderSpeed">-- / -- cont/s</strong></div>
-              <div class="camera-hud-value pipeline"><span>Pipeline</span><strong id="operationPipelinePrimary">BIN — · SPEC — ms</strong><small id="operationPipelineSecondary">MORPH — · CONT — ms</small></div>
-              <div class="camera-hud-value"><span>Entrada prata</span><strong id="operationSilverShadowState">INDISPONÍVEL</strong><small id="operationSilverShadowDetails">—</small></div>
-            </div>
-          </div>
         </section>
 
         <aside id="missionStateCard" class="card operation-control-panel mission-state-card" data-tone="idle">
@@ -2206,22 +2171,7 @@ std::string DashboardServer::dashboardHtml()
     const datasetCaptureStatus = element("datasetCaptureStatus");
     const datasetCaptureState = element("datasetCaptureState");
     const datasetCaptureDetails = element("datasetCaptureDetails");
-    const cameraHudFps = element("cameraHudFps");
-    const downwardCameraTelemetry = element("downwardCameraTelemetry");
-    const forwardAssistDiagnostic = element("forwardAssistDiagnostic");
     const cameraViewButtons = Array.from(document.querySelectorAll("[data-camera-view]"));
-    const operationCameraDiagnosticFields = {
-      lineFollowerState: element("cameraLineFollowerState"),
-      greenInterpretation: element("operationGreenInterpretation"),
-      greenConfirmed: element("operationGreenConfirmed"),
-      greenPathBlackValid: element("operationGreenPathBlackValid"),
-      lineSequence: element("operationLineSequence"),
-      specularRepair: element("operationSpecularRepair"),
-      pipelinePrimary: element("operationPipelinePrimary"),
-      pipelineSecondary: element("operationPipelineSecondary"),
-      silverShadowState: element("operationSilverShadowState"),
-      silverShadowDetails: element("operationSilverShadowDetails")
-    };
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
     const rescueZoneTargetColor = element("rescueZoneTargetColor");
@@ -2290,7 +2240,6 @@ std::string DashboardServer::dashboardHtml()
     let manualMaximumPower = 1.0;
     let activeCameraView = "downward";
     let activeDashboardMode = "operation";
-    let latestCameraDiagnosticData = null;
     let cameraRenderGeneration = 0;
     const mountedCameraImages = new Map();
     const mountedCameraStatuses = new Map();
@@ -2313,7 +2262,6 @@ std::string DashboardServer::dashboardHtml()
         button.setAttribute("aria-selected", selected ? "true" : "false");
         button.tabIndex = selected ? 0 : -1;
       });
-      renderCurrentCameraDiagnostics();
     }
 
     function setPill(target, text, state) {
@@ -2356,12 +2304,6 @@ std::string DashboardServer::dashboardHtml()
     function formatNumber(value, digits = 1) {
       const number = Number(value);
       return Number.isFinite(number) ? number.toFixed(digits) : "--";
-    }
-
-    function formatPipelineTiming(value) {
-      return typeof value === "number" && Number.isFinite(value) && value >= 0
-        ? formatNumber(value, 2)
-        : "—";
     }
 
     function formatUptime(milliseconds) {
@@ -2698,12 +2640,6 @@ std::string DashboardServer::dashboardHtml()
       element("machineAppliedSpeed").textContent = fresh
         ? `${formatNumber(data.esp32AppliedLeftPower, 2)} / ${formatNumber(data.esp32AppliedRightPower, 2)}`
         : "-- / --";
-      setTextIfChanged(
-        element("machineEncoderSpeed"),
-        fresh
-          ? `${formatNumber(data.leftEncoderRate, 0)} / ${formatNumber(data.rightEncoderRate, 0)} cont/s`
-          : "-- / -- cont/s"
-      );
       const distanceMission = mission === "drive_distance";
       element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
       element("machineDistanceSides").textContent = distanceMission
@@ -2999,7 +2935,6 @@ std::string DashboardServer::dashboardHtml()
         updateMode(data);
         updateAutonomousMission(data);
         updateStateMachine(data);
-        updateForwardAssistDiagnostic(data);
         element("cpu").textContent = `${formatNumber(data.cpu, 1)}%`;
         element("temp").textContent = `${formatNumber(data.temperature, 1)} °C`;
         element("ram").textContent = `${formatNumber(data.ram, 1)}%`;
@@ -3677,7 +3612,6 @@ std::string DashboardServer::dashboardHtml()
         ? `${cameraFpsText(cameras.downward)} / ${cameraFpsText(cameras.forward)}`
         : cameraFpsText(cameras[activeCameraView]);
       setTextIfChanged(operationCameraFps, selectedFps);
-      setTextIfChanged(cameraHudFps, cameraFpsText(cameras.downward));
     }
 
     function renderCameraMetadata() {
@@ -3970,7 +3904,6 @@ std::string DashboardServer::dashboardHtml()
       frame.className = shouldMountStream ? "camera-frame loading" : "camera-frame unconfigured";
       if (shouldMountStream) mountCameraStream(camera, frame, generation);
       else buildCameraPlaceholder(camera, frame);
-      if (camera.id === "downward") frame.appendChild(downwardCameraTelemetry);
       feed.append(header, frame);
       updateForwardCameraButtons();
       updateLineCameraButtons();
@@ -4007,143 +3940,9 @@ std::string DashboardServer::dashboardHtml()
       visibleCameraIds(view).forEach(cameraId => {
         cameraFeeds.appendChild(buildCameraFeed(cameraId, generation));
       });
-      downwardCameraTelemetry.hidden = view === "forward";
       renderCameraMetadata();
       if (cameraIsVisible("downward")) refreshCameraStatus();
       if (cameraIsVisible("forward")) refreshForwardCameraStatus();
-    }
-
-    function clearCameraDiagnostics() {
-      latestCameraDiagnosticData = null;
-      renderCurrentCameraDiagnostics();
-    }
-
-    function clearOperationCameraDiagnostics() {
-      Object.values(operationCameraDiagnosticFields)
-        .forEach(field => setTextIfChanged(field, "—"));
-      setTextIfChanged(
-        operationCameraDiagnosticFields.lineFollowerState,
-        "CONTROLE PENDENTE"
-      );
-    }
-
-    function updateOperationCameraDiagnostics(data) {
-  setTextIfChanged(
-    operationCameraDiagnosticFields.lineFollowerState,
-    data.lineFollowerImplemented === true ? "CONTROLE ATIVO" : "CONTROLE PENDENTE"
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.greenInterpretation,
-    String(
-      data.greenRawInterpretation ||
-      data.greenInterpretation ||
-      "SEM_DECISAO"
-    ).replaceAll("_", " ")
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.greenConfirmed,
-    data.greenConfirmed === true ? "CONFIRMADO" : "NÃO CONFIRMADO"
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.greenPathBlackValid,
-    data.greenPathBlackValid === true ? "SIM" : "NÃO"
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.lineSequence,
-    Number.isFinite(Number(data.lineSequence))
-      ? `SEQ ${Number(data.lineSequence).toFixed(0)}`
-      : "—"
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.specularRepair,
-    `${formatNumber(data.specularRepairPixels, 0)} px · ${formatNumber(data.specularRepairComponents, 0)} comp`
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.pipelinePrimary,
-    `BIN ${formatPipelineTiming(data.binaryMs)} · SPEC ${formatPipelineTiming(data.specularMs)} ms`
-  );
-
-  setTextIfChanged(
-    operationCameraDiagnosticFields.pipelineSecondary,
-    `MORPH ${formatPipelineTiming(data.morphMs)} · CONT ${formatPipelineTiming(data.contoursMs)} ms`
-  );
-
-  const silverShadowAvailable = data.silverShadowAvailable === true;
-  const silverShadowDetected = data.silverShadowDetected === true;
-  const silverMarkerConfirmed = data.courseMarkerConfirmed === true &&
-    data.courseMarker === "GRAY";
-  const silverConfirmationFrames = Number(data.silverConfirmationFrames) || 0;
-  const silverConfirmationRequiredFrames =
-    Number(data.silverConfirmationRequiredFrames) || 4;
-  setTextIfChanged(
-    operationCameraDiagnosticFields.silverShadowState,
-    !silverShadowAvailable
-      ? "INDISPONÍVEL"
-      : silverMarkerConfirmed
-        ? "ENTRADA CONFIRMADA"
-        : silverShadowDetected
-          ? `CONFIRMANDO ${silverConfirmationFrames}/${silverConfirmationRequiredFrames}`
-          : String(data.silverShadowLabel || "SEM LEITURA").toUpperCase()
-  );
-  setTextIfChanged(
-    operationCameraDiagnosticFields.silverShadowDetails,
-    silverShadowAvailable
-      ? `S ${formatNumber(Number(data.silverShadowProbability) * 100, 1)}% · MARGEM ${formatNumber(Number(data.silverShadowMargin) * 100, 1)}% · ${formatPipelineTiming(data.silverShadowInferenceMs)} ms · ${formatNumber(data.silverInferenceTargetFps, 0)} FPS`
-      : String(data.silverShadowError || "—")
-  );
-}
-
-    function updateForwardAssistDiagnostic(data) {
-      const state = String(data.forwardPathState || "UNCERTAIN");
-      const near = String(data.nearLineState || "UNKNOWN");
-      const decision = String(data.gapValidationDecision || "NORMAL");
-      setTextIfChanged(
-        forwardAssistDiagnostic,
-        `NEAR ${near} | FWD ${state} | DECISION ${decision} | SOURCE ${data.lineControlSource || "UNAVAILABLE"} | CONTROLE INFERIOR`
-      );
-    }
-
-    function renderCurrentCameraDiagnostics() {
-      if (latestCameraDiagnosticData) {
-        updateOperationCameraDiagnostics(latestCameraDiagnosticData);
-      } else {
-        clearOperationCameraDiagnostics();
-      }
-    }
-
-    function updateCameraDiagnostics(data) {
-      const numericFields = [
-        data.greenConsecutiveSamples,
-        data.specularRepairPixels, data.specularRepairComponents,
-        data.lineTimestamp, data.lineSequence, data.timestamp
-      ];
-      const fieldsPresent = typeof data.lineFollowerImplemented === "boolean" &&
-        typeof data.greenConfirmed === "boolean" &&
-        typeof data.greenPathBlackValid === "boolean" &&
-        typeof data.greenInterpretation === "string" &&
-        numericFields.every(value => Number.isFinite(Number(value)));
-      const statusTimestamp = Number(data.timestamp);
-      const lineTimestamp = Number(data.lineTimestamp);
-      const nowMs = performance.now();
-      if (statusTimestamp !== lastCameraStatusTimestamp) {
-        lastCameraStatusTimestamp = statusTimestamp;
-        lastCameraStatusChangeAtMs = nowMs;
-      }
-      const lineAgeAtStatusMs = (statusTimestamp - lineTimestamp) * 1000;
-      const statusFresh = fieldsPresent && nowMs - lastCameraStatusChangeAtMs <= 1000 &&
-        lineAgeAtStatusMs >= 0 && lineAgeAtStatusMs <= 1000;
-      if (!statusFresh) {
-        clearCameraDiagnostics();
-        return;
-      }
-      latestCameraDiagnosticData = data;
-      renderCurrentCameraDiagnostics();
     }
 
     async function refreshCameraStatus() {
@@ -4196,10 +3995,7 @@ std::string DashboardServer::dashboardHtml()
           camera.transitioning = false;
         }
         setCameraStatus("downward", visualState);
-        if (visualState !== "ONLINE") {
-          clearCameraDiagnostics();
-        }
-        else {
+        if (visualState === "ONLINE") {
           const width = Number(data.width);
           const height = Number(data.height);
           const sensorMode = data.sensorMode || {};
@@ -4209,13 +4005,11 @@ std::string DashboardServer::dashboardHtml()
           camera.metadata.sensor = Number(sensorMode.width) > 0 && Number(sensorMode.height) > 0 ? `${Number(sensorMode.width).toFixed(0)}×${Number(sensorMode.height).toFixed(0)} ${Number(sensorMode.bitDepth).toFixed(0)}-bit` : "--";
           camera.metadata.crop = Number.isFinite(Number(scalerCrop.x)) && Number.isFinite(Number(scalerCrop.y)) && Number(scalerCrop.width) > 0 && Number(scalerCrop.height) > 0 ? `${Number(scalerCrop.x).toFixed(0)},${Number(scalerCrop.y).toFixed(0)},${Number(scalerCrop.width).toFixed(0)},${Number(scalerCrop.height).toFixed(0)}` : "--";
           camera.metadata.format = data.cameraFormat || "--";
-          updateCameraDiagnostics(data);
         }
       } catch {
         // Sem IPC não existe visão válida para o segue-faixa; a missão já bloqueia
         // o movimento por sourceFresh, e o painel expõe a falha sem estado ambíguo.
         setCameraStatus("downward", "FALHA");
-        clearCameraDiagnostics();
       }
 
       updateLineCameraButtons();
