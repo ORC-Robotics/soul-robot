@@ -786,6 +786,8 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
         const std::string json = content.str();
         const bool active = getJsonBool(json, "active", false);
         if (!tryGetJsonBool(json, "ballDetected", snapshot.detected) ||
+            !tryGetJsonBool(
+                json, "ballCandidateVisible", snapshot.candidateVisible) ||
             !tryGetJsonNumber(json, "timestamp", snapshot.timestamp) ||
             !tryGetJsonUnsignedInteger(
                 json, "targetSequence", snapshot.targetSequence) ||

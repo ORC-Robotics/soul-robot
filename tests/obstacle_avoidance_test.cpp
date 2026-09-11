@@ -68,7 +68,24 @@ ObstacleAvoidanceOutput completeTurn(
     avoidance.update(telemetry, line, true);
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kTurn90SettleMs + 20));
-    return avoidance.update(telemetry, line, true);
+    ObstacleAvoidanceOutput output =
+        avoidance.update(telemetry, line, true);
+    if (output.phase != "obstacle_sampling_left" &&
+        output.phase != "obstacle_sampling_right")
+    {
+        return output;
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleClearanceSettleMs + 20));
+    for (int sample = 0;
+         sample < config::kObstacleClearanceRequiredSamples;
+         ++sample)
+    {
+        ++telemetry.esp32UptimeMs;
+        output = avoidance.update(telemetry, line, true);
+    }
+    return output;
 }
 
 ObstacleAvoidanceOutput sampleDuringTurn(
@@ -80,6 +97,7 @@ ObstacleAvoidanceOutput sampleDuringTurn(
 {
     ++telemetry.esp32UptimeMs;
     telemetry.yawZDeg = yawDegrees;
+    telemetry.gyroZDegPerSec = 20.0;
     telemetry.ultrasonicDistanceCm = distanceCm;
     return avoidance.update(telemetry, line, true);
 }
@@ -151,7 +169,7 @@ void testCenteringIsSharedAndPrecedesScan()
             "O yaw base deve ser salvo depois da centralização.");
 }
 
-void testContinuousSweepUsesMinimumAndSelectsRight()
+void testStableEndpointUsesMaximumAndSelectsRight()
 {
     ObstacleAvoidance avoidance;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
@@ -159,29 +177,33 @@ void testContinuousSweepUsesMinimumAndSelectsRight()
     beginAndCenter(avoidance, telemetry, line);
 
     sampleDuringTurn(avoidance, telemetry, line, -5.0, 2.0);
-    sampleSideSweep(avoidance, telemetry, line, -1.0, 18.0, 140.0, 155.0);
+    sampleSideSweep(avoidance, telemetry, line, -1.0, 300.0, 70.0, 75.0);
     ObstacleAvoidanceOutput output = completeTurn(
-        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
-    require(std::abs(output.leftClearance - 18.0) < 0.001,
-            "A esquerda deve usar a menor leitura entre 10 e 45 graus.");
+        avoidance, telemetry, line, -config::kObstacleClearanceScanDegrees);
+    require(std::abs(output.leftClearance - 75.0) < 0.001,
+            "A esquerda deve usar a leitura estabilizada perto de 60 graus.");
 
     output = completeTurn(avoidance, telemetry, line, 0.0);
     require(output.phase == "obstacle_measuring_right",
             "A direita deve começar somente depois do retorno ao yawBase.");
     sampleDuringTurn(avoidance, telemetry, line, 5.0, 3.0);
-    sampleSideSweep(avoidance, telemetry, line, 1.0, 76.0, 82.0, 79.0);
+    sampleSideSweep(avoidance, telemetry, line, 1.0, 350.0, 82.0, 79.0);
     output = completeTurn(
-        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, config::kObstacleClearanceScanDegrees);
     require(!output.completed && output.selectedSide == "RIGHT" &&
-                output.phase == "obstacle_selected_forward_start",
+                output.phase == "obstacle_side_selected",
             "O lado com maior clearance deve ser selecionado.");
-    require(std::abs(output.rightClearance - 76.0) < 0.001,
-            "A direita deve usar a menor leitura do setor angular.");
+    require(std::abs(output.rightClearance - 79.0) < 0.001,
+            "A direita deve ignorar o pico de movimento e usar o alvo estabilizado.");
+    output = completeTurn(
+        avoidance, telemetry, line, config::kObstacleSideApproachDegrees);
+    require(output.phase == "obstacle_selected_forward_start",
+            "Depois da medição a 60 graus, o avanço deve retornar a 45 graus.");
     output = avoidance.update(telemetry, line, true);
     require(output.leftPower == config::kObstacleSelectedForwardPower &&
                 output.rightPower == config::kObstacleSelectedForwardPower,
             "O avanço deve partir em 0,75 no yaw selecionado.");
-    telemetry.yawZDeg = config::kObstacleSideScanDegrees - 5.0;
+    telemetry.yawZDeg = config::kObstacleSideApproachDegrees - 5.0;
     output = avoidance.update(telemetry, line, true);
     require(output.leftPower > output.rightPower,
             "Erro positivo de heading deve corrigir suavemente para a direita.");
@@ -227,16 +249,16 @@ void testLeftSelectionReturnsToLeftYaw()
     beginAndCenter(avoidance, telemetry, line);
     sampleSideSweep(avoidance, telemetry, line, -1.0, 60.0, 40.0, 50.0);
     completeTurn(
-        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, -config::kObstacleClearanceScanDegrees);
     completeTurn(avoidance, telemetry, line, 0.0);
     sampleSideSweep(avoidance, telemetry, line, 1.0, 10.0, 30.0, 20.0);
     ObstacleAvoidanceOutput output = completeTurn(
-        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, config::kObstacleClearanceScanDegrees);
     require(!output.completed && output.selectedSide == "LEFT",
             "A maior folga esquerda deve iniciar o retorno à esquerda.");
 
     output = completeTurn(
-        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, -config::kObstacleSideApproachDegrees);
     require(!output.completed && output.selectedSide == "LEFT" &&
                 output.phase == "obstacle_selected_forward_start",
             "O avanço deve iniciar no yaw esquerdo selecionado.");
@@ -272,7 +294,7 @@ void testPracticalTieUsesFixedSide()
     beginAndCenter(avoidance, telemetry, line);
     sampleSideSweep(avoidance, telemetry, line, -1.0, 30.0, 30.0, 30.0);
     completeTurn(
-        avoidance, telemetry, line, -config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, -config::kObstacleClearanceScanDegrees);
     completeTurn(avoidance, telemetry, line, 0.0);
     sampleSideSweep(
         avoidance, telemetry, line, 1.0,
@@ -280,7 +302,7 @@ void testPracticalTieUsesFixedSide()
         30.0 + config::kObstacleClearanceTieCm,
         30.0 + config::kObstacleClearanceTieCm);
     const ObstacleAvoidanceOutput output = completeTurn(
-        avoidance, telemetry, line, config::kObstacleSideScanDegrees);
+        avoidance, telemetry, line, config::kObstacleClearanceScanDegrees);
     const std::string expected =
         config::kObstacleDefaultSideIsRight ? "RIGHT" : "LEFT";
     require(output.selectedSide == expected,
@@ -312,7 +334,7 @@ int main()
     try
     {
         testCenteringIsSharedAndPrecedesScan();
-        testContinuousSweepUsesMinimumAndSelectsRight();
+        testStableEndpointUsesMaximumAndSelectsRight();
         testLeftSelectionReturnsToLeftYaw();
         testPracticalTieUsesFixedSide();
         testStartCanBeBlockedAndMissingLineStops();

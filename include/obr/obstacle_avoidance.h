@@ -47,8 +47,10 @@ private:
         Idle,
         Centering,
         TurningLeftForMeasurement,
+        SamplingLeftClearance,
         ReturningToBaseBeforeRight,
         TurningRightForMeasurement,
+        SamplingRightClearance,
         PositioningSelectedSide,
         DrivingSelectedHeading,
         CurvingAroundObstacle,
@@ -66,11 +68,14 @@ private:
     double rightClearance_ = std::numeric_limits<double>::quiet_NaN();
     std::string selectedSide_ = "NONE";
     std::vector<double> clearanceSamples_;
+    double maximumClearanceAngleDegrees_ =
+        std::numeric_limits<double>::quiet_NaN();
     long long lastSampleUptimeMs_ = -1;
     long long forwardStartLeftCount_ = 0;
     long long forwardStartRightCount_ = 0;
     double selectedHeadingYaw_ = std::numeric_limits<double>::quiet_NaN();
     std::chrono::steady_clock::time_point forwardStartedAt_{};
+    std::chrono::steady_clock::time_point clearanceSamplingStartedAt_{};
     long long curveStartLeftCount_ = 0;
     long long curveStartRightCount_ = 0;
     double curveStartYaw_ = std::numeric_limits<double>::quiet_NaN();
@@ -86,11 +91,17 @@ private:
         const CameraLineSnapshot& line);
     ObstacleAvoidanceOutput updateTurn(
         const Esp32TelemetrySnapshot& telemetry);
+    ObstacleAvoidanceOutput updateClearanceSampling(
+        const Esp32TelemetrySnapshot& telemetry,
+        bool measuringLeft);
+    ObstacleAvoidanceOutput startClearanceSampling(bool measuringLeft);
+    ObstacleAvoidanceOutput continueAfterRightMeasurement(
+        const Esp32TelemetrySnapshot& telemetry);
     ObstacleAvoidanceOutput updateSelectedForward(
         const Esp32TelemetrySnapshot& telemetry);
     ObstacleAvoidanceOutput updateCurve(
         const Esp32TelemetrySnapshot& telemetry);
-    void collectClearanceDuringTurn(
+    void collectStableClearance(
         const Esp32TelemetrySnapshot& telemetry,
         bool measuringLeft);
     bool finishClearanceMeasurement(bool measuringLeft);
@@ -110,7 +121,7 @@ private:
     ObstacleAvoidanceOutput fail(
         const std::string& phase,
         const std::string& action);
-    static double minimumClearance(const std::vector<double>& samples);
+    static double maximumClearance(const std::vector<double>& samples);
     static double normalizedYaw(double yawDegrees);
     static double signedYawError(
         double targetDegrees,

@@ -41,6 +41,22 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+    def test_yolo_mode_skips_forward_assist_processing(self):
+        frame = np.zeros((20, 30, 3), dtype=np.uint8)
+        with mock.patch.object(
+            forward_camera_stream,
+            "process_forward_frame",
+        ) as process_forward_frame:
+            reading = forward_camera_stream.process_forward_frame_for_mode(
+                frame,
+                "RGB888",
+                True,
+            )
+
+        process_forward_frame.assert_not_called()
+        self.assertFalse(reading["forwardLineVisible"])
+        self.assertEqual(reading["source"], "YOLO_EXCLUSIVE")
+
     def test_rescue_zone_frame_obstruction_covers_real_closeup_patterns(self):
         dark_frame = np.full((120, 160, 3), (18, 14, 51), dtype=np.uint8)
         cyan_frame = np.full((120, 160, 3), (220, 190, 20), dtype=np.uint8)
@@ -102,6 +118,177 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 missing_path,
             ):
                 self.assertTrue(forward_camera_stream.requested_enabled())
+
+    def test_ball_detection_gate_defaults_to_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_path = os.path.join(temporary_directory, "missing")
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_DETECTION_CONTROL_PATH",
+                missing_path,
+            ):
+                self.assertFalse(
+                    forward_camera_stream.requested_ball_detection_enabled()
+                )
+
+    def test_disabled_ball_gate_never_calls_yolo(self):
+        fake_pipeline = mock.Mock()
+        fake_pipeline.target_locked = False
+        frame = np.zeros((20, 30, 3), dtype=np.uint8)
+
+        with mock.patch.object(
+            forward_camera_stream,
+            "ball_vision_pipeline",
+            fake_pipeline,
+        ):
+            observation, candidates, status = (
+                forward_camera_stream.analyze_requested_ball_frame(
+                    frame,
+                    False,
+                )
+            )
+
+        fake_pipeline.analyze.assert_not_called()
+        self.assertIsNone(observation)
+        self.assertEqual(candidates, ())
+        self.assertFalse(status["ballDetectionEnabled"])
+        self.assertFalse(status["ballDetected"])
+
+    def test_target_sequence_change_is_detected_only_once(self):
+        previous_sequence = forward_camera_stream.active_ball_target_sequence
+        try:
+            forward_camera_stream.active_ball_target_sequence = 0
+            self.assertTrue(
+                forward_camera_stream.synchronize_ball_target_sequence(17)
+            )
+            self.assertFalse(
+                forward_camera_stream.synchronize_ball_target_sequence(17)
+            )
+            self.assertEqual(
+                forward_camera_stream.active_ball_target_sequence,
+                17,
+            )
+        finally:
+            forward_camera_stream.active_ball_target_sequence = previous_sequence
+
+    def test_cam1_loop_starts_with_ball_detector_disabled(self):
+        class FakeCamera:
+            def __init__(self):
+                self.stopped = False
+                self.closed = False
+
+            def capture_array(self, stream_name):
+                self.stream_name = stream_name
+                forward_camera_stream.running = False
+                return np.zeros((20, 30, 3), dtype=np.uint8)
+
+            def stop(self):
+                self.stopped = True
+
+            def close(self):
+                self.closed = True
+
+        class FakeServer:
+            def __init__(self):
+                self.shutdown_called = False
+                self.closed = False
+
+            def shutdown(self):
+                self.shutdown_called = True
+
+            def server_close(self):
+                self.closed = True
+
+        fake_camera = FakeCamera()
+        fake_server = FakeServer()
+        fake_pipeline = mock.Mock()
+        fake_pipeline.target_locked = False
+        fake_pipeline.silver_processing_scale = 1.0
+        fake_pipeline.analyze.side_effect = AssertionError(
+            "YOLO não deve executar com o gate desligado."
+        )
+        empty_reading = {
+            "forwardLineVisible": False,
+            "forwardLinePosition": None,
+            "forwardLineConfidence": 0.0,
+        }
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = lambda name: os.path.join(temporary_directory, name)
+            patches = (
+                mock.patch.object(forward_camera_stream, "CONTROL_PATH", path("camera")),
+                mock.patch.object(forward_camera_stream, "TEMP_CONTROL_PATH", path("camera.tmp")),
+                mock.patch.object(forward_camera_stream, "STATUS_PATH", path("status.json")),
+                mock.patch.object(forward_camera_stream, "TEMP_STATUS_PATH", path("status.tmp")),
+                mock.patch.object(forward_camera_stream, "BALL_DETECTION_CONTROL_PATH", path("ball-gate")),
+                mock.patch.object(forward_camera_stream, "TEMP_BALL_DETECTION_CONTROL_PATH", path("ball-gate.tmp")),
+                mock.patch.object(forward_camera_stream, "BALL_TARGET_SEQUENCE_CONTROL_PATH", path("sequence")),
+                mock.patch.object(forward_camera_stream, "BALL_STATUS_PATH", path("ball.json")),
+                mock.patch.object(forward_camera_stream, "TEMP_BALL_STATUS_PATH", path("ball.tmp")),
+                mock.patch.object(forward_camera_stream, "SilverDatasetRecorder", None),
+                mock.patch.object(forward_camera_stream, "ball_vision_pipeline", fake_pipeline),
+                mock.patch.object(forward_camera_stream, "start_stream_server", return_value=fake_server),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "open_forward_camera",
+                    return_value=(fake_camera, "RGB888", {}),
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "process_forward_frame",
+                    return_value=empty_reading,
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "save_forward_line_status",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "read_json_snapshot",
+                    return_value={},
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "read_rescue_zone_detection_input",
+                    return_value={"enabled": False},
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "clear_forward_line_status",
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "clear_rescue_zone_status",
+                ),
+                mock.patch.object(
+                    forward_camera_stream,
+                    "stream_has_clients",
+                    return_value=False,
+                ),
+                mock.patch.object(forward_camera_stream.signal, "signal"),
+                mock.patch.object(
+                    forward_camera_stream.camera_line_frame,
+                    "Picamera2",
+                    object(),
+                ),
+            )
+            forward_camera_stream.running = True
+            try:
+                for patcher in patches:
+                    patcher.start()
+                result = forward_camera_stream.main()
+            finally:
+                for patcher in reversed(patches):
+                    patcher.stop()
+                forward_camera_stream.running = True
+
+        self.assertEqual(result, 0)
+        fake_pipeline.analyze.assert_not_called()
+        self.assertTrue(fake_camera.stopped)
+        self.assertTrue(fake_camera.closed)
+        self.assertTrue(fake_server.shutdown_called)
+        self.assertTrue(fake_server.closed)
 
     def test_rescue_zone_gate_defaults_to_disabled(self):
         with tempfile.TemporaryDirectory() as temporary_directory:

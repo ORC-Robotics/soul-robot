@@ -36,6 +36,7 @@ RescueZoneSnapshot foundUnknownGreen(std::uint64_t sequence)
     zones.sourceFresh = true;
     zones.sequence = sequence;
     zones.timestamp = static_cast<double>(sequence);
+    zones.green.candidateDetected = true;
     zones.green.detected = true;
     zones.green.geometryState = RescueZoneGeometryState::BoundsUnknown;
     return zones;

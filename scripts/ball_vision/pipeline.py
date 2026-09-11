@@ -2,10 +2,10 @@
 
 from dataclasses import dataclass
 
-from .ball_detector import BallDetector
 from .ball_tracker import BallTracker
 from .distance_calibration import DistanceCalibration
-from .main import BallObservation, analyze_frame
+from .main import BallObservation, analyze_frame, draw_overlay
+from .yolo_detector import YoloBallDetector
 
 
 @dataclass(frozen=True)
@@ -20,15 +20,20 @@ class BallVisionPipeline:
     """Detecta, seleciona e mede bolas sem depender do dashboard."""
 
     def __init__(self, detector=None, calibration=None, tracker=None):
-        self.detector = detector or BallDetector()
+        # A missão de resgate usa exclusivamente o modelo treinado. Se o arquivo
+        # estiver ausente ou inválido, a câmera falha de forma segura e não
+        # substitui o YOLO por um detector geométrico diferente.
+        self.detector = detector or YoloBallDetector()
         self.calibration = calibration or DistanceCalibration()
-        self.tracker = tracker or BallTracker()
+        self.tracker = tracker or BallTracker(
+            distance_estimator=self.calibration.estimate
+        )
 
     @property
     def silver_processing_scale(self):
         """Expõe a escala da prata para diagnóstico de desempenho."""
 
-        return self.detector.silver_detector.config.processing_scale
+        return self.detector.processing_scale
 
     @property
     def target_locked(self):
@@ -54,3 +59,9 @@ class BallVisionPipeline:
             return BallVisionResult(None, ())
 
         return BallVisionResult(tracked_observation, tuple(candidates))
+
+    @staticmethod
+    def draw(frame, result):
+        """Desenha o resultado sem modificar o frame original."""
+
+        return draw_overlay(frame, result.observation, result.candidates)

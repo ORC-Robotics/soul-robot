@@ -620,9 +620,21 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
                                        status.phase == "camera_not_ready" ||
                                        status.phase == "line_ipc_stale" ||
                                        status.phase == "rescue_esp32_not_ready" ||
+                                       status.phase ==
+                                           "victim_collection_preparation_timeout" ||
+                                       status.phase ==
+                                           "victim_collection_encoder_lost" ||
+                                       status.phase ==
+                                           "victim_collection_encoder_mismatch" ||
+                                       status.phase ==
+                                           "victim_collection_stall" ||
+                                       status.phase ==
+                                           "victim_collection_timeout" ||
                                        status.phase == "ball_reached" ||
                                        status.phase ==
                                            "ball_alignment_target_lost_timeout" ||
+                                       status.phase ==
+                                           "ball_alignment_motion_timeout" ||
                                        terminalObstacleStatus ||
                                        terminalRescueZoneAlignStatus ||
                                        terminalRescueZoneApproachStatus ||

@@ -339,18 +339,74 @@ static_assert(kRescueZoneApproachFarDistanceCm >
                   kRescueZoneApproachTimeoutMs > 0,
               "Os limites do APPROACH_ZONE devem permanecer seguros.");
 
-// Margem angular, em graus, aceita para considerar a vítima centralizada.
+// Potência simétrica aplicada somente nos micro-pivôs da busca de vítimas.
+// O pulso curto limita o deslocamento mesmo usando potência suficiente para
+// vencer a inércia dos motores.
+constexpr double kRescueSearchTurnPower = 0.72;
+
+// Duração, em milissegundos, de cada micro-pivô da busca de vítimas.
+// O robô precisa deste intervalo para vencer a inércia mecânica depois que o
+// comando atravessa a Raspberry, a UART e o controle de segurança da ESP32.
+constexpr int kRescueSearchPulseMs = 130;
+
+// Pausa, em milissegundos, para estabilizar a câmera depois de cada micro-pivô.
+constexpr int kRescueSearchSettlingMs = 100;
+
+// Margem angular estrita usada como referência interna da correção fina.
 constexpr double kBallAlignmentDeadbandDegrees = 1.0;
+
+// Margem visual, em graus, que permite iniciar a aproximação. O robô não
+// precisa terminar toda a centralização parado porque continuará corrigindo
+// suavemente o heading enquanto avança.
+constexpr double kBallApproachStartToleranceDegrees = 4.0;
+
+// Metade do campo de visão horizontal de 62° usado para calcular o tx.
+// Este limite normaliza o tempo dos pulsos sem alterar o cálculo da câmera.
+constexpr double kBallAlignmentMaximumVisualErrorDegrees = 31.0;
 
 // Tempo, em milissegundos, com PWM zerado antes de verificar novamente o tx.
 // A pausa evita decidir enquanto a inércia ainda cruza o centro da imagem.
-constexpr int kBallAlignmentCrossingBrakeMs = 160;
+constexpr int kBallAlignmentCrossingBrakeMs = 100;
 
-// Erros até este valor usam pulsos curtos em vez de um pivot contínuo.
-constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 3.0;
+// Erros até este valor usam pulsos finos. Esta faixa é maior que a tolerância
+// de aproximação para evitar voltar ao pulso grosso perto da transição.
+constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 7.0;
 
-// Duração, em milissegundos, de uma correção angular fina.
-constexpr int kBallAlignmentFineCorrectionPulseMs = 80;
+// Faixa de tempo útil, em milissegundos, do alinhamento grosso. O período do
+// controle é de 20 ms; manter pulsos curtos reduz a ultrapassagem sem diminuir
+// a potência necessária para vencer o atrito dos motores.
+constexpr int kBallAlignmentCoarseMinimumPulseMs = 20;
+constexpr int kBallAlignmentCoarseMaximumPulseMs = 40;
+
+// Faixa de tempo útil, em milissegundos, da correção fina. O erro angular
+// escolhe proporcionalmente um valor entre estes limites.
+constexpr int kBallAlignmentFineMinimumPulseMs = 15;
+constexpr int kBallAlignmentFineMaximumPulseMs = 30;
+
+// Fração do erro visual que um único pulso pode percorrer segundo a IMU.
+// Os limites impedem tanto pulsos imperceptíveis quanto a passagem pelo alvo.
+constexpr double kBallAlignmentCoarseYawFraction = 0.15;
+constexpr double kBallAlignmentCoarseMinimumYawDegrees = 0.4;
+constexpr double kBallAlignmentCoarseMaximumYawDegrees = 1.3;
+constexpr double kBallAlignmentFineYawFraction = 0.20;
+constexpr double kBallAlignmentFineMinimumYawDegrees = 0.25;
+constexpr double kBallAlignmentFineMaximumYawDegrees = 0.65;
+
+// Tempo máximo, em milissegundos, para a ESP32 confirmar PWM e movimento.
+// Se os encoders não mostrarem partida, a missão falha com os motores parados.
+constexpr int kBallAlignmentPulseStartTimeoutMs = 300;
+
+// Menor potência aplicada pela ESP32 aceita como confirmação do micro-pivô.
+constexpr double kBallAlignmentAppliedPowerMinimum = 0.60;
+
+// Potência usada somente até os encoders confirmarem que o pivô começou.
+// Ela iguala o pulso de busca já validado e deixa de ser usada assim que as
+// rodas vencem a inércia, limitando o risco de ultrapassar o centro.
+constexpr double kBallAlignmentStartPower = 0.72;
+
+// Taxa mínima, em contagens por segundo, que confirma movimento físico nas
+// duas rodas. Confirmar apenas o PWM permitia encerrar o pulso com o robô parado.
+constexpr double kBallAlignmentMovementMinimumRateCountsPerSecond = 20.0;
 
 // Quantidade de frames novos e alinhados exigida antes da aproximação.
 constexpr int kBallAlignmentStableFrames = 3;
@@ -360,46 +416,131 @@ constexpr double kBallAlignmentStationaryRateCountsPerSecond = 20.0;
 
 // Tempo máximo, em milissegundos, para o alvo travado reaparecer.
 // Durante toda a perda, a saída dos motores permanece zerada.
-constexpr int kBallAlignmentTargetLossTimeoutMs = 1000;
+// Dois segundos acomodam uma inferência lenta e a janela de reaquisição sem
+// autorizar movimento com uma medição antiga.
+constexpr int kBallAlignmentTargetLossTimeoutMs = 2000;
 
-// Potência inicial do pivot usada para vencer a inércia dos motores.
-constexpr double kBallAlignmentStartPower = 0.70;
-
-// Faixa proporcional do pivot depois que os encoders confirmam movimento.
-constexpr double kBallAlignmentMinimumRunPower = kMotorRunMinimumPower;
-constexpr double kBallAlignmentMaximumRunPower = 0.68;
-
-// Erro angular, em graus, que libera a potência máxima do alinhamento.
-constexpr double kBallAlignmentFullPowerErrorDegrees = 12.0;
+// Os pulsos usam somente a margem necessária para vencer o atrito. O fino fica
+// ainda mais próximo do piso de partida para reduzir a ultrapassagem do centro.
+constexpr double kBallAlignmentCoarsePulsePower = 0.69;
+constexpr double kBallAlignmentFinePulsePower = 0.68;
 
 // Distância frontal, em centímetros, que conclui a aproximação da vítima.
 constexpr double kBallApproachStopDistanceCm = 5.0;
+
+// Margem angular aceita quando a vítima já atingiu a distância de coleta.
+// Muito perto, a caixa ocupa grande parte do frame e pequenos pivôs deixam de
+// ser úteis; esta tolerância libera o avanço final sem aceitar um grande desvio.
+constexpr double kBallCollectionNearAlignmentToleranceDegrees = 6.0;
+
+// Distância adicional, em centímetros, percorrida depois que a câmera confirma
+// a vítima próxima. O avanço por encoder garante contato com o coletor sem
+// continuar dependendo de uma caixa que pode sair do campo de visão.
+constexpr double kVictimCollectionAdvanceDistanceCm = 5.0;
+
+// Potência e correção diferencial do avanço final. A potência fica próxima do
+// piso de partida para reduzir o impacto, e os encoders mantêm o percurso reto.
+constexpr double kVictimCollectionAdvancePower = 0.68;
+constexpr double kVictimCollectionMaximumBalanceCorrection = 0.05;
+
+// Critérios do avanço final. Diferença persistente ou ausência de progresso
+// confirmam contato com a vítima ou parede e zeram o PWM antes da conclusão.
+// O tempo total ainda limita a energização dos motores em caso de falha atípica.
+constexpr double kVictimCollectionMaximumSideDifferenceCm = 1.5;
+constexpr int kVictimCollectionDifferenceConfirmationSamples = 3;
+constexpr int kVictimCollectionPreparationTimeoutMs = 1000;
+constexpr int kVictimCollectionStallTimeoutMs = 1000;
+constexpr int kVictimCollectionTimeoutMs = 3000;
+constexpr int kVictimCollectionSettleMs = 200;
 
 // Potência base e correção diferencial usadas durante a aproximação.
 constexpr double kBallApproachBasePower = 0.70;
 constexpr double kBallApproachMaximumSteeringCorrection = 0.09;
 
+// Erros de heading menores que esta margem não alteram a potência dos motores.
+// A margem pequena permite responder ao objetivo visual gradual sem oscilar.
+constexpr double kBallApproachHeadingDeadbandDegrees = 0.3;
+
+// Margem visual, em graus, considerada alinhada durante a aproximação.
+// Fora dela, somente frames novos atualizam gradualmente o heading desejado.
+constexpr double kBallApproachVisualAlignedToleranceDegrees = 2.0;
+
+// Ganho e correção angular máxima, em graus por frame, usados para trazer a
+// vítima de volta ao centro sem perseguir integralmente uma inferência atrasada.
+constexpr double kBallApproachVisualHeadingGain = 0.40;
+constexpr double kBallApproachMaximumHeadingAdjustmentDegrees = 3.0;
+
 // Erro angular, em graus, que aplica a correção diferencial máxima.
-constexpr double kBallApproachFullSteeringErrorDegrees = 10.0;
+constexpr double kBallApproachFullSteeringErrorDegrees = 3.0;
 
 static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
-                  kBallAlignmentFullPowerErrorDegrees >
+                  kBallApproachStartToleranceDegrees >
                       kBallAlignmentDeadbandDegrees &&
-                  kBallAlignmentStartPower >=
-                      kBallAlignmentMaximumRunPower &&
-                  kBallAlignmentMaximumRunPower >=
-                      kBallAlignmentMinimumRunPower &&
-                  kBallAlignmentMinimumRunPower >=
-                      kMotorRunMinimumPower &&
-                  kBallAlignmentStartPower <= kMaxMotorOutput &&
+                  kBallAlignmentMaximumVisualErrorDegrees >
+                      kBallAlignmentFineCorrectionThresholdDegrees &&
+                  kBallAlignmentFineCorrectionThresholdDegrees >
+                      kBallApproachStartToleranceDegrees &&
+                  kBallAlignmentCoarsePulsePower >=
+                      kMotorStartMinimumPower &&
+                  kBallAlignmentCoarsePulsePower <= kMaxMotorOutput &&
+                  kBallAlignmentFinePulsePower >= kMotorStartMinimumPower &&
+                  kBallAlignmentFinePulsePower <= kMaxMotorOutput &&
                   kBallAlignmentCrossingBrakeMs > 0 &&
                   kBallAlignmentFineCorrectionThresholdDegrees >
                       kBallAlignmentDeadbandDegrees &&
-                  kBallAlignmentFineCorrectionPulseMs > 0 &&
+                  kBallAlignmentCoarseMinimumPulseMs > 0 &&
+                  kBallAlignmentCoarseMaximumPulseMs >=
+                      kBallAlignmentCoarseMinimumPulseMs &&
+                  kBallAlignmentFineMinimumPulseMs > 0 &&
+                  kBallAlignmentFineMaximumPulseMs >=
+                      kBallAlignmentFineMinimumPulseMs &&
+                  kBallAlignmentFineMaximumPulseMs <
+                      kBallAlignmentCoarseMaximumPulseMs &&
+                  kBallAlignmentCoarseYawFraction > 0.0 &&
+                  kBallAlignmentCoarseMinimumYawDegrees > 0.0 &&
+                  kBallAlignmentCoarseMaximumYawDegrees >=
+                      kBallAlignmentCoarseMinimumYawDegrees &&
+                  kBallAlignmentFineYawFraction > 0.0 &&
+                  kBallAlignmentFineMinimumYawDegrees > 0.0 &&
+                  kBallAlignmentFineMaximumYawDegrees >=
+                      kBallAlignmentFineMinimumYawDegrees &&
+                  kBallAlignmentPulseStartTimeoutMs > 0 &&
+                  kBallAlignmentAppliedPowerMinimum > 0.0 &&
+                  kBallAlignmentAppliedPowerMinimum <=
+                      kBallAlignmentCoarsePulsePower &&
+                  kBallAlignmentAppliedPowerMinimum <=
+                      kBallAlignmentFinePulsePower &&
+                  kBallAlignmentStartPower >=
+                      kBallAlignmentCoarsePulsePower &&
+                  kBallAlignmentStartPower >=
+                      kBallAlignmentFinePulsePower &&
+                  kBallAlignmentStartPower <= kMaxMotorOutput &&
+                  kBallAlignmentMovementMinimumRateCountsPerSecond > 0.0 &&
                   kBallAlignmentStableFrames > 0 &&
                   kBallAlignmentStationaryRateCountsPerSecond >= 0.0 &&
                   kBallAlignmentTargetLossTimeoutMs > 0 &&
                   kBallApproachStopDistanceCm > 0.0 &&
+                  kBallCollectionNearAlignmentToleranceDegrees >
+                      kBallApproachStartToleranceDegrees &&
+                  kBallCollectionNearAlignmentToleranceDegrees <
+                      kBallAlignmentFineCorrectionThresholdDegrees &&
+                  kVictimCollectionAdvanceDistanceCm > 0.0 &&
+                  kVictimCollectionAdvancePower >= kMotorStartMinimumPower &&
+                  kVictimCollectionAdvancePower <= kMaxMotorOutput &&
+                  kVictimCollectionMaximumBalanceCorrection > 0.0 &&
+                  kVictimCollectionAdvancePower -
+                          kVictimCollectionMaximumBalanceCorrection >=
+                      kMotorRunMinimumPower &&
+                  kVictimCollectionAdvancePower +
+                          kVictimCollectionMaximumBalanceCorrection <=
+                      kMaxMotorOutput &&
+                  kVictimCollectionMaximumSideDifferenceCm > 0.0 &&
+                  kVictimCollectionDifferenceConfirmationSamples > 0 &&
+                  kVictimCollectionPreparationTimeoutMs > 0 &&
+                  kVictimCollectionStallTimeoutMs > 0 &&
+                  kVictimCollectionTimeoutMs >
+                      kVictimCollectionStallTimeoutMs &&
+                  kVictimCollectionSettleMs > 0 &&
                   kBallApproachBasePower >= kMotorStartMinimumPower &&
                   kBallApproachBasePower +
                           kBallApproachMaximumSteeringCorrection <=
@@ -408,9 +549,23 @@ static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
                           kBallApproachMaximumSteeringCorrection >=
                       kMotorRunMinimumPower &&
                   kBallApproachMaximumSteeringCorrection > 0.0 &&
+                  kBallApproachHeadingDeadbandDegrees > 0.0 &&
+                  kBallApproachVisualAlignedToleranceDegrees >=
+                      kBallApproachHeadingDeadbandDegrees &&
+                  kBallApproachVisualAlignedToleranceDegrees <
+                      kBallApproachStartToleranceDegrees &&
+                  kBallApproachVisualHeadingGain > 0.0 &&
+                  kBallApproachVisualHeadingGain <= 1.0 &&
+                  kBallApproachMaximumHeadingAdjustmentDegrees > 0.0 &&
                   kBallApproachFullSteeringErrorDegrees >
-                      kBallAlignmentDeadbandDegrees,
-              "Os limites do alinhamento de vítimas devem permanecer seguros.");
+                      kBallApproachHeadingDeadbandDegrees,
+                "Os limites do alinhamento de vítimas devem permanecer seguros.");
+
+static_assert(kRescueSearchTurnPower >= kMotorStartMinimumPower &&
+                  kRescueSearchTurnPower <= kMaxMotorOutput &&
+                  kRescueSearchPulseMs > 0 &&
+                  kRescueSearchSettlingMs > 0,
+              "Os micro-pivôs da busca devem permanecer na faixa segura.");
 
 // Quantidade de amostras novas e válidas dos encoders para trocar STARTING por RUNNING.
 // A confirmação evita liberar 0,61 por um pico isolado ou ruído de telemetria.
@@ -529,11 +684,20 @@ constexpr int kObstacleDetectionConfirmationSamples = 2;
 constexpr double kObstacleRearmDistanceCm = 15.0;
 constexpr int kObstacleRearmConfirmationSamples = 3;
 
-// A seleção inicial mede o espaço a 45 graus de cada lado do yaw base.
-constexpr double kObstacleSideScanDegrees = 45.0;
-// Os primeiros 10 graus ainda apontam para o obstáculo frontal e não devem
-// contaminar a medição do corredor lateral.
-constexpr double kObstacleClearanceIgnoreDegrees = 10.0;
+// A medição gira 60 graus para enxergar a passagem lateral além do obstáculo.
+// Depois da escolha, o robô retorna a 45 graus para preservar a trajetória.
+constexpr double kObstacleClearanceScanDegrees = 60.0;
+constexpr double kObstacleSideApproachDegrees = 45.0;
+// Os primeiros 25 graus ainda podem manter o obstáculo frontal dentro do cone
+// do ultrassônico. A medição final também exige que o robô esteja dentro da
+// tolerância do alvo de 60 graus e com velocidade angular estabilizada.
+constexpr double kObstacleClearanceIgnoreDegrees = 25.0;
+
+// Depois de alcançar cada lado, o robô permanece parado antes de aceitar ecos.
+// Cinco leituras a 100 ms evitam decidir com a primeira medida residual do giro.
+constexpr int kObstacleClearanceSettleMs = 200;
+constexpr int kObstacleClearanceRequiredSamples = 5;
+constexpr int kObstacleClearanceSamplingTimeoutMs = 1500;
 
 // Diferenças de até 2 cm são tratadas como empate prático. O lado direito
 // preserva uma decisão fixa e repetível quando as duas passagens estão livres.
@@ -555,8 +719,9 @@ constexpr double kObstacleTurnToleranceDegrees = 5.0;
 // vence o atrito estático, mas reduz a inércia observada com 0,75.
 constexpr double kObstacleTurnCommandPower = 0.73;
 constexpr int kObstacleTurnCorrectionPulseMs = 30;
-constexpr int kObstacleTurnMaximumCorrectionPulses = 8;
-// A seleção pode corrigir sem pressa; o limite continua impedindo giro eterno.
+// Valor -1 permite quantas correções forem necessárias no desvio. A proteção
+// contra giro eterno continua sendo feita pelo timeout total e pela validade da IMU.
+constexpr int kObstacleTurnMaximumCorrectionPulses = -1;
 constexpr int kObstacleTurnTimeoutMs = 12000;
 
 // Primeira reta experimental após a escolha do lado. O alvo de heading é o
@@ -573,7 +738,7 @@ constexpr double kObstacleCurveBasePower = 0.75;
 constexpr double kObstacleCurveMaximumHeadingCorrection = 0.06;
 constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
 // Depois da curva validada, este pivot apenas aponta a câmera mais para dentro.
-constexpr double kObstacleFinalInwardPivotDegrees = 45.0;
+constexpr double kObstacleFinalInwardPivotDegrees = 40.0;
 
 // Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
 constexpr double kObstacleFirstForwardDistanceCm = 25.0;
@@ -598,11 +763,19 @@ static_assert(kObstacleDetectionDistanceCm > 0.0 &&
                   kObstacleDetectionConfirmationSamples > 0 &&
                   kObstacleRearmConfirmationSamples > 0,
               "A detecção de obstáculo deve possuir histerese válida.");
-static_assert(kObstacleSideScanDegrees > 0.0 &&
-                  kObstacleSideScanDegrees <= 90.0 &&
+static_assert(kObstacleClearanceScanDegrees > 0.0 &&
+                  kObstacleClearanceScanDegrees <= 90.0 &&
+                  kObstacleSideApproachDegrees > 0.0 &&
+                  kObstacleSideApproachDegrees <= 90.0 &&
+                  kObstacleClearanceScanDegrees >
+                      kObstacleSideApproachDegrees &&
                   kObstacleClearanceIgnoreDegrees >= 0.0 &&
                   kObstacleClearanceIgnoreDegrees <
-                      kObstacleSideScanDegrees &&
+                      kObstacleClearanceScanDegrees &&
+                  kObstacleClearanceSettleMs >= 0 &&
+                  kObstacleClearanceRequiredSamples > 1 &&
+                  kObstacleClearanceSamplingTimeoutMs >
+                      kObstacleClearanceSettleMs &&
                   kObstacleClearanceTieCm >= 0.0 &&
                   kObstacleUltrasonicFreshnessMs > 0,
               "A varredura lateral do obstáculo deve permanecer válida.");
@@ -616,7 +789,8 @@ static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                   kObstacleTurnCommandPower > 0.0 &&
                   kObstacleTurnCommandPower <= kMaxMotorOutput &&
                   kObstacleTurnCorrectionPulseMs > 0 &&
-                  kObstacleTurnMaximumCorrectionPulses > 0 &&
+                  (kObstacleTurnMaximumCorrectionPulses == -1 ||
+                   kObstacleTurnMaximumCorrectionPulses > 0) &&
                   kObstacleTurnTimeoutMs > 0 &&
                   kObstacleSelectedForwardDistanceCm > 0.0 &&
                   kObstacleSelectedForwardPower > 0.0 &&

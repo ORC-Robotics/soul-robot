@@ -63,7 +63,9 @@ $setupCommand = "powershell -ExecutionPolicy Bypass -File deployment/install-ser
 # parar o serviço evita deixar o robô indisponível por causa de um pacote incompleto.
 $requiredDashboardAssets = @(
     "$workspace/assets/dashboard-logo.png",
-    "$workspace/assets/soul-sync-favicon.png"
+    "$workspace/assets/soul-sync-favicon.png",
+    # O processo da câmera não deve iniciar sem o modelo de vítimas validado.
+    "$workspace/assets/models/ball_detector.onnx"
 )
 
 foreach ($assetPath in $requiredDashboardAssets) {
@@ -130,8 +132,13 @@ Invoke-Checked scp @(
 
 # O deploy copia apenas os arquivos necessários para executar o robô. Os testes
 # continuam ativos no build local, mas não podem exigir a pasta tests na Raspberry.
-$atomicBuildCommand = "cd '$RemoteDir' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$remoteStagingBuild' -DBUILD_TESTING=OFF && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
+$atomicBuildCommand = "cd '$RemoteDir' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && test -s assets/models/ball_detector.onnx && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$remoteStagingBuild' -DBUILD_TESTING=OFF && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
 Invoke-Checked ssh @($sshArgs + @($remote, $atomicBuildCommand))
+
+# Usa exatamente o mesmo Python escolhido por run_robot.sh. O ambiente virtual
+# existente não é recriado nem reconfigurado por esta validação.
+$visionDependenciesCommand = "if [ -x '$RemoteDir/.venv/bin/python3' ]; then python_bin='$RemoteDir/.venv/bin/python3'; else python_bin=`$(command -v python3); fi; test -n `"`$python_bin`" || { echo 'Python 3 was not found for the forward camera.' >&2; exit 1; }; if ! `"`$python_bin`" -c 'import onnxruntime; raise SystemExit(0 if tuple(map(int, onnxruntime.__version__.split(chr(46)))) == (1, 30, 0) else 1)' 2>/dev/null; then `"`$python_bin`" -m pip install --disable-pip-version-check onnxruntime==1.30.0; fi; `"`$python_bin`" -c 'import onnxruntime; raise SystemExit(0 if tuple(map(int, onnxruntime.__version__.split(chr(46)))) == (1, 30, 0) else 1)'"
+Invoke-Checked ssh @($sshArgs + @($remote, $visionDependenciesCommand))
 
 Write-Host "Deploy complete: ${remote}:$remoteBuild/$Target"
 
