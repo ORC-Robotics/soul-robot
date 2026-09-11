@@ -20,6 +20,7 @@ add_executable(robot_test
     src/robot/motor_controller.cpp
     src/robot/curve_diagnostics_logger.cpp
     src/robot/forward_line_assist.cpp
+    src/robot/forward_reacquisition_control_recorder.cpp
     src/robot/green_turn_around_maneuver.cpp
     src/robot/imu_turn_controller.cpp
     src/robot/line_course_mission.cpp
@@ -191,6 +192,21 @@ if(BUILD_TESTING)
     add_test(
         NAME curve_diagnostics_logger_test
         COMMAND curve_diagnostics_logger_test)
+
+    add_executable(forward_reacquisition_control_recorder_test
+        tests/forward_reacquisition_control_recorder_test.cpp
+        src/robot/forward_reacquisition_control_recorder.cpp
+        src/robot/robot_state.cpp
+    )
+    target_include_directories(
+        forward_reacquisition_control_recorder_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(
+            forward_reacquisition_control_recorder_test pthread)
+    endif()
+    add_test(
+        NAME forward_reacquisition_control_recorder_test
+        COMMAND forward_reacquisition_control_recorder_test)
 
     add_executable(servo_controller_test
         tests/servo_controller_test.cpp

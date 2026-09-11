@@ -25,9 +25,28 @@ except ModuleNotFoundError as error:
 
     def read_dataset_status():
         return {}
+try:
+    from forward_reacquisition_recorder import (
+        ForwardReacquisitionRecorder,
+    )
+except Exception as error:
+    # A instrumentação é opcional e nunca pode impedir a inicialização da CAM1.
+    print(f"Gravador diagnóstico da CAM1 indisponível: {error}", flush=True)
+    ForwardReacquisitionRecorder = None
+
 from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 from vision.forward_path import ForwardPathTracker
 from vision.gap_validation import read_json_snapshot
+from vision.obstacle_black import (
+    analyze_obstacle_black,
+    draw_obstacle_black_overlay,
+    empty_obstacle_black,
+)
+from vision.parabola_black import (
+    analyze_parabola_black,
+    draw_parabola_black_overlay,
+    empty_parabola_black,
+)
 from vision.camera_config import GAP_VALIDATION_CONFIG, LINE_STATUS_PATH
 from vision.rescue_zone import (
     RescueZoneTemporalFilter,
@@ -585,7 +604,14 @@ def calculate_forward_line_assist(filtered_line_mask, reference=None, tracker=No
                            FORWARD_ASSIST_MIN_COMPONENT_AREA_PX)
 
 
-def process_forward_frame(frame, camera_format, reference=None, tracker=None, now=None):
+def process_forward_frame(
+    frame,
+    camera_format,
+    reference=None,
+    tracker=None,
+    now=None,
+    diagnostics=None,
+):
     """Aplica somente a segmentação preta configurada para o perfil frontal."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
@@ -610,7 +636,13 @@ def process_forward_frame(frame, camera_format, reference=None, tracker=None, no
                 roi_start_y:roi_start_y + available_height,
                 :available_width,
             ] = filtered_mask[:available_height, :available_width]
-    return calculate_forward_line_assist(full_filtered_mask, reference, tracker, now)
+    if diagnostics is not None:
+        # A cópia só é solicitada nos frames diagnósticos. A mesma máscara
+        # continua sendo entregue ao detector, sem qualquer reprocessamento.
+        diagnostics["mask"] = full_filtered_mask
+    return calculate_forward_line_assist(
+        full_filtered_mask, reference, tracker, now
+    )
 
 
 def process_forward_frame_for_mode(
@@ -620,6 +652,7 @@ def process_forward_frame_for_mode(
     reference=None,
     tracker=None,
     now=None,
+    diagnostics=None,
 ):
     """Suspende totalmente o Forward Assist enquanto o resgate usa o YOLO."""
 
@@ -646,6 +679,7 @@ def process_forward_frame_for_mode(
         reference,
         tracker,
         now,
+        diagnostics,
     )
 
 
@@ -702,6 +736,25 @@ def save_forward_line_status(reading, timestamp, sequence):
             "forwardPathReferenceSequence": reading.get("forwardPathReferenceSequence", 0),
             "forwardPathReferenceTimestamp": reading.get("forwardPathReferenceTimestamp", 0.0),
             "forwardPathComponents": reading.get("forwardPathComponents", {}),
+            "obstacleBlackPixelCount": int(reading.get("obstacleBlackPixelCount", 0)),
+            "obstacleBlackRatio": float(reading.get("obstacleBlackRatio", 0.0)),
+            "obstacleBlackLargestComponent": int(
+                reading.get("obstacleBlackLargestComponent", 0)
+            ),
+            "obstacleBlackSequence": int(reading.get("obstacleBlackSequence", sequence)),
+            "obstacleBlackVisible": bool(reading.get("obstacleBlackVisible", False)),
+            "parabolaLeftBlack": int(reading.get("parabolaLeftBlack", 0)),
+            "parabolaRightBlack": int(reading.get("parabolaRightBlack", 0)),
+            "parabolaSequence": int(reading.get("parabolaSequence", sequence)),
+            "parabolaNearForwardBlack": int(
+                reading.get("parabolaNearForwardBlack", 0)
+            ),
+            "parabolaNearForwardLargest": int(
+                reading.get("parabolaNearForwardLargest", 0)
+            ),
+            "parabolaNearForwardVisible": bool(
+                reading.get("parabolaNearForwardVisible", False)
+            ),
         }
         if status["forwardPathState"] not in ("PRESENT", "UNCERTAIN", "ABSENT"):
             raise ValueError("Estado frontal desconhecido")
@@ -1019,6 +1072,7 @@ def main():
     rescue_zone_active = False
     rescue_zone_results = None
     rescue_zone_input = None
+    obstacle_black_error_reported = False
     rescue_zone_temporal_filter = RescueZoneTemporalFilter()
     path_tracker = ForwardPathTracker()
     rescue_zone_profiler = RescueZoneCycleProfiler(
@@ -1031,6 +1085,14 @@ def main():
             silver_dataset_recorder = SilverDatasetRecorder("forward")
         except Exception as error:
             print(f"Coleta do dataset frontal indisponível: {error}", flush=True)
+
+    forward_reacquisition_recorder = None
+    if ForwardReacquisitionRecorder is not None:
+        try:
+            forward_reacquisition_recorder = ForwardReacquisitionRecorder()
+        except Exception as error:
+            # A falha do gravador nunca deve retirar a percepção frontal do ar.
+            print(f"Gravador diagnóstico da CAM1 indisponível: {error}", flush=True)
 
     try:
         while running:
@@ -1146,13 +1208,78 @@ def main():
                         bottom_status.get("bottomPathReference")
                         if bottom_fresh else None
                     )
+                diagnostic_recording_active = False
+                diagnostic_capture_due = False
+                forward_diagnostics = None
+                if forward_reacquisition_recorder is not None:
+                    try:
+                        diagnostic_recording_active = (
+                            forward_reacquisition_recorder.active()
+                        )
+                        diagnostic_capture_due = (
+                            diagnostic_recording_active
+                            and forward_reacquisition_recorder.capture_due()
+                        )
+                        if (
+                            diagnostic_recording_active
+                            or (enabled and stream_has_clients())
+                        ):
+                            forward_diagnostics = {}
+                    except Exception as error:
+                        # Consultar o gravador é observacional; uma falha não
+                        # pode cancelar este frame nem alterar a leitura visual.
+                        print(
+                            "Gravador diagnóstico da CAM1 desativado após "
+                            f"falha de controle: {error}",
+                            flush=True,
+                        )
+                        forward_reacquisition_recorder = None
                 reading = process_forward_frame_for_mode(
                     frame, camera_format,
                     ball_detection_active,
                     reference,
                     path_tracker,
                     line_timestamp,
+                    forward_diagnostics,
                 )
+                try:
+                    if ball_detection_active or rescue_zone_active:
+                        obstacle_black = empty_obstacle_black(
+                            frame.shape, line_sequence + 1
+                        )
+                        parabola_black = empty_parabola_black(line_sequence + 1)
+                    else:
+                        obstacle_black = analyze_obstacle_black(
+                            frame, line_sequence + 1
+                        )
+                        parabola_black = analyze_parabola_black(
+                            frame, line_sequence + 1
+                        )
+                    obstacle_black_error_reported = False
+                except Exception as error:
+                    # Este detector ainda é apenas diagnóstico. Uma falha não
+                    # pode interromper a CAM1 nem modificar a percepção atual.
+                    obstacle_black = empty_obstacle_black(
+                        frame.shape, line_sequence + 1
+                    )
+                    parabola_black = empty_parabola_black(line_sequence + 1)
+                    if not obstacle_black_error_reported:
+                        print(
+                            f"Detector obstacleBlack indisponível: {error}",
+                            flush=True,
+                        )
+                        obstacle_black_error_reported = True
+                reading.update({
+                    key: obstacle_black[key]
+                    for key in (
+                        "obstacleBlackPixelCount",
+                        "obstacleBlackRatio",
+                        "obstacleBlackLargestComponent",
+                        "obstacleBlackSequence",
+                        "obstacleBlackVisible",
+                    )
+                })
+                reading.update(parabola_black)
                 if not ball_detection_active:
                     reading["decision"] = bottom_status.get("gapValidationDecision", "UNAVAILABLE") if bottom_fresh else "UNAVAILABLE"
                     reading["nearState"] = bottom_status.get("nearLineState", "UNKNOWN") if bottom_fresh else "UNKNOWN"
@@ -1305,7 +1432,7 @@ def main():
                 continue
 
             has_stream_client = enabled and stream_has_clients()
-            if has_stream_client:
+            if has_stream_client or diagnostic_capture_due:
                 stage_started = time.perf_counter() if profile_this_cycle else 0.0
                 display_frame = frame.copy()
                 if ball_detection_active:
@@ -1320,13 +1447,35 @@ def main():
                         rescue_zone_input,
                     )
                 else:
-                    draw_forward_assist_overlay(display_frame, reading)
+                    draw_obstacle_black_overlay(display_frame, obstacle_black)
+                    draw_parabola_black_overlay(display_frame, parabola_black)
+                if diagnostic_capture_due:
+                    used_reference = (
+                        reference
+                        if reading.get("forwardPathReferenceValid") is True
+                        else None
+                    )
+                    forward_reacquisition_recorder.submit(
+                        frame,
+                        (forward_diagnostics or {}).get("mask"),
+                        display_frame,
+                        reading,
+                        used_reference,
+                        resolve_forward_assist_roi(frame.shape),
+                        line_timestamp,
+                        line_sequence,
+                        capture_due_confirmed=True,
+                    )
                 if profile_this_cycle:
                     profile_timings["overlayMs"] = (
                         time.perf_counter() - stage_started
                     ) * 1000.0
                     stage_started = time.perf_counter()
-                jpeg = camera_line_frame.encode_frame(display_frame)
+                jpeg = (
+                    camera_line_frame.encode_frame(display_frame)
+                    if has_stream_client
+                    else None
+                )
                 if profile_this_cycle:
                     profile_timings["jpegEncodeMs"] = (
                         time.perf_counter() - stage_started

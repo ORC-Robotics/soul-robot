@@ -241,9 +241,20 @@ class CalibrationCapture:
                     "camera_configuration": safe_json(self.camera.camera_configuration()),
                     "request": request, "mask_origin": "live_same_request_before_overlay",
                     "raw_format": "lossless PNG from BGR main; not Bayer", "opencv": cv2.__version__,
-                    "component_filters": {"minimum_area_px": config.LINE_MIN_COMPONENT_AREA_PX,
-                                          "minimum_thickness_px": config.LINE_MIN_COMPONENT_THICKNESS_PX,
-                                          "minimum_core_ratio": config.LINE_MIN_COMPONENT_CORE_RATIO},
+                    "component_filters": {
+                        "minimum_area_px": self.profile["vision"].get(
+                            "line_min_component_area_px",
+                            config.LINE_MIN_COMPONENT_AREA_PX,
+                        ),
+                        "minimum_thickness_px": self.profile["vision"].get(
+                            "line_min_component_thickness_px",
+                            config.LINE_MIN_COMPONENT_THICKNESS_PX,
+                        ),
+                        "minimum_core_ratio": self.profile["vision"].get(
+                            "line_min_component_core_ratio",
+                            config.LINE_MIN_COMPONENT_CORE_RATIO,
+                        ),
+                    },
                     "source_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in source_root.glob("*.py")},
                     "safety_at_start": self.guard.telemetry,
                 }

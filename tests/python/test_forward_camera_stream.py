@@ -563,6 +563,11 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 "forwardPathReferenceSequence",
                 "forwardPathReferenceTimestamp",
                 "forwardPathComponents",
+                "obstacleBlackPixelCount",
+                "obstacleBlackRatio",
+                "obstacleBlackLargestComponent",
+                "obstacleBlackSequence",
+                "obstacleBlackVisible",
             },
         )
         self.assertEqual(status["forwardLineSequence"], 7)

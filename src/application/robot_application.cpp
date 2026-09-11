@@ -159,6 +159,40 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     }
     return "camera";
 }
+
+std::string currentMovementCommandSource(
+    const RobotSnapshot& state,
+    const Esp32TelemetrySnapshot& telemetry)
+{
+    if (state.emergencyStop || state.mode == "emergency" ||
+        telemetry.emergencyStopActive)
+    {
+        return "emergency_stop";
+    }
+    if (telemetry.calibrationActive)
+    {
+        return "calibration";
+    }
+    if (telemetry.motorWatchdogTimedOut)
+    {
+        return "esp32_watchdog";
+    }
+    if (state.mode == "stopped")
+    {
+        return "stopped";
+    }
+    if (state.mode == "manual")
+    {
+        return state.rawMotorCommand
+                   ? "dashboard_raw_diagnostic"
+                   : "dashboard_manual";
+    }
+    if (state.autonomousStatus.phase.rfind("obstacle_", 0) == 0)
+    {
+        return "obstacle_avoidance";
+    }
+    return autonomousCommandSourceName(state.autonomousMission);
+}
 }
 
 RobotApplication::RobotApplication()
@@ -167,6 +201,9 @@ RobotApplication::RobotApplication()
       motors_(esp32_),
       oledEvents_(esp32_),
       curveDiagnosticsLogger_(config::kCurveDiagnosticsPath),
+      forwardReacquisitionRecorder_(
+          config::kForwardReacquisitionControlPath,
+          config::kForwardReacquisitionSessionRoot),
       readyLed_(config::kRaspberryReadyLedPin),
       dashboard_(
           robotState_,
@@ -191,6 +228,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
     OledEventNotifier& oledEvents = oledEvents_;
     CurveDiagnosticsLogger& curveDiagnosticsLogger =
         curveDiagnosticsLogger_;
+    ForwardReacquisitionControlRecorder& forwardReacquisitionRecorder =
+        forwardReacquisitionRecorder_;
     StatusLed& readyLed = readyLed_;
     DashboardServer& dashboard = dashboard_;
 
@@ -494,6 +533,16 @@ int RobotApplication::run(const std::atomic<bool>& running)
             finalMotorCommand);
         const Esp32TelemetrySnapshot finalEsp32Telemetry =
             esp32.telemetrySnapshot();
+        // Este ponto fica depois de MotorController::apply(): left/right são
+        // exatamente os valores pós-clamp, pós-piso e pós-sincronismo já
+        // enviados à UART. O gravador recebe apenas cópias imutáveis.
+        forwardReacquisitionRecorder.record(
+            robotSnapshot,
+            finalMotorCommand,
+            finalEsp32Telemetry,
+            forwardLineSnapshot,
+            currentMovementCommandSource(
+                robotSnapshot, finalEsp32Telemetry));
         const auto motorTraceTime = std::chrono::steady_clock::now();
         const bool autonomousTraceActive =
             robotSnapshot.mode == "autonomous";

@@ -5,6 +5,7 @@
 #include "obr/dashboard_server.h"
 #include "obr/esp32_bridge.h"
 #include "obr/forward_ball_vision_lifecycle.h"
+#include "obr/forward_reacquisition_control_recorder.h"
 #include "obr/mission_controller.h"
 #include "obr/motor_controller.h"
 #include "obr/oled_event_notifier.h"
@@ -34,6 +35,7 @@ private:
     MotorController motors_;
     OledEventNotifier oledEvents_;
     CurveDiagnosticsLogger curveDiagnosticsLogger_;
+    ForwardReacquisitionControlRecorder forwardReacquisitionRecorder_;
     StatusLed readyLed_;
     DashboardServer dashboard_;
 };

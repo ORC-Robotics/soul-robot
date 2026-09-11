@@ -22,12 +22,13 @@ bool ultrasonicReadingIsValid(const Esp32TelemetrySnapshot& telemetry)
 ObstacleAvoidanceOutput ObstacleAvoidance::update(
     const Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line,
-    bool allowStart)
+    bool allowStart,
+    const ForwardLineSnapshot& forwardLine)
 {
     switch (phase_)
     {
     case Phase::Idle:
-        return updateIdle(telemetry, line, allowStart);
+        return updateIdle(telemetry, line, allowStart, forwardLine);
     case Phase::ReversingBeforeCentering:
         return updateInitialReverse(telemetry);
     case Phase::Centering:
@@ -37,7 +38,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     case Phase::TurningRightForMeasurement:
     case Phase::PositioningSelectedSide:
     case Phase::FinalInwardPivot:
-        return updateTurn(telemetry);
+        return updateTurn(telemetry, line, forwardLine);
     case Phase::SamplingLeftClearance:
         return updateClearanceSampling(telemetry, true);
     case Phase::SamplingRightClearance:
@@ -45,7 +46,18 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     case Phase::DrivingSelectedHeading:
         return updateSelectedForward(telemetry);
     case Phase::CurvingAroundObstacle:
-        return updateCurve(telemetry);
+        return updateCurve(telemetry, line, forwardLine);
+    case Phase::ReacquireForward:
+        return updateReacquireForward(telemetry, line);
+    case Phase::ReacquireSearch:
+        return updateReacquireSearch(telemetry, line);
+    case Phase::ParabolaGapLostValidate:
+        return updateParabolaGapLostValidation(
+            telemetry, line, forwardLine);
+    case Phase::ParabolaReacquireForward:
+        return updateParabolaReacquireForward(telemetry, line);
+    case Phase::ParabolaReacquireSearch:
+        return updateParabolaReacquireSearch(telemetry, line);
     }
     return {};
 }
@@ -62,6 +74,7 @@ void ObstacleAvoidance::reset()
     leftClearance_ = std::numeric_limits<double>::quiet_NaN();
     rightClearance_ = std::numeric_limits<double>::quiet_NaN();
     selectedSide_ = "NONE";
+    resetCameraBlackEvidence();
     clearanceSamples_.clear();
     maximumClearanceAngleDegrees_ =
         std::numeric_limits<double>::quiet_NaN();
@@ -75,6 +88,12 @@ void ObstacleAvoidance::reset()
     curveStartRightCount_ = 0;
     curveStartYaw_ = std::numeric_limits<double>::quiet_NaN();
     curveEndYaw_ = std::numeric_limits<double>::quiet_NaN();
+    fusionReacquireFrames_ = 0;
+    lastFusionLineSequence_ = 0;
+    reacquireForwardStartLeftCount_ = 0;
+    reacquireForwardStartRightCount_ = 0;
+    reacquireSearchStartYaw_ = std::numeric_limits<double>::quiet_NaN();
+    clearCase3Evidence();
 }
 
 bool ObstacleAvoidance::active() const
@@ -85,13 +104,20 @@ bool ObstacleAvoidance::active() const
 ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
     const Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line,
-    bool allowStart)
+    bool allowStart,
+    const ForwardLineSnapshot& forwardLine)
 {
+    const ObstacleAvoidanceOutput case3Output =
+        updateCase3Idle(telemetry, line, forwardLine);
+    if (case3Output.hasControl)
+    {
+        return case3Output;
+    }
     if (!ultrasonicReadingIsValid(telemetry))
     {
         obstacleConfirmationSamples_ = 0;
         rearmConfirmationSamples_ = 0;
-        return {};
+        return case3Output;
     }
     if (!armed_)
     {
@@ -109,20 +135,20 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
         {
             rearmConfirmationSamples_ = 0;
         }
-        return {};
+        return case3Output;
     }
     if (!allowStart ||
         telemetry.ultrasonicDistanceCm > config::kObstacleDetectionDistanceCm)
     {
         obstacleConfirmationSamples_ = 0;
-        return {};
+        return case3Output;
     }
 
     ++obstacleConfirmationSamples_;
     if (obstacleConfirmationSamples_ <
         config::kObstacleDetectionConfirmationSamples)
     {
-        return {};
+        return case3Output;
     }
     if (!line.sourceFresh || !ImuTurnController::imuReady(telemetry))
     {
@@ -133,6 +159,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
 
     armed_ = false;
     obstacleConfirmationSamples_ = 0;
+    resetCameraBlackEvidence();
+    clearCase3Evidence();
     phase_ = Phase::ReversingBeforeCentering;
     reverseStartLeftCount_ = telemetry.leftEncoderCount;
     reverseStartRightCount_ = telemetry.rightEncoderCount;
@@ -197,7 +225,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialReverse(
 
     ObstacleAvoidanceOutput result = output(
         "obstacle_initial_reverse",
-        "Recuando 5 cm antes de iniciar o desvio",
+        "Recuando 2 cm antes de iniciar o desvio",
         -config::kObstacleReversePower,
         -config::kObstacleReversePower);
     result.progressPercent = progressPercent;
@@ -260,11 +288,23 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCentering(
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
-    const Esp32TelemetrySnapshot& telemetry)
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    const ForwardLineSnapshot& forwardLine)
 {
-    const ImuTurnOutput turn = turnController_.update(telemetry);
     const bool collectingLeft = phase_ == Phase::TurningLeftForMeasurement;
     const bool collectingRight = phase_ == Phase::TurningRightForMeasurement;
+    const std::string cameraConfirmation =
+        collectingLeft || collectingRight
+            ? observeCameraBlack(telemetry, forwardLine, collectingLeft)
+            : "";
+    if (phase_ == Phase::FinalInwardPivot &&
+        case3AwaitingFusionAcquire_ &&
+        observeCase3FusionAcquire(line))
+    {
+        armCase3FusionWindow();
+    }
+    const ImuTurnOutput turn = turnController_.update(telemetry);
     if (turn.result == ImuTurnResult::Failed)
     {
         return fail("obstacle_" + turn.phase, "Desvio: " + turn.action);
@@ -276,9 +316,11 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
             return output(
                 collectingLeft ? "obstacle_measuring_left"
                                : "obstacle_measuring_right",
-                collectingLeft
-                    ? "MIRANDO ESQUERDA; medindo somente com o robô estabilizado"
-                    : "MIRANDO DIREITA; medindo somente com o robô estabilizado",
+                !cameraConfirmation.empty()
+                    ? cameraConfirmation
+                    : collectingLeft
+                          ? "MIRANDO ESQUERDA; medindo somente com o robô estabilizado"
+                          : "MIRANDO DIREITA; medindo somente com o robô estabilizado",
                 turn.leftPower,
                 turn.rightPower);
         }
@@ -318,6 +360,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
     if (phase_ == Phase::FinalInwardPivot)
     {
         phase_ = Phase::Idle;
+        case3PostObstacleYaw_ = telemetry.yawZDeg;
         ObstacleAvoidanceOutput result = output(
             "obstacle_completed",
             "Desvio nominal concluído: pivot final para dentro finalizado");
@@ -408,19 +451,27 @@ ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterRightMeasurement(
     const Esp32TelemetrySnapshot& telemetry)
 {
     const double difference = leftClearance_ - rightClearance_;
-    if (std::abs(difference) <= config::kObstacleClearanceTieCm)
+    if (cameraBlackLeft_ != cameraBlackRight_)
+    {
+        selectedSide_ = cameraBlackLeft_ ? "LEFT" : "RIGHT";
+        selectedSideSource_ = "CAMERA_BLACK";
+    }
+    else if (std::abs(difference) <= config::kObstacleClearanceTieCm)
     {
         selectedSide_ =
             config::kObstacleDefaultSideIsRight ? "RIGHT" : "LEFT";
+        selectedSideSource_ = "ULTRASONIC";
     }
     else
     {
         selectedSide_ = difference > 0.0 ? "LEFT" : "RIGHT";
+        selectedSideSource_ = "ULTRASONIC";
     }
     std::cout << "Obstacle side decision leftMaximumCm=" << leftClearance_
               << " rightMaximumCm=" << rightClearance_
               << " differenceCm=" << difference
-              << " selected=" << selectedSide_ << '\n';
+              << " selected=" << selectedSide_
+              << " source=" << selectedSideSource_ << '\n';
 
     const double targetYaw = normalizedYaw(
         yawBase_ + (selectedSide_ == "RIGHT" ? 1.0 : -1.0) *
@@ -439,7 +490,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterRightMeasurement(
     }
     return output(
         "obstacle_side_selected",
-        "LADO ESCOLHIDO: " + selectedSide_ + "; posicionando yaw inicial");
+        "LADO ESCOLHIDO: " + selectedSide_ + " via " +
+            selectedSideSource_ + "; posicionando yaw inicial");
 }
 
 void ObstacleAvoidance::collectStableClearance(
@@ -502,6 +554,68 @@ bool ObstacleAvoidance::finishClearanceMeasurement(bool measuringLeft)
         std::numeric_limits<double>::quiet_NaN();
     lastSampleUptimeMs_ = -1;
     return true;
+}
+
+std::string ObstacleAvoidance::observeCameraBlack(
+    const Esp32TelemetrySnapshot& telemetry,
+    const ForwardLineSnapshot& forwardLine,
+    bool measuringLeft)
+{
+    if (!forwardLine.sourceFresh ||
+        forwardLine.obstacleBlackSequence == 0 ||
+        forwardLine.obstacleBlackSequence == lastCameraBlackSequence_)
+    {
+        return {};
+    }
+    // Todo frame novo é consumido uma única vez. Fora da janela ele é apenas
+    // descartado, sem apagar uma confirmação obtida anteriormente.
+    lastCameraBlackSequence_ = forwardLine.obstacleBlackSequence;
+    const double yawDelta = signedYawError(telemetry.yawZDeg, yawBase_);
+    const double sideAngle = measuringLeft ? -yawDelta : yawDelta;
+    if (sideAngle < config::kObstacleCameraBlackMinimumAngleDegrees ||
+        sideAngle > config::kObstacleCameraBlackMaximumAngleDegrees)
+    {
+        return {};
+    }
+
+    int& frames = measuringLeft ? cameraBlackLeftFrames_
+                                : cameraBlackRightFrames_;
+    bool& confirmed = measuringLeft ? cameraBlackLeft_
+                                    : cameraBlackRight_;
+    if (!forwardLine.obstacleBlackVisible)
+    {
+        if (!confirmed)
+        {
+            frames = 0;
+        }
+        return {};
+    }
+    if (confirmed)
+    {
+        return {};
+    }
+
+    frames = std::min(
+        frames + 1,
+        config::kObstacleCameraBlackConfirmationFrames);
+    if (frames < config::kObstacleCameraBlackConfirmationFrames)
+    {
+        return {};
+    }
+    confirmed = true;
+    const std::string side = measuringLeft ? "LEFT" : "RIGHT";
+    std::cout << "CAM1 confirmou faixa " << side << '\n';
+    return "CAM1 confirmou faixa " + side;
+}
+
+void ObstacleAvoidance::resetCameraBlackEvidence()
+{
+    cameraBlackLeft_ = false;
+    cameraBlackRight_ = false;
+    cameraBlackLeftFrames_ = 0;
+    cameraBlackRightFrames_ = 0;
+    lastCameraBlackSequence_ = 0;
+    selectedSideSource_ = "UNDECIDED";
 }
 
 bool ObstacleAvoidance::startTurnToYaw(
@@ -647,6 +761,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::startCurve(
                                 : -config::kObstacleCurveEndOffsetDegrees;
     curveEndYaw_ = normalizedYaw(yawBase_ + oppositeOffset);
     curveStartedAt_ = std::chrono::steady_clock::now();
+    fusionReacquireFrames_ = 0;
+    lastFusionLineSequence_ = 0;
+    lastParabolaSequence_ = 0;
     ObstacleAvoidanceOutput result = output(
         "obstacle_curve_start",
         "Avanço de 10 cm concluído: iniciando curva suave");
@@ -655,7 +772,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::startCurve(
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
-    const Esp32TelemetrySnapshot& telemetry)
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    const ForwardLineSnapshot& forwardLine)
 {
     const double leftCounts = std::abs(static_cast<double>(
         telemetry.leftEncoderCount - curveStartLeftCount_));
@@ -688,6 +807,23 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
             "obstacle_curve_timeout",
             "Curva interrompida pelo tempo limite de segurança");
     }
+    observeParabolaFrame(forwardLine);
+    if (observeFreshFusion(line))
+    {
+        // O caso 2 tem prioridade total e descarta a memória lateral do caso 3.
+        clearCase3Evidence();
+        phase_ = Phase::ReacquireForward;
+        reacquireForwardStartLeftCount_ = telemetry.leftEncoderCount;
+        reacquireForwardStartRightCount_ = telemetry.rightEncoderCount;
+        reacquireForwardStartedAt_ = std::chrono::steady_clock::now();
+        fusionReacquireFrames_ = 0;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_reacquire_forward",
+            "Fusion detectado durante parábola");
+        result.targetDistanceCm =
+            config::kObstacleReacquireForwardDistanceCm;
+        return result;
+    }
     const double totalYawChange = signedYawError(curveEndYaw_, curveStartYaw_);
     const double targetYaw = normalizedYaw(
         curveStartYaw_ + totalYawChange * progress);
@@ -712,6 +848,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
                 "Desvio interrompido: não foi possível iniciar o pivot final");
         }
         phase_ = Phase::FinalInwardPivot;
+        case3AwaitingFusionAcquire_ = bestParabolaSideValid_;
+        case3FusionAcquireFrames_ = 0;
+        lastCase3LineSequence_ = line.lineSequence;
         ObstacleAvoidanceOutput result = output(
             "obstacle_final_pivot_start",
             "Curva concluída: iniciando pivot final de 20 graus para dentro");
@@ -743,6 +882,652 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
     return result;
 }
 
+ObstacleAvoidanceOutput ObstacleAvoidance::updateReacquireForward(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    const double leftCounts = std::abs(static_cast<double>(
+        telemetry.leftEncoderCount - reacquireForwardStartLeftCount_));
+    const double rightCounts = std::abs(static_cast<double>(
+        telemetry.rightEncoderCount - reacquireForwardStartRightCount_));
+    const double leftDistanceCm =
+        leftCounts / config::kEncoderCountsPerCentimeter;
+    const double rightDistanceCm =
+        rightCounts / config::kEncoderCountsPerCentimeter;
+    const double usedDistanceCm = std::min(leftDistanceCm, rightDistanceCm);
+
+    if (!telemetry.sensorFresh || telemetry.lastSensorAgeMs < 0 ||
+        telemetry.lastSensorAgeMs > config::kObstacleEncoderFreshnessMs ||
+        !std::isfinite(telemetry.leftEncoderRate) ||
+        !std::isfinite(telemetry.rightEncoderRate))
+    {
+        return fail(
+            "obstacle_reacquire_forward_sensors_lost",
+            "Recovery interrompido: encoders sem dados recentes");
+    }
+    if (std::chrono::steady_clock::now() - reacquireForwardStartedAt_ >
+        std::chrono::milliseconds(config::kObstacleDistanceSafetyTimeoutMs))
+    {
+        return fail(
+            "obstacle_reacquire_forward_timeout",
+            "Recovery interrompido pelo tempo limite de segurança");
+    }
+
+    const double predictionSeconds =
+        config::kObstacleBrakePredictionSeconds +
+        telemetry.lastSensorAgeMs / 1000.0;
+    const double projectedLeftCounts =
+        leftCounts + std::abs(telemetry.leftEncoderRate) * predictionSeconds;
+    const double projectedRightCounts =
+        rightCounts + std::abs(telemetry.rightEncoderRate) * predictionSeconds;
+    const double targetCounts =
+        config::kObstacleReacquireForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter;
+    if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
+    {
+        if (!ImuTurnController::imuReady(telemetry))
+        {
+            return fail(
+                "obstacle_reacquire_search_sensors_lost",
+                "Recovery interrompido: IMU indisponível para buscar a linha");
+        }
+        phase_ = Phase::ReacquireSearch;
+        reacquireSearchStartYaw_ = telemetry.yawZDeg;
+        reacquireSearchStartedAt_ = std::chrono::steady_clock::now();
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_reacquire_search",
+            "Recovery +5cm; buscando linha " + selectedSide_);
+        result.progressPercent = 100.0;
+        result.targetDistanceCm =
+            config::kObstacleReacquireForwardDistanceCm;
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_reacquire_forward",
+        "Recovery +5cm",
+        config::kObstacleSelectedForwardPower,
+        config::kObstacleSelectedForwardPower);
+    result.progressPercent = std::clamp(
+        usedDistanceCm / config::kObstacleReacquireForwardDistanceCm * 100.0,
+        0.0,
+        100.0);
+    result.targetDistanceCm = config::kObstacleReacquireForwardDistanceCm;
+    result.leftDistanceCm = leftDistanceCm;
+    result.rightDistanceCm = rightDistanceCm;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateReacquireSearch(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    if (!ImuTurnController::imuReady(telemetry))
+    {
+        return fail(
+            "obstacle_reacquire_search_sensors_lost",
+            "Recovery interrompido: IMU perdida durante a busca da linha");
+    }
+    if (observeFreshFusion(line))
+    {
+        phase_ = Phase::Idle;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_reacquired",
+            "Linha reacquirida");
+        result.completed = true;
+        result.progressPercent = 100.0;
+        return result;
+    }
+
+    const double yawChange = signedYawError(
+        telemetry.yawZDeg, reacquireSearchStartYaw_);
+    if (std::abs(yawChange) >=
+            config::kObstacleReacquireSearchMaximumDegrees ||
+        std::chrono::steady_clock::now() - reacquireSearchStartedAt_ >
+            std::chrono::milliseconds(config::kObstacleTurnTimeoutMs))
+    {
+        return fail(
+            "obstacle_reacquire_timeout",
+            "Recovery timeout");
+    }
+
+    const double direction = selectedSide_ == "LEFT" ? -1.0 : 1.0;
+    return output(
+        "obstacle_reacquire_search",
+        "Buscando linha " + selectedSide_,
+        direction * config::kObstacleTurnCommandPower,
+        -direction * config::kObstacleTurnCommandPower);
+}
+
+bool ObstacleAvoidance::observeFreshFusion(
+    const CameraLineSnapshot& line)
+{
+    if (!line.sourceFresh || line.lineSequence == 0 ||
+        line.lineSequence == lastFusionLineSequence_)
+    {
+        return false;
+    }
+    lastFusionLineSequence_ = line.lineSequence;
+    const bool fusionValid =
+        line.lineControlSource == "fusion" && line.normalSteeringValid;
+    if (!fusionValid)
+    {
+        fusionReacquireFrames_ = 0;
+        return false;
+    }
+    fusionReacquireFrames_ = std::min(
+        fusionReacquireFrames_ + 1,
+        config::kObstacleFusionReacquireConfirmationFrames);
+    return fusionReacquireFrames_ >=
+           config::kObstacleFusionReacquireConfirmationFrames;
+}
+
+void ObstacleAvoidance::observeParabolaFrame(
+    const ForwardLineSnapshot& forwardLine)
+{
+    if (!forwardLine.sourceFresh || forwardLine.parabolaSequence == 0 ||
+        forwardLine.parabolaSequence == lastParabolaSequence_)
+    {
+        return;
+    }
+    lastParabolaSequence_ = forwardLine.parabolaSequence;
+    const std::uint64_t left = forwardLine.parabolaLeftBlack;
+    const std::uint64_t right = forwardLine.parabolaRightBlack;
+    const std::uint64_t winner = std::max(left, right);
+    const std::uint64_t loser = std::min(left, right);
+    if (winner < config::kObstacleParabolaMinimumBlackPixels ||
+        static_cast<double>(winner) <
+            static_cast<double>(loser) *
+                config::kObstacleParabolaMinimumDominance)
+    {
+        return;
+    }
+
+    const std::uint64_t score = winner - loser;
+    if (score <= bestParabolaScore_)
+    {
+        return;
+    }
+    rawBestParabolaSide_ = left > right ? "LEFT" : "RIGHT";
+    bestParabolaSide_ = rawBestParabolaSide_;
+    bestParabolaScore_ = score;
+    bestParabolaLeftBlack_ = left;
+    bestParabolaRightBlack_ = right;
+    bestParabolaSequence_ = forwardLine.parabolaSequence;
+    bestParabolaSideValid_ = true;
+    std::cout << "Parabola raw best " << rawBestParabolaSide_
+              << " recovery side=" << bestParabolaSide_
+              << " score=" << bestParabolaScore_ << '\n';
+}
+
+bool ObstacleAvoidance::observeCase3FusionAcquire(
+    const CameraLineSnapshot& line)
+{
+    if (!line.sourceFresh || line.lineSequence == 0 ||
+        line.lineSequence == lastCase3LineSequence_)
+    {
+        return false;
+    }
+    lastCase3LineSequence_ = line.lineSequence;
+    const bool fusionValid =
+        line.lineControlSource == "fusion" && line.normalSteeringValid;
+    if (!fusionValid)
+    {
+        case3FusionAcquireFrames_ = 0;
+        return false;
+    }
+    case3FusionAcquireFrames_ = std::min(
+        case3FusionAcquireFrames_ + 1,
+        config::kObstacleFusionReacquireConfirmationFrames);
+    return case3FusionAcquireFrames_ >=
+           config::kObstacleFusionReacquireConfirmationFrames;
+}
+
+void ObstacleAvoidance::armCase3FusionWindow()
+{
+    if (case3Armed_ || !bestParabolaSideValid_)
+    {
+        return;
+    }
+    case3AwaitingFusionAcquire_ = false;
+    case3Armed_ = true;
+    case3FusionAcquireTime_ = std::chrono::steady_clock::now();
+    case3GapLostFrames_ = 0;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::startParabolaRearFusionRecovery(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    phase_ = Phase::ParabolaReacquireSearch;
+    case3AwaitingFusionAcquire_ = false;
+    case3Armed_ = false;
+    case3GapLostFrames_ = 0;
+    parabolaSearchStartYaw_ = telemetry.yawZDeg;
+    parabolaSearchStartedAt_ = std::chrono::steady_clock::now();
+    parabolaSearchOppositeSide_ = false;
+    parabolaRearFusionRecovery_ = true;
+    fusionReacquireFrames_ = 0;
+    lastFusionLineSequence_ = line.lineSequence;
+    return output(
+        "obstacle_parabola_reacquire_search",
+        "Rear Fusion blocked; searching " + bestParabolaSide_);
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateCase3Idle(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    const ForwardLineSnapshot& forwardLine)
+{
+    if (case3AwaitingFusionAcquire_ && observeCase3FusionAcquire(line))
+    {
+        armCase3FusionWindow();
+    }
+    if (!case3Armed_)
+    {
+        if (!case3AwaitingFusionAcquire_)
+        {
+            return {};
+        }
+        ObstacleAvoidanceOutput result = output("", "");
+        result.hasControl = false;
+        return result;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now - case3FusionAcquireTime_ >=
+        std::chrono::milliseconds(config::kObstacleCase3FusionWindowMs))
+    {
+        clearCase3Evidence();
+        return {};
+    }
+
+    const bool fusionValid =
+        line.sourceFresh && line.lineControlSource == "fusion" &&
+        line.normalSteeringValid;
+    if (fusionValid && ImuTurnController::imuReady(telemetry) &&
+        std::isfinite(case3PostObstacleYaw_))
+    {
+        const double bestDirection =
+            bestParabolaSide_ == "LEFT" ? -1.0 : 1.0;
+        const double yawFromObstacleCompletion = signedYawError(
+            telemetry.yawZDeg, case3PostObstacleYaw_);
+        const double wrongDirectionDegrees =
+            yawFromObstacleCompletion * -bestDirection;
+        if (wrongDirectionDegrees >=
+            config::kObstaclePostObstacleFusionReturnLimitDegrees)
+        {
+            // O Fusion ainda está válido, mas já virou para o lado oposto ao
+            // recovery salvo pela CAM1. Assume os motores antes de voltar ao
+            // obstáculo e rejeita essa mesma faixa durante o retorno frontal.
+            return startParabolaRearFusionRecovery(telemetry, line);
+        }
+    }
+
+    if (line.sourceFresh && line.lineSequence > 0 &&
+        line.lineSequence != lastCase3LineSequence_)
+    {
+        lastCase3LineSequence_ = line.lineSequence;
+        const bool fusionValid =
+            line.lineControlSource == "fusion" && line.normalSteeringValid;
+        const bool gapOrLost =
+            line.gapValidationDecision == "GAP" ||
+            line.gapValidationDecision == "LOST";
+        if (fusionValid)
+        {
+            case3GapLostFrames_ = 0;
+        }
+        else if (gapOrLost)
+        {
+            case3GapLostFrames_ = std::min(
+                case3GapLostFrames_ + 1,
+                config::kObstacleParabolaGapLostConfirmationFrames);
+        }
+        else
+        {
+            case3GapLostFrames_ = 0;
+        }
+    }
+
+    if (case3GapLostFrames_ >=
+            config::kObstacleParabolaGapLostConfirmationFrames &&
+        bestParabolaSideValid_)
+    {
+        phase_ = Phase::ParabolaGapLostValidate;
+        case3Armed_ = false;
+        nearForwardLineVisible_ = false;
+        nearForwardLineVotes_ = 0;
+        nearForwardLineSamples_ = 0;
+        lastNearValidationSequence_ = forwardLine.parabolaSequence;
+        return output(
+            "obstacle_parabola_gaplost_validate",
+            "GAP/LOST validating CAM1 NEAR");
+    }
+
+    ObstacleAvoidanceOutput result = output("", "");
+    result.hasControl = false;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaGapLostValidation(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
+    const ForwardLineSnapshot& forwardLine)
+{
+    if (forwardLine.sourceFresh && forwardLine.parabolaSequence > 0 &&
+        forwardLine.parabolaSequence != lastNearValidationSequence_)
+    {
+        lastNearValidationSequence_ = forwardLine.parabolaSequence;
+        ++nearForwardLineSamples_;
+        if (forwardLine.parabolaNearForwardVisible)
+        {
+            ++nearForwardLineVotes_;
+        }
+    }
+    if (nearForwardLineSamples_ <
+        config::kObstacleParabolaNearValidationFrames)
+    {
+        return output(
+            "obstacle_parabola_gaplost_validate",
+            "GAP/LOST validating CAM1 NEAR");
+    }
+
+    nearForwardLineVisible_ =
+        nearForwardLineVotes_ >= config::kObstacleParabolaNearRequiredVotes;
+    if (nearForwardLineVisible_ || !bestParabolaSideValid_)
+    {
+        phase_ = Phase::Idle;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_parabola_gaplost_validate",
+            nearForwardLineVisible_
+                ? "Forward continuation detected: normal GAP/LOST"
+                : "No parabola evidence: normal GAP/LOST");
+        result.completed = true;
+        clearCase3Evidence();
+        return result;
+    }
+    if (!ImuTurnController::imuReady(telemetry))
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_timeout",
+            "Parabola reacquire timeout");
+        clearCase3Evidence();
+        return result;
+    }
+
+    phase_ = Phase::ParabolaReacquireForward;
+    parabolaReacquireForwardStartLeftCount_ = telemetry.leftEncoderCount;
+    parabolaReacquireForwardStartRightCount_ = telemetry.rightEncoderCount;
+    parabolaReacquireForwardStartedAt_ = std::chrono::steady_clock::now();
+    fusionReacquireFrames_ = 0;
+    lastFusionLineSequence_ = line.lineSequence;
+    return output(
+        "obstacle_parabola_reacquire_forward",
+        "False GAP/LOST confirmed");
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireForward(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    const double leftCounts = std::abs(static_cast<double>(
+        telemetry.leftEncoderCount -
+        parabolaReacquireForwardStartLeftCount_));
+    const double rightCounts = std::abs(static_cast<double>(
+        telemetry.rightEncoderCount -
+        parabolaReacquireForwardStartRightCount_));
+    const double leftDistanceCm =
+        leftCounts / config::kEncoderCountsPerCentimeter;
+    const double rightDistanceCm =
+        rightCounts / config::kEncoderCountsPerCentimeter;
+    const double usedDistanceCm = std::min(leftDistanceCm, rightDistanceCm);
+
+    if (!telemetry.sensorFresh || telemetry.lastSensorAgeMs < 0 ||
+        telemetry.lastSensorAgeMs > config::kObstacleEncoderFreshnessMs ||
+        !std::isfinite(telemetry.leftEncoderRate) ||
+        !std::isfinite(telemetry.rightEncoderRate))
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_forward_sensors_lost",
+            "Recovery do caso 3 interrompido: encoders sem dados recentes");
+        clearCase3Evidence();
+        return result;
+    }
+    if (std::chrono::steady_clock::now() -
+            parabolaReacquireForwardStartedAt_ >
+        std::chrono::milliseconds(config::kObstacleDistanceSafetyTimeoutMs))
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_forward_timeout",
+            "Recovery do caso 3 interrompido pelo tempo limite de segurança");
+        clearCase3Evidence();
+        return result;
+    }
+
+    // Usa a mesma compensação de frenagem do avanço curto do caso 2. A menor
+    // distância das duas rodas impede concluir se apenas uma roda avançou.
+    const double predictionSeconds =
+        config::kObstacleBrakePredictionSeconds +
+        telemetry.lastSensorAgeMs / 1000.0;
+    const double projectedLeftCounts =
+        leftCounts + std::abs(telemetry.leftEncoderRate) * predictionSeconds;
+    const double projectedRightCounts =
+        rightCounts + std::abs(telemetry.rightEncoderRate) * predictionSeconds;
+    const double targetCounts =
+        config::kObstacleParabolaReacquireForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter;
+    if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
+    {
+        if (!ImuTurnController::imuReady(telemetry))
+        {
+            ObstacleAvoidanceOutput result = fail(
+                "obstacle_parabola_reacquire_search_sensors_lost",
+                "Recovery do caso 3 interrompido: IMU indisponível para buscar a linha");
+            clearCase3Evidence();
+            return result;
+        }
+        phase_ = Phase::ParabolaReacquireSearch;
+        // O limite angular começa somente após os 2 cm, imediatamente antes
+        // do primeiro comando de pivot para o lado salvo pela CAM1.
+        parabolaSearchStartYaw_ = telemetry.yawZDeg;
+        parabolaSearchStartedAt_ = std::chrono::steady_clock::now();
+        parabolaSearchOppositeSide_ = false;
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_parabola_reacquire_search",
+            "Searching parabola exit " + bestParabolaSide_);
+        result.progressPercent = 100.0;
+        result.targetDistanceCm =
+            config::kObstacleParabolaReacquireForwardDistanceCm;
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_parabola_reacquire_forward",
+        "Recovery clearance +2cm",
+        config::kObstacleSelectedForwardPower,
+        config::kObstacleSelectedForwardPower);
+    result.progressPercent = std::clamp(
+        usedDistanceCm /
+            config::kObstacleParabolaReacquireForwardDistanceCm * 100.0,
+        0.0,
+        100.0);
+    result.targetDistanceCm =
+        config::kObstacleParabolaReacquireForwardDistanceCm;
+    result.leftDistanceCm = leftDistanceCm;
+    result.rightDistanceCm = rightDistanceCm;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireSearch(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    if (!ImuTurnController::imuReady(telemetry))
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_timeout",
+            "Parabola reacquire timeout");
+        clearCase3Evidence();
+        return result;
+    }
+    const double yawChange = signedYawError(
+        telemetry.yawZDeg, parabolaSearchStartYaw_);
+    const double initialDirection =
+        bestParabolaSide_ == "LEFT" ? -1.0 : 1.0;
+    const double directedYawChange = yawChange * initialDirection;
+    if (std::chrono::steady_clock::now() - parabolaSearchStartedAt_ >
+            std::chrono::milliseconds(config::kObstacleTurnTimeoutMs))
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_timeout",
+            "Parabola reacquire timeout");
+        clearCase3Evidence();
+        return result;
+    }
+
+    if (parabolaRearFusionRecovery_)
+    {
+        const double recoveryYawChange = yawChange * initialDirection;
+        if (recoveryYawChange >=
+            config::kObstacleReacquireSearchMaximumDegrees)
+        {
+            ObstacleAvoidanceOutput result = fail(
+                "obstacle_parabola_reacquire_timeout",
+                "Parabola rear-Fusion recovery timeout");
+            clearCase3Evidence();
+            return result;
+        }
+
+        const bool fusionValid =
+            line.sourceFresh && line.lineControlSource == "fusion" &&
+            line.normalSteeringValid;
+        const bool fusionSupportsBestSide = fusionValid &&
+            (bestParabolaSide_ == "LEFT"
+                 ? line.lineFollowerLeftPower <= line.lineFollowerRightPower
+                 : line.lineFollowerRightPower <= line.lineFollowerLeftPower);
+        if (!fusionSupportsBestSide)
+        {
+            // Rejeita a faixa que causou o giro oposto. O Fusion volta a votar
+            // assim que seu próprio steering concorda com o lado salvo pela CAM1.
+            fusionReacquireFrames_ = 0;
+            lastFusionLineSequence_ = line.lineSequence;
+        }
+        else if (observeFreshFusion(line))
+        {
+            phase_ = Phase::Idle;
+            ObstacleAvoidanceOutput result = output(
+                "obstacle_parabola_reacquired",
+                "Parabola line reacquired");
+            result.completed = true;
+            result.progressPercent = 100.0;
+            clearCase3Evidence();
+            return result;
+        }
+
+        return output(
+            "obstacle_parabola_reacquire_search",
+            "Rear Fusion blocked; searching " + bestParabolaSide_,
+            initialDirection * config::kObstacleTurnCommandPower,
+            -initialDirection * config::kObstacleTurnCommandPower);
+    }
+
+    if (!parabolaSearchOppositeSide_ &&
+        directedYawChange >= config::kObstacleParabolaRearBlockDegrees)
+    {
+        // A partir de 65 graus a câmera pode enxergar a faixa deixada para trás.
+        // Esse frame é consumido sem votar e a busca recomeça no lado oposto.
+        parabolaSearchOppositeSide_ = true;
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+        const std::string oppositeSide =
+            bestParabolaSide_ == "LEFT" ? "RIGHT" : "LEFT";
+        return output(
+            "obstacle_parabola_reacquire_opposite_search",
+            "Rear line blocked; searching opposite " + oppositeSide);
+    }
+
+    if (parabolaSearchOppositeSide_ &&
+        directedYawChange <= -config::kObstacleParabolaRearBlockDegrees)
+    {
+        ObstacleAvoidanceOutput result = fail(
+            "obstacle_parabola_reacquire_timeout",
+            "Parabola reacquire timeout");
+        clearCase3Evidence();
+        return result;
+    }
+
+    const bool fusionBlockedBySearchSector =
+        directedYawChange >= config::kObstacleParabolaRearBlockDegrees ||
+        (parabolaSearchOppositeSide_ && directedYawChange > 0.0);
+    if (fusionBlockedBySearchSector)
+    {
+        // Depois da inversão, ignora o Fusion até cruzar o yaw inicial e entrar
+        // realmente no lado oposto. Assim a faixa traseira não volta a votar.
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+    }
+    else if (observeFreshFusion(line))
+    {
+        phase_ = Phase::Idle;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_parabola_reacquired",
+            "Parabola line reacquired");
+        result.completed = true;
+        result.progressPercent = 100.0;
+        clearCase3Evidence();
+        return result;
+    }
+
+    const double direction = parabolaSearchOppositeSide_
+        ? -initialDirection
+        : initialDirection;
+    const std::string searchSide = parabolaSearchOppositeSide_
+        ? (bestParabolaSide_ == "LEFT" ? "RIGHT" : "LEFT")
+        : bestParabolaSide_;
+    return output(
+        parabolaSearchOppositeSide_
+            ? "obstacle_parabola_reacquire_opposite_search"
+            : "obstacle_parabola_reacquire_search",
+        "Searching parabola exit " + searchSide,
+        direction * config::kObstacleTurnCommandPower,
+        -direction * config::kObstacleTurnCommandPower);
+}
+
+void ObstacleAvoidance::clearCase3Evidence()
+{
+    rawBestParabolaSide_ = "NONE";
+    bestParabolaSide_ = "NONE";
+    bestParabolaScore_ = 0;
+    bestParabolaLeftBlack_ = 0;
+    bestParabolaRightBlack_ = 0;
+    bestParabolaSequence_ = 0;
+    bestParabolaSideValid_ = false;
+    lastParabolaSequence_ = 0;
+    case3AwaitingFusionAcquire_ = false;
+    case3Armed_ = false;
+    case3FusionAcquireFrames_ = 0;
+    case3GapLostFrames_ = 0;
+    lastCase3LineSequence_ = 0;
+    nearForwardLineVisible_ = false;
+    nearForwardLineVotes_ = 0;
+    nearForwardLineSamples_ = 0;
+    lastNearValidationSequence_ = 0;
+    parabolaReacquireForwardStartLeftCount_ = 0;
+    parabolaReacquireForwardStartRightCount_ = 0;
+    parabolaSearchStartYaw_ = std::numeric_limits<double>::quiet_NaN();
+    parabolaSearchOppositeSide_ = false;
+    case3PostObstacleYaw_ = std::numeric_limits<double>::quiet_NaN();
+    parabolaRearFusionRecovery_ = false;
+}
+
 ObstacleAvoidanceOutput ObstacleAvoidance::output(
     const std::string& phase,
     const std::string& action,
@@ -759,6 +1544,34 @@ ObstacleAvoidanceOutput ObstacleAvoidance::output(
     result.leftClearance = leftClearance_;
     result.rightClearance = rightClearance_;
     result.selectedSide = selectedSide_;
+    result.cameraBlackLeft = cameraBlackLeft_;
+    result.cameraBlackRight = cameraBlackRight_;
+    result.cameraBlackLeftFrames = cameraBlackLeftFrames_;
+    result.cameraBlackRightFrames = cameraBlackRightFrames_;
+    result.selectedSideSource = selectedSideSource_;
+    result.rawBestParabolaSide = rawBestParabolaSide_;
+    result.bestParabolaSide = bestParabolaSide_;
+    result.bestParabolaScore = bestParabolaScore_;
+    result.bestParabolaLeftBlack = bestParabolaLeftBlack_;
+    result.bestParabolaRightBlack = bestParabolaRightBlack_;
+    result.bestParabolaSequence = bestParabolaSequence_;
+    result.bestParabolaSideValid = bestParabolaSideValid_;
+    result.nearForwardLineVisible = nearForwardLineVisible_;
+    result.nearForwardLineVotes = nearForwardLineVotes_;
+    result.nearForwardLineSamples = nearForwardLineSamples_;
+    result.case3Armed = case3Armed_;
+    if (case3Armed_)
+    {
+        result.case3FusionAcquireTime =
+            std::chrono::duration<double>(
+                case3FusionAcquireTime_.time_since_epoch()).count();
+        result.case3TimeRemainingMs = std::max<long long>(
+            0,
+            config::kObstacleCase3FusionWindowMs -
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() -
+                    case3FusionAcquireTime_).count());
+    }
     return result;
 }
 

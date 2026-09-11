@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace config
 {
 // Porta HTTP usada pelo dashboard e pelo WebSocket.
@@ -73,6 +75,17 @@ constexpr const char* kForwardCameraStatusPath =
 // nem o estado da câmera inferior.
 constexpr const char* kForwardLineStatusPath =
     "/dev/shm/obr_forward_line_status.json";
+
+// O gravador diagnóstico da CAM1 observa este IPC e permanece desligado quando
+// o arquivo está ausente ou contém active=false. Ele nunca concede autoridade
+// de movimento à câmera frontal.
+constexpr const char* kForwardReacquisitionControlPath =
+    "/dev/shm/obr_forward_reacquisition_capture.json";
+
+// Cada sessão curta mantém imagens e JSONL dentro do diretório do projeto.
+// O serviço usa /home/raspberry/OBR2026K como diretório de trabalho.
+constexpr const char* kForwardReacquisitionSessionRoot =
+    "logs/forward_reacquisition";
 
 // Gate da percepção das áreas verde e vermelha da sala de resgate.
 // Somente o modo isolado de validação deve mantê-lo ativo nesta etapa.
@@ -734,9 +747,15 @@ constexpr double kObstacleRearmDistanceCm = 15.0;
 constexpr int kObstacleRearmConfirmationSamples = 3;
 
 // A medição gira 60 graus para enxergar a passagem lateral além do obstáculo.
-// Depois da escolha, o robô retorna a 45 graus para preservar a trajetória.
+// Depois da escolha, o robô retorna a 40 graus para fechar a aproximação antes
+// da reta curta e da curva nominal.
 constexpr double kObstacleClearanceScanDegrees = 60.0;
-constexpr double kObstacleSideApproachDegrees = 45.0;
+constexpr double kObstacleSideApproachDegrees = 40.0;
+// A CAM1 confirma preto apenas nesta janela angular do scan. Antes dela, o
+// obstáculo pode preencher a ROI; depois dela, a faixa lateral pode sair do quadro.
+constexpr double kObstacleCameraBlackMinimumAngleDegrees = 10.0;
+constexpr double kObstacleCameraBlackMaximumAngleDegrees = 40.0;
+constexpr int kObstacleCameraBlackConfirmationFrames = 3;
 // Os primeiros 25 graus ainda podem manter o obstáculo frontal dentro do cone
 // do ultrassônico. A medição final também exige que o robô esteja dentro da
 // tolerância do alvo de 60 graus e com velocidade angular estabilizada.
@@ -775,7 +794,7 @@ constexpr int kObstacleTurnTimeoutMs = 12000;
 
 // Primeira reta experimental após a escolha do lado. O alvo de heading é o
 // yaw realmente alcançado no posicionamento lateral, não o yaw base.
-constexpr double kObstacleSelectedForwardDistanceCm = 10.0;
+constexpr double kObstacleSelectedForwardDistanceCm = 12.0;
 constexpr double kObstacleSelectedForwardPower = 0.75;
 constexpr double kObstacleSelectedForwardMaximumHeadingCorrection = 0.04;
 constexpr double kObstacleSelectedForwardFullHeadingErrorDegrees = 10.0;
@@ -789,11 +808,35 @@ constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
 // Depois da curva validada, este pivot apenas aponta a câmera mais para dentro.
 constexpr double kObstacleFinalInwardPivotDegrees = 40.0;
 
+// Recuperação antecipada exclusiva da curva de obstáculo. Três amostras novas
+// do Fusion cancelam a curva nominal; os encoders medem o avanço curto e a IMU
+// limita o pivot de busca para impedir movimento indefinido.
+constexpr int kObstacleFusionReacquireConfirmationFrames = 3;
+constexpr double kObstacleReacquireForwardDistanceCm = 5.0;
+constexpr double kObstacleReacquireSearchMaximumDegrees = 100.0;
+
+// O caso 3 conserva somente o frame lateral mais dominante da parábola. A
+// memória passa a ter validade temporal apenas após o primeiro Fusion estável.
+constexpr std::uint64_t kObstacleParabolaMinimumBlackPixels = 3000;
+constexpr double kObstacleParabolaMinimumDominance = 1.5;
+constexpr int kObstacleParabolaGapLostConfirmationFrames = 3;
+constexpr int kObstacleParabolaNearValidationFrames = 3;
+constexpr int kObstacleParabolaNearRequiredVotes = 2;
+constexpr int kObstacleCase3FusionWindowMs = 2000;
+// Avanço reto, em centímetros, executado antes do pivot do caso 3. A distância
+// cria folga do obstáculo e continua limitada pelos encoders e pelo timeout.
+constexpr double kObstacleParabolaReacquireForwardDistanceCm = 2.0;
+// Limite angular, em graus, da busca lateral iniciada pelo caso 3.
+constexpr double kObstacleParabolaRearBlockDegrees = 65.0;
+// Limite menor, em graus, aplicado somente ao Fusion que tenta levar o robô para
+// o lado oposto ao melhor lado salvo após o desvio nominal do obstáculo.
+constexpr double kObstaclePostObstacleFusionReturnLimitDegrees = 35.0;
+
 // Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
 constexpr double kObstacleFirstForwardDistanceCm = 25.0;
 constexpr double kObstacleSecondForwardDistanceCm = 30.0;
 constexpr double kObstacleThirdForwardDistanceCm = 21.5;
-constexpr double kObstacleReverseDistanceCm = 5.0;
+constexpr double kObstacleReverseDistanceCm = 2.0;
 
 // Potências normalizadas dos deslocamentos para frente e em ré.
 constexpr double kObstacleForwardPower = 0.75;
@@ -821,6 +864,12 @@ static_assert(kObstacleClearanceScanDegrees > 0.0 &&
                   kObstacleSideApproachDegrees <= 90.0 &&
                   kObstacleClearanceScanDegrees >
                       kObstacleSideApproachDegrees &&
+                  kObstacleCameraBlackMinimumAngleDegrees >= 0.0 &&
+                  kObstacleCameraBlackMaximumAngleDegrees >
+                      kObstacleCameraBlackMinimumAngleDegrees &&
+                  kObstacleCameraBlackMaximumAngleDegrees <
+                      kObstacleClearanceScanDegrees &&
+                  kObstacleCameraBlackConfirmationFrames > 0 &&
                   kObstacleClearanceIgnoreDegrees >= 0.0 &&
                   kObstacleClearanceIgnoreDegrees <
                       kObstacleClearanceScanDegrees &&
@@ -861,7 +910,26 @@ static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                   kObstacleCurveMaximumHeadingCorrection > 0.0 &&
                   kObstacleCurveFullHeadingErrorDegrees > 0.0 &&
                   kObstacleFinalInwardPivotDegrees > 0.0 &&
-                  kObstacleFinalInwardPivotDegrees <= 45.0,
+                  kObstacleFinalInwardPivotDegrees <= 45.0 &&
+                  kObstacleFusionReacquireConfirmationFrames > 0 &&
+                  kObstacleReacquireForwardDistanceCm > 0.0 &&
+                  kObstacleReacquireSearchMaximumDegrees > 0.0 &&
+                  kObstacleReacquireSearchMaximumDegrees < 180.0 &&
+                  kObstacleParabolaMinimumBlackPixels > 0 &&
+                  kObstacleParabolaMinimumDominance > 1.0 &&
+                  kObstacleParabolaGapLostConfirmationFrames > 0 &&
+                  kObstacleParabolaNearValidationFrames > 0 &&
+                  kObstacleParabolaNearRequiredVotes > 0 &&
+                  kObstacleParabolaNearRequiredVotes <=
+                      kObstacleParabolaNearValidationFrames &&
+                  kObstacleCase3FusionWindowMs > 0 &&
+                  kObstacleParabolaReacquireForwardDistanceCm > 0.0 &&
+                  kObstacleParabolaRearBlockDegrees > 0.0 &&
+                  kObstacleParabolaRearBlockDegrees <
+                      kObstacleReacquireSearchMaximumDegrees &&
+                  kObstaclePostObstacleFusionReturnLimitDegrees > 0.0 &&
+                  kObstaclePostObstacleFusionReturnLimitDegrees <
+                      kObstacleParabolaRearBlockDegrees,
               "Os ângulos do desvio devem permanecer válidos.");
 static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
                   kObstacleSecondForwardDistanceCm > 0.0 &&

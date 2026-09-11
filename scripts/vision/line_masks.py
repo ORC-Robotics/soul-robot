@@ -373,7 +373,11 @@ def create_structural_line_mask(
     return structural_mask
 
 
-def component_has_min_thickness(component_mask):
+def component_has_min_thickness(
+    component_mask,
+    minimum_thickness_px=LINE_MIN_COMPONENT_THICKNESS_PX,
+    minimum_core_ratio=LINE_MIN_COMPONENT_CORE_RATIO,
+):
     """
     Rejeita componentes predominantemente finos,
     como frestas entre placas da pista.
@@ -400,7 +404,7 @@ def component_has_min_thickness(component_mask):
     )
 
     minimum_radius = (
-        LINE_MIN_COMPONENT_THICKNESS_PX
+        minimum_thickness_px
         / 2.0
     )
 
@@ -417,7 +421,7 @@ def component_has_min_thickness(component_mask):
 
     return (
         thick_core_ratio
-        >= LINE_MIN_COMPONENT_CORE_RATIO
+        >= minimum_core_ratio
     )
 
 
@@ -446,6 +450,11 @@ def create_line_candidate_mask(
 
     accepted_contours = []
 
+    minimum_area_px = vision_profile.get(
+        "line_min_component_area_px",
+        LINE_MIN_COMPONENT_AREA_PX,
+    )
+
     minimum_short_side_px = (
         min(structural_mask.shape[:2])
         * vision_profile[
@@ -470,7 +479,7 @@ def create_line_candidate_mask(
         # uma faixa útil para o robô.
         if (
             contour_area
-            < LINE_MIN_COMPONENT_AREA_PX
+            < minimum_area_px
         ):
             continue
 
@@ -518,7 +527,15 @@ def create_line_candidate_mask(
         )
 
         if not component_has_min_thickness(
-            component_mask
+            component_mask,
+            vision_profile.get(
+                "line_min_component_thickness_px",
+                LINE_MIN_COMPONENT_THICKNESS_PX,
+            ),
+            vision_profile.get(
+                "line_min_component_core_ratio",
+                LINE_MIN_COMPONENT_CORE_RATIO,
+            ),
         ):
             continue
 

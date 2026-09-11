@@ -950,6 +950,42 @@ std::string DashboardServer::buildTelemetryJson(
          << (obstacleRightClearanceAvailable ? "true" : "false")
          << ",\"obstacleSelectedSide\":\""
          << state.autonomousStatus.obstacleSelectedSide << "\""
+         << ",\"cameraBlackLeft\":"
+         << (state.autonomousStatus.cameraBlackLeft ? "true" : "false")
+         << ",\"cameraBlackRight\":"
+         << (state.autonomousStatus.cameraBlackRight ? "true" : "false")
+         << ",\"cameraBlackLeftFrames\":"
+         << state.autonomousStatus.cameraBlackLeftFrames
+         << ",\"cameraBlackRightFrames\":"
+         << state.autonomousStatus.cameraBlackRightFrames
+         << ",\"selectedSideSource\":\""
+         << state.autonomousStatus.selectedSideSource << "\""
+         << ",\"rawBestParabolaSide\":\""
+         << state.autonomousStatus.rawBestParabolaSide << "\""
+         << ",\"bestParabolaSide\":\""
+         << state.autonomousStatus.bestParabolaSide << "\""
+         << ",\"bestParabolaScore\":"
+         << state.autonomousStatus.bestParabolaScore
+         << ",\"bestParabolaLeftBlack\":"
+         << state.autonomousStatus.bestParabolaLeftBlack
+         << ",\"bestParabolaRightBlack\":"
+         << state.autonomousStatus.bestParabolaRightBlack
+         << ",\"bestParabolaSequence\":"
+         << state.autonomousStatus.bestParabolaSequence
+         << ",\"bestParabolaSideValid\":"
+         << (state.autonomousStatus.bestParabolaSideValid ? "true" : "false")
+         << ",\"nearForwardLineVisible\":"
+         << (state.autonomousStatus.nearForwardLineVisible ? "true" : "false")
+         << ",\"nearForwardLineVotes\":"
+         << state.autonomousStatus.nearForwardLineVotes
+         << ",\"nearForwardLineSamples\":"
+         << state.autonomousStatus.nearForwardLineSamples
+         << ",\"case3Armed\":"
+         << (state.autonomousStatus.case3Armed ? "true" : "false")
+         << ",\"case3FusionAcquireTime\":"
+         << state.autonomousStatus.case3FusionAcquireTime
+         << ",\"case3TimeRemainingMs\":"
+         << state.autonomousStatus.case3TimeRemainingMs
          << ",\"servoRoutineWaitingForConfirmation\":"
          << (state.autonomousStatus.servoRoutineWaitingForConfirmation ? "true" : "false")
          << ",\"servoRoutineInternalObjectStored\":"
@@ -1331,6 +1367,9 @@ std::string DashboardServer::dashboardHtml()
     .camera-feed-card[data-camera-id="forward"] .camera-frame { aspect-ratio: 16 / 9; }
     .camera-frame img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .camera-frame.offline img { opacity: 0; }
+    .parabola-best-overlay { position: absolute; z-index: 2; top: 8px; right: 8px; padding: 6px 9px; border: 2px solid #7f8a99; border-radius: 7px; background: rgba(5, 9, 14, .82); color: #d8dee8; font: 800 .72rem/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-line; pointer-events: none; }
+    .parabola-best-overlay[data-best-side="LEFT"] { border-color: #43d7ff; color: #43d7ff; }
+    .parabola-best-overlay[data-best-side="RIGHT"] { border-color: #ffd33d; color: #ffd33d; }
     .camera-message { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); text-align: center; padding: var(--space-5); }
     .camera-frame.online .camera-message { display: none; }
     .camera-placeholder { display: grid; align-content: center; justify-items: center; gap: var(--space-2); width: 100%; height: 100%; padding: var(--space-6); text-align: center; }
@@ -2245,6 +2284,9 @@ std::string DashboardServer::dashboardHtml()
     const mountedCameraStatuses = new Map();
     const mountedCameraModeButtons = [];
     const cameraReconnectTimers = new Map();
+    let latestRawBestParabolaSide = "NONE";
+    let latestParabolaBestSide = "NONE";
+    let latestParabolaBestScore = 0;
     let lastCameraStatusTimestamp = null;
     let lastCameraStatusChangeAtMs = 0;
     let lastCameraMetadataSignature = "";
@@ -2935,6 +2977,7 @@ std::string DashboardServer::dashboardHtml()
         updateMode(data);
         updateAutonomousMission(data);
         updateStateMachine(data);
+        updateParabolaBestOverlay(data);
         element("cpu").textContent = `${formatNumber(data.cpu, 1)}%`;
         element("temp").textContent = `${formatNumber(data.temperature, 1)} °C`;
         element("ram").textContent = `${formatNumber(data.ram, 1)}%`;
@@ -3752,6 +3795,14 @@ std::string DashboardServer::dashboardHtml()
       };
       mountedCameraImages.set(camera.id, image);
       frame.appendChild(image);
+      if (camera.id === "forward") {
+        const bestOverlay = document.createElement("div");
+        bestOverlay.className = "parabola-best-overlay";
+        bestOverlay.dataset.parabolaBestOverlay = "";
+        bestOverlay.dataset.bestSide = latestParabolaBestSide;
+        bestOverlay.textContent = `RAW BEST: ${latestRawBestParabolaSide}\nRECOVERY SIDE: ${latestParabolaBestSide}\nSCORE=${latestParabolaBestScore}`;
+        frame.appendChild(bestOverlay);
+      }
       const message = document.createElement("div");
       message.className = "camera-message";
       const messageTitle = document.createElement("strong");
@@ -3761,6 +3812,25 @@ std::string DashboardServer::dashboardHtml()
       message.append(messageTitle, messageDetail);
       frame.appendChild(message);
       connectCameraImage(camera, image, frame, generation);
+    }
+
+    function updateParabolaBestOverlay(data) {
+      const reportedRawSide = String(data.rawBestParabolaSide || "NONE");
+      const reportedSide = String(data.bestParabolaSide || "NONE");
+      latestParabolaBestSide = data.bestParabolaSideValid === true &&
+        ["LEFT", "RIGHT"].includes(reportedSide) ? reportedSide : "NONE";
+      latestRawBestParabolaSide = latestParabolaBestSide !== "NONE" &&
+        ["LEFT", "RIGHT"].includes(reportedRawSide) ? reportedRawSide : "NONE";
+      const reportedScore = Number(data.bestParabolaScore);
+      latestParabolaBestScore = latestParabolaBestSide !== "NONE" &&
+        Number.isFinite(reportedScore) ? Math.max(0, Math.round(reportedScore)) : 0;
+      document.querySelectorAll("[data-parabola-best-overlay]").forEach(overlay => {
+        overlay.dataset.bestSide = latestParabolaBestSide;
+        setTextIfChanged(
+          overlay,
+          `RAW BEST: ${latestRawBestParabolaSide}\nRECOVERY SIDE: ${latestParabolaBestSide}\nSCORE=${latestParabolaBestScore}`
+        );
+      });
     }
 
     function buildCameraPlaceholder(camera, frame) {

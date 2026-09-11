@@ -20,7 +20,7 @@ desvio de obstáculo usado no OBR2026K.
 6. Gira 90° à esquerda.
 7. Avança 21,5 cm.
 8. Gira 90° à direita.
-9. Recua 5 cm e devolve a autoridade ao segue-linha.
+9. Recua 2 cm e devolve a autoridade ao segue-linha.
 
 Depois de iniciado, linha, verde e câmera não alteram a sequência. E-Stop,
 comando Parar, perda da ESP32, IMU ou encoders e timeouts permanecem acima do

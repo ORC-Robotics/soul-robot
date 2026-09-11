@@ -729,6 +729,68 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
                 hasCachedForwardLineSnapshot_);
         }
 
+        // Campos obstacleBlack são aditivos. Um produtor antigo ou uma leitura
+        // inválida não pode derrubar o contrato frontal usado por GAP/LOST.
+        const bool obstacleBlackValid =
+            tryGetJsonBool(
+                json, "obstacleBlackVisible", candidate.obstacleBlackVisible) &&
+            tryGetJsonUnsignedInteger(
+                json,
+                "obstacleBlackPixelCount",
+                candidate.obstacleBlackPixelCount) &&
+            tryGetJsonNumber(
+                json, "obstacleBlackRatio", candidate.obstacleBlackRatio) &&
+            tryGetJsonUnsignedInteger(
+                json,
+                "obstacleBlackLargestComponent",
+                candidate.obstacleBlackLargestComponent) &&
+            tryGetJsonUnsignedInteger(
+                json,
+                "obstacleBlackSequence",
+                candidate.obstacleBlackSequence) &&
+            std::isfinite(candidate.obstacleBlackRatio) &&
+            candidate.obstacleBlackRatio >= 0.0 &&
+            candidate.obstacleBlackRatio <= 1.0;
+        if (!obstacleBlackValid)
+        {
+            candidate.obstacleBlackVisible = false;
+            candidate.obstacleBlackPixelCount = 0;
+            candidate.obstacleBlackRatio = 0.0;
+            candidate.obstacleBlackLargestComponent = 0;
+            candidate.obstacleBlackSequence = 0;
+        }
+
+        // O caso 3 recebe apenas contagens simples da CAM1. Ausência desses
+        // campos mantém o desvio e todos os consumidores globais inalterados.
+        const bool parabolaBlackValid =
+            tryGetJsonUnsignedInteger(
+                json, "parabolaLeftBlack", candidate.parabolaLeftBlack) &&
+            tryGetJsonUnsignedInteger(
+                json, "parabolaRightBlack", candidate.parabolaRightBlack) &&
+            tryGetJsonUnsignedInteger(
+                json, "parabolaSequence", candidate.parabolaSequence) &&
+            tryGetJsonUnsignedInteger(
+                json,
+                "parabolaNearForwardBlack",
+                candidate.parabolaNearForwardBlack) &&
+            tryGetJsonUnsignedInteger(
+                json,
+                "parabolaNearForwardLargest",
+                candidate.parabolaNearForwardLargest) &&
+            tryGetJsonBool(
+                json,
+                "parabolaNearForwardVisible",
+                candidate.parabolaNearForwardVisible);
+        if (!parabolaBlackValid)
+        {
+            candidate.parabolaLeftBlack = 0;
+            candidate.parabolaRightBlack = 0;
+            candidate.parabolaSequence = 0;
+            candidate.parabolaNearForwardBlack = 0;
+            candidate.parabolaNearForwardLargest = 0;
+            candidate.parabolaNearForwardVisible = false;
+        }
+
         const bool valuesValid =
             candidate.sequence > 0 &&
             (candidate.pathState == "PRESENT" || candidate.pathState == "UNCERTAIN" ||

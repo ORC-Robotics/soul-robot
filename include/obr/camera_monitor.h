@@ -98,6 +98,18 @@ struct ForwardLineSnapshot
     double timestamp = 0.0;
     std::uint64_t sequence = 0;
     double ageMs = 0.0;
+    // Evidência simples e independente usada somente durante o scan de obstáculo.
+    bool obstacleBlackVisible = false;
+    std::uint64_t obstacleBlackPixelCount = 0;
+    double obstacleBlackRatio = 0.0;
+    std::uint64_t obstacleBlackLargestComponent = 0;
+    std::uint64_t obstacleBlackSequence = 0;
+    std::uint64_t parabolaLeftBlack = 0;
+    std::uint64_t parabolaRightBlack = 0;
+    std::uint64_t parabolaSequence = 0;
+    std::uint64_t parabolaNearForwardBlack = 0;
+    std::uint64_t parabolaNearForwardLargest = 0;
+    bool parabolaNearForwardVisible = false;
 
     bool lineObservationValid() const;
     bool normalCommandValid() const;

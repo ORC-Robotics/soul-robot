@@ -73,6 +73,36 @@ class CalibrationTests(unittest.TestCase):
         self.assertTrue(np.all(mask[tape] == 255))
         self.assertFalse(np.any(mask[:300][green > 0]))
 
+    def test_down_profile_rejects_seam_and_fragment_and_keeps_tape(self):
+        seam = np.zeros((360, 480), np.uint8)
+        seam[47:360, 229:251] = 255
+        seam_mask = create_line_candidate_mask(
+            seam,
+            CAMERA_PROFILES["down"]["vision"],
+        )
+
+        fragment = np.zeros((360, 480), np.uint8)
+        fragment[120:148, 60:88] = 255
+        fragment_mask = create_line_candidate_mask(
+            fragment,
+            CAMERA_PROFILES["down"]["vision"],
+        )
+
+        tape = np.zeros((360, 480), np.uint8)
+        tape_polygon = np.asarray(
+            [[226, 47], [254, 47], [275, 359], [205, 359]],
+            dtype=np.int32,
+        )
+        cv2.fillPoly(tape, [tape_polygon], 255)
+        tape_mask = create_line_candidate_mask(
+            tape,
+            CAMERA_PROFILES["down"]["vision"],
+        )
+
+        self.assertEqual(cv2.countNonZero(seam_mask), 0)
+        self.assertEqual(cv2.countNonZero(fragment_mask), 0)
+        self.assertGreater(cv2.countNonZero(tape_mask), 0)
+
     def test_analysis_rejects_modified_rgb_and_incompatible_baseline_mask(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

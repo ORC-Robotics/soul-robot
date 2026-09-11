@@ -13,3 +13,4 @@ camera_fov_test/**/*.log
 .venv*/
 dataset/
 training_outputs/
+logs/

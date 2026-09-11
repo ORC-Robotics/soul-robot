@@ -206,6 +206,11 @@ GREEN_CLOSE_ITERATIONS = 2
 LINE_MIN_COMPONENT_AREA_PX = 120
 LINE_MIN_COMPONENT_THICKNESS_PX = 11.0
 LINE_MIN_COMPONENT_CORE_RATIO = 0.15
+# Filtros conservadores exclusivos da câmera inferior. Ajuste estes três
+# valores juntos se a pista real usar fita ou frestas com dimensões diferentes.
+DOWN_LINE_MIN_COMPONENT_AREA_PX = 800
+DOWN_LINE_MIN_COMPONENT_THICKNESS_PX = 20.0
+DOWN_LINE_MIN_COMPONENT_CORE_RATIO = 0.25
 GREEN_MIN_AREA_RATIO = 1900.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
@@ -480,6 +485,15 @@ CAMERA_PROFILES = {
             # Vinte pixels mantêm aproximadamente a mesma espessura angular
             # mínima do perfil frontal após o aumento de campo de visão.
             "full_line_min_short_side_ratio": 20.0 / 480.0,
+            # A fresta entre placas forma um componente longo, mas mantém pouca
+            # espessura real. A fita observada é muito mais larga mesmo inclinada.
+            "line_min_component_area_px": DOWN_LINE_MIN_COMPONENT_AREA_PX,
+            "line_min_component_thickness_px": (
+                DOWN_LINE_MIN_COMPONENT_THICKNESS_PX
+            ),
+            "line_min_component_core_ratio": (
+                DOWN_LINE_MIN_COMPONENT_CORE_RATIO
+            ),
             # Fração máxima da imagem ocupada por um componente aceito.
             # O valor 1,0 mantém esse limite desativado; reduzi-lo pode rejeitar
             # interseções ou a fita muito próxima da câmera.

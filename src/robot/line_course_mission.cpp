@@ -35,6 +35,24 @@ AutonomousStatus makeObstacleStatus(
     status.obstacleLeftClearance = output.leftClearance;
     status.obstacleRightClearance = output.rightClearance;
     status.obstacleSelectedSide = output.selectedSide;
+    status.cameraBlackLeft = output.cameraBlackLeft;
+    status.cameraBlackRight = output.cameraBlackRight;
+    status.cameraBlackLeftFrames = output.cameraBlackLeftFrames;
+    status.cameraBlackRightFrames = output.cameraBlackRightFrames;
+    status.selectedSideSource = output.selectedSideSource;
+    status.rawBestParabolaSide = output.rawBestParabolaSide;
+    status.bestParabolaSide = output.bestParabolaSide;
+    status.bestParabolaScore = output.bestParabolaScore;
+    status.bestParabolaLeftBlack = output.bestParabolaLeftBlack;
+    status.bestParabolaRightBlack = output.bestParabolaRightBlack;
+    status.bestParabolaSequence = output.bestParabolaSequence;
+    status.bestParabolaSideValid = output.bestParabolaSideValid;
+    status.nearForwardLineVisible = output.nearForwardLineVisible;
+    status.nearForwardLineVotes = output.nearForwardLineVotes;
+    status.nearForwardLineSamples = output.nearForwardLineSamples;
+    status.case3Armed = output.case3Armed;
+    status.case3FusionAcquireTime = output.case3FusionAcquireTime;
+    status.case3TimeRemainingMs = output.case3TimeRemainingMs;
     return status;
 }
 }
@@ -78,7 +96,8 @@ void LineCourseMission::update(
         esp32Telemetry,
         cameraLineSnapshot,
         !greenTurnAroundManeuver_.active() && cameraReady &&
-            cameraLineSnapshot.sourceFresh);
+            cameraLineSnapshot.sourceFresh,
+        forwardLineSnapshot);
     if (obstacleOutput.failed)
     {
         robotState.stop();
@@ -190,8 +209,22 @@ void LineCourseMission::update(
         !(
             normalLineFollowing &&
             cameraLineSnapshot.normalSteeringValid));
-    robotState.updateAutonomousStatus(forwardLineAssist_.status(
+    AutonomousStatus status = forwardLineAssist_.status(
         "line_following",
         "Seguindo a linha pela câmera inferior",
-        forwardLineSnapshot));
+        forwardLineSnapshot);
+    status.rawBestParabolaSide = obstacleOutput.rawBestParabolaSide;
+    status.bestParabolaSide = obstacleOutput.bestParabolaSide;
+    status.bestParabolaScore = obstacleOutput.bestParabolaScore;
+    status.bestParabolaLeftBlack = obstacleOutput.bestParabolaLeftBlack;
+    status.bestParabolaRightBlack = obstacleOutput.bestParabolaRightBlack;
+    status.bestParabolaSequence = obstacleOutput.bestParabolaSequence;
+    status.bestParabolaSideValid = obstacleOutput.bestParabolaSideValid;
+    status.nearForwardLineVisible = obstacleOutput.nearForwardLineVisible;
+    status.nearForwardLineVotes = obstacleOutput.nearForwardLineVotes;
+    status.nearForwardLineSamples = obstacleOutput.nearForwardLineSamples;
+    status.case3Armed = obstacleOutput.case3Armed;
+    status.case3FusionAcquireTime = obstacleOutput.case3FusionAcquireTime;
+    status.case3TimeRemainingMs = obstacleOutput.case3TimeRemainingMs;
+    robotState.updateAutonomousStatus(status);
 }

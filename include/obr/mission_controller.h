@@ -99,7 +99,8 @@ private:
     void updateObstacleAvoidance(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
-        const CameraLineSnapshot& cameraLineSnapshot);
+        const CameraLineSnapshot& cameraLineSnapshot,
+        const ForwardLineSnapshot& forwardLineSnapshot);
     void updateServoRoutine(
         RobotState& robotState,
         ServoRoutineKind kind,
