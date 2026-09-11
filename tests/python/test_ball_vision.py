@@ -1,6 +1,7 @@
 import math
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -18,7 +19,7 @@ from ball_vision.ball_detector import (
     BlackBallDetector,
     SilverBallDetector,
 )
-from ball_vision.ball_tracker import BallTracker, BallTrackerConfig
+from ball_vision.ball_tracker import BallTracker, BallTrackerConfig, TargetState
 from ball_vision.camera import CameraConfig, FrontCamera
 import ball_vision.camera as camera_module
 from ball_vision.distance_calibration import DistanceCalibration
@@ -27,6 +28,10 @@ from ball_vision.main import (
     build_esp32_payload,
     calculate_horizontal_angle,
     classify_position,
+)
+from ball_vision.yolo_detector import (
+    YoloBallDetector,
+    YoloBallDetectorConfig,
 )
 
 
@@ -308,6 +313,180 @@ class BallTrackerTest(unittest.TestCase):
             visible_area_pixels=float(visible_area_pixels),
         )
 
+    @staticmethod
+    def yolo_candidate(
+        center_x,
+        radius,
+        ball_type="black_ball",
+        confidence=0.70,
+    ):
+        return BallCandidate(
+            ball_type=ball_type,
+            center_x=float(center_x),
+            center_y=250.0,
+            radius_pixels=float(radius),
+            diameter_pixels=float(radius * 2.0),
+            contour_area_pixels=float(radius * radius * 4.0),
+            circularity=float(confidence),
+            circle_fill_ratio=float(confidence),
+            top_clipped=False,
+            detection_method="yolo",
+            visible_area_pixels=float(radius * radius * 4.0),
+            bounding_box=(
+                float(center_x - radius),
+                float(250.0 - radius),
+                float(radius * 2.0),
+                float(radius * 2.0),
+            ),
+        )
+
+    def test_yolo_acquisition_prioritizes_silver_over_black(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        black = self.yolo_candidate(300, 70, "black_ball", 0.95)
+        silver = self.yolo_candidate(650, 50, "silver_ball", 0.60)
+
+        selected = tracker.update([black, silver], frame_width=960)
+
+        self.assertEqual(selected[0].ball_type, "silver_ball")
+        self.assertTrue(tracker.locked)
+
+    def test_target_switch_requires_all_confirmation_frames(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        locked = self.yolo_candidate(250, 40, "black_ball", 0.70)
+        tracker.update([locked], frame_width=960)
+
+        for frame_index in range(
+            tracker.config.switch_confirmation_frames
+        ):
+            current = self.yolo_candidate(
+                250 + frame_index,
+                40,
+                "black_ball",
+                0.70,
+            )
+            replacement = self.yolo_candidate(
+                320,
+                55,
+                "silver_ball",
+                0.80,
+            )
+            selected = tracker.update(
+                [current, replacement],
+                frame_width=960,
+            )
+            if frame_index + 1 < tracker.config.switch_confirmation_frames:
+                self.assertEqual(selected[0].ball_type, "black_ball")
+
+        self.assertEqual(selected[0].ball_type, "silver_ball")
+
+    def test_reacquisition_requires_consecutive_compatible_frames(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball")],
+            frame_width=960,
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+
+        reacquired = self.yolo_candidate(600, 45, "silver_ball")
+        self.assertEqual(
+            tracker.update([reacquired], frame_width=960),
+            [],
+        )
+        selected = tracker.update([reacquired], frame_width=960)
+
+        self.assertEqual(selected[0].ball_type, "silver_ball")
+        self.assertAlmostEqual(selected[0].center_x, 600.0)
+
+    def test_single_high_confidence_candidate_reacquires_locked_target(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball", 0.91)],
+            frame_width=960,
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+
+        reacquired = tracker.update(
+            [self.yolo_candidate(600, 45, "silver_ball", 0.91)],
+            frame_width=960,
+        )
+
+        self.assertEqual(reacquired[0].ball_type, "silver_ball")
+        self.assertAlmostEqual(reacquired[0].center_x, 600.0)
+
+    def test_visible_jump_enters_reacquisition_without_empty_frame(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball", 0.91)],
+            frame_width=960,
+        )
+
+        reacquired = tracker.update(
+            [self.yolo_candidate(600, 45, "silver_ball", 0.91)],
+            frame_width=960,
+        )
+
+        self.assertEqual(tracker.state, TargetState.TRACKING)
+        self.assertTrue(tracker.locked)
+        self.assertEqual(reacquired[0].ball_type, "silver_ball")
+        self.assertAlmostEqual(reacquired[0].center_x, 600.0)
+
+    def test_high_confidence_does_not_skip_confirmation_with_two_candidates(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball", 0.91)],
+            frame_width=960,
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+
+        candidates = [
+            self.yolo_candidate(600, 45, "silver_ball", 0.91),
+            self.yolo_candidate(760, 40, "silver_ball", 0.89),
+        ]
+
+        self.assertEqual(tracker.update(candidates, frame_width=960), [])
+
+    def test_reacquisition_tolerates_one_empty_inference(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball")],
+            frame_width=960,
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+
+        reacquired = self.yolo_candidate(600, 45, "silver_ball")
+        self.assertEqual(
+            tracker.update([reacquired], frame_width=960),
+            [],
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+        selected = tracker.update([reacquired], frame_width=960)
+
+        self.assertEqual(selected[0].ball_type, "silver_ball")
+        self.assertAlmostEqual(selected[0].center_x, 600.0)
+
+    def test_two_empty_inferences_clear_partial_reacquisition(self):
+        tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
+        tracker.update(
+            [self.yolo_candidate(180, 45, "silver_ball")],
+            frame_width=960,
+        )
+        tracker.update([], frame_width=960)
+
+        reacquired = self.yolo_candidate(600, 45, "silver_ball")
+        self.assertEqual(
+            tracker.update([reacquired], frame_width=960),
+            [],
+        )
+        self.assertEqual(tracker.update([], frame_width=960), [])
+        self.assertEqual(tracker.update([], frame_width=960), [])
+        self.assertEqual(
+            tracker.update([reacquired], frame_width=960),
+            [],
+        )
+        selected = tracker.update([reacquired], frame_width=960)
+
+        self.assertEqual(selected[0].ball_type, "silver_ball")
+
     def test_reduces_radius_and_center_variation_for_stationary_ball(self):
         tracker = BallTracker(BallTrackerConfig(acquisition_frames=1))
         measurements = (
@@ -498,6 +677,19 @@ class BallObservationTest(unittest.TestCase):
 
 
 class PublicBallVisionPipelineTest(unittest.TestCase):
+    def test_default_pipeline_uses_yolo_without_legacy_fallback(self):
+        pipeline = BallVisionPipeline()
+
+        self.assertIsInstance(pipeline.detector, YoloBallDetector)
+
+    def test_missing_yolo_model_fails_instead_of_using_legacy_detector(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            missing_model = Path(temporary_directory) / "missing.onnx"
+            with self.assertRaises(FileNotFoundError):
+                YoloBallDetector(
+                    YoloBallDetectorConfig(model_path=missing_model)
+                )
+
     def test_public_pipeline_can_be_imported_from_package(self):
         pipeline = BallVisionPipeline(
             tracker=BallTracker(BallTrackerConfig(acquisition_frames=1))

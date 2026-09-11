@@ -90,6 +90,19 @@ if(BUILD_TESTING)
         NAME ball_alignment_mission_test
         COMMAND ball_alignment_mission_test)
 
+    add_executable(rescue_area_mission_test
+        tests/rescue_area_mission_test.cpp
+        src/robot/ball_alignment_mission.cpp
+        src/robot/rescue_area_mission.cpp
+    )
+    target_include_directories(rescue_area_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(rescue_area_mission_test pthread)
+    endif()
+    add_test(
+        NAME rescue_area_mission_test
+        COMMAND rescue_area_mission_test)
+
     add_executable(obstacle_avoidance_test
         tests/obstacle_avoidance_test.cpp
         src/robot/imu_turn_controller.cpp

@@ -43,6 +43,7 @@ public:
         const Esp32TelemetrySnapshot& telemetry,
         double completionToleranceDegrees = 0.0,
         int correctionPulseMs = 0,
+        // Um valor negativo remove apenas o limite de pulsos; o timeout permanece ativo.
         int maximumCorrectionPulses = 0,
         double commandPower = 0.0,
         int timeoutMs = 0);
@@ -69,6 +70,7 @@ private:
     double correctionDirection_ = 1.0;
     int correctionPulseCount_ = 0;
     int correctionPulseMs_ = 0;
+    // Um valor negativo permite correções até o timeout total do giro.
     int maximumCorrectionPulses_ = 0;
     double commandPower_ = 0.0;
     int timeoutMs_ = 0;

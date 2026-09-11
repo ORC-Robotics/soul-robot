@@ -106,6 +106,9 @@ struct ForwardBallSnapshot
 {
     bool sourceFresh = false;
     bool detected = false;
+    // Indica uma candidata ainda em confirmação temporal. Ela nunca autoriza
+    // alinhamento, mas interrompe a busca enquanto o target lock decide.
+    bool candidateVisible = false;
     std::string type;
     double txDegrees = std::numeric_limits<double>::quiet_NaN();
     double distanceCm = std::numeric_limits<double>::quiet_NaN();

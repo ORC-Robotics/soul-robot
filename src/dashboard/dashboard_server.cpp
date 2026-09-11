@@ -2454,7 +2454,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "rescue_zone_triangle"
             ? "Orquestra SEARCH_ZONE, ALIGN_ZONE e APPROACH_ZONE sem duplicar seus controles."
           : mission === "rescue_area"
-            ? "Preserva o alinhamento e a aproximação para receber as detecções do futuro modelo."
+            ? "Liga o detector frontal, alinha, aproxima e conclui com um avanço curto pelos encoders."
           : mission === "obstacle_avoidance"
             ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
           : mission === "servo_initialize"
@@ -2527,8 +2527,10 @@ std::string DashboardServer::dashboardHtml()
         obstacle_centering_waiting_line: ["CENTRALIZANDO: AGUARDANDO LINHA", "warn", "machineStepPerception"],
         obstacle_centered: ["CENTRALIZADO", "warn", "machineStepFeedback"],
         obstacle_measuring_left: ["MEDINDO ESQUERDA", "warn", "machineStepPerception"],
+        obstacle_sampling_left: ["AMOSTRANDO ESQUERDA PARADO", "warn", "machineStepPerception"],
         obstacle_left_measured: ["ESQUERDA MEDIDA", "warn", "machineStepFeedback"],
         obstacle_measuring_right: ["MEDINDO DIREITA", "warn", "machineStepPerception"],
+        obstacle_sampling_right: ["AMOSTRANDO DIREITA PARADO", "warn", "machineStepPerception"],
         obstacle_side_selected: ["LADO ESCOLHIDO", "active", "machineStepMotion"],
         obstacle_side_selection_completed: ["LADO ESCOLHIDO: POSICIONADO", "active", "machineStepFeedback"],
         obstacle_selected_forward_start: ["AVANÇO 10 CM: INICIANDO", "warn", "machineStepFeedback"],
@@ -2588,16 +2590,35 @@ std::string DashboardServer::dashboardHtml()
         rescue_zone_approach_timeout: ["APPROACH_ZONE: TIMEOUT", "danger", "machineStepFeedback"],
         rescue_zone_triangle_success: ["TRIÂNGULO: SUCESSO", "active", "machineStepFeedback"],
         rescue_zone_triangle_failed: ["TRIÂNGULO: INTERROMPIDO", "danger", "machineStepFeedback"],
+        rescue_waiting_camera: ["RESGATE: AGUARDANDO CAM1", "warn", "machineStepPerception"],
+        rescue_victim_acquired: ["RESGATE: VÍTIMA CONFIRMADA", "active", "machineStepPerception"],
+        rescue_confirming_victim: ["RESGATE: CONFIRMANDO VÍTIMA", "warn", "machineStepPerception"],
+        rescue_search_pivot: ["RESGATE: PROCURANDO VÍTIMA", "active", "machineStepMotion"],
+        rescue_search_settling: ["RESGATE: ESTABILIZANDO BUSCA", "warn", "machineStepFeedback"],
+        rescue_search_waiting_frame: ["RESGATE: AGUARDANDO FRAME", "warn", "machineStepPerception"],
+        rescue_reacquiring_victim: ["RESGATE: REAQUISIÇÃO", "warn", "machineStepPerception"],
         ball_alignment_waiting_target: ["RESGATE: PROCURANDO VÍTIMA", "warn", "machineStepPerception"],
         ball_alignment_camera_stale: ["RESGATE: VISÃO OFFLINE", "danger", "machineStepFeedback"],
         ball_alignment_target_lost: ["RESGATE: ALVO PERDIDO", "warn", "machineStepPerception"],
         ball_alignment_target_lost_timeout: ["RESGATE: TIMEOUT DO ALVO", "danger", "machineStepFeedback"],
+        ball_alignment_motion_timeout: ["RESGATE: GIRO NÃO CONFIRMADO", "danger", "machineStepFeedback"],
         ball_alignment_turning: ["RESGATE: ALINHANDO", "active", "machineStepMotion"],
+        ball_alignment_correction_pulse: ["RESGATE: ALINHANDO", "active", "machineStepMotion"],
         ball_alignment_braking: ["RESGATE: ESTABILIZANDO", "warn", "machineStepFeedback"],
         ball_alignment_verifying: ["RESGATE: CONFIRMANDO", "warn", "machineStepPerception"],
         ball_alignment_fine_correction: ["RESGATE: CORREÇÃO FINA", "active", "machineStepMotion"],
         ball_approach_waiting_distance: ["RESGATE: SEM DISTÂNCIA", "warn", "machineStepPerception"],
+        ball_approach_waiting_imu: ["RESGATE: SEM HEADING", "warn", "machineStepPerception"],
         ball_approaching: ["RESGATE: APROXIMANDO", "active", "machineStepMotion"],
+        victim_collection_preparing: ["RESGATE: PREPARANDO COLETA", "warn", "machineStepFeedback"],
+        victim_collection_advancing: ["RESGATE: GARANTINDO COLETA", "active", "machineStepMotion"],
+        victim_collection_settling: ["RESGATE: ESTABILIZANDO COLETA", "warn", "machineStepFeedback"],
+        victim_collection_preparation_timeout: ["RESGATE: ROBÔ NÃO ESTABILIZOU", "danger", "machineStepFeedback"],
+        victim_collection_encoder_lost: ["RESGATE: ENCODERS PERDIDOS", "danger", "machineStepFeedback"],
+        victim_collection_encoder_mismatch: ["RESGATE: RODAS DIVERGENTES", "danger", "machineStepFeedback"],
+        victim_collection_stall: ["RESGATE: AVANÇO TRAVADO", "danger", "machineStepFeedback"],
+        victim_collection_timeout: ["RESGATE: TIMEOUT DA COLETA", "danger", "machineStepFeedback"],
+        rescue_waiting_exit_program: ["RESGATE: AGUARDANDO SAÍDA", "warn", "machineStepFeedback"],
         ball_reached: ["RESGATE: VÍTIMA ALCANÇADA", "active", "machineStepFeedback"]
       };
       let phase = String(data.autonomousPhase || "stopped");

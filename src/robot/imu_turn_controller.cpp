@@ -61,9 +61,11 @@ bool ImuTurnController::start(
     correctionPulseMs_ = correctionPulseMs > 0
                              ? correctionPulseMs
                              : config::kTurn90CorrectionPulseMs;
-    maximumCorrectionPulses_ = maximumCorrectionPulses > 0
-                                   ? maximumCorrectionPulses
-                                   : config::kTurn90MaximumCorrectionPulses;
+    maximumCorrectionPulses_ = maximumCorrectionPulses < 0
+                                   ? -1
+                                   : (maximumCorrectionPulses > 0
+                                          ? maximumCorrectionPulses
+                                          : config::kTurn90MaximumCorrectionPulses);
     commandPower_ = commandPower > 0.0
                         ? commandPower
                         : config::kTurn90CommandPower;
@@ -201,7 +203,8 @@ ImuTurnOutput ImuTurnController::update(
             "Giro pelo MPU6050 concluído",
             100.0);
     }
-    if (correctionPulseCount_ >= maximumCorrectionPulses_)
+    if (maximumCorrectionPulses_ > 0 &&
+        correctionPulseCount_ >= maximumCorrectionPulses_)
     {
         reset();
         return stoppedOutput(

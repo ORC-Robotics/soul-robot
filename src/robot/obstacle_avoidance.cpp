@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 namespace
 {
@@ -35,6 +36,10 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     case Phase::PositioningSelectedSide:
     case Phase::FinalInwardPivot:
         return updateTurn(telemetry);
+    case Phase::SamplingLeftClearance:
+        return updateClearanceSampling(telemetry, true);
+    case Phase::SamplingRightClearance:
+        return updateClearanceSampling(telemetry, false);
     case Phase::DrivingSelectedHeading:
         return updateSelectedForward(telemetry);
     case Phase::CurvingAroundObstacle:
@@ -56,6 +61,8 @@ void ObstacleAvoidance::reset()
     rightClearance_ = std::numeric_limits<double>::quiet_NaN();
     selectedSide_ = "NONE";
     clearanceSamples_.clear();
+    maximumClearanceAngleDegrees_ =
+        std::numeric_limits<double>::quiet_NaN();
     lastSampleUptimeMs_ = -1;
     forwardStartLeftCount_ = 0;
     forwardStartRightCount_ = 0;
@@ -169,7 +176,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCentering(
     yawBase_ = telemetry.yawZDeg;
     if (!startTurnToYaw(
             Phase::TurningLeftForMeasurement,
-            normalizedYaw(yawBase_ - config::kObstacleSideScanDegrees),
+            normalizedYaw(yawBase_ - config::kObstacleClearanceScanDegrees),
             telemetry))
     {
         return fail(
@@ -187,11 +194,6 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
     const ImuTurnOutput turn = turnController_.update(telemetry);
     const bool collectingLeft = phase_ == Phase::TurningLeftForMeasurement;
     const bool collectingRight = phase_ == Phase::TurningRightForMeasurement;
-    if ((turn.phase == "turning" || turn.phase == "turn_correction") &&
-        (collectingLeft || collectingRight))
-    {
-        collectClearanceDuringTurn(telemetry, collectingLeft);
-    }
     if (turn.result == ImuTurnResult::Failed)
     {
         return fail("obstacle_" + turn.phase, "Desvio: " + turn.action);
@@ -204,8 +206,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
                 collectingLeft ? "obstacle_measuring_left"
                                : "obstacle_measuring_right",
                 collectingLeft
-                    ? "MEDINDO ESQUERDA continuamente durante o giro"
-                    : "MEDINDO DIREITA continuamente durante o giro",
+                    ? "MIRANDO ESQUERDA; medindo somente com o robô estabilizado"
+                    : "MIRANDO DIREITA; medindo somente com o robô estabilizado",
                 turn.leftPower,
                 turn.rightPower);
         }
@@ -219,22 +221,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
     turnController_.reset();
     if (phase_ == Phase::TurningLeftForMeasurement)
     {
-        if (!finishClearanceMeasurement(true))
-        {
-            return fail(
-                "obstacle_left_clearance_unavailable",
-                "Desvio interrompido: nenhuma leitura válida na varredura esquerda");
-        }
-        if (!startTurnToYaw(
-                Phase::ReturningToBaseBeforeRight, yawBase_, telemetry))
-        {
-            return fail(
-                "obstacle_turn_start_failed",
-                "Desvio interrompido: não foi possível retornar ao yawBase");
-        }
-        return output(
-            "obstacle_left_measured",
-            "MEDIÇÃO ESQUERDA concluída; retornando ao yawBase");
+        return startClearanceSampling(true);
     }
     if (phase_ == Phase::ReturningToBaseBeforeRight)
     {
@@ -242,7 +229,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
         lastSampleUptimeMs_ = -1;
         if (!startTurnToYaw(
                 Phase::TurningRightForMeasurement,
-                normalizedYaw(yawBase_ + config::kObstacleSideScanDegrees),
+                normalizedYaw(yawBase_ + config::kObstacleClearanceScanDegrees),
                 telemetry))
         {
             return fail(
@@ -251,45 +238,11 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
         }
         return output(
             "obstacle_measuring_right",
-            "MEDINDO DIREITA durante o giro de yawBase até 45 graus");
+            "MIRANDO DIREITA; a medição ocorrerá com o robô estabilizado");
     }
     if (phase_ == Phase::TurningRightForMeasurement)
     {
-        if (!finishClearanceMeasurement(false))
-        {
-            return fail(
-                "obstacle_right_clearance_unavailable",
-                "Desvio interrompido: nenhuma leitura válida na varredura direita");
-        }
-        const double difference = leftClearance_ - rightClearance_;
-        if (std::abs(difference) <= config::kObstacleClearanceTieCm)
-        {
-            selectedSide_ =
-                config::kObstacleDefaultSideIsRight ? "RIGHT" : "LEFT";
-        }
-        else
-        {
-            selectedSide_ = difference > 0.0 ? "LEFT" : "RIGHT";
-        }
-
-        const double targetYaw = normalizedYaw(
-            yawBase_ + (selectedSide_ == "RIGHT" ? 1.0 : -1.0) *
-                           config::kObstacleSideScanDegrees);
-        if (std::abs(signedYawError(targetYaw, telemetry.yawZDeg)) <=
-            config::kObstacleTurnToleranceDegrees)
-        {
-            return startSelectedForward(telemetry);
-        }
-        if (!startTurnToYaw(
-                Phase::PositioningSelectedSide, targetYaw, telemetry))
-        {
-            return fail(
-                "obstacle_turn_start_failed",
-                "Desvio interrompido: não foi possível posicionar o lado escolhido");
-        }
-        return output(
-            "obstacle_side_selected",
-            "LADO ESCOLHIDO: " + selectedSide_ + "; posicionando yaw inicial");
+        return startClearanceSampling(false);
     }
     if (phase_ == Phase::FinalInwardPivot)
     {
@@ -304,18 +257,147 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
     return startSelectedForward(telemetry);
 }
 
-void ObstacleAvoidance::collectClearanceDuringTurn(
+ObstacleAvoidanceOutput ObstacleAvoidance::startClearanceSampling(
+    bool measuringLeft)
+{
+    clearanceSamples_.clear();
+    maximumClearanceAngleDegrees_ =
+        std::numeric_limits<double>::quiet_NaN();
+    lastSampleUptimeMs_ = -1;
+    clearanceSamplingStartedAt_ = std::chrono::steady_clock::now();
+    phase_ = measuringLeft ? Phase::SamplingLeftClearance
+                           : Phase::SamplingRightClearance;
+    return output(
+        measuringLeft ? "obstacle_sampling_left"
+                      : "obstacle_sampling_right",
+        measuringLeft
+            ? "ROBÔ PARADO: estabilizando o ultrassônico à esquerda"
+            : "ROBÔ PARADO: estabilizando o ultrassônico à direita");
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateClearanceSampling(
+    const Esp32TelemetrySnapshot& telemetry,
+    bool measuringLeft)
+{
+    const auto elapsed = std::chrono::steady_clock::now() -
+                         clearanceSamplingStartedAt_;
+    if (elapsed > std::chrono::milliseconds(
+                      config::kObstacleClearanceSamplingTimeoutMs))
+    {
+        return fail(
+            measuringLeft ? "obstacle_left_clearance_unavailable"
+                          : "obstacle_right_clearance_unavailable",
+            "Desvio interrompido: amostras estáveis insuficientes do ultrassônico");
+    }
+    if (elapsed < std::chrono::milliseconds(
+                      config::kObstacleClearanceSettleMs))
+    {
+        return output(
+            measuringLeft ? "obstacle_sampling_left"
+                          : "obstacle_sampling_right",
+            "ROBÔ PARADO: aguardando o eco do giro anterior sair");
+    }
+
+    collectStableClearance(telemetry, measuringLeft);
+    if (clearanceSamples_.size() < static_cast<std::size_t>(
+                                       config::kObstacleClearanceRequiredSamples))
+    {
+        return output(
+            measuringLeft ? "obstacle_sampling_left"
+                          : "obstacle_sampling_right",
+            "ROBÔ PARADO: coletando ultrassônico estável " +
+                std::to_string(clearanceSamples_.size()) + "/" +
+                std::to_string(config::kObstacleClearanceRequiredSamples));
+    }
+
+    if (!finishClearanceMeasurement(measuringLeft))
+    {
+        return fail(
+            measuringLeft ? "obstacle_left_clearance_unavailable"
+                          : "obstacle_right_clearance_unavailable",
+            "Desvio interrompido: nenhuma leitura ultrassônica estável");
+    }
+    if (!measuringLeft)
+    {
+        return continueAfterRightMeasurement(telemetry);
+    }
+    if (!startTurnToYaw(
+            Phase::ReturningToBaseBeforeRight, yawBase_, telemetry))
+    {
+        return fail(
+            "obstacle_turn_start_failed",
+            "Desvio interrompido: não foi possível retornar ao yawBase");
+    }
+    return output(
+        "obstacle_left_measured",
+        "MEDIÇÃO ESTÁVEL ESQUERDA concluída; retornando ao yawBase");
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterRightMeasurement(
+    const Esp32TelemetrySnapshot& telemetry)
+{
+    const double difference = leftClearance_ - rightClearance_;
+    if (std::abs(difference) <= config::kObstacleClearanceTieCm)
+    {
+        selectedSide_ =
+            config::kObstacleDefaultSideIsRight ? "RIGHT" : "LEFT";
+    }
+    else
+    {
+        selectedSide_ = difference > 0.0 ? "LEFT" : "RIGHT";
+    }
+    std::cout << "Obstacle side decision leftMaximumCm=" << leftClearance_
+              << " rightMaximumCm=" << rightClearance_
+              << " differenceCm=" << difference
+              << " selected=" << selectedSide_ << '\n';
+
+    const double targetYaw = normalizedYaw(
+        yawBase_ + (selectedSide_ == "RIGHT" ? 1.0 : -1.0) *
+                       config::kObstacleSideApproachDegrees);
+    if (std::abs(signedYawError(targetYaw, telemetry.yawZDeg)) <=
+        config::kObstacleTurnToleranceDegrees)
+    {
+        return startSelectedForward(telemetry);
+    }
+    if (!startTurnToYaw(
+            Phase::PositioningSelectedSide, targetYaw, telemetry))
+    {
+        return fail(
+            "obstacle_turn_start_failed",
+            "Desvio interrompido: não foi possível posicionar o lado escolhido");
+    }
+    return output(
+        "obstacle_side_selected",
+        "LADO ESCOLHIDO: " + selectedSide_ + "; posicionando yaw inicial");
+}
+
+void ObstacleAvoidance::collectStableClearance(
     const Esp32TelemetrySnapshot& telemetry,
     bool measuringLeft)
 {
     const double yawDelta = signedYawError(telemetry.yawZDeg, yawBase_);
     const double sideAngle = measuringLeft ? -yawDelta : yawDelta;
-    if (sideAngle < config::kObstacleClearanceIgnoreDegrees ||
-        sideAngle > config::kObstacleSideScanDegrees ||
+    const double stableWindowStartDegrees = std::max(
+        config::kObstacleClearanceIgnoreDegrees,
+        config::kObstacleClearanceScanDegrees -
+            config::kObstacleTurnToleranceDegrees);
+    const double stableWindowEndDegrees =
+        config::kObstacleClearanceScanDegrees +
+        config::kObstacleTurnToleranceDegrees;
+    if (sideAngle < stableWindowStartDegrees ||
+        sideAngle > stableWindowEndDegrees ||
+        std::abs(telemetry.gyroZDegPerSec) >
+            config::kTurn90StationaryRateDegPerSec ||
         !ultrasonicReadingIsValid(telemetry) ||
         telemetry.esp32UptimeMs == lastSampleUptimeMs_)
     {
         return;
+    }
+    if (clearanceSamples_.empty() ||
+        telemetry.ultrasonicDistanceCm >
+            maximumClearance(clearanceSamples_))
+    {
+        maximumClearanceAngleDegrees_ = sideAngle;
     }
     clearanceSamples_.push_back(telemetry.ultrasonicDistanceCm);
     lastSampleUptimeMs_ = telemetry.esp32UptimeMs;
@@ -327,7 +409,15 @@ bool ObstacleAvoidance::finishClearanceMeasurement(bool measuringLeft)
     {
         return false;
     }
-    const double clearance = minimumClearance(clearanceSamples_);
+    // Compara o maior eco obtido perto do alvo lateral e com o robô parado.
+    // Isso reproduz a leitura manual e evita picos capturados durante o giro.
+    const double clearance = maximumClearance(clearanceSamples_);
+    std::cout << "Obstacle stable clearance side="
+              << (measuringLeft ? "LEFT" : "RIGHT")
+              << " samples=" << clearanceSamples_.size()
+              << " maximumCm=" << clearance
+              << " maximumAngleDeg=" << maximumClearanceAngleDegrees_
+              << '\n';
     if (measuringLeft)
     {
         leftClearance_ = clearance;
@@ -337,6 +427,8 @@ bool ObstacleAvoidance::finishClearanceMeasurement(bool measuringLeft)
         rightClearance_ = clearance;
     }
     clearanceSamples_.clear();
+    maximumClearanceAngleDegrees_ =
+        std::numeric_limits<double>::quiet_NaN();
     lastSampleUptimeMs_ = -1;
     return true;
 }
@@ -612,9 +704,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::fail(
     return result;
 }
 
-double ObstacleAvoidance::minimumClearance(const std::vector<double>& samples)
+double ObstacleAvoidance::maximumClearance(const std::vector<double>& samples)
 {
-    return *std::min_element(samples.begin(), samples.end());
+    return *std::max_element(samples.begin(), samples.end());
 }
 
 double ObstacleAvoidance::normalizedYaw(double yawDegrees)

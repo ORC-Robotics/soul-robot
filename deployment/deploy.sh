@@ -79,6 +79,7 @@ SETUP_COMMAND="bash deployment/install-service.sh --host $HOST_NAME"
 required_dashboard_assets=(
   "$WORKSPACE/assets/dashboard-logo.png"
   "$WORKSPACE/assets/soul-sync-favicon.png"
+  "$WORKSPACE/assets/models/ball_detector.onnx"
 )
 
 for asset_path in "${required_dashboard_assets[@]}"; do
@@ -118,8 +119,13 @@ scp "${SCP_ARGS[@]}" -r "$WORKSPACE/assets" "${REMOTE}:${REMOTE_DIR}/"
 
 # O deploy copia apenas os arquivos necessários para executar o robô. Os testes
 # continuam ativos no build local, mas não podem exigir a pasta tests na Raspberry.
-atomic_build_command="cd '$REMOTE_DIR' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$REMOTE_STAGING_BUILD' -DBUILD_TESTING=OFF && cmake --build '$REMOTE_STAGING_BUILD' --target '$TARGET' && test -s '$REMOTE_STAGING_BUILD/$TARGET' && install -m 755 '$REMOTE_STAGING_BUILD/$TARGET' '$REMOTE_BUILD/$TARGET.new' && mv -f '$REMOTE_BUILD/$TARGET.new' '$REMOTE_BUILD/$TARGET' && test -s '$REMOTE_BUILD/$TARGET'"
+atomic_build_command="cd '$REMOTE_DIR' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && test -s assets/models/ball_detector.onnx && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$REMOTE_STAGING_BUILD' -DBUILD_TESTING=OFF && cmake --build '$REMOTE_STAGING_BUILD' --target '$TARGET' && test -s '$REMOTE_STAGING_BUILD/$TARGET' && install -m 755 '$REMOTE_STAGING_BUILD/$TARGET' '$REMOTE_BUILD/$TARGET.new' && mv -f '$REMOTE_BUILD/$TARGET.new' '$REMOTE_BUILD/$TARGET' && test -s '$REMOTE_BUILD/$TARGET'"
 ssh "${SSH_ARGS[@]}" "$REMOTE" "$atomic_build_command"
+
+# Usa exatamente o mesmo Python escolhido por run_robot.sh. O ambiente virtual
+# existente não é recriado nem reconfigurado por esta validação.
+vision_dependencies_command="if [ -x '$REMOTE_DIR/.venv/bin/python3' ]; then python_bin='$REMOTE_DIR/.venv/bin/python3'; else python_bin=\$(command -v python3); fi; test -n \"\$python_bin\" || { echo 'Python 3 was not found for the forward camera.' >&2; exit 1; }; if ! \"\$python_bin\" -c 'import onnxruntime; raise SystemExit(0 if onnxruntime.__version__ == \"1.30.0\" else 1)' 2>/dev/null; then \"\$python_bin\" -m pip install --disable-pip-version-check onnxruntime==1.30.0; fi; \"\$python_bin\" -c 'import onnxruntime; raise SystemExit(0 if onnxruntime.__version__ == \"1.30.0\" else 1)'"
+ssh "${SSH_ARGS[@]}" "$REMOTE" "$vision_dependencies_command"
 
 echo "Deploy complete: ${REMOTE}:${REMOTE_BUILD}/${TARGET}"
 

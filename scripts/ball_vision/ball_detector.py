@@ -79,6 +79,9 @@ class BallCandidate:
     top_clipped: bool
     detection_method: str
     visible_area_pixels: float = 0.0
+    # Caixa original do detector, em pixels: esquerda, topo, largura e altura.
+    # Detectores geométricos não possuem essa informação e deixam o campo vazio.
+    bounding_box: tuple[float, float, float, float] | None = None
 
 
 class BlackBallDetector:

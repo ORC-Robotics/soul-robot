@@ -1085,22 +1085,33 @@ void testRescueAlignmentModeKeepsExistingMotorAuthority()
     ForwardBallSnapshot ball;
     ball.sourceFresh = true;
     ball.detected = true;
-    ball.type = "black";
+    ball.type = "black_ball";
     ball.txDegrees = 18.0;
     ball.distanceCm = 24.0;
     ball.radiusPixels = 30.0;
     ball.visibleAreaPixels = 2500.0;
     ball.targetSequence = started.autonomousRunSequence;
     ball.targetLocked = true;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
     controller.update(
-        robotState, readyTelemetry(), false, {}, {}, ball);
+        robotState, telemetry, false, {}, {}, ball);
 
-    const RobotSnapshot snapshot = robotState.snapshot();
+    RobotSnapshot snapshot = robotState.snapshot();
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "rescue_victim_acquired",
+        "O alvo confirmado deve parar antes de iniciar o alinhamento.");
+
+    controller.update(
+        robotState, telemetry, false, {}, {}, ball);
+    snapshot = robotState.snapshot();
     require(
         snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
             snapshot.right < 0.0 &&
-            snapshot.autonomousStatus.phase == "ball_alignment_turning",
-        "O modo de detectar e alinhar deve conservar a autoridade motora existente.");
+            snapshot.autonomousStatus.phase ==
+                "ball_alignment_correction_pulse",
+        "O resgate deve transferir o alvo travado ao alinhamento validado.");
 }
 
 void testRescueZoneDetectionOnlyKeepsMotorsStopped()
