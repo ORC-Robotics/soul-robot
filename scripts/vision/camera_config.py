@@ -220,6 +220,9 @@ GREEN_PARTIAL_EXTENT_MIN = 0.20
 GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
 GREEN_CONFIRMATION_FRAMES = 2
 GREEN_SINGLE_OBSERVATION_FRAMES = 2
+# O retorno exige uma amostra adicional porque combina dois marcadores e pode
+# surgir brevemente quando verdes de interseções diferentes entram no quadro.
+GREEN_TURNAROUND_CONFIRMATION_FRAMES = 3
 GREEN_CLEAR_HYSTERESIS_FRAMES = 2
 # Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
 # um candidato verde aguarda confirmação. O limite evita um hold indefinido.
@@ -230,9 +233,9 @@ GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 2
 # Esta medida-base equivale a 5% da largura do frame e dimensiona as duas ROIs
 # sem prender o detector a uma resolução específica.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
-# A ROI superior recebe 25% a mais de largura para encontrar a faixa em curvas
-# ou pequenos desalinhamentos. A altura e a ROI horizontal não são alteradas.
-GREEN_UPPER_ROI_HALF_WIDTH_SCALE = 1.25
+# A ROI superior recebe 50% a mais de largura para encontrar a faixa em curvas
+# circulares ou chegadas diagonais. A altura e a ROI lateral não são alteradas.
+GREEN_UPPER_ROI_HALF_WIDTH_SCALE = 1.50
 # Pelo menos metade da ROI nominal deve existir dentro da imagem. Uma amostra
 # menor poderia aceitar ruído de borda como se fosse a faixa preta.
 GREEN_ROI_MIN_VISIBLE_RATIO = 0.50
@@ -246,7 +249,9 @@ GREEN_DIRECTION_RETENTION_SECONDS = 0.3
 # Dois marcadores só representam retorno quando estão na mesma altura local.
 # A tolerância usa a maior altura observada para acompanhar a perspectiva.
 GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS = 1.5
-
+# Dois verdes só formam retorno quando o preto acima deles possui orientação
+# semelhante. A comparação axial continua válida quando o robô chega diagonal.
+GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES = 35.0
 # O LED físico pode criar pequenos reflexos brancos dentro da fita preta. Este
 # reparo atua somente em ilhas claras completamente cercadas pela máscara preta;
 # jamais fecha uma abertura ligada ao fundo, pois ela pode ser uma interrupção real.

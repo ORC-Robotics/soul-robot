@@ -33,6 +33,7 @@ from .camera_config import (
     GREEN_OBSERVATION_STATES,
     GREEN_OPEN_ITERATIONS,
     GREEN_OPEN_KERNEL_SIZE,
+    GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES,
     GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS,
     GREEN_PARTIAL_AREA_FACTOR,
     GREEN_PARTIAL_ASPECT_RATIO_MIN,
@@ -45,6 +46,7 @@ from .camera_config import (
     GREEN_SIDE_ROI_MIN_BLACK_RATIO,
     GREEN_SATURATION_MIN,
     GREEN_SINGLE_OBSERVATION_FRAMES,
+    GREEN_TURNAROUND_CONFIRMATION_FRAMES,
     GREEN_UPPER_ROI_HALF_WIDTH_SCALE,
     GREEN_VALUE_MIN,
 )
@@ -955,6 +957,38 @@ def measure_horizontal_black_roi(black_mask, geometry):
     }
 
 
+def black_roi_orientation_degrees(black_mask, roi):
+    """Estima a orientação axial do preto dentro de uma ROI."""
+
+    x1, y1, x2, y2 = (int(value) for value in roi)
+    x1 = max(0, min(black_mask.shape[1], x1))
+    y1 = max(0, min(black_mask.shape[0], y1))
+    x2 = max(0, min(black_mask.shape[1], x2))
+    y2 = max(0, min(black_mask.shape[0], y2))
+    if x2 <= x1 or y2 <= y1:
+        return None
+
+    points_y, points_x = np.nonzero(black_mask[y1:y2, x1:x2] > 0)
+    if points_x.size < 8:
+        return None
+    points = np.column_stack((points_x, points_y)).astype(np.float64)
+    covariance = np.cov(points, rowvar=False)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    if not np.all(np.isfinite(eigenvalues)) or eigenvalues[-1] <= 0.0:
+        return None
+    direction = eigenvectors[:, -1]
+    return float(
+        math.degrees(math.atan2(direction[1], direction[0])) % 180.0
+    )
+
+
+def axial_angle_difference_degrees(first, second):
+    """Calcula a menor diferença entre orientações sem sentido de percurso."""
+
+    difference = abs(float(first) - float(second)) % 180.0
+    return min(difference, 180.0 - difference)
+
+
 def analyze_green_marker_contours(green_contours, selected_black_mask):
     """Classifica o verde pelas ROIs horizontal e superior."""
 
@@ -1032,15 +1066,48 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
             GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS
             * max(1.0, first_height, second_height)
         )
-        # Dois marcadores já associados à faixa pela ROI superior definem o
-        # retorno. A ROI lateral não é confiável quando o robô chega diagonal.
-        pair_compatible = (
+        first_orientation = black_roi_orientation_degrees(
+            selected_black_mask,
+            first["geometry"]["upper_roi"],
+        )
+        second_orientation = black_roi_orientation_degrees(
+            selected_black_mask,
+            second["geometry"]["upper_roi"],
+        )
+        orientation_compatible = (
+            first_orientation is not None
+            and second_orientation is not None
+            and axial_angle_difference_degrees(
+                first_orientation,
+                second_orientation,
+            ) <= GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES
+        )
+        # Uma chegada diagonal gira as duas faixas locais juntas. Orientações
+        # divergentes indicam verdes pertencentes a ramos diferentes.
+        vertical_compatible = (
             abs(float(first_center[1] - second_center[1]))
             <= vertical_tolerance
         )
+        pair_compatible = vertical_compatible and orientation_compatible
         result["pair_compatible"] = pair_compatible
         if not pair_compatible:
-            result["interpretation"] = "AMBIGUO"
+            if not vertical_compatible:
+                result["interpretation"] = "AMBIGUO"
+                return result
+            # Se o par não representa retorno, conserva a decisão individual
+            # do marcador mais próximo do robô em vez de bloquear a curva.
+            nearest_marker = max(
+                upper_valid_markers,
+                key=lambda item: item["geometry"]["center"][1],
+            )
+            interpretation = nearest_marker["interpretation"]
+            result["interpretation"] = interpretation
+            result["left_seen"] = interpretation == "ESQUERDA"
+            result["right_seen"] = interpretation == "DIREITA"
+            result["path_black_valid"] = interpretation in (
+                "ESQUERDA",
+                "DIREITA",
+            )
             return result
         result.update({
             "interpretation": "RETORNO_180",
@@ -1135,6 +1202,11 @@ class GreenObservationTracker:
         if interpretation in ("ESQUERDA", "DIREITA"):
             required_samples = max(
                 required_samples, GREEN_SINGLE_OBSERVATION_FRAMES
+            )
+        elif interpretation == "RETORNO_180":
+            required_samples = max(
+                required_samples,
+                GREEN_TURNAROUND_CONFIRMATION_FRAMES,
             )
         # A telemetria representa o progresso da confirmação, não há motivo
         # para crescer sem limite depois de a decisão já estar aceita.
