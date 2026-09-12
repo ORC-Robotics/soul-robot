@@ -114,15 +114,16 @@ flowchart LR
 
 1. `MissionController` identifica a missão autônoma selecionada.
 2. `MainMission` coordena segue-faixa, retorno verde e desvio de obstáculo.
-3. A missão isolada `rescue_area` abre o gate reservado ao futuro detector de vítimas.
+3. Ao confirmar a faixa cinza, a `MainMission` liga o YOLO e entrega a sequência
+   completa à `RescueRoomMission`.
 4. Cada comportamento atualiza `RobotState`, sem acessar GPIO ou dashboard.
 5. `MotorController` aplica os limites antes de enviar comandos à ESP32.
 6. E-Stop, timeout e parada continuam tendo prioridade sobre a autonomia.
 
 A Missão Principal preserva o segue-faixa geométrico atual e entrega autoridade
-temporária ao desvio quando o ultrassônico confirma um obstáculo. A visão de
-vítimas será uma etapa separada; o detector antigo não participa mais da
-execução da câmera frontal.
+temporária ao desvio quando o ultrassônico confirma um obstáculo. Na sala de
+resgate, o YOLO, os encoders, a IMU, os triângulos e as rotinas validadas dos
+servos são coordenados sem permitir que a percepção acesse GPIO diretamente.
 
 ## 4. Hardware conhecido
 
@@ -588,6 +589,7 @@ RESET_ENCODERS
 CALIBRATE_SENSORS
 SYSTEM_STARTING
 SYSTEM_READY
+SERVO_HOLD,<0|1>
 SERVO,<ARM|WRIST|GRIPPER>,<angleDegrees>
 SERVO_POSE,<armDegrees>,<wristDegrees>,<gripperDegrees>
 SERVO_SLEW,<ARM|WRIST|GRIPPER>,<targetDegrees>,<degreesPerSecond>
@@ -605,6 +607,10 @@ PING
 ```
 
 ### Calibração persistente dos servos
+
+`SERVO_HOLD,1` impede `FULL_OFF` dos servos durante a sala de resgate, inclusive
+se o heartbeat atrasar. A ESP32 conserva a última pose, mas continua recusando
+novos movimentos até `SYSTEM_READY` voltar. `SERVO_HOLD,0` libera essa trava.
 
 `SERVO_SLEW` e `SERVO_DISABLE` são extensões opcionais controladas pela
 Raspberry. O primeiro movimenta um canal já habilitado até o alvo, respeitando
@@ -734,13 +740,14 @@ mudam o modo por conta própria.
 
 ```txt
 percurso inicial -> faixa cinza confirmada -> área de resgate
--> saída do resgate confirmada -> percurso final -> faixa vermelha confirmada
--> missão concluída
+-> duas vítimas vivas no triângulo verde -> vítima morta no triângulo vermelho
+-> verificação de vítimas extras -> missão concluída e parada
 ```
 
-Os dois percursos usam a mesma `LineCourseMission`, portanto preservam
-segue-faixa, GREEN, GAP, SEARCH, assistência frontal, rampa e desvio de
-obstáculo. A `MainMission` apenas troca de fase e zera os motores nas transições.
+O percurso inicial usa `LineCourseMission`, portanto preserva segue-faixa,
+GREEN, GAP, SEARCH, assistência frontal, rampa e desvio de obstáculo. Depois do
+resgate, a missão fica parada; a busca da saída será integrada em uma etapa
+posterior.
 
 #### `turn_right_90`
 
@@ -782,16 +789,17 @@ obstáculo. A `MainMission` apenas troca de fase e zera os motores nas transiç�
 
 #### `rescue_area`
 
-- É uma etapa explícita: selecionar a missão não abre o gate; pressionar Auto ou
-  o botão físico o libera para o futuro detector.
-- O detector antigo por HSV, contornos e Hough foi retirado da execução da CAM1.
-- O IPC, a sequência da execução e o requisito de alvo travado permanecem como
-  contrato para o futuro modelo.
+- O modo isolado continua validando busca, alinhamento e aproximação de uma
+  vítima. Na `main_mission`, a `RescueRoomMission` coordena a rotina completa.
+- O YOLO recebe a classe solicitada (`silver_ball` ou `black_ball`) antes do
+  tracker, preservando a prioridade das duas vítimas vivas.
 - Alinha pelo `tx`, com frenagem antes da confirmação, e aproxima até 5 cm.
 - IPC frontal com mais de 500 ms ou medição inválida mantém os motores zerados.
-- Depois da primeira aquisição, perder o alvo por 1 s encerra a missão.
+- A perda do alvo durante a aproximação volta para uma nova varredura limitada.
 - Stop, E-Stop, troca de missão, conclusão e falha fecham o gate e impedem
   reutilizar o alvo de uma execução anterior.
+- A sequência detalhada, as proteções e o checklist físico estão em
+  `docs/ROTINA_SALA_RESGATE.md`.
 
 O modo isolado encerra depois da aproximação da vítima. Na Missão Principal, o
 mesmo módulo permanece parado depois dessa etapa até a estratégia validada de
@@ -893,8 +901,8 @@ o IPC de visão. `ONLINE` só aparece depois de uma publicação nova da visão;
 `MissionController` seleciona a missão e reinicia seu estado quando uma nova
 execução começa. `turn_right_90`, `drive_distance`, `rescue_area` e
 `obstacle_avoidance` são ferramentas isoladas de teste. `MainMission` coordena
-as fases da prova e delega os dois percursos para `LineCourseMission` e o resgate
-para `RescueAreaMission`.
+o percurso inicial com `LineCourseMission` e delega o resgate para
+`RescueRoomMission`, que reutiliza `RescueAreaMission` para a aproximação.
 
 `LineCourseMission` compõe os comportamentos do percurso. O desvio de obstáculo
 possui prioridade sobre o segue-faixa depois de duas leituras de até 8 cm; uma
@@ -927,10 +935,9 @@ Regras para os próximos comportamentos:
 - Inclinação de rampa é apenas telemetria/OLED.
 - Encoders não fecham velocidade, mas confirmam START/RUN por roda e sincronizam
   eficiência exclusivamente nos deslocamentos retos.
-- PCA9685 aciona braço, pulso e garra, mas a Missão Principal ainda não possui
-  uma sequência autônoma definida para esses mecanismos.
-- A área de resgate possui detecção, alinhamento e aproximação da vítima, mas
-  ainda não possui entrada automática, coleta, entrega nem lógica do kit.
+- A busca da saída da sala de resgate ainda não foi implementada. Depois da
+  verificação final das vítimas, o robô marca a missão concluída e fica parado.
+- A lógica específica do kit de resgate ainda não foi definida.
 
 > **PREENCHER:** estratégia completa exigida pela modalidade da equipe e status
 > de cada desafio do regulamento 2026.
@@ -1306,10 +1313,10 @@ Confirme:
 - A distância física usa uma calibração empírica única; ainda não existe odometria
   2D nem calibração separada por lado.
 - Yaw do MPU6050 deriva por não usar referência absoluta.
-- Braço, pulso e garra já possuem controle manual e protocolo, mas as poses da
-  estratégia final ainda precisam ser definidas pela equipe.
-- Rampas, entrada automática no resgate, coleta, kit e outras situações da prova
-  ainda não possuem estratégia completa.
+- Braço, pulso e garra já possuem controle manual, protocolo e poses validadas
+  para a estratégia atual; a sequência integrada ainda exige ensaio físico.
+- Rampas, kit e a procura da saída da sala de resgate ainda não possuem
+  estratégia completa.
 - Modelo mecânico e elétrico completo não está versionado neste repositório.
 - O acesso GPIO da Raspberry usa `/sys/class/gpio`, interface considerada legada
   em kernels Linux recentes; funciona na configuração atual, mas deve ser
@@ -1329,7 +1336,8 @@ Esta lista é uma sugestão técnica, não uma decisão automática da equipe:
 - [ ] Definir limite de bateria baixa e política segura.
 - [x] Integrar o ultrassônico ao desvio de obstáculo da Missão Principal.
 - [ ] Validar fisicamente as distâncias e os ângulos do desvio de obstáculo.
-- [ ] Classificar automaticamente a entrada da área de resgate.
+- [x] Classificar automaticamente a entrada da área de resgate.
+- [x] Integrar coleta e depósito de duas vítimas vivas e uma morta.
 - [ ] Calibrar e validar vítimas pretas e prateadas na iluminação da arena.
 - [ ] Confirmar no robô os canais e pulsos finais dos três servos do PCA9685.
 - [ ] Documentar estratégia completa da modalidade OBR.
@@ -1423,7 +1431,7 @@ curl http://127.0.0.1:8080/camera-status.json
 | Percurso de linha reutilizável | `src/robot/line_course_mission.cpp` |
 | Ciclo de vida da aplicação | `src/application/robot_application.cpp` |
 | Desvio de obstáculo | `include/obr/obstacle_avoidance.h` / `src/robot/obstacle_avoidance.cpp` |
-| Resgate e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/rescue_area_mission.cpp` / `src/robot/ball_alignment_mission.cpp` |
+| Resgate e alinhamento de vítimas | `scripts/ball_vision/` / `src/robot/rescue_room_mission.cpp` / `src/robot/rescue_area_mission.cpp` / `src/robot/ball_alignment_mission.cpp` |
 | Dashboard | `src/dashboard/dashboard_server.cpp` |
 | Captura das câmeras | `scripts/camera_line_frame.py` / `scripts/forward_camera_stream.py` |
 | Deploy Windows/Linux | `scripts/deploy.ps1` / `scripts/deploy.sh`; implementação em `deployment/` |

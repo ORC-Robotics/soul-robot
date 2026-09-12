@@ -28,6 +28,7 @@ RESET_ENCODERS
 CALIBRATE_SENSORS
 SYSTEM_STARTING
 SYSTEM_READY
+SERVO_HOLD,<0|1>
 SERVO,<ARM|WRIST|GRIPPER>,<anguloGraus>
 SERVO_POSE,<bracoGraus>,<pulsoGraus>,<garraGraus>
 SERVO_SLEW,<ARM|WRIST|GRIPPER>,<alvoGraus>,<velocidadeGrausPorSegundo>
@@ -68,8 +69,14 @@ pertencendo ao firmware.
 `SYSTEM_STARTING` mantém a animação de inicialização ativa. Depois que UART,
 câmera e serviços estão prontos, a Raspberry envia `SYSTEM_READY` a cada segundo.
 Se esse heartbeat desaparecer por mais de 3 segundos, a ESP32 volta à animação.
-Esse heartbeat não substitui os timeouts e travas dos motores. Para os servos,
-ele também impede que um pulso antigo permaneça ativo se a Raspberry cair.
+Esse heartbeat não substitui os timeouts e travas dos motores. Fora do modo de
+retenção, ele também impede que um pulso antigo permaneça ativo se a Raspberry cair.
+
+`SERVO_HOLD,1` protege mecanismos sujeitos à gravidade: nenhum caminho lógico
+aplica `FULL_OFF`, inclusive após Stop, E-Stop ou perda do heartbeat. Novos
+movimentos continuam bloqueados sem heartbeat. `SERVO_HOLD,0` libera a trava e
+restaura o comportamento normal. A sala de resgate arma a trava; entrar em
+Manual ou Calibração, ou pedir o desligamento explícito, libera essa proteção.
 
 `SERVO` movimenta um mecanismo entre 0° e 180°. `SERVO_POSE` valida os três
 ângulos antes de aplicar uma pose completa, sendo o formato indicado para
@@ -84,7 +91,8 @@ movimento gradual correspondente. Nenhum caminho atual da Raspberry envia
 `SERVO_SLEW`, portanto gravar o firmware não muda as rotinas existentes.
 
 `SERVO_DISABLE` remove somente o sinal do mecanismo indicado;
-`SERVO_DISABLE_ALL` remove os sinais dos três canais.
+`SERVO_DISABLE_ALL` remove os sinais dos três canais quando `SERVO_HOLD` está
+inativo. Com a trava ativa, ambos são bloqueados para impedir a queda do braço.
 Os servos também são desligados por `STOP`, `ESTOP`, calibração,
 `SYSTEM_STARTING` ou perda do heartbeat `SYSTEM_READY`. Os canais e pulsos ficam
 centralizados em `../obr_esp32_bridge/robot_config.h`.

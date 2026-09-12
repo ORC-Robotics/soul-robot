@@ -10,9 +10,13 @@
 enum class ServoRoutineKind
 {
     Initialize,
+    PrepareCapture,
+    SecureCapture,
+    SecureCaptureForDirectDeposit,
     Capture,
     InternalStorage,
     Deposit,
+    DepositCarriedAndStored,
     FullSequence,
     FullSequenceTwo
 };

@@ -133,18 +133,57 @@ int main()
                 "Capture should use the new pickup and retention poses");
         requireWristClearance(steps);
 
+        steps = runRoutine(ServoRoutineKind::PrepareCapture, 20, home, output);
+        requirePhaseOrder(steps, {
+            "servo_capture_arm_clearance",
+            "servo_capture_wrist_forward",
+            "servo_capture_gripper_open",
+            "servo_capture_arm_pickup"});
+        require(closeTo(steps.back().pose.armDegrees, 103.0) &&
+                    closeTo(steps.back().pose.wristDegrees, 180.0) &&
+                    closeTo(steps.back().pose.gripperDegrees, 180.0),
+                "PrepareCapture must stop at the validated open pickup pose");
+
+        const ServoPose prepared{
+            config::kServoRoutineArmPickupDegrees,
+            config::kServoRoutineWristForwardDegrees,
+            config::kServoRoutineGripperFullyOpenDegrees};
+        steps = runRoutine(ServoRoutineKind::SecureCapture, 21, prepared, output);
+        requirePhaseOrder(steps, {
+            "servo_capture_gripper_press",
+            "servo_capture_gripper_retention",
+            "servo_capture_arm_finish"});
+        require(closeTo(steps.back().pose.armDegrees, 15.0) &&
+                    closeTo(steps.back().pose.gripperDegrees, 5.0),
+                "SecureCapture must retain the victim with the validated angles");
+        require(closeTo(
+                    poseAt(steps, "servo_capture_arm_finish").gripperDegrees,
+                    config::kServoRoutineGripperRetentionDegrees),
+                "The gripper must remain at 5 degrees while the arm rises");
+
+        steps = runRoutine(
+            ServoRoutineKind::SecureCaptureForDirectDeposit,
+            23,
+            prepared,
+            output);
+        require(closeTo(steps.back().pose.armDegrees, 0.0) &&
+                    closeTo(steps.back().pose.gripperDegrees, 5.0),
+                "Direct capture must preserve the validated 0-degree finish");
+
         const ServoPose captured{
             config::kServoRoutineArmHomeDegrees,
             config::kServoRoutineWristForwardDegrees,
             config::kServoRoutineGripperRetentionDegrees};
         steps = runRoutine(ServoRoutineKind::InternalStorage, 3, captured, output);
-        require(closeTo(poseAt(steps, "servo_store_gripper_release").gripperDegrees, 90.0) &&
+        require(closeTo(poseAt(steps, "servo_store_wrist_internal").wristDegrees, 0.0) &&
+                    closeTo(poseAt(steps, "servo_store_wrist_internal").gripperDegrees, 5.0) &&
+                    closeTo(poseAt(steps, "servo_store_gripper_release").gripperDegrees, 90.0) &&
                     closeTo(poseAt(steps, "servo_store_arm_clearance").armDegrees, 50.0) &&
                     closeTo(poseAt(steps, "servo_store_wrist_clearance").wristDegrees, 45.0) &&
                     closeTo(poseAt(steps, "servo_store_arm_transition").armDegrees, 20.0) &&
                     closeTo(poseAt(steps, "servo_store_arm_ready").armDegrees, 0.0) &&
                     output.internalObjectStored,
-                "Storage should deposit the victim and remember it internally");
+                "Storage must reach wrist zero before releasing the victim");
         requireWristClearance(steps);
 
         steps = runRoutine(ServoRoutineKind::FullSequence, 4, home, output);
@@ -183,6 +222,30 @@ int main()
             "servo_second_gripper_press",
             "servo_second_gripper_retention",
             "servo_second_arm_carry",
+            "servo_second_deposit",
+            "servo_stored_wrist_approach",
+            "servo_stored_arm_approach",
+            "servo_stored_wrist_internal",
+            "servo_stored_arm_pickup",
+            "servo_stored_gripper_press",
+            "servo_stored_gripper_retention",
+            "servo_stored_arm_carry",
+            "servo_stored_wrist_deposit",
+            "servo_stored_deposit",
+            "servo_final_arm_home",
+            "servo_final_wrist_home",
+            "servo_final_gripper_home"});
+
+        const ServoPose secondCaptured{
+            config::kServoRoutineArmHomeDegrees,
+            config::kServoRoutineWristForwardDegrees,
+            config::kServoRoutineGripperRetentionDegrees};
+        steps = runRoutine(
+            ServoRoutineKind::DepositCarriedAndStored,
+            22,
+            secondCaptured,
+            output);
+        requirePhaseOrder(steps, {
             "servo_second_deposit",
             "servo_stored_wrist_approach",
             "servo_stored_arm_approach",

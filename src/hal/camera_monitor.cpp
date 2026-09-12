@@ -989,11 +989,18 @@ bool CameraMonitor::setForwardBallDetectionEnabled(bool enabled) const
 #endif
 }
 
-bool CameraMonitor::requestForwardBallTargetSequence(
-    std::uint64_t sequence) const
+bool CameraMonitor::requestForwardBallTarget(
+    std::uint64_t sequence,
+    const std::string& targetType) const
 {
+    if (targetType != "any" && targetType != "silver_ball" &&
+        targetType != "black_ball")
+    {
+        return false;
+    }
 #ifdef _WIN32
     (void)sequence;
+    (void)targetType;
     return true;
 #else
     {
@@ -1004,7 +1011,8 @@ bool CameraMonitor::requestForwardBallTargetSequence(
         {
             return false;
         }
-        control << sequence << '\n';
+        control << "{\"targetSequence\":" << sequence
+                << ",\"targetType\":\"" << targetType << "\"}\n";
         if (!control)
         {
             return false;

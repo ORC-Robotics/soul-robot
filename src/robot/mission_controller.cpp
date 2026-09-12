@@ -122,11 +122,38 @@ bool MissionController::requiresRescueZoneDetection(
         return snapshot.mode == "manual" ||
                rescueZoneTriangleMission_.requiresRescueZoneDetection();
     }
+    if (snapshot.mode == "autonomous" &&
+        snapshot.autonomousMission == AutonomousMission::MainMission)
+    {
+        return mainMission_.requiresRescueZoneDetection();
+    }
     return snapshot.autonomousMission ==
                AutonomousMission::RescueZoneDetection ||
            snapshot.autonomousMission == AutonomousMission::RescueZoneSearch ||
            snapshot.autonomousMission == AutonomousMission::RescueZoneAlign ||
            snapshot.autonomousMission == AutonomousMission::RescueZoneApproach;
+}
+
+std::uint64_t MissionController::forwardBallTargetSequence(
+    const RobotSnapshot& snapshot) const
+{
+    if (snapshot.autonomousMission == AutonomousMission::MainMission)
+    {
+        return mainMission_.rescueBallTargetSequence(
+            snapshot.autonomousRunSequence);
+    }
+    return snapshot.autonomousRunSequence;
+}
+
+const char* MissionController::forwardBallTargetType(
+    const RobotSnapshot& snapshot) const
+{
+    if (snapshot.autonomousMission == AutonomousMission::MainMission)
+    {
+        return mainMission_.rescueBallTargetType();
+    }
+    // O modo isolado continua aceitando ambos os tipos para diagnóstico.
+    return "any";
 }
 
 void MissionController::update(
@@ -269,6 +296,7 @@ void MissionController::update(
             cameraLineSnapshot,
             forwardLineSnapshot,
             forwardBallSnapshot,
+            rescueZoneSnapshot,
             activeAutonomousRunSequence_);
         return;
     }

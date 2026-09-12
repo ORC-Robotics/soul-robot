@@ -266,6 +266,9 @@ int RobotApplication::run(const std::atomic<bool>& running)
     bool systemDisplayStatusSent = false;
     bool lastSystemDisplayReady = false;
     auto lastSystemDisplayStatusTime = std::chrono::steady_clock::now();
+    auto lastServoHoldCommandTime =
+        std::chrono::steady_clock::now() -
+        std::chrono::milliseconds(config::kRescueServoHoldRetryMs);
     auto lastCameraLineDiagnosticTime =
         std::chrono::steady_clock::now() - std::chrono::seconds(1);
     bool autonomousMotorTraceInitialized = false;
@@ -337,7 +340,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
             missionController.requiresForwardBallDetection(stateAtLoopStart);
         forwardBallVision.update(
             rescueAreaActive,
-            stateAtLoopStart.autonomousRunSequence);
+            missionController.forwardBallTargetSequence(stateAtLoopStart),
+            missionController.forwardBallTargetType(stateAtLoopStart));
 
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
@@ -521,6 +525,33 @@ int RobotApplication::run(const std::atomic<bool>& running)
                 lastSystemDisplayReady = startupComplete;
                 lastSystemDisplayStatusTime = now;
             }
+        }
+
+        const bool rescueServoHoldRequired =
+            robotSnapshot.mode == "autonomous" &&
+            robotSnapshot.autonomousStatus.phase.rfind("rescue_", 0) == 0;
+        const bool servoHoldReleaseRequired =
+            robotSnapshot.mode == "manual" ||
+            robotSnapshot.mode == "servo_calibration";
+        if (rescueServoHoldRequired && !esp32Telemetry.servoHoldActive &&
+            now - lastServoHoldCommandTime >=
+                std::chrono::milliseconds(config::kRescueServoHoldRetryMs))
+        {
+            // A trava é habilitada antes da primeira pose de coleta e não é
+            // liberada nesta missão. Assim, pausa, falha ou reinício do serviço
+            // não deixam o braço cair sobre o pulso por causa de FULL_OFF.
+            esp32.sendServoHoldEnabled(true);
+            lastServoHoldCommandTime = now;
+        }
+        else if (servoHoldReleaseRequired && esp32Telemetry.servoHoldActive &&
+                 esp32Telemetry.raspberrySystemReady &&
+                 now - lastServoHoldCommandTime >=
+                     std::chrono::milliseconds(config::kRescueServoHoldRetryMs))
+        {
+            // Manual e Calibração são ações explícitas do operador. Nesses
+            // modos, libera a trava para restaurar todos os comandos do painel.
+            esp32.sendServoHoldEnabled(false);
+            lastServoHoldCommandTime = now;
         }
         motors.apply(robotSnapshot);
         servos.apply(robotSnapshot);

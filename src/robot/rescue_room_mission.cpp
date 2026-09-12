@@ -1,0 +1,1173 @@
+#include "obr/rescue_room_mission.h"
+
+#include "obr/config.h"
+
+#include <algorithm>
+#include <cmath>
+#include <string>
+
+namespace
+{
+AutonomousStatus makeStatus(
+    const std::string& phase,
+    const std::string& action,
+    double progressPercent = 0.0)
+{
+    AutonomousStatus status;
+    status.phase = phase;
+    status.action = action;
+    status.progressPercent = progressPercent;
+    return status;
+}
+
+bool encodersReady(const Esp32TelemetrySnapshot& telemetry)
+{
+    return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
+           telemetry.lastSensorAgeMs <=
+               config::kDriveDistanceEncoderFreshnessMs &&
+           std::isfinite(telemetry.leftEncoderRate) &&
+           std::isfinite(telemetry.rightEncoderRate);
+}
+
+bool encodersStopped(const Esp32TelemetrySnapshot& telemetry)
+{
+    return encodersReady(telemetry) &&
+           std::abs(telemetry.leftEncoderRate) <=
+               config::kBallAlignmentStationaryRateCountsPerSecond &&
+           std::abs(telemetry.rightEncoderRate) <=
+               config::kBallAlignmentStationaryRateCountsPerSecond;
+}
+
+bool approachReturnedToSearch(const AutonomousStatus& status)
+{
+    return status.phase == "rescue_reacquiring_victim" ||
+           status.phase == "rescue_search_pivot" ||
+           status.phase == "rescue_search_settling" ||
+           status.phase == "rescue_search_waiting_frame";
+}
+
+bool initialAlignmentMustRestart(const AutonomousStatus& status)
+{
+    return status.phase == "ball_alignment_target_lost_timeout" ||
+           status.phase == "ball_alignment_camera_stale_timeout";
+}
+
+bool allServoOutputsEnabled(const Esp32TelemetrySnapshot& telemetry)
+{
+    return telemetry.armServoEnabled && telemetry.wristServoEnabled &&
+           telemetry.gripperServoEnabled;
+}
+}
+
+RescueRoomOutput RescueRoomMission::update(
+    const ForwardBallSnapshot& ball,
+    const RescueZoneSnapshot& zones,
+    const Esp32TelemetrySnapshot& telemetry,
+    std::uint64_t autonomousRunSequence,
+    unsigned long long servoConfirmationSequence,
+    const ServoPose& currentServoPose,
+    std::chrono::steady_clock::time_point now)
+{
+    RescueRoomOutput output;
+    output.internalObjectStored = storedAliveVictim_;
+
+    if (phase_ == Phase::Completed)
+    {
+        output.completed = true;
+        output.status = makeStatus(
+            "rescue_room_completed",
+            "Resgate concluído: nenhuma vítima adicional encontrada",
+            100.0);
+        return output;
+    }
+    if (phase_ == Phase::Failed)
+    {
+        output.failed = true;
+        output.status = failureStatus_;
+        return output;
+    }
+    if (!telemetry.readyForOperation())
+    {
+        // Uma perda transitória para o robô sem descartar toda a sequência.
+        // Quando a telemetria voltar, a etapa atual continua do ponto seguro.
+        output.status = makeStatus(
+            "rescue_room_esp32_not_ready",
+            "Resgate pausado: aguardando a ESP32 voltar a ficar pronta");
+        return output;
+    }
+    if (servoMotionStarted_ &&
+        (!telemetry.servoHoldSupported || !telemetry.servoHoldActive))
+    {
+        output.failed = true;
+        output.status = makeStatus(
+            "rescue_servo_hold_lost",
+            "Resgate interrompido: proteção contra FULL_OFF não confirmada");
+        fail(output.status);
+        return output;
+    }
+    if (servoOutputsConfirmed_ && !allServoOutputsEnabled(telemetry))
+    {
+        // Depois da primeira confirmação, qualquer canal OFF invalida a posição
+        // mecânica do braço. O pulso nunca pode avançar nessa condição.
+        output.failed = true;
+        output.status = makeStatus(
+            "rescue_servo_output_lost",
+            "Resgate interrompido: um servo perdeu PWM; pulso bloqueado");
+        fail(output.status);
+        return output;
+    }
+
+    const std::uint64_t expectedTargetSequence =
+        ballTargetSequence(autonomousRunSequence);
+
+    if (phase_ == Phase::EntryAdvance)
+    {
+        // O deslocamento só começa depois que o primeiro resultado do YOLO
+        // confirma que o gate realmente abriu. Durante a espera, o PWM é zero.
+        if (distanceMove_.phase == DistancePhase::Idle &&
+            (!ball.sourceFresh ||
+             ball.targetSequence != expectedTargetSequence))
+        {
+            output.status = makeStatus(
+                "rescue_entry_waiting_yolo",
+                "Parado: aguardando o YOLO da busca atual antes do avanço de 10 cm");
+            return output;
+        }
+        if (distanceMove_.phase == DistancePhase::Idle)
+        {
+            startDistance(
+                config::kRescueEntryAdvanceDistanceCm,
+                config::kRescueEntryAdvancePower,
+                1,
+                now);
+        }
+        output = updateDistance(
+            telemetry,
+            now,
+            "rescue_entry_advancing",
+            "Avançando 10 cm com o detector de vítimas ativo");
+        output.internalObjectStored = storedAliveVictim_;
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (!output.completed)
+        {
+            return output;
+        }
+
+        distanceMove_ = {};
+        if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
+        {
+            carriedVictimType_ = desiredVictimType_;
+            initialVictimAlignmentMission_.reset();
+            phase_ = Phase::AlignVictim;
+            output.completed = false;
+            output.status = makeStatus(
+                "rescue_victim_acquired",
+                "Vítima viva encontrada durante a entrada; iniciando alinhamento");
+            return output;
+        }
+        phase_ = Phase::SearchVictim;
+        sweepStep_ = SweepStep::Right45;
+        sweepTurnStarted_ = false;
+        waitingForSweepFrame_ = false;
+        output.completed = false;
+        output.status = makeStatus(
+            "rescue_search_starting",
+            "Avanço concluído: iniciando varredura da vítima viva");
+        return output;
+    }
+
+    if (phase_ == Phase::SearchVictim)
+    {
+        return updateSearch(ball, telemetry, expectedTargetSequence);
+    }
+
+    if (phase_ == Phase::AlignVictim)
+    {
+        const BallAlignmentOutput alignment =
+            initialVictimAlignmentMission_.update(
+                ball,
+                telemetry,
+                expectedTargetSequence,
+                now,
+                true);
+        output.leftPower = alignment.leftPower;
+        output.rightPower = alignment.rightPower;
+        output.status = alignment.status;
+        output.internalObjectStored = storedAliveVictim_;
+        if (!alignment.finished)
+        {
+            return output;
+        }
+        if (initialAlignmentMustRestart(alignment.status))
+        {
+            initialVictimAlignmentMission_.reset();
+            startVictimSearch(desiredVictimType_, finalVerification_);
+            output.leftPower = 0.0;
+            output.rightPower = 0.0;
+            output.status = makeStatus(
+                "rescue_reacquiring_victim",
+                "Alvo perdido no alinhamento inicial; reiniciando a busca");
+            return output;
+        }
+        if (alignment.status.phase != "ball_aligned")
+        {
+            fail(alignment.status);
+            output.failed = true;
+            return output;
+        }
+
+        initialVictimAlignmentMission_.reset();
+        phase_ = Phase::PrepareCapture;
+        output.status = makeStatus(
+            "rescue_victim_aligned",
+            "Alinhamento confirmado; preparando a garra aberta");
+        return output;
+    }
+
+    if (phase_ == Phase::PrepareCapture)
+    {
+        output = updateServo(
+            ServoRoutineKind::PrepareCapture,
+            telemetry,
+            autonomousRunSequence,
+            servoConfirmationSequence,
+            currentServoPose,
+            now);
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (output.completed)
+        {
+            servoRoutine_.resetExecution();
+            victimApproachMission_.reset();
+            phase_ = Phase::ApproachVictim;
+            output.completed = false;
+            output.status = makeStatus(
+                "rescue_capture_ready",
+                "Garra aberta na posição de coleta; iniciando aproximação pelo YOLO");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::ApproachVictim)
+    {
+        const RescueAreaOutput approach = victimApproachMission_.update(
+            ball,
+            telemetry,
+            expectedTargetSequence,
+            false,
+            true,
+            now);
+        output.leftPower = approach.leftPower;
+        output.rightPower = approach.rightPower;
+        output.status = approach.status;
+        output.failed = approach.failed;
+        output.internalObjectStored = storedAliveVictim_;
+        if (approach.failed &&
+            approach.status.phase == "ball_alignment_camera_stale_timeout")
+        {
+            // A câmera pode perder alguns frames durante a aproximação. Isso
+            // cancela qualquer PWM e reinicia a busca, sem encerrar a missão.
+            victimApproachMission_.reset();
+            startVictimSearch(desiredVictimType_, finalVerification_);
+            output.failed = false;
+            output.leftPower = 0.0;
+            output.rightPower = 0.0;
+            output.status = makeStatus(
+                "rescue_reacquiring_victim",
+                "YOLO perdido: reiniciando a busca da mesma vítima");
+            return output;
+        }
+        if (approach.failed)
+        {
+            fail(approach.status);
+            return output;
+        }
+        if (approachReturnedToSearch(approach.status))
+        {
+            victimApproachMission_.reset();
+            startVictimSearch(desiredVictimType_, finalVerification_);
+            output.leftPower = 0.0;
+            output.rightPower = 0.0;
+            output.status = makeStatus(
+                "rescue_reacquiring_victim",
+                "Alvo perdido: reiniciando a varredura limitada");
+            return output;
+        }
+        if (approach.completed)
+        {
+            victimApproachMission_.reset();
+            phase_ = Phase::SecureCapture;
+            output.completed = false;
+            output.status = makeStatus(
+                "rescue_victim_reached",
+                "Aproximação concluída; fechando a garra");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::SecureCapture)
+    {
+        const bool willUseInternalStorage =
+            carriedVictimType_ == VictimType::Alive &&
+            (collectedAliveVictims_ == 0 || storedAliveVictim_);
+        output = updateServo(
+            willUseInternalStorage
+                ? ServoRoutineKind::SecureCapture
+                : ServoRoutineKind::SecureCaptureForDirectDeposit,
+            telemetry,
+            autonomousRunSequence,
+            servoConfirmationSequence,
+            currentServoPose,
+            now);
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (output.completed)
+        {
+            // Somente agora a pose de retenção é válida: a garra já fechou e o
+            // braço terminou em 15°. Salvar a pose na preparação reaplicaria
+            // 103° durante a ré e derrubaria o braço sobre o pulso.
+            collectionRetentionPose_ = output.servoPose;
+            collectionRetentionPose_.gripperDegrees =
+                config::kServoRoutineGripperRetentionDegrees;
+            collectionRetentionActive_ = true;
+            servoRoutine_.resetExecution();
+            if (carriedVictimType_ == VictimType::Alive)
+            {
+                ++collectedAliveVictims_;
+            }
+            startDistance(
+                config::kRescuePostCollectionReverseDistanceCm,
+                config::kRescuePostCollectionReversePower,
+                -1,
+                now);
+            phase_ = Phase::ReverseAfterCollection;
+            output.completed = false;
+            output.status = makeStatus(
+                "rescue_collection_secured",
+                "Vítima presa; iniciando ré de até 15 cm");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::ReverseAfterCollection)
+    {
+        output = updateDistance(
+            telemetry,
+            now,
+            "rescue_collection_reversing",
+            "Recuando até 15 cm após a coleta");
+        applyCollectionRetention(output);
+        output.internalObjectStored = storedAliveVictim_;
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (!output.completed)
+        {
+            return output;
+        }
+
+        distanceMove_ = {};
+        output.completed = false;
+        if (carriedVictimType_ == VictimType::Alive &&
+            collectedAliveVictims_ == 1 && !storedAliveVictim_)
+        {
+            phase_ = Phase::StoreFirstAlive;
+            output.status = makeStatus(
+                "rescue_first_alive_storage",
+                "Ré concluída; armazenando internamente a primeira vítima viva");
+            return output;
+        }
+
+        triangleMission_.reset();
+        phase_ = Phase::FindDepositZone;
+        output.status = makeStatus(
+            "rescue_deposit_zone_starting",
+            carriedVictimType_ == VictimType::Alive
+                ? "Procurando o triângulo verde"
+                : "Procurando o triângulo vermelho");
+        return output;
+    }
+
+    if (phase_ == Phase::StoreFirstAlive)
+    {
+        collectionRetentionActive_ = false;
+        output = updateServo(
+            ServoRoutineKind::InternalStorage,
+            telemetry,
+            autonomousRunSequence,
+            servoConfirmationSequence,
+            currentServoPose,
+            now);
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (output.completed)
+        {
+            servoRoutine_.resetExecution();
+            storedAliveVictim_ = true;
+            startVictimSearch(VictimType::Alive, false);
+            output.completed = false;
+            output.internalObjectStored = true;
+            output.status = makeStatus(
+                "rescue_first_alive_stored",
+                "Primeira vítima viva armazenada; procurando a segunda");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::FindDepositZone)
+    {
+        const RescueZoneTargetColor targetColor =
+            carriedVictimType_ == VictimType::Alive
+                ? RescueZoneTargetColor::Green
+                : RescueZoneTargetColor::Red;
+        const RescueZoneTriangleOutput triangle = triangleMission_.update(
+            zones,
+            telemetry,
+            targetColor,
+            now);
+        output.leftPower = triangle.leftPower;
+        output.rightPower = triangle.rightPower;
+        output.status = triangle.status;
+        output.failed = triangle.failed;
+        output.internalObjectStored = storedAliveVictim_;
+        applyCollectionRetention(output);
+        if (triangle.failed)
+        {
+            fail(triangle.status);
+            return output;
+        }
+        if (triangle.completed)
+        {
+            triangleMission_.reset();
+            depositRoutineKind_ =
+                carriedVictimType_ == VictimType::Alive && storedAliveVictim_
+                    ? ServoRoutineKind::DepositCarriedAndStored
+                    : ServoRoutineKind::Deposit;
+            phase_ = Phase::DepositVictims;
+            output.completed = false;
+            output.status = makeStatus(
+                "rescue_deposit_ready",
+                "Triângulo alcançado; iniciando a entrega das vítimas");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::DepositVictims)
+    {
+        collectionRetentionActive_ = false;
+        output = updateServo(
+            depositRoutineKind_,
+            telemetry,
+            autonomousRunSequence,
+            servoConfirmationSequence,
+            currentServoPose,
+            now);
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (output.completed)
+        {
+            servoRoutine_.resetExecution();
+            if (carriedVictimType_ == VictimType::Alive)
+            {
+                deliveredAliveVictims_ += storedAliveVictim_ ? 2 : 1;
+                storedAliveVictim_ = false;
+            }
+            else
+            {
+                ++deliveredDeadVictims_;
+            }
+            const bool requiredDeadDeliveryCompleted =
+                carriedVictimType_ == VictimType::Dead &&
+                deliveredAliveVictims_ >= 2 &&
+                deliveredDeadVictims_ == 1 &&
+                !finalVerification_;
+            postDepositReverseDistanceCm_ =
+                requiredDeadDeliveryCompleted
+                    ? config::kRescueFinalDeadDepositReverseDistanceCm
+                    : config::kRescuePostDepositReverseDistanceCm;
+            startDistance(
+                postDepositReverseDistanceCm_,
+                config::kRescuePostDepositReversePower,
+                -1,
+                now);
+            phase_ = Phase::ReverseAfterDeposit;
+            output.completed = false;
+            output.internalObjectStored = false;
+            output.status = makeStatus(
+                "rescue_deposit_completed",
+                requiredDeadDeliveryCompleted
+                    ? "Entrega preta concluída; iniciando ré de 40 cm"
+                    : "Entrega concluída; iniciando ré de 20 cm");
+        }
+        return output;
+    }
+
+    if (phase_ == Phase::ReverseAfterDeposit)
+    {
+        output = updateDistance(
+            telemetry,
+            now,
+            "rescue_deposit_reversing",
+            postDepositReverseDistanceCm_ ==
+                    config::kRescueFinalDeadDepositReverseDistanceCm
+                ? "Recuando 40 cm antes da verificação final"
+                : "Recuando 20 cm para liberar o triângulo");
+        if (output.failed)
+        {
+            fail(output.status);
+            return output;
+        }
+        if (!output.completed)
+        {
+            return output;
+        }
+
+        distanceMove_ = {};
+        output.completed = false;
+        if (deliveredAliveVictims_ < 2)
+        {
+            startVictimSearch(VictimType::Alive, false);
+            output.status = makeStatus(
+                "rescue_required_alive_search",
+                "Procurando a próxima vítima viva obrigatória");
+        }
+        else if (deliveredDeadVictims_ < 1)
+        {
+            startVictimSearch(VictimType::Dead, false);
+            output.status = makeStatus(
+                "rescue_required_dead_search",
+                "Duas vítimas vivas entregues; procurando a vítima morta");
+        }
+        else
+        {
+            startVictimSearch(VictimType::Alive, true);
+            output.status = makeStatus(
+                "rescue_final_verification",
+                "Entregas obrigatórias concluídas; verificando vítimas vivas extras");
+        }
+        return output;
+    }
+
+    output.failed = true;
+    output.status = makeStatus(
+        "rescue_room_invalid_phase",
+        "Resgate interrompido: estado interno inválido");
+    fail(output.status);
+    return output;
+}
+
+RescueRoomOutput RescueRoomMission::updateSearch(
+    const ForwardBallSnapshot& ball,
+    const Esp32TelemetrySnapshot& telemetry,
+    std::uint64_t expectedTargetSequence)
+{
+    RescueRoomOutput output;
+    output.internalObjectStored = storedAliveVictim_;
+
+    if (!ball.sourceFresh || ball.targetSequence != expectedTargetSequence)
+    {
+        output.status = makeStatus(
+            "rescue_search_waiting_yolo",
+            "Parado: aguardando um resultado atual do YOLO");
+        return output;
+    }
+    if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
+    {
+        sweepTurnController_.reset();
+        carriedVictimType_ = desiredVictimType_;
+        initialVictimAlignmentMission_.reset();
+        phase_ = Phase::AlignVictim;
+        output.status = makeStatus(
+            "rescue_victim_acquired",
+            desiredVictimType_ == VictimType::Alive
+                ? "Vítima viva confirmada; motores parados antes da coleta"
+                : "Vítima morta confirmada; motores parados antes da coleta");
+        return output;
+    }
+    if (ball.candidateVisible)
+    {
+        // O filtro do YOLO publica candidatas somente do tipo solicitado. A
+        // confirmação temporal acontece com o robô parado para não perder o alvo.
+        output.status = makeStatus(
+            "rescue_confirming_victim",
+            "Motores parados: confirmando a vítima em frames consecutivos");
+        return output;
+    }
+
+    if (waitingForSweepFrame_)
+    {
+        if (ball.timestamp <= sweepFrameTimestamp_)
+        {
+            output.status = makeStatus(
+                "rescue_search_waiting_frame",
+                "Motores parados: aguardando um frame novo no limite da varredura");
+            return output;
+        }
+        waitingForSweepFrame_ = false;
+        switch (sweepStep_)
+        {
+        case SweepStep::Right45:
+            sweepStep_ = SweepStep::Left45;
+            break;
+        case SweepStep::Left45:
+            sweepStep_ = SweepStep::Right75;
+            break;
+        case SweepStep::Right75:
+            sweepStep_ = SweepStep::Left75;
+            break;
+        case SweepStep::Left75:
+            sweepStep_ = SweepStep::Finished;
+            break;
+        case SweepStep::Finished:
+            break;
+        }
+    }
+
+    if (sweepStep_ == SweepStep::Finished)
+    {
+        if (finalVerification_ && desiredVictimType_ == VictimType::Alive)
+        {
+            startVictimSearch(VictimType::Dead, true);
+            output.status = makeStatus(
+                "rescue_final_dead_verification",
+                "Nenhuma vítima viva extra; verificando vítimas mortas extras");
+            return output;
+        }
+        if (finalVerification_)
+        {
+            phase_ = Phase::Completed;
+            output.completed = true;
+            output.status = makeStatus(
+                "rescue_room_completed",
+                "Nenhuma vítima adicional encontrada; missão concluída",
+                100.0);
+            return output;
+        }
+
+        const VictimType missingType = desiredVictimType_;
+        startVictimSearch(missingType, false);
+        output.status = makeStatus(
+            missingType == VictimType::Alive
+                ? "rescue_required_alive_search_restarting"
+                : "rescue_required_dead_search_restarting",
+            missingType == VictimType::Alive
+                ? "Vítima viva ainda não confirmada; repetindo a varredura"
+                : "Vítima morta ainda não confirmada; repetindo a varredura");
+        return output;
+    }
+
+    double targetDegrees = config::kRescueVictimFirstSweepDegrees;
+    ImuTurnDirection direction = ImuTurnDirection::Right;
+    const char* sweepName = "+45°";
+    if (sweepStep_ == SweepStep::Left45)
+    {
+        targetDegrees = config::kRescueVictimFirstSweepDegrees * 2.0;
+        direction = ImuTurnDirection::Left;
+        sweepName = "−45°";
+    }
+    else if (sweepStep_ == SweepStep::Right75)
+    {
+        targetDegrees = config::kRescueVictimFirstSweepDegrees +
+                        config::kRescueVictimSecondSweepDegrees;
+        direction = ImuTurnDirection::Right;
+        sweepName = "+75°";
+    }
+    else if (sweepStep_ == SweepStep::Left75)
+    {
+        targetDegrees = config::kRescueVictimSecondSweepDegrees * 2.0;
+        direction = ImuTurnDirection::Left;
+        sweepName = "−75°";
+    }
+
+    if (!sweepTurnStarted_)
+    {
+        if (!sweepTurnController_.start(
+                targetDegrees,
+                direction,
+                telemetry,
+                config::kRescueVictimSweepToleranceDegrees,
+                config::kTurn90CorrectionPulseMs,
+                -1,
+                config::kRescueSearchTurnPower,
+                config::kRescueVictimSweepTimeoutMs))
+        {
+            output.status = makeStatus(
+                "rescue_search_imu_unavailable",
+                "Busca pausada: aguardando uma leitura válida da IMU");
+            return output;
+        }
+        sweepTurnStarted_ = true;
+    }
+
+    const ImuTurnOutput turn = sweepTurnController_.update(telemetry);
+    output.leftPower = turn.leftPower;
+    output.rightPower = turn.rightPower;
+    output.status = makeStatus(
+        "rescue_search_sweep",
+        std::string("Procurando vítima no limite ") + sweepName,
+        turn.progressPercent);
+    if (turn.result == ImuTurnResult::Completed)
+    {
+        sweepTurnStarted_ = false;
+        waitingForSweepFrame_ = true;
+        sweepFrameTimestamp_ = ball.timestamp;
+        output.leftPower = 0.0;
+        output.rightPower = 0.0;
+        output.status = makeStatus(
+            "rescue_search_endpoint",
+            std::string("Limite ") + sweepName +
+                " alcançado; confirmando a imagem com o robô parado");
+    }
+    else if (turn.result == ImuTurnResult::Failed)
+    {
+        // Reinicia a varredura a partir da posição atual quando a IMU voltar.
+        // Nenhum comando permanece ativo depois da falha do giro.
+        sweepTurnController_.reset();
+        sweepStep_ = SweepStep::Right45;
+        sweepTurnStarted_ = false;
+        waitingForSweepFrame_ = false;
+        output.status = makeStatus(
+            "rescue_search_turn_restarting",
+            "Giro não concluído: parado até reiniciar a varredura");
+    }
+    return output;
+}
+
+RescueRoomOutput RescueRoomMission::updateServo(
+    ServoRoutineKind kind,
+    const Esp32TelemetrySnapshot& telemetry,
+    std::uint64_t autonomousRunSequence,
+    unsigned long long confirmationSequence,
+    const ServoPose& currentPose,
+    std::chrono::steady_clock::time_point now)
+{
+    RescueRoomOutput output;
+    output.internalObjectStored = storedAliveVictim_;
+    if (!telemetry.pca9685Ok)
+    {
+        output.failed = true;
+        output.status = makeStatus(
+            "rescue_servo_driver_lost",
+            "Resgate interrompido: PCA9685 indisponível");
+        return output;
+    }
+    if (!telemetry.servoHoldSupported)
+    {
+        output.failed = true;
+        output.status = makeStatus(
+            "rescue_servo_hold_unsupported",
+            "Resgate bloqueado: atualize a ESP32 para impedir FULL_OFF");
+        return output;
+    }
+    if (!telemetry.servoHoldActive)
+    {
+        output.status = makeStatus(
+            "rescue_servo_hold_waiting",
+            "Parado: aguardando a ESP32 travar o PWM dos servos");
+        return output;
+    }
+
+    const bool outputsEnabled = allServoOutputsEnabled(telemetry);
+    if (servoMotionStarted_ && !servoOutputsConfirmed_)
+    {
+        if (outputsEnabled)
+        {
+            servoOutputsConfirmed_ = true;
+        }
+        else if (now >= servoEnableDeadline_)
+        {
+            output.failed = true;
+            output.status = makeStatus(
+                "rescue_servo_enable_timeout",
+                "Resgate interrompido: servos não confirmaram PWM ativo");
+            return output;
+        }
+        else
+        {
+            // Repete a pose inicial sem avançar o relógio da sequência. Isso
+            // cobre o atraso entre o comando UART e a próxima telemetria.
+            output.servoPoseRequested = true;
+            output.servoPose = pendingServoPose_;
+            output.status = makeStatus(
+                "rescue_servo_enable_waiting",
+                "Mantendo pose: aguardando os três canais ativos");
+            return output;
+        }
+    }
+
+    const ServoRoutineOutput servo = servoRoutine_.update(
+        kind,
+        autonomousRunSequence,
+        confirmationSequence,
+        currentPose,
+        now);
+    output.servoPoseRequested = servo.poseRequested;
+    output.releaseGripper = servo.releaseGripper;
+    output.servoPose = servo.pose;
+    output.completed = servo.completed;
+    output.failed = servo.failed;
+    output.status = makeStatus(
+        servo.phase,
+        servo.action,
+        servo.progressPercent);
+    output.status.servoRoutineWaitingForConfirmation =
+        servo.waitingForConfirmation;
+    if (servo.poseRequested)
+    {
+        pendingServoPose_ = servo.pose;
+        if (!servoMotionStarted_)
+        {
+            servoMotionStarted_ = true;
+            servoOutputsConfirmed_ = outputsEnabled;
+            servoEnableDeadline_ =
+                now + std::chrono::milliseconds(
+                          config::kRescueServoEnableConfirmationTimeoutMs);
+        }
+    }
+    return output;
+}
+
+void RescueRoomMission::startDistance(
+    double targetCm,
+    double power,
+    int directionSign,
+    std::chrono::steady_clock::time_point now)
+{
+    distanceMove_ = {};
+    distanceMove_.phase = DistancePhase::Preparing;
+    distanceMove_.targetCm = targetCm;
+    distanceMove_.power = power;
+    distanceMove_.directionSign = directionSign < 0 ? -1 : 1;
+    distanceMove_.phaseStartedAt = now;
+    distanceMove_.lastProgressAt = now;
+}
+
+RescueRoomOutput RescueRoomMission::updateDistance(
+    const Esp32TelemetrySnapshot& telemetry,
+    std::chrono::steady_clock::time_point now,
+    const char* phase,
+    const char* action)
+{
+    RescueRoomOutput output;
+    output.internalObjectStored = storedAliveVictim_;
+    if (distanceMove_.phase == DistancePhase::Failed)
+    {
+        output.failed = true;
+        output.status = distanceMove_.failureStatus;
+        return output;
+    }
+    if (distanceMove_.phase == DistancePhase::Completed)
+    {
+        output.completed = true;
+        output.status = makeStatus(phase, action, 100.0);
+        return output;
+    }
+
+    if (distanceMove_.phase == DistancePhase::Preparing)
+    {
+        if (!encodersStopped(telemetry))
+        {
+            if (now - distanceMove_.phaseStartedAt >=
+                std::chrono::milliseconds(
+                    config::kRescueDistancePreparationTimeoutMs))
+            {
+                distanceMove_.phase = DistancePhase::Failed;
+                distanceMove_.failureStatus = makeStatus(
+                    "rescue_distance_preparation_failed",
+                    "Deslocamento cancelado: encoders indisponíveis ou rodas em movimento");
+                output.failed = true;
+                output.status = distanceMove_.failureStatus;
+                return output;
+            }
+            output.status = makeStatus(
+                "rescue_distance_preparing",
+                "Parado: aguardando os encoders e o fim da inércia");
+            return output;
+        }
+
+        distanceMove_.startLeftCount = telemetry.leftEncoderCount;
+        distanceMove_.startRightCount = telemetry.rightEncoderCount;
+        distanceMove_.lastUptimeMs = telemetry.esp32UptimeMs;
+        distanceMove_.lastProgressCounts = 0.0;
+        distanceMove_.differenceSamples = 0;
+        distanceMove_.phaseStartedAt = now;
+        distanceMove_.lastProgressAt = now;
+        distanceMove_.phase = DistancePhase::Driving;
+    }
+
+    const double leftCounts = std::abs(static_cast<double>(
+        telemetry.leftEncoderCount - distanceMove_.startLeftCount));
+    const double rightCounts = std::abs(static_cast<double>(
+        telemetry.rightEncoderCount - distanceMove_.startRightCount));
+    const double leftCm = leftCounts / config::kEncoderCountsPerCentimeter;
+    const double rightCm = rightCounts / config::kEncoderCountsPerCentimeter;
+    const double minimumCounts = std::min(leftCounts, rightCounts);
+    const double minimumCm = std::min(leftCm, rightCm);
+    const double progress = std::clamp(
+        minimumCm / distanceMove_.targetCm * 100.0,
+        0.0,
+        100.0);
+
+    const auto distanceStatus = [&](const std::string& statusPhase,
+                                    const std::string& statusAction) {
+        AutonomousStatus status = makeStatus(statusPhase, statusAction, progress);
+        status.targetDistanceCm = distanceMove_.targetCm;
+        status.leftDistanceCm = leftCm;
+        status.rightDistanceCm = rightCm;
+        status.averageDistanceCm = (leftCm + rightCm) * 0.5;
+        return status;
+    };
+    const auto failDistance = [&](const char* statusPhase,
+                                  const char* statusAction) {
+        distanceMove_.phase = DistancePhase::Failed;
+        distanceMove_.failureStatus = distanceStatus(statusPhase, statusAction);
+        output.failed = true;
+        output.status = distanceMove_.failureStatus;
+    };
+
+    if (distanceMove_.phase == DistancePhase::Settling)
+    {
+        output.status = distanceStatus(
+            "rescue_distance_settling",
+            "PWM zerado: aguardando o deslocamento estabilizar");
+        if (now - distanceMove_.phaseStartedAt >=
+            std::chrono::milliseconds(config::kRescueDistanceSettleMs))
+        {
+            distanceMove_.phase = DistancePhase::Completed;
+            output.completed = true;
+            output.status = distanceStatus(phase, action);
+        }
+        return output;
+    }
+
+    if (!encodersReady(telemetry))
+    {
+        failDistance(
+            "rescue_distance_encoder_lost",
+            "Deslocamento interrompido: encoders sem dados recentes");
+        return output;
+    }
+    if (now - distanceMove_.phaseStartedAt >=
+        std::chrono::milliseconds(config::kRescueDistanceTimeoutMs))
+    {
+        failDistance(
+            "rescue_distance_timeout",
+            "Deslocamento interrompido pelo tempo limite");
+        return output;
+    }
+
+    if (telemetry.esp32UptimeMs != distanceMove_.lastUptimeMs)
+    {
+        distanceMove_.lastUptimeMs = telemetry.esp32UptimeMs;
+        if (std::abs(leftCm - rightCm) >
+            config::kDriveDistanceMaximumSideDifferenceCm)
+        {
+            ++distanceMove_.differenceSamples;
+        }
+        else
+        {
+            distanceMove_.differenceSamples = 0;
+        }
+    }
+    if (distanceMove_.differenceSamples >=
+        config::kDriveDistanceDifferenceConfirmationSamples)
+    {
+        failDistance(
+            "rescue_distance_side_mismatch",
+            "Deslocamento interrompido: diferença excessiva entre os encoders");
+        return output;
+    }
+
+    if (minimumCounts >= distanceMove_.lastProgressCounts +
+                             config::kDriveDistanceMinimumProgressCounts)
+    {
+        distanceMove_.lastProgressCounts = minimumCounts;
+        distanceMove_.lastProgressAt = now;
+    }
+    if (now - distanceMove_.lastProgressAt >=
+        std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
+    {
+        failDistance(
+            "rescue_distance_stall",
+            "Deslocamento interrompido: rodas sem progresso suficiente");
+        return output;
+    }
+
+    if (minimumCm >= distanceMove_.targetCm)
+    {
+        distanceMove_.phase = DistancePhase::Settling;
+        distanceMove_.phaseStartedAt = now;
+        output.status = distanceStatus(
+            "rescue_distance_settling",
+            "Distância alcançada: PWM zerado para estabilização");
+        return output;
+    }
+
+    const double differenceCm = leftCm - rightCm;
+    const double maximumCorrection = std::max(
+        0.0,
+        std::min(
+            config::kDriveDistanceMaximumBalanceCorrection,
+            distanceMove_.power - config::kMotorRunMinimumPower));
+    const double correction =
+        std::abs(differenceCm) <= config::kDriveDistanceBalanceDeadbandCm
+            ? 0.0
+            : std::clamp(
+                  (std::abs(differenceCm) -
+                   config::kDriveDistanceBalanceDeadbandCm) *
+                      config::kDriveDistanceBalanceGainPerCm,
+                  0.0,
+                  maximumCorrection);
+    double leftMagnitude = distanceMove_.power;
+    double rightMagnitude = distanceMove_.power;
+    if (differenceCm > 0.0)
+    {
+        leftMagnitude -= correction;
+        rightMagnitude += correction;
+    }
+    else if (differenceCm < 0.0)
+    {
+        leftMagnitude += correction;
+        rightMagnitude -= correction;
+    }
+    output.leftPower = distanceMove_.directionSign * leftMagnitude;
+    output.rightPower = distanceMove_.directionSign * rightMagnitude;
+    output.status = distanceStatus(phase, action);
+    return output;
+}
+
+void RescueRoomMission::startVictimSearch(
+    VictimType type,
+    bool finalVerification)
+{
+    desiredVictimType_ = type;
+    finalVerification_ = finalVerification;
+    ++ballTargetGeneration_;
+    sweepStep_ = SweepStep::Right45;
+    sweepTurnStarted_ = false;
+    waitingForSweepFrame_ = false;
+    sweepFrameTimestamp_ = 0.0;
+    sweepTurnController_.reset();
+    initialVictimAlignmentMission_.reset();
+    victimApproachMission_.reset();
+    phase_ = Phase::SearchVictim;
+}
+
+void RescueRoomMission::applyCollectionRetention(
+    RescueRoomOutput& output) const
+{
+    if (!collectionRetentionActive_)
+    {
+        return;
+    }
+
+    // A pose completa mantém braço e pulso no último alvo e renova também a
+    // autorização da garra. O único passo que deixa de usar 5° é a soltura
+    // explícita em 90° dentro da rotina de armazenamento ou depósito.
+    output.servoPoseRequested = true;
+    output.servoPose = collectionRetentionPose_;
+}
+
+void RescueRoomMission::fail(const AutonomousStatus& status)
+{
+    phase_ = Phase::Failed;
+    failureStatus_ = status;
+    sweepTurnController_.reset();
+    initialVictimAlignmentMission_.reset();
+    victimApproachMission_.reset();
+    triangleMission_.reset();
+}
+
+bool RescueRoomMission::matchesVictim(
+    const ForwardBallSnapshot& ball,
+    VictimType type,
+    std::uint64_t expectedTargetSequence)
+{
+    return ball.sourceFresh && ball.detected && ball.targetLocked &&
+           ball.targetSequence == expectedTargetSequence &&
+           std::isfinite(ball.txDegrees) &&
+           ball.type == (type == VictimType::Alive
+                             ? "silver_ball"
+                             : "black_ball");
+}
+
+bool RescueRoomMission::requiresBallDetection() const
+{
+    return phase_ == Phase::EntryAdvance ||
+           phase_ == Phase::SearchVictim ||
+           phase_ == Phase::AlignVictim ||
+           phase_ == Phase::PrepareCapture ||
+           phase_ == Phase::ApproachVictim;
+}
+
+bool RescueRoomMission::requiresRescueZoneDetection() const
+{
+    return phase_ == Phase::FindDepositZone &&
+           triangleMission_.requiresRescueZoneDetection();
+}
+
+std::uint64_t RescueRoomMission::ballTargetSequence(
+    std::uint64_t autonomousRunSequence) const
+{
+    // O bloco por partida reserva 65.536 buscas distintas. Isso mantém a
+    // geração monotônica mesmo quando a arena contém vítimas extras.
+    return autonomousRunSequence * 65536ULL + ballTargetGeneration_;
+}
+
+const char* RescueRoomMission::ballTargetType() const
+{
+    return desiredVictimType_ == VictimType::Alive
+               ? "silver_ball"
+               : "black_ball";
+}
+
+void RescueRoomMission::reset()
+{
+    phase_ = Phase::EntryAdvance;
+    desiredVictimType_ = VictimType::Alive;
+    carriedVictimType_ = VictimType::Alive;
+    sweepStep_ = SweepStep::Right45;
+    sweepTurnStarted_ = false;
+    waitingForSweepFrame_ = false;
+    finalVerification_ = false;
+    storedAliveVictim_ = false;
+    collectionRetentionActive_ = false;
+    servoMotionStarted_ = false;
+    servoOutputsConfirmed_ = false;
+    collectedAliveVictims_ = 0;
+    deliveredAliveVictims_ = 0;
+    deliveredDeadVictims_ = 0;
+    ballTargetGeneration_ = 0;
+    sweepFrameTimestamp_ = 0.0;
+    postDepositReverseDistanceCm_ =
+        config::kRescuePostDepositReverseDistanceCm;
+    collectionRetentionPose_ = {};
+    pendingServoPose_ = {};
+    servoEnableDeadline_ = {};
+    depositRoutineKind_ = ServoRoutineKind::Deposit;
+    sweepTurnController_.reset();
+    initialVictimAlignmentMission_.reset();
+    victimApproachMission_.reset();
+    triangleMission_.reset();
+    servoRoutine_.resetExecution();
+    distanceMove_ = {};
+    failureStatus_ = {};
+}

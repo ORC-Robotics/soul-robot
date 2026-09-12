@@ -14,14 +14,6 @@ AutonomousStatus makeStatus(
     return status;
 }
 
-bool confirmedMarker(
-    const CameraLineSnapshot& cameraLineSnapshot,
-    CourseMarker expectedMarker)
-{
-    return cameraLineSnapshot.sourceFresh &&
-           cameraLineSnapshot.courseMarkerConfirmed &&
-           cameraLineSnapshot.courseMarker == expectedMarker;
-}
 }
 
 void MainMission::reset()
@@ -29,13 +21,30 @@ void MainMission::reset()
     phase_ = Phase::InitialLineCourse;
     lineCourseMission_.reset();
     silverEntryManeuver_.reset();
-    rescueAreaMission_.reset();
+    rescueRoomMission_.reset();
 }
 
 bool MainMission::requiresRescueVision() const
 {
-    // Confirmar a faixa cinza não liga automaticamente a busca de vítimas.
-    return phase_ == Phase::RescueArea;
+    return phase_ == Phase::RescueArea &&
+           rescueRoomMission_.requiresBallDetection();
+}
+
+bool MainMission::requiresRescueZoneDetection() const
+{
+    return phase_ == Phase::RescueArea &&
+           rescueRoomMission_.requiresRescueZoneDetection();
+}
+
+std::uint64_t MainMission::rescueBallTargetSequence(
+    std::uint64_t autonomousRunSequence) const
+{
+    return rescueRoomMission_.ballTargetSequence(autonomousRunSequence);
+}
+
+const char* MainMission::rescueBallTargetType() const
+{
+    return rescueRoomMission_.ballTargetType();
 }
 
 void MainMission::update(
@@ -53,6 +62,7 @@ void MainMission::update(
         cameraLineSnapshot,
         forwardLineSnapshot,
         ForwardBallSnapshot{},
+        RescueZoneSnapshot{},
         snapshot.autonomousRunSequence);
 }
 
@@ -63,6 +73,27 @@ void MainMission::update(
     const CameraLineSnapshot& cameraLineSnapshot,
     const ForwardLineSnapshot& forwardLineSnapshot,
     const ForwardBallSnapshot& forwardBallSnapshot,
+    std::uint64_t autonomousRunSequence)
+{
+    update(
+        robotState,
+        esp32Telemetry,
+        cameraReady,
+        cameraLineSnapshot,
+        forwardLineSnapshot,
+        forwardBallSnapshot,
+        RescueZoneSnapshot{},
+        autonomousRunSequence);
+}
+
+void MainMission::update(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& esp32Telemetry,
+    bool cameraReady,
+    const CameraLineSnapshot& cameraLineSnapshot,
+    const ForwardLineSnapshot& forwardLineSnapshot,
+    const ForwardBallSnapshot& forwardBallSnapshot,
+    const RescueZoneSnapshot& rescueZoneSnapshot,
     std::uint64_t autonomousRunSequence)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
@@ -77,7 +108,7 @@ void MainMission::update(
         robotState.driveAutonomous(0.0, 0.0);
         robotState.updateAutonomousStatus(makeStatus(
             "main_mission_completed",
-            "Missão concluída: faixa vermelha confirmada",
+            "Missão concluída: resgate finalizado e robô parado",
             100.0));
         return;
     }
@@ -90,18 +121,6 @@ void MainMission::update(
         return;
     }
 
-    if (phase_ == Phase::RescueAreaConfirmed)
-    {
-        // Este estado é terminal por enquanto. A confirmação da faixa cinza
-        // para o robô, mas não concede autoridade à missão de resgate.
-        robotState.driveAutonomous(0.0, 0.0);
-        robotState.updateAutonomousStatus(makeStatus(
-            "rescue_area_confirmed",
-            "Faixa cinza confirmada: robô parado",
-            100.0));
-        return;
-    }
-
     if (phase_ == Phase::InitialLineCourse && cameraReady)
     {
         const SilverEntryOutput silverEntry = silverEntryManeuver_.update(
@@ -109,17 +128,16 @@ void MainMission::update(
             esp32Telemetry);
         if (silverEntry.completed)
         {
-            // A confirmação termina o avanço com PWM zero. A busca de vítimas
-            // permanece desabilitada até a equipe ligar essa fase futuramente.
+            // A faixa cinza entrega autoridade diretamente à rotina completa.
+            // O primeiro avanço ainda aguarda o gate do YOLO publicar um frame.
             lineCourseMission_.reset();
             silverEntryManeuver_.reset();
-            rescueAreaMission_.reset();
-            phase_ = Phase::RescueAreaConfirmed;
+            rescueRoomMission_.reset();
+            phase_ = Phase::RescueArea;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
-                "rescue_area_confirmed",
-                "Faixa cinza confirmada: robô parado",
-                100.0));
+                "rescue_area_entering",
+                "Faixa cinza confirmada: ligando o YOLO para entrar no resgate"));
             return;
         }
         if (silverEntry.hasControl)
@@ -135,14 +153,24 @@ void MainMission::update(
 
     if (phase_ == Phase::RescueArea)
     {
-        const RescueAreaOutput output = rescueAreaMission_.update(
+        const RescueRoomOutput output = rescueRoomMission_.update(
             forwardBallSnapshot,
+            rescueZoneSnapshot,
             esp32Telemetry,
             autonomousRunSequence,
-            cameraLineSnapshot.sourceFresh &&
-                cameraLineSnapshot.rescueExitConfirmed,
-            false);
+            snapshot.servoRoutineConfirmationSequence,
+            snapshot.servoPose);
         robotState.driveAutonomous(output.leftPower, output.rightPower);
+        if (output.servoPoseRequested)
+        {
+            robotState.setAutonomousServoPose(output.servoPose);
+        }
+        if (output.releaseGripper)
+        {
+            robotState.setAutonomousServoOutputEnabled(ServoId::Gripper, false);
+        }
+        robotState.setServoRoutineInternalObjectStored(
+            output.internalObjectStored);
         robotState.updateAutonomousStatus(output.status);
         if (output.failed)
         {
@@ -155,30 +183,13 @@ void MainMission::update(
         }
         if (output.completed)
         {
-            // O segundo percurso recebe estado limpo; nenhuma busca, direção
-            // verde ou manobra anterior pode atravessar a saída do resgate.
-            rescueAreaMission_.reset();
-            lineCourseMission_.reset();
-            phase_ = Phase::FinalLineCourse;
+            phase_ = Phase::Completed;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
-                "final_line_course_entering",
-                "Saída do resgate confirmada: retomando o percurso de linha"));
+                "main_mission_completed",
+                "Resgate concluído: robô parado antes da futura busca da saída",
+                100.0));
         }
-        return;
-    }
-
-    if (phase_ == Phase::FinalLineCourse &&
-        cameraReady &&
-        confirmedMarker(cameraLineSnapshot, CourseMarker::Red))
-    {
-        lineCourseMission_.reset();
-        phase_ = Phase::Completed;
-        robotState.driveAutonomous(0.0, 0.0);
-        robotState.updateAutonomousStatus(makeStatus(
-            "main_mission_completed",
-            "Faixa vermelha confirmada: missão concluída",
-            100.0));
         return;
     }
 

@@ -193,6 +193,13 @@ bool Esp32Bridge::sendSystemReady()
     return writeLine("SYSTEM_READY\n");
 }
 
+bool Esp32Bridge::sendServoHoldEnabled(bool enabled)
+{
+    // Durante o resgate, o firmware deve conservar a última pose mesmo se o
+    // heartbeat atrasar. Isso evita que um braço sob gravidade caia sobre o pulso.
+    return writeLine(enabled ? "SERVO_HOLD,1\n" : "SERVO_HOLD,0\n");
+}
+
 bool Esp32Bridge::sendServoAngle(ServoId servo, double angleDegrees)
 {
     if (!std::isfinite(angleDegrees) ||
@@ -753,6 +760,14 @@ bool Esp32Bridge::parseSensorLine(const std::string& line)
             next.gripperServoTargetAngleDegrees = std::stod(values[58]);
             next.gripperServoSlewRateDegreesPerSecond = std::stod(values[59]);
             next.gripperServoSlewActive = std::stoi(values[60]) != 0;
+        }
+
+        if (values.size() >= 62)
+        {
+            // O campo confirma que o firmware entende e mantém o modo de
+            // retenção usado para impedir FULL_OFF durante a sala de resgate.
+            next.servoHoldSupported = true;
+            next.servoHoldActive = std::stoi(values[61]) != 0;
         }
 
         std::lock_guard<std::mutex> lock(telemetryMutex_);

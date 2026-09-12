@@ -291,6 +291,34 @@ void testTargetLossStopsAndTimesOut()
     require(output.status.phase == "ball_alignment_target_lost_timeout",
             "O timeout do alvo deve ser identificado.");
 }
+
+void testAlignmentOnlyStopsBeforeApproach()
+{
+    BallAlignmentMission mission;
+    const Clock::time_point start{};
+    BallAlignmentOutput output = mission.update(
+        ball(0.0, 40.0, 1.0),
+        stoppedTelemetry(),
+        kTargetSequence,
+        start,
+        true);
+    require(output.leftPower == 0.0 && output.rightPower == 0.0,
+            "O alinhamento inicial não pode liberar avanço à vítima.");
+
+    for (int frame = 2; frame <= 4; ++frame)
+    {
+        output = mission.update(
+            ball(0.0, 40.0, static_cast<double>(frame)),
+            stoppedTelemetry(),
+            kTargetSequence,
+            start + std::chrono::milliseconds(100 + frame * 20),
+            true);
+    }
+    require(output.finished && output.status.phase == "ball_aligned",
+            "Três frames centrais devem concluir somente o alinhamento inicial.");
+    require(output.leftPower == 0.0 && output.rightPower == 0.0,
+            "A conclusão do alinhamento deve manter a aproximação bloqueada.");
+}
 }
 
 int main()
@@ -302,6 +330,7 @@ int main()
         testMotionConfirmationTimeoutFailsSafe();
         testApproachUsesVisionImuAndStopsAtDistance();
         testTargetLossStopsAndTimesOut();
+        testAlignmentOnlyStopsBeforeApproach();
     }
     catch (const std::exception& error)
     {

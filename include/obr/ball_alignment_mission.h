@@ -27,7 +27,8 @@ public:
         const Esp32TelemetrySnapshot& telemetry,
         std::uint64_t expectedTargetSequence,
         std::chrono::steady_clock::time_point now =
-            std::chrono::steady_clock::now());
+            std::chrono::steady_clock::now(),
+        bool stopAfterAlignment = false);
     void reset();
 
 private:
@@ -60,6 +61,7 @@ private:
     bool correctionMovementConfirmed_ = false;
     bool fineCorrectionActive_ = false;
     bool correctionYawAvailable_ = false;
+    bool alignmentOnlyCompleted_ = false;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
     std::chrono::steady_clock::time_point correctionMovementConfirmedAt_{};
     std::chrono::steady_clock::time_point targetLostAt_{};

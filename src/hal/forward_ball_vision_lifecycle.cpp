@@ -11,6 +11,7 @@ ForwardBallVisionLifecycle::ForwardBallVisionLifecycle(
 void ForwardBallVisionLifecycle::begin()
 {
     requestedTargetSequence_ = std::numeric_limits<std::uint64_t>::max();
+    requestedTargetType_.clear();
     enabled_ = false;
     controlWriteFailureLogged_ = false;
     targetWriteFailureLogged_ = false;
@@ -19,19 +20,23 @@ void ForwardBallVisionLifecycle::begin()
 
 void ForwardBallVisionLifecycle::update(
     bool detectionRequired,
-    std::uint64_t autonomousRunSequence)
+    std::uint64_t targetSequence,
+    const std::string& targetType)
 {
     bool targetReady = !detectionRequired;
     if (detectionRequired &&
-        requestedTargetSequence_ == autonomousRunSequence)
+        requestedTargetSequence_ == targetSequence &&
+        requestedTargetType_ == targetType)
     {
         targetReady = true;
     }
     else if (detectionRequired &&
-             cameraMonitor_.requestForwardBallTargetSequence(
-                 autonomousRunSequence))
+             cameraMonitor_.requestForwardBallTarget(
+                 targetSequence,
+                 targetType))
     {
-        requestedTargetSequence_ = autonomousRunSequence;
+        requestedTargetSequence_ = targetSequence;
+        requestedTargetType_ = targetType;
         targetReady = true;
         targetWriteFailureLogged_ = false;
     }

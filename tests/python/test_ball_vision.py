@@ -703,6 +703,37 @@ class PublicBallVisionPipelineTest(unittest.TestCase):
         self.assertAlmostEqual(result.observation.angle_degrees, 0.0, delta=1.0)
         self.assertGreater(result.observation.candidate.radius_pixels, 65.0)
 
+    def test_target_type_filters_before_temporal_lock(self):
+        class FixedDetector:
+            processing_scale = 1.0
+
+            def detect(self, frame):
+                del frame
+                return [
+                    BallCandidate(
+                        "black_ball", 480.0, 270.0, 80.0, 160.0,
+                        10000.0, 0.9, 0.9, False, "yolo", 10000.0,
+                    ),
+                    BallCandidate(
+                        "silver_ball", 600.0, 270.0, 60.0, 120.0,
+                        8000.0, 0.9, 0.9, False, "yolo", 8000.0,
+                    ),
+                ]
+
+        pipeline = BallVisionPipeline(
+            detector=FixedDetector(),
+            tracker=BallTracker(BallTrackerConfig(acquisition_frames=1)),
+        )
+        pipeline.set_target_type("silver_ball")
+        result = pipeline.analyze(np.zeros((540, 960, 3), dtype=np.uint8))
+
+        self.assertIsNotNone(result.observation)
+        self.assertEqual(result.observation.candidate.ball_type, "silver_ball")
+        self.assertEqual(
+            {candidate.ball_type for candidate in result.candidates},
+            {"silver_ball"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

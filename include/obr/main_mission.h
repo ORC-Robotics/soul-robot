@@ -3,7 +3,7 @@
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
 #include "obr/line_course_mission.h"
-#include "obr/rescue_area_mission.h"
+#include "obr/rescue_room_mission.h"
 #include "obr/robot_state.h"
 #include "obr/silver_entry_maneuver.h"
 
@@ -16,6 +16,10 @@ class MainMission
 public:
     void reset();
     bool requiresRescueVision() const;
+    bool requiresRescueZoneDetection() const;
+    std::uint64_t rescueBallTargetSequence(
+        std::uint64_t autonomousRunSequence) const;
+    const char* rescueBallTargetType() const;
     void update(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
@@ -30,14 +34,21 @@ public:
         const ForwardLineSnapshot& forwardLineSnapshot,
         const ForwardBallSnapshot& forwardBallSnapshot,
         std::uint64_t autonomousRunSequence);
+    void update(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry,
+        bool cameraReady,
+        const CameraLineSnapshot& cameraLineSnapshot,
+        const ForwardLineSnapshot& forwardLineSnapshot,
+        const ForwardBallSnapshot& forwardBallSnapshot,
+        const RescueZoneSnapshot& rescueZoneSnapshot,
+        std::uint64_t autonomousRunSequence);
 
 private:
     enum class Phase
     {
         InitialLineCourse,
-        RescueAreaConfirmed,
         RescueArea,
-        FinalLineCourse,
         Completed,
         Failed
     };
@@ -45,5 +56,5 @@ private:
     Phase phase_ = Phase::InitialLineCourse;
     LineCourseMission lineCourseMission_;
     SilverEntryManeuver silverEntryManeuver_;
-    RescueAreaMission rescueAreaMission_;
+    RescueRoomMission rescueRoomMission_;
 };

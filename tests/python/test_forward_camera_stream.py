@@ -156,20 +156,59 @@ class ForwardCameraStreamTest(unittest.TestCase):
 
     def test_target_sequence_change_is_detected_only_once(self):
         previous_sequence = forward_camera_stream.active_ball_target_sequence
+        previous_type = forward_camera_stream.active_ball_target_type
         try:
             forward_camera_stream.active_ball_target_sequence = 0
-            self.assertTrue(
-                forward_camera_stream.synchronize_ball_target_sequence(17)
-            )
-            self.assertFalse(
-                forward_camera_stream.synchronize_ball_target_sequence(17)
-            )
+            forward_camera_stream.active_ball_target_type = "any"
+            with mock.patch.object(
+                forward_camera_stream.ball_vision_pipeline,
+                "set_target_type",
+            ) as set_target_type:
+                self.assertTrue(
+                    forward_camera_stream.synchronize_ball_target(
+                        17,
+                        "silver_ball",
+                    )
+                )
+                self.assertFalse(
+                    forward_camera_stream.synchronize_ball_target(
+                        17,
+                        "silver_ball",
+                    )
+                )
+                set_target_type.assert_not_called()
             self.assertEqual(
                 forward_camera_stream.active_ball_target_sequence,
                 17,
             )
+            self.assertEqual(
+                forward_camera_stream.active_ball_target_type,
+                "silver_ball",
+            )
         finally:
             forward_camera_stream.active_ball_target_sequence = previous_sequence
+            forward_camera_stream.active_ball_target_type = previous_type
+
+    def test_ball_target_control_reads_sequence_and_requested_type(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            target_path = os.path.join(temporary_directory, "target.json")
+            with open(target_path, "w", encoding="utf-8") as target_file:
+                json.dump(
+                    {
+                        "targetSequence": 42,
+                        "targetType": "black_ball",
+                    },
+                    target_file,
+                )
+            with mock.patch.object(
+                forward_camera_stream,
+                "BALL_TARGET_SEQUENCE_CONTROL_PATH",
+                target_path,
+            ):
+                self.assertEqual(
+                    forward_camera_stream.requested_ball_target(),
+                    (42, "black_ball"),
+                )
 
     def test_cam1_loop_starts_with_ball_detector_disabled(self):
         class FakeCamera:

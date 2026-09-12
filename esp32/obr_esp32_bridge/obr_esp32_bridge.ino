@@ -174,6 +174,9 @@ bool startButtonPressed = false;
 bool calibrationActive = false;
 bool calibrationStopLatched = false;
 bool servoCalibrationActive = false;
+// Enquanto ativo, nenhum caminho lógico pode remover o PWM dos servos. Esse
+// modo existe para mecanismos que caem por gravidade quando recebem FULL_OFF.
+bool servoHoldActive = false;
 int8_t servoCalibrationSelectedIndex = -1;
 bool dashboardArmed = false;
 bool emergencyStopActive = false;
@@ -489,6 +492,13 @@ void disableServoOutput(ServoId servo)
 
 void disableAllServoOutputs()
 {
+  if (servoHoldActive)
+  {
+    // A sala de resgate depende do torque contínuo do braço. Mesmo E-Stop ou
+    // perda da Raspberry mantêm a última pose; a tração continua sendo zerada.
+    return;
+  }
+
   // Remover o sinal evita manter um comando antigo durante parada, E-Stop,
   // calibração ou perda da Raspberry. Isso não corta a alimentação V+.
   for (size_t index = 0; index < kServoOutputCount; ++index)
@@ -669,7 +679,8 @@ void stopMotorOutputs()
 
 bool beginServoCalibrationMode()
 {
-  if (!pca9685Ready || emergencyStopActive || calibrationActive)
+  if (!pca9685Ready || emergencyStopActive || calibrationActive ||
+      servoHoldActive)
   {
     return false;
   }
@@ -2099,6 +2110,24 @@ void handleUartCommand(const char* line)
     lastRaspberrySystemReadyMs = millis();
     return;
   }
+  if (strcmp(line, "SERVO_HOLD,1") == 0)
+  {
+    // A trava conserva o último PWM. O timeout da Raspberry ainda impede que
+    // comandos de movimento novos sejam aceitos até o heartbeat retornar.
+    servoHoldActive = true;
+    Serial.println("SERVO_HOLD,ON");
+    return;
+  }
+  if (strcmp(line, "SERVO_HOLD,0") == 0)
+  {
+    servoHoldActive = false;
+    if (!isRaspberrySystemReady(millis()))
+    {
+      disableAllServoOutputs();
+    }
+    Serial.println("SERVO_HOLD,OFF");
+    return;
+  }
   if (strcmp(line, "OLED_CLEAR") == 0)
   {
     remoteOledActive = false;
@@ -2222,6 +2251,11 @@ void handleUartCommand(const char* line)
 
   if (strncmp(line, "SERVO_DISABLE,", 14) == 0)
   {
+    if (servoHoldActive)
+    {
+      sendUartError("servo_hold_active");
+      return;
+    }
     char servoName[16] = {};
     int consumedCharacters = 0;
     const int parsedFields = sscanf(
@@ -2483,6 +2517,9 @@ void sendUartTelemetryIfDue()
     Serial.print(',');
     Serial.print(servoOutputStates[index].slewActive ? 1 : 0);
   }
+  // Confirma à Raspberry que o firmware protege a pose contra FULL_OFF.
+  Serial.print(',');
+  Serial.print(servoHoldActive ? 1 : 0);
   Serial.println();
 }
 

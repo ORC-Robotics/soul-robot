@@ -22,6 +22,9 @@ class MissionController
 public:
     bool requiresForwardBallDetection(const RobotSnapshot& snapshot) const;
     bool requiresRescueZoneDetection(const RobotSnapshot& snapshot) const;
+    std::uint64_t forwardBallTargetSequence(
+        const RobotSnapshot& snapshot) const;
+    const char* forwardBallTargetType(const RobotSnapshot& snapshot) const;
     void update(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,

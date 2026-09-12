@@ -1099,18 +1099,18 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
     require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
+            snapshot.autonomousStatus.phase == "rescue_area_entering",
         "Duas leituras centrais devem confirmar a área de resgate.");
     require(
-        !fixture.mission.requiresRescueVision(),
-        "A faixa cinza não deve ligar automaticamente a visão de vítimas.");
+        fixture.mission.requiresRescueVision(),
+        "A faixa cinza deve ligar automaticamente a visão de vítimas.");
 
     snapshot = fixture.update(gray);
     require(
         snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
             snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "rescue_area_confirmed",
-        "Depois da faixa cinza, o robô deve permanecer parado.");
+            snapshot.autonomousStatus.phase == "rescue_entry_waiting_yolo",
+        "Depois da faixa cinza, o robô deve aguardar o primeiro frame do YOLO.");
 
     fixture.mission.reset();
     require(
@@ -1175,7 +1175,7 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         "A primeira leitura NEAR central deve aguardar confirmação.");
     snapshot = reverseFixture.update(alignedLine);
     require(
-        snapshot.autonomousStatus.phase == "rescue_area_confirmed" &&
+        snapshot.autonomousStatus.phase == "rescue_area_entering" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
         "A linha recuperada e centralizada deve confirmar a área de resgate.");
 }

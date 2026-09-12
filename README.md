@@ -613,15 +613,20 @@ Ela não executa sensores FAR/MEDIUM/NEAR, GREEN, GAP, recovery nem comandos de
 motor; por isso o stream não muda o controle ou a interpretação da CAM0.
 
 Os detectores antigos de vítimas por HSV, contornos e Hough não participam mais
-da execução da CAM1, e seu overlay também não é desenhado no stream. O processo
-frontal fica dedicado à captura, ao dataset e ao assistente leve de linha enquanto
-o novo modelo ainda não estiver integrado.
+da execução da CAM1. Durante o resgate, o gate liga o modelo YOLO e informa se o
+tracker deve aceitar `silver_ball`, `black_ball` ou ambos no modo isolado.
 
-O contrato `/dev/shm/obr_forward_ball_status.json`, o gate de resgate e a sequência
-da execução permanecem reservados ao futuro detector. `ForwardBallSnapshot`,
-`BallAlignmentMission` e `RescueAreaMission` continuam validando idade, identidade
-da execução e alvo travado. Sem um produtor válido, a missão mantém os motores
-zerados.
+O contrato `/dev/shm/obr_forward_ball_status.json`, a geração do alvo e o requisito
+de target lock impedem reutilizar uma vítima de uma busca anterior.
+`ForwardBallSnapshot`, `BallAlignmentMission`, `RescueAreaMission` e
+`RescueRoomMission` validam idade, identidade e geometria antes de permitir
+movimento. Sem um produtor válido, a missão mantém os motores zerados.
+
+Na Missão Principal, a faixa cinza liga o YOLO antes do avanço inicial de 10 cm.
+A rotina prioriza duas vítimas pratas no triângulo verde, entrega a vítima preta
+no triângulo vermelho e faz uma varredura final por vítimas extras. A sequência,
+as etapas reaproveitadas dos servos e o checklist físico estão em
+[`docs/ROTINA_SALA_RESGATE.md`](docs/ROTINA_SALA_RESGATE.md).
 
 O modo isolado `rescue_zone_detection`, exibido como `Áreas de Resgate`, ativa
 somente a segmentação HSV das zonas verde e vermelha. O stream frontal mostra

@@ -186,7 +186,9 @@ public:
     ForwardBallSnapshot forwardBallSnapshot() const;
     RescueZoneSnapshot rescueZoneSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;
-    bool requestForwardBallTargetSequence(std::uint64_t sequence) const;
+    bool requestForwardBallTarget(
+        std::uint64_t sequence,
+        const std::string& targetType) const;
     bool publishRescueZoneDetectionInput(
         bool enabled,
         bool ultrasonicFresh,

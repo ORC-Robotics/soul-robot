@@ -123,9 +123,8 @@ static_assert(kRescueZoneUltrasonicFreshnessMs > 0 &&
                       kRescueZoneUltrasonicMinimumCm,
               "A telemetria ultrassônica das áreas exige limites válidos.");
 
-// Gate reservado ao futuro detector de vítimas da câmera frontal. A CAM1
-// continua entregando apenas o assistente leve de linha enquanto nenhum modelo
-// novo estiver integrado. O produtor futuro deverá respeitar este gate.
+// Gate do detector YOLO de vítimas da câmera frontal. Fora das etapas que
+// precisam procurar ou aproximar uma vítima, a inferência pesada fica desligada.
 constexpr const char* kForwardBallDetectionControlPath =
     "/dev/shm/obr_forward_ball_detection_enabled";
 constexpr const char* kForwardBallDetectionTemporaryControlPath =
@@ -138,7 +137,7 @@ constexpr const char* kForwardBallTargetSequenceControlPath =
 constexpr const char* kForwardBallTargetSequenceTemporaryControlPath =
     "/dev/shm/obr_forward_ball_target_sequence.tmp";
 
-// Contrato de resultado do futuro detector, publicado somente durante o resgate.
+// Contrato de resultado do detector, publicado somente durante o resgate.
 constexpr const char* kForwardBallStatusPath =
     "/dev/shm/obr_forward_ball_status.json";
 
@@ -414,6 +413,40 @@ constexpr int kRescueSearchPulseMs = 130;
 // Pausa, em milissegundos, para estabilizar a câmera depois de cada micro-pivô.
 constexpr int kRescueSearchSettlingMs = 100;
 
+// Avanço inicial, em centímetros, executado ao entrar na sala de resgate.
+// O detector de vítimas permanece ligado durante todo o deslocamento.
+constexpr double kRescueEntryAdvanceDistanceCm = 10.0;
+constexpr double kRescueEntryAdvancePower = 0.70;
+
+// Limites angulares, em graus, da busca de vítimas em relação ao heading de
+// entrada. A segunda varredura amplia a área observada somente quando ±45°
+// não encontram uma vítima do tipo solicitado.
+constexpr double kRescueVictimFirstSweepDegrees = 45.0;
+constexpr double kRescueVictimSecondSweepDegrees = 75.0;
+constexpr double kRescueVictimSweepToleranceDegrees = 3.0;
+constexpr int kRescueVictimSweepTimeoutMs = 12000;
+
+// Ré feita depois de cada coleta para liberar a vítima da parede e criar espaço
+// para movimentar o mecanismo. Os encoders limitam o percurso a 15 cm.
+constexpr double kRescuePostCollectionReverseDistanceCm = 15.0;
+constexpr double kRescuePostCollectionReversePower = 0.80;
+
+// Ré feita depois de cada entrega. Vinte centímetros afastam o robô do
+// triângulo antes de iniciar outra busca visual.
+constexpr double kRescuePostDepositReverseDistanceCm = 20.0;
+constexpr double kRescuePostDepositReversePower = 0.80;
+
+// Ré, em centímetros, feita depois da primeira entrega preta obrigatória.
+// O afastamento maior evita iniciar a verificação final diante do depósito vermelho.
+constexpr double kRescueFinalDeadDepositReverseDistanceCm = 40.0;
+
+// Tempos máximos, em milissegundos, dos deslocamentos internos do resgate.
+// A ausência de progresso ou de telemetria recente interrompe a missão antes.
+constexpr int kRescueDistancePreparationTimeoutMs = 1200;
+constexpr int kRescueDistanceStallTimeoutMs = 1500;
+constexpr int kRescueDistanceTimeoutMs = 12000;
+constexpr int kRescueDistanceSettleMs = 250;
+
 // Margem angular estrita usada como referência interna da correção fina.
 constexpr double kBallAlignmentDeadbandDegrees = 1.0;
 
@@ -626,8 +659,33 @@ static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
 static_assert(kRescueSearchTurnPower >= kMotorStartMinimumPower &&
                   kRescueSearchTurnPower <= kMaxMotorOutput &&
                   kRescueSearchPulseMs > 0 &&
-                  kRescueSearchSettlingMs > 0,
-              "Os micro-pivôs da busca devem permanecer na faixa segura.");
+                  kRescueSearchSettlingMs > 0 &&
+                  kRescueEntryAdvanceDistanceCm > 0.0 &&
+                  kRescueEntryAdvancePower >= kMotorStartMinimumPower &&
+                  kRescueEntryAdvancePower <= kMaxMotorOutput &&
+                  kRescueVictimFirstSweepDegrees > 0.0 &&
+                  kRescueVictimSecondSweepDegrees >
+                      kRescueVictimFirstSweepDegrees &&
+                  kRescueVictimSecondSweepDegrees < 180.0 &&
+                  kRescueVictimSweepToleranceDegrees > 0.0 &&
+                  kRescueVictimSweepToleranceDegrees <
+                      kRescueVictimFirstSweepDegrees &&
+                  kRescueVictimSweepTimeoutMs > 0 &&
+                  kRescuePostCollectionReverseDistanceCm > 0.0 &&
+                  kRescuePostCollectionReversePower >=
+                      kMotorStartMinimumPower &&
+                  kRescuePostCollectionReversePower <= kMaxMotorOutput &&
+                  kRescuePostDepositReverseDistanceCm > 0.0 &&
+                  kRescuePostDepositReversePower >=
+                      kMotorStartMinimumPower &&
+                  kRescuePostDepositReversePower <= kMaxMotorOutput &&
+                  kRescueFinalDeadDepositReverseDistanceCm >=
+                      kRescuePostDepositReverseDistanceCm &&
+                  kRescueDistancePreparationTimeoutMs > 0 &&
+                  kRescueDistanceStallTimeoutMs > 0 &&
+                  kRescueDistanceTimeoutMs > kRescueDistanceStallTimeoutMs &&
+                  kRescueDistanceSettleMs > 0,
+              "Os deslocamentos da sala de resgate devem permanecer seguros.");
 
 // Quantidade de amostras novas e válidas dos encoders para trocar STARTING por RUNNING.
 // A confirmação evita liberar 0,61 por um pico isolado ou ruído de telemetria.
@@ -1163,6 +1221,14 @@ constexpr int kServoRoutineGripperPressMs = 500;
 // Se não houver confirmação, a sequência para sem abrir automaticamente.
 constexpr int kServoRoutineConfirmationTimeoutMs = 2000;
 
+// Intervalo, em milissegundos, para repetir a solicitação que proíbe FULL_OFF
+// durante a sala de resgate até a ESP32 confirmar a trava pela telemetria.
+constexpr int kRescueServoHoldRetryMs = 250;
+
+// Tempo máximo, em milissegundos, para a telemetria confirmar os três canais
+// ativos depois da primeira pose. A rotina não avança enquanto eles estiverem OFF.
+constexpr int kRescueServoEnableConfirmationTimeoutMs = 1000;
+
 // Posições, em graus, usadas pelas rotinas mecânicas predefinidas. Alterar
 // qualquer valor muda diretamente os pontos de captura, armazenamento e depósito.
 constexpr double kServoRoutineArmHomeDegrees = kAutonomousInitialArmAngleDegrees;
@@ -1195,6 +1261,8 @@ static_assert(kServoSlewMinimumSpeedDegreesPerSecond > 0.0 &&
                   kServoRoutineResumePoseMs >= kServoPoseHoldBeforeWristMotionMs &&
                   kServoRoutineGripperPressMs > 0 &&
                   kServoRoutineConfirmationTimeoutMs > 0 &&
+                  kRescueServoHoldRetryMs > 0 &&
+                  kRescueServoEnableConfirmationTimeoutMs > 0 &&
                   static_cast<double>(kServoRoutineInitialPoseMs) >=
                       kServoPoseHoldBeforeWristMotionMs +
                           (kServoMaximumAngleDegrees - kServoMinimumAngleDegrees) /

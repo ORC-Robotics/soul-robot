@@ -182,7 +182,8 @@ BallAlignmentOutput BallAlignmentMission::update(
     const ForwardBallSnapshot& ball,
     const Esp32TelemetrySnapshot& telemetry,
     std::uint64_t expectedTargetSequence,
-    std::chrono::steady_clock::time_point now)
+    std::chrono::steady_clock::time_point now,
+    bool stopAfterAlignment)
 {
     BallAlignmentOutput output;
     if (expectedTargetSequence_ != expectedTargetSequence)
@@ -195,8 +196,10 @@ BallAlignmentOutput BallAlignmentMission::update(
     {
         output.finished = true;
         output.status = makeStatus(
-            "ball_reached",
-            "Bola alcançada; alvo permanece travado até uma nova execução",
+            alignmentOnlyCompleted_ ? "ball_aligned" : "ball_reached",
+            alignmentOnlyCompleted_
+                ? "Vítima alinhada; aguardando a preparação da garra"
+                : "Bola alcançada; alvo permanece travado até uma nova execução",
             100.0);
         return output;
     }
@@ -274,18 +277,23 @@ BallAlignmentOutput BallAlignmentMission::update(
         std::isfinite(ball.distanceCm) && ball.distanceCm > 0.0 &&
         ball.distanceCm <= config::kBallApproachStopDistanceCm &&
         absoluteTx <=
-            config::kBallCollectionNearAlignmentToleranceDegrees;
+            (stopAfterAlignment
+                 ? config::kBallApproachStartToleranceDegrees
+                 : config::kBallCollectionNearAlignmentToleranceDegrees);
     if (victimAlreadyAtCollectionDistance)
     {
         // Perto da vítima, um novo pivô pode deslocá-la para fora do coletor.
         // A etapa seguinte usa os encoders para completar o contato em linha reta.
         phase_ = Phase::Completed;
+        alignmentOnlyCompleted_ = stopAfterAlignment;
         output.finished = true;
         output.status = makeStatus(
-            "ball_reached",
-            "Vítima próxima e dentro da margem de coleta; distância=" +
-                powerText(ball.distanceCm) + " cm; tx=" +
-                txText(ball.txDegrees),
+            stopAfterAlignment ? "ball_aligned" : "ball_reached",
+            stopAfterAlignment
+                ? "Vítima próxima e alinhada; preparando a garra antes da aproximação"
+                : "Vítima próxima e dentro da margem de coleta; distância=" +
+                      powerText(ball.distanceCm) + " cm; tx=" +
+                      txText(ball.txDegrees),
             100.0);
         return output;
     }
@@ -464,6 +472,19 @@ BallAlignmentOutput BallAlignmentMission::update(
             }
             if (stableFrameCount_ >= config::kBallAlignmentStableFrames)
             {
+                if (stopAfterAlignment)
+                {
+                    // A sala de resgate usa esta parada para preparar braço,
+                    // pulso e garra antes de liberar qualquer avanço à vítima.
+                    phase_ = Phase::Completed;
+                    alignmentOnlyCompleted_ = true;
+                    output.finished = true;
+                    output.status = makeStatus(
+                        "ball_aligned",
+                        "Vítima alinhada; preparando a garra antes da aproximação",
+                        100.0);
+                    return output;
+                }
                 if (!approachHeadingAvailable(telemetry))
                 {
                     output.status = makeStatus(
@@ -614,6 +635,7 @@ void BallAlignmentMission::reset()
     correctionMovementConfirmed_ = false;
     fineCorrectionActive_ = false;
     correctionYawAvailable_ = false;
+    alignmentOnlyCompleted_ = false;
     phaseStartedAt_ = {};
     correctionMovementConfirmedAt_ = {};
     targetLostAt_ = {};

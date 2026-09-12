@@ -680,6 +680,9 @@ void DashboardServer::handleCommand(const std::string& message)
     }
     else if (message.find("\"command\":\"servo_disable_all\"") != std::string::npos)
     {
+        // O botão é uma ordem explícita de manutenção. Libera primeiro a trava
+        // herdada do resgate para que SERVO_DISABLE_ALL não seja ignorado.
+        esp32_.sendServoHoldEnabled(false);
         robotState_.disableServos();
     }
     else if (message.find("\"command\":\"servo_calibration_begin\"") != std::string::npos)
@@ -1147,6 +1150,10 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"gripperServoSlewActive\":" << (esp32.gripperServoSlewActive ? "true" : "false")
          << ",\"servoExtendedControlSupported\":"
          << (esp32.servoExtendedControlSupported ? "true" : "false")
+         << ",\"servoHoldSupported\":"
+         << (esp32.servoHoldSupported ? "true" : "false")
+         << ",\"servoHoldActive\":"
+         << (esp32.servoHoldActive ? "true" : "false")
          << ",\"servoCalibrationRequested\":"
          << (state.servoCalibrationActive ? "true" : "false")
          << ",\"servoCalibrationSupported\":"

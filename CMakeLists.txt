@@ -30,6 +30,7 @@ add_executable(robot_test
     src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
     src/robot/rescue_area_mission.cpp
+    src/robot/rescue_room_mission.cpp
     src/robot/rescue_zone_align_mission.cpp
     src/robot/rescue_zone_approach_mission.cpp
     src/robot/rescue_zone_search_mission.cpp
@@ -65,6 +66,7 @@ if(BUILD_TESTING)
         src/robot/obstacle_avoidance.cpp
         src/robot/ball_alignment_mission.cpp
         src/robot/rescue_area_mission.cpp
+        src/robot/rescue_room_mission.cpp
         src/robot/rescue_zone_align_mission.cpp
         src/robot/rescue_zone_approach_mission.cpp
         src/robot/rescue_zone_search_mission.cpp
@@ -105,6 +107,27 @@ if(BUILD_TESTING)
     add_test(
         NAME rescue_area_mission_test
         COMMAND rescue_area_mission_test)
+
+    add_executable(rescue_room_mission_test
+        tests/rescue_room_mission_test.cpp
+        src/robot/ball_alignment_mission.cpp
+        src/robot/imu_turn_controller.cpp
+        src/robot/rescue_area_mission.cpp
+        src/robot/rescue_room_mission.cpp
+        src/robot/rescue_zone_align_mission.cpp
+        src/robot/rescue_zone_approach_mission.cpp
+        src/robot/rescue_zone_search_mission.cpp
+        src/robot/rescue_zone_triangle_mission.cpp
+        src/robot/robot_state.cpp
+        src/robot/servo_routine.cpp
+    )
+    target_include_directories(rescue_room_mission_test PRIVATE include)
+    if(NOT WIN32)
+        target_link_libraries(rescue_room_mission_test pthread)
+    endif()
+    add_test(
+        NAME rescue_room_mission_test
+        COMMAND rescue_room_mission_test)
 
     add_executable(obstacle_avoidance_test
         tests/obstacle_avoidance_test.cpp

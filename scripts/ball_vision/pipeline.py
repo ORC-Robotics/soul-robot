@@ -28,6 +28,7 @@ class BallVisionPipeline:
         self.tracker = tracker or BallTracker(
             distance_estimator=self.calibration.estimate
         )
+        self.target_type = None
 
     @property
     def silver_processing_scale(self):
@@ -46,6 +47,16 @@ class BallVisionPipeline:
 
         self.tracker.reset()
 
+    def set_target_type(self, target_type):
+        """Seleciona a classe aceita sem alterar os detectores calibrados."""
+
+        normalized = None if target_type in (None, "", "any") else target_type
+        if normalized not in (None, "silver_ball", "black_ball"):
+            raise ValueError("O tipo alvo deve ser prata, preta ou any.")
+        if normalized != self.target_type:
+            self.target_type = normalized
+            self.tracker.reset()
+
     def analyze(self, frame):
         """Retorna somente o alvo travado e os demais candidatos detectados."""
 
@@ -54,6 +65,7 @@ class BallVisionPipeline:
             self.detector,
             self.calibration,
             tracker=self.tracker,
+            target_type=self.target_type,
         )
         if not candidates:
             return BallVisionResult(None, ())

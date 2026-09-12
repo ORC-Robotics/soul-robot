@@ -94,10 +94,19 @@ def analyze_frame(
     horizontal_fov_degrees=DEFAULT_HORIZONTAL_FOV_DEGREES,
     center_angle_degrees=DEFAULT_CENTER_ANGLE_DEGREES,
     tracker=None,
+    target_type=None,
 ):
     """Mede o alvo selecionado sem reutilizar observações de frames antigos."""
 
     detected_candidates = detector.detect(frame)
+    if target_type in ("silver_ball", "black_ball"):
+        # A missão escolhe qual classe pode entrar no tracker. Filtrar antes da
+        # confirmação impede uma vítima preta de bloquear a busca prioritária.
+        detected_candidates = [
+            candidate
+            for candidate in detected_candidates
+            if candidate.ball_type == target_type
+        ]
     candidates = detected_candidates
     if tracker is not None:
         candidates = tracker.update(detected_candidates, frame.shape[1])

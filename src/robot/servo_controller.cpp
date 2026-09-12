@@ -222,7 +222,10 @@ double ServoController::moveAngleToward(double currentDegrees,
 
 bool ServoController::beginCalibration()
 {
-    return esp32_.sendServoCalibrationBegin();
+    // A trava da sala impede FULL_OFF e, por isso, também impede a calibração.
+    // A ação explícita do operador libera a trava antes de abrir o modo de bancada.
+    return esp32_.sendServoHoldEnabled(false) &&
+           esp32_.sendServoCalibrationBegin();
 }
 
 bool ServoController::endCalibration()

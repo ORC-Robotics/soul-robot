@@ -218,6 +218,7 @@ active_stream_clients = 0
 frame_condition = threading.Condition()
 ball_vision_pipeline = BallVisionPipeline()
 active_ball_target_sequence = 0
+active_ball_target_type = "any"
 
 
 def empty_ball_status(processing_ms=0.0, detection_enabled=False):
@@ -428,14 +429,25 @@ def requested_ball_detection_enabled():
         return False
 
 
-def requested_ball_target_sequence():
-    """Lê a execução autônoma que deve possuir o próximo alvo travado."""
+def requested_ball_target():
+    """Lê a geração e o tipo de vítima solicitados pela missão autônoma."""
 
     try:
         with open(BALL_TARGET_SEQUENCE_CONTROL_PATH, "r", encoding="utf-8") as control_file:
-            return max(0, int(control_file.read().strip()))
-    except (OSError, ValueError):
-        return 0
+            content = control_file.read().strip()
+        try:
+            target = json.loads(content)
+        except json.JSONDecodeError:
+            # Mantém compatibilidade com arquivos antigos que continham apenas
+            # a sequência numérica e, portanto, aceitavam as duas classes.
+            return max(0, int(content)), "any"
+        sequence = max(0, int(target["targetSequence"]))
+        target_type = str(target.get("targetType", "any"))
+        if target_type not in ("any", "silver_ball", "black_ball"):
+            return 0, "any"
+        return sequence, target_type
+    except (KeyError, OSError, TypeError, ValueError):
+        return 0, "any"
 
 
 def measure_rescue_zone_frame_obstruction(frame_bgr):
@@ -502,14 +514,20 @@ def clear_rescue_zone_status():
             print(f"Falha ao remover IPC das áreas de resgate {path}: {error}", flush=True)
 
 
-def synchronize_ball_target_sequence(target_sequence):
-    """Descarta o alvo quando uma nova execução de resgate começa."""
+def synchronize_ball_target(target_sequence, target_type="any"):
+    """Registra a nova geração sem tocar no tracker durante uma inferência."""
 
-    global active_ball_target_sequence
+    global active_ball_target_sequence, active_ball_target_type
     target_sequence = max(0, int(target_sequence))
-    if target_sequence == active_ball_target_sequence:
+    if target_type not in ("any", "silver_ball", "black_ball"):
+        target_type = "any"
+    if (
+        target_sequence == active_ball_target_sequence
+        and target_type == active_ball_target_type
+    ):
         return False
     active_ball_target_sequence = target_sequence
+    active_ball_target_type = target_type
     return True
 
 
@@ -1050,7 +1068,10 @@ def main():
     camera_format = ""
     details = {}
     ball_detection_active = False
-    active_ball_target_sequence = requested_ball_target_sequence()
+    initial_target_sequence, initial_target_type = requested_ball_target()
+    synchronize_ball_target(initial_target_sequence, initial_target_type)
+    # Ainda não existe uma inferência em andamento durante a inicialização.
+    ball_vision_pipeline.set_target_type(active_ball_target_type)
     ball_status = empty_ball_status(detection_enabled=False)
     observation = None
     candidates = ()
@@ -1165,8 +1186,11 @@ def main():
                     ) * 1000.0
 
                 ball_detection_requested = requested_ball_detection_enabled()
-                target_sequence = requested_ball_target_sequence()
-                target_changed = synchronize_ball_target_sequence(target_sequence)
+                target_sequence, target_type = requested_ball_target()
+                target_changed = synchronize_ball_target(
+                    target_sequence,
+                    target_type,
+                )
                 if ball_detection_requested != ball_detection_active:
                     ball_detection_active = ball_detection_requested
                     target_changed = True
@@ -1387,6 +1411,12 @@ def main():
 
                     if ball_analysis_future is None:
                         if ball_analysis_reset_pending:
+                            # A classe só muda depois que a inferência anterior
+                            # terminou. O resultado antigo já foi descartado
+                            # pela geração, sem reset concorrente do tracker.
+                            ball_vision_pipeline.set_target_type(
+                                active_ball_target_type
+                            )
                             ball_vision_pipeline.reset()
                             ball_analysis_reset_pending = False
                         if ball_analysis_due(ball_time, last_ball_analysis_time):
