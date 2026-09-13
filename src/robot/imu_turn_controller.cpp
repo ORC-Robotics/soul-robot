@@ -39,7 +39,8 @@ bool ImuTurnController::start(
     int correctionPulseMs,
     int maximumCorrectionPulses,
     double commandPower,
-    int timeoutMs)
+    int timeoutMs,
+    std::chrono::steady_clock::time_point now)
 {
     if (completionToleranceDegrees <= 0.0)
     {
@@ -55,7 +56,6 @@ bool ImuTurnController::start(
         return false;
     }
 
-    const auto now = std::chrono::steady_clock::now();
     targetDegrees_ = targetDegrees;
     completionToleranceDegrees_ = completionToleranceDegrees;
     correctionPulseMs_ = correctionPulseMs > 0
@@ -85,14 +85,14 @@ bool ImuTurnController::start(
 }
 
 ImuTurnOutput ImuTurnController::update(
-    const Esp32TelemetrySnapshot& telemetry)
+    const Esp32TelemetrySnapshot& telemetry,
+    std::chrono::steady_clock::time_point now)
 {
     if (phase_ == Phase::Idle)
     {
         return {};
     }
 
-    const auto now = std::chrono::steady_clock::now();
     const double turnedDegrees = std::isfinite(telemetry.yawZDeg)
                                      ? angularDistanceDegrees(
                                            startYawDegrees_, telemetry.yawZDeg)

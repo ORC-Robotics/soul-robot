@@ -41,6 +41,29 @@ FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+    def test_candidate_direction_is_published_without_confirming_detection(self):
+        pipeline = mock.Mock()
+        pipeline.target_locked = False
+        pipeline.analyze.return_value = forward_camera_stream.BallVisionResult(
+            None, (object(),), -15.0
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "ball.json"
+            with (
+                mock.patch.object(forward_camera_stream, "ball_vision_pipeline", pipeline),
+                mock.patch.object(forward_camera_stream, "BALL_STATUS_PATH", str(path)),
+                mock.patch.object(forward_camera_stream, "TEMP_BALL_STATUS_PATH", str(path) + ".tmp"),
+            ):
+                _, _, status = forward_camera_stream.analyze_requested_ball_frame(
+                    np.zeros((20, 30, 3), dtype=np.uint8), True
+                )
+                forward_camera_stream.save_ball_control_status(True, status)
+                payload = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["candidateTxDegrees"], -15.0)
+        self.assertTrue(payload["ballCandidateVisible"])
+        self.assertFalse(payload["ballDetected"])
+        self.assertFalse(payload["targetLocked"])
+
     def test_yolo_mode_skips_forward_assist_processing(self):
         frame = np.zeros((20, 30, 3), dtype=np.uint8)
         with mock.patch.object(

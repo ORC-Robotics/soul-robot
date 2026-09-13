@@ -124,6 +124,9 @@ struct ForwardBallSnapshot
     // Indica uma candidata ainda em confirmação temporal. Ela nunca autoriza
     // alinhamento, mas interrompe a busca enquanto o target lock decide.
     bool candidateVisible = false;
+    // Direção da candidata do frame atual, antes da confirmação. Serve somente
+    // para orientar a busca; nunca autoriza alinhamento ou coleta.
+    double candidateTxDegrees = std::numeric_limits<double>::quiet_NaN();
     std::string type;
     double txDegrees = std::numeric_limits<double>::quiet_NaN();
     double distanceCm = std::numeric_limits<double>::quiet_NaN();
@@ -177,9 +180,11 @@ public:
     // Um caminho alternativo permite testar o contrato IPC sem câmera nem motores.
     explicit CameraMonitor(
         std::string forwardLineStatusPath = {},
-        std::string rescueZoneStatusPath = {})
+        std::string rescueZoneStatusPath = {},
+        std::string forwardBallStatusPath = {})
         : forwardLineStatusPath_(std::move(forwardLineStatusPath)),
-          rescueZoneStatusPath_(std::move(rescueZoneStatusPath)) {}
+          rescueZoneStatusPath_(std::move(rescueZoneStatusPath)),
+          forwardBallStatusPath_(std::move(forwardBallStatusPath)) {}
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
@@ -198,6 +203,7 @@ public:
 private:
     std::string forwardLineStatusPath_;
     std::string rescueZoneStatusPath_;
+    std::string forwardBallStatusPath_;
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
     ForwardLineSnapshot cachedForwardLineSnapshot_;

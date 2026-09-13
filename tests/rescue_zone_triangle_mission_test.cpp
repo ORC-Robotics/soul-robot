@@ -79,7 +79,7 @@ void testOrchestratesSearchAlignApproachAndSuccess()
     require(
         !output.completed &&
             output.status.rescueZoneTrianglePhase == "APPROACH" &&
-            output.leftPower == config::kRescueZoneApproachNearPower,
+            output.leftPower == config::kRescueZoneApproachFinalAdvancePower,
         "APPROACH existente deve comandar sua aproximação sem lógica duplicada.");
 
     output = mission.update(

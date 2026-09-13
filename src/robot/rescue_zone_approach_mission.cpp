@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 
 RescueZoneApproachOutput RescueZoneApproachMission::update(
     double lockedHeadingDegrees,
@@ -59,6 +60,15 @@ RescueZoneApproachOutput RescueZoneApproachMission::update(
         startedAt_ = now;
     }
 
+    if (paused_)
+    {
+        if (finalAdvanceActive_)
+        {
+            finalAdvanceStartedAt_ += now - pausedAt_;
+        }
+        paused_ = false;
+    }
+
     if (now - startedAt_ >
         std::chrono::milliseconds(config::kRescueZoneApproachTimeoutMs))
     {
@@ -95,21 +105,25 @@ RescueZoneApproachOutput RescueZoneApproachMission::update(
         (zones.cameraObscured ||
          targetZone.frameCoverage >=
              config::kRescueZoneApproachCameraStopCoverage);
-    if (!finalAdvanceActive_ && cameraStop)
+    if (!finalAdvanceActive_ &&
+        (cameraStop || distanceCm <= config::kRescueZoneApproachStopDistanceCm))
     {
         // A imagem sem detalhe ou tomada pela área indica contato muito próximo.
         // Ainda executa o mesmo avanço final lento antes de zerar os motores.
         finalAdvanceActive_ = true;
         finalAdvanceStartedAt_ = now;
-        completionReason_ = "CAMERA_OBSCURED";
+        completionReason_ = cameraStop ? "CAMERA_OBSCURED" : "REACHED_DISTANCE";
+        std::cout << "Rescue final advance started: reason=" << completionReason_
+                  << " durationMs=" << config::kRescueZoneApproachFinalAdvanceMs
+                  << " power=" << config::kRescueZoneApproachFinalAdvancePower << '\n';
         RescueZoneApproachOutput output = stoppedOutput(
             "rescue_zone_approach_final_advance",
-            "APPROACH_ZONE executando avanço final após obstrução da CAM1",
+            "APPROACH_ZONE executando avanço final obrigatório",
             telemetry,
             headingErrorDegrees,
             "FINAL");
-        output.leftPower = config::kRescueZoneApproachNearPower;
-        output.rightPower = config::kRescueZoneApproachNearPower;
+        output.leftPower = config::kRescueZoneApproachFinalAdvancePower;
+        output.rightPower = config::kRescueZoneApproachFinalAdvancePower;
         return output;
     }
     if (finalAdvanceActive_)
@@ -130,6 +144,9 @@ RescueZoneApproachOutput RescueZoneApproachMission::update(
                 terminalPhase_, terminalAction_, telemetry,
                 headingErrorDegrees, "STOP");
             output.completed = true;
+            std::cout << "Rescue final advance completed: reason=" << completionReason_
+                      << " executedMs=" << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             now - finalAdvanceStartedAt_).count() << '\n';
             return output;
         }
 
@@ -139,25 +156,8 @@ RescueZoneApproachOutput RescueZoneApproachMission::update(
             telemetry,
             headingErrorDegrees,
             "FINAL");
-        output.leftPower = config::kRescueZoneApproachNearPower;
-        output.rightPower = config::kRescueZoneApproachNearPower;
-        return output;
-    }
-    if (distanceCm <= config::kRescueZoneApproachStopDistanceCm)
-    {
-        // Após alcançar a distância alvo, avança por um intervalo curto e fixo.
-        // A fase ignora novas faixas de distância e nunca aumenta a potência.
-        finalAdvanceActive_ = true;
-        finalAdvanceStartedAt_ = now;
-        completionReason_ = "REACHED_DISTANCE";
-        RescueZoneApproachOutput output = stoppedOutput(
-            "rescue_zone_approach_final_advance",
-            "APPROACH_ZONE executando avanço final temporizado",
-            telemetry,
-            headingErrorDegrees,
-            "FINAL");
-        output.leftPower = config::kRescueZoneApproachNearPower;
-        output.rightPower = config::kRescueZoneApproachNearPower;
+        output.leftPower = config::kRescueZoneApproachFinalAdvancePower;
+        output.rightPower = config::kRescueZoneApproachFinalAdvancePower;
         return output;
     }
 
@@ -211,12 +211,28 @@ void RescueZoneApproachMission::reset()
     started_ = false;
     nearLatched_ = false;
     finalAdvanceActive_ = false;
+    paused_ = false;
     completed_ = false;
     failed_ = false;
     lockedHeadingDegrees_ = std::numeric_limits<double>::quiet_NaN();
     terminalPhase_.clear();
     terminalAction_.clear();
     completionReason_.clear();
+}
+
+void RescueZoneApproachMission::pause(std::chrono::steady_clock::time_point now)
+{
+    if (!paused_)
+    {
+        paused_ = true;
+        pausedAt_ = now;
+        if (finalAdvanceActive_ && !completed_ && !failed_)
+        {
+            std::cout << "Rescue final advance paused: executedMs="
+                      << std::chrono::duration_cast<std::chrono::milliseconds>(
+                             now - finalAdvanceStartedAt_).count() << '\n';
+        }
+    }
 }
 
 RescueZoneApproachOutput RescueZoneApproachMission::stopWithFailure(
@@ -229,6 +245,7 @@ RescueZoneApproachOutput RescueZoneApproachMission::stopWithFailure(
     terminalPhase_ = phase;
     terminalAction_ = action;
     completionReason_ = reason;
+    std::cout << "Rescue approach failed: reason=" << reason << '\n';
     const double headingErrorDegrees =
         std::isfinite(lockedHeadingDegrees_) &&
                 ImuTurnController::imuReady(telemetry)

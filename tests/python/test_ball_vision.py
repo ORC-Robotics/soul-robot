@@ -677,6 +677,25 @@ class BallObservationTest(unittest.TestCase):
 
 
 class PublicBallVisionPipelineTest(unittest.TestCase):
+    def test_candidate_direction_precedes_lock_and_never_reuses_missing_frame(self):
+        detector = mock.Mock()
+        selected = BallTrackerTest.yolo_candidate(240, 50, "silver_ball", 0.9)
+        other = BallTrackerTest.yolo_candidate(700, 80, "silver_ball", 0.6)
+        detector.detect.return_value = [other, selected]
+        pipeline = BallVisionPipeline(
+            detector=detector,
+            tracker=BallTracker(BallTrackerConfig(acquisition_frames=3)),
+        )
+        frame = np.zeros((540, 960, 3), dtype=np.uint8)
+        result = pipeline.analyze(frame)
+        self.assertIsNone(result.observation)
+        self.assertFalse(pipeline.target_locked)
+        self.assertLess(result.candidate_tx_degrees, 0.0)
+        detector.detect.return_value = []
+        result = pipeline.analyze(frame)
+        self.assertIsNone(result.candidate_tx_degrees)
+        self.assertIsNone(result.observation)
+
     def test_default_pipeline_uses_yolo_without_legacy_fallback(self):
         pipeline = BallVisionPipeline()
 

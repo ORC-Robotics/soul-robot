@@ -228,6 +228,7 @@ def empty_ball_status(processing_ms=0.0, detection_enabled=False):
         "ballDetectionEnabled": bool(detection_enabled),
         "ballDetected": False,
         "ballCandidateVisible": False,
+        "candidateTxDegrees": None,
         "ballType": "",
         "ballCenterX": None,
         "ballCenterY": None,
@@ -259,6 +260,7 @@ def build_ball_status(observation, processing_ms):
         "ballDetectionEnabled": True,
         "ballDetected": True,
         "ballCandidateVisible": True,
+        "candidateTxDegrees": round(float(observation.angle_degrees), 2),
         "ballType": candidate.ball_type,
         "ballCenterX": round(float(candidate.center_x), 2),
         "ballCenterY": round(float(candidate.center_y), 2),
@@ -293,6 +295,7 @@ def save_ball_control_status(active, ball_status=None):
         "timestamp": time.time(),
         "ballDetected": bool(current_ball["ballDetected"]),
         "ballCandidateVisible": bool(current_ball["ballCandidateVisible"]),
+        "candidateTxDegrees": current_ball.get("candidateTxDegrees"),
         "ballType": current_ball["ballType"],
         "ballTxDegrees": current_ball["ballTxDegrees"],
         "visibleAreaPixels": current_ball["visibleAreaPixels"],
@@ -316,6 +319,7 @@ def analyze_requested_ball_frame(frame, detection_enabled):
     processing_ms = (time.perf_counter() - processing_started) * 1000.0
     status = build_ball_status(result.observation, processing_ms)
     status["ballCandidateVisible"] = bool(result.candidates)
+    status["candidateTxDegrees"] = result.candidate_tx_degrees
     return result.observation, result.candidates, status
 
 

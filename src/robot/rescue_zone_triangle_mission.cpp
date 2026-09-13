@@ -110,6 +110,11 @@ void RescueZoneTriangleMission::reset()
     lockedHeading_ = std::numeric_limits<double>::quiet_NaN();
 }
 
+void RescueZoneTriangleMission::pause(std::chrono::steady_clock::time_point now)
+{
+    approachMission_.pause(now);
+}
+
 bool RescueZoneTriangleMission::requiresRescueZoneDetection() const
 {
     return phase_ == Phase::Search || phase_ == Phase::Align ||

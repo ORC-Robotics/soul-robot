@@ -148,6 +148,21 @@ int main()
             config::kServoRoutineArmPickupDegrees,
             config::kServoRoutineWristForwardDegrees,
             config::kServoRoutineGripperFullyOpenDegrees};
+        steps = runRoutine(ServoRoutineKind::GripForReverse, 30, prepared, output);
+        for (const auto& step : steps)
+        {
+            require(closeTo(step.pose.armDegrees, 103.0) && closeTo(step.pose.wristDegrees, 180.0),
+                    "Prender para a ré não pode mover braço ou pulso.");
+        }
+        requirePhaseOrder(steps, {"servo_capture_gripper_press", "servo_capture_gripper_retention"});
+        require(closeTo(output.pose.gripperDegrees, 5.0), "A garra deve terminar em retenção.");
+        const ServoPose retained = output.pose;
+        steps = runRoutine(ServoRoutineKind::LiftAfterReverse, 31, retained, output);
+        require(closeTo(output.pose.armDegrees, 15.0) && closeTo(output.pose.gripperDegrees, 5.0),
+                "A elevação para armazenamento deve manter a vítima presa.");
+        steps = runRoutine(ServoRoutineKind::LiftAfterReverseForDirectDeposit, 32, retained, output);
+        require(closeTo(output.pose.armDegrees, 0.0) && closeTo(output.pose.gripperDegrees, 5.0),
+                "A elevação direta deve conservar o destino de 0° e a retenção.");
         steps = runRoutine(ServoRoutineKind::SecureCapture, 21, prepared, output);
         requirePhaseOrder(steps, {
             "servo_capture_gripper_press",

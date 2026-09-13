@@ -13,6 +13,10 @@ enum class ServoRoutineKind
     PrepareCapture,
     SecureCapture,
     SecureCaptureForDirectDeposit,
+    // Etapas separadas da missão: a ré ocorre entre prender e levantar a vítima.
+    GripForReverse,
+    LiftAfterReverse,
+    LiftAfterReverseForDirectDeposit,
     Capture,
     InternalStorage,
     Deposit,

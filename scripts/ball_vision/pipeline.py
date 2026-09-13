@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .ball_tracker import BallTracker
 from .distance_calibration import DistanceCalibration
-from .main import BallObservation, analyze_frame, draw_overlay
+from .main import BallObservation, analyze_frame, calculate_horizontal_angle, draw_overlay
 from .yolo_detector import YoloBallDetector
 
 
@@ -14,6 +14,7 @@ class BallVisionResult:
 
     observation: BallObservation | None
     candidates: tuple
+    candidate_tx_degrees: float | None = None
 
 
 class BallVisionPipeline:
@@ -70,7 +71,12 @@ class BallVisionPipeline:
         if not candidates:
             return BallVisionResult(None, ())
 
-        return BallVisionResult(tracked_observation, tuple(candidates))
+        candidate = self.tracker.search_candidate
+        candidate_tx = (
+            calculate_horizontal_angle(candidate.center_x, frame.shape[1])
+            if candidate is not None else None
+        )
+        return BallVisionResult(tracked_observation, tuple(candidates), candidate_tx)
 
     @staticmethod
     def draw(frame, result):

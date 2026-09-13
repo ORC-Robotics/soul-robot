@@ -30,6 +30,44 @@ bool closeTo(double actual, double expected)
     return std::abs(actual - expected) <= 1e-9;
 }
 
+void testBallIpcCandidateDirectionIsOptionalAndCannotConfirmTarget()
+{
+    const auto path = std::filesystem::temp_directory_path() /
+                      "obr_rescue_candidate_test.json";
+    CameraMonitor monitor({}, {}, path.string());
+    const auto publish = [&](const std::string& hint, bool detected, double ageSeconds = 0.0) {
+        std::ofstream file(path);
+        file << std::setprecision(17)
+             << "{\"active\":true,\"timestamp\":"
+             << std::chrono::duration<double>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() - ageSeconds
+             << ",\"targetSequence\":42,\"ballCandidateVisible\":true,\"ballDetected\":"
+             << (detected ? "true" : "false")
+             << ",\"targetLocked\":" << (detected ? "true" : "false")
+             << ",\"ballType\":\"silver_ball\",\"ballTxDegrees\":10,"
+                "\"ballDistanceCm\":20,\"ballRadiusPixels\":50,\"visibleAreaPixels\":500"
+             << hint << '}';
+    };
+    publish(",\"candidateTxDegrees\":-20", false);
+    auto ball = monitor.forwardBallSnapshot();
+    require(ball.sourceFresh && ball.candidateVisible && !ball.detected &&
+                !ball.targetLocked && ball.candidateTxDegrees == -20.0,
+            "A candidata deve publicar direção sem liberar um alvo confirmado.");
+    for (const std::string hint : {"", ",\"candidateTxDegrees\":null",
+                                  ",\"candidateTxDegrees\":90"})
+    {
+        publish(hint, true);
+        ball = monitor.forwardBallSnapshot();
+        require(ball.detected && ball.targetLocked && std::isnan(ball.candidateTxDegrees),
+                "Campo opcional ausente ou inválido não deve rejeitar uma detecção válida.");
+    }
+    publish(",\"candidateTxDegrees\":-20", false, 2.0);
+    ball = monitor.forwardBallSnapshot();
+    require(!ball.sourceFresh && std::isnan(ball.candidateTxDegrees),
+            "Uma candidata antiga não pode orientar a busca atual.");
+    std::filesystem::remove(path);
+}
+
 Esp32TelemetrySnapshot readyTelemetry()
 {
     Esp32TelemetrySnapshot telemetry;
@@ -1442,6 +1480,7 @@ int main()
 {
     try
     {
+        testBallIpcCandidateDirectionIsOptionalAndCannotConfirmTarget();
         testNormalLineFollowerCommandsMotors();
         testNormalLineFollowerCompensatesRampPower();
         testRampCompensationRequiresFreshValidImu();

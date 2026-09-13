@@ -837,7 +837,8 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
     ForwardBallSnapshot snapshot;
     try
     {
-        std::ifstream file(config::kForwardBallStatusPath);
+        std::ifstream file(forwardBallStatusPath_.empty()
+                               ? config::kForwardBallStatusPath : forwardBallStatusPath_);
         if (!file)
         {
             return snapshot;
@@ -866,6 +867,14 @@ ForwardBallSnapshot CameraMonitor::forwardBallSnapshot() const
                                snapshot.ageMs >= 0.0 &&
                                snapshot.ageMs <=
                                    config::kForwardBallStatusTimeoutMs;
+        // O campo é opcional para manter compatibilidade com publicadores antigos.
+        double candidateTx = 0.0;
+        if (snapshot.sourceFresh && snapshot.candidateVisible &&
+            tryGetJsonNumber(json, "candidateTxDegrees", candidateTx) &&
+            std::isfinite(candidateTx) && std::abs(candidateTx) <= 45.0)
+        {
+            snapshot.candidateTxDegrees = candidateTx;
+        }
         if (!snapshot.sourceFresh || !snapshot.detected)
         {
             snapshot.detected = false;

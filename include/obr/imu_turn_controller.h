@@ -46,8 +46,10 @@ public:
         // Um valor negativo remove apenas o limite de pulsos; o timeout permanece ativo.
         int maximumCorrectionPulses = 0,
         double commandPower = 0.0,
-        int timeoutMs = 0);
-    ImuTurnOutput update(const Esp32TelemetrySnapshot& telemetry);
+        int timeoutMs = 0,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    ImuTurnOutput update(const Esp32TelemetrySnapshot& telemetry,
+                        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     void reset();
     bool active() const;
 

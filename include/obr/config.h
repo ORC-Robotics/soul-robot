@@ -322,12 +322,18 @@ constexpr int kRescueZoneAlignStableFrames = 2;
 
 // Potência dos micro-pivôs usados tanto para revelar bounds quanto para
 // centralizar o aim. O sinal é definido pela direção da correção visual.
-constexpr double kRescueZoneAlignTurnPower = 0.69;
+// A busca e o alinhamento das zonas usam os mesmos pulsos já usados pelo YOLO.
+constexpr double kRescueSearchTurnPower = 0.72;
+// Duração, em milissegundos, que permite vencer a inércia após o comando UART.
+constexpr int kRescueSearchPulseMs = 130;
+// Pausa, em milissegundos, para estabilizar a imagem após cada micro-pivô.
+constexpr int kRescueSearchSettlingMs = 100;
+constexpr double kRescueZoneAlignTurnPower = kRescueSearchTurnPower;
 
 // Duração do pulso e pausa mecânica fixa, em milissegundos. Nenhuma dessas
 // etapas consulta encoder ou usa um pequeno setpoint angular da IMU.
-constexpr int kRescueZoneAlignMicroPivotDurationMs = 80;
-constexpr int kRescueZoneAlignSettleMs = 100;
+constexpr int kRescueZoneAlignMicroPivotDurationMs = kRescueSearchPulseMs;
+constexpr int kRescueZoneAlignSettleMs = kRescueSearchSettlingMs;
 
 // Potência normalizada do pivot contínuo usado exclusivamente pelo SEARCH_ZONE.
 // O valor baixo permite observar vários frames da CAM1 durante a varredura.
@@ -357,8 +363,11 @@ constexpr double kRescueZoneApproachMidPower = 0.75;
 constexpr double kRescueZoneApproachNearPower = 0.70;
 
 // Tempo, em milissegundos, do avanço final após alcançar a distância alvo.
-// Esse deslocamento usa a potência NEAR e termina obrigatoriamente com PWM zero.
-constexpr int kRescueZoneApproachFinalAdvanceMs = 600;
+// Esse deslocamento usa potência própria e termina obrigatoriamente com PWM zero.
+constexpr int kRescueZoneApproachFinalAdvanceMs = 1500;
+// Potência normalizada exclusiva do avanço final. Aumentar este valor aumenta
+// o deslocamento e o esforço contra o triângulo durante o intervalo fixo.
+constexpr double kRescueZoneApproachFinalAdvancePower = 0.75;
 
 // Cobertura mínima da imagem pela zona alvo para concluir a aproximação.
 // A câmera funciona como parada redundante quando o ULTRA perde o eco de perto.
@@ -395,23 +404,12 @@ static_assert(kRescueZoneApproachFarDistanceCm >
                       kMotorRunMinimumPower &&
                   kRescueZoneApproachFullHeadingErrorDegrees > 0.0 &&
                   kRescueZoneApproachFinalAdvanceMs > 0 &&
+                  kRescueZoneApproachFinalAdvancePower >= kMotorStartMinimumPower &&
+                  kRescueZoneApproachFinalAdvancePower <= kMaxMotorOutput &&
                   kRescueZoneApproachCameraStopCoverage > 0.0 &&
                   kRescueZoneApproachCameraStopCoverage <= 1.0 &&
                   kRescueZoneApproachTimeoutMs > 0,
               "Os limites do APPROACH_ZONE devem permanecer seguros.");
-
-// Potência simétrica aplicada somente nos micro-pivôs da busca de vítimas.
-// O pulso curto limita o deslocamento mesmo usando potência suficiente para
-// vencer a inércia dos motores.
-constexpr double kRescueSearchTurnPower = 0.72;
-
-// Duração, em milissegundos, de cada micro-pivô da busca de vítimas.
-// O robô precisa deste intervalo para vencer a inércia mecânica depois que o
-// comando atravessa a Raspberry, a UART e o controle de segurança da ESP32.
-constexpr int kRescueSearchPulseMs = 130;
-
-// Pausa, em milissegundos, para estabilizar a câmera depois de cada micro-pivô.
-constexpr int kRescueSearchSettlingMs = 100;
 
 // Avanço inicial, em centímetros, executado ao entrar na sala de resgate.
 // O detector de vítimas permanece ligado durante todo o deslocamento.
@@ -424,7 +422,10 @@ constexpr double kRescueEntryAdvancePower = 0.70;
 constexpr double kRescueVictimFirstSweepDegrees = 45.0;
 constexpr double kRescueVictimSecondSweepDegrees = 75.0;
 constexpr double kRescueVictimSweepToleranceDegrees = 3.0;
-constexpr int kRescueVictimSweepTimeoutMs = 12000;
+// Limite por tentativa, em milissegundos. A varredura maior recebe mais tempo
+// para cruzar a sala; nenhum timeout autoriza insistir no mesmo lado sem limite.
+constexpr int kRescueVictimFirstSweepTimeoutMs = 3000;
+constexpr int kRescueVictimSecondSweepTimeoutMs = 8000;
 
 // Ré feita depois de cada coleta para liberar a vítima da parede e criar espaço
 // para movimentar o mecanismo. Os encoders limitam o percurso a 15 cm.
@@ -670,7 +671,8 @@ static_assert(kRescueSearchTurnPower >= kMotorStartMinimumPower &&
                   kRescueVictimSweepToleranceDegrees > 0.0 &&
                   kRescueVictimSweepToleranceDegrees <
                       kRescueVictimFirstSweepDegrees &&
-                  kRescueVictimSweepTimeoutMs > 0 &&
+                  kRescueVictimFirstSweepTimeoutMs > 0 &&
+                  kRescueVictimSecondSweepTimeoutMs >= kRescueVictimFirstSweepTimeoutMs &&
                   kRescuePostCollectionReverseDistanceCm > 0.0 &&
                   kRescuePostCollectionReversePower >=
                       kMotorStartMinimumPower &&
@@ -1184,7 +1186,7 @@ constexpr double kAutonomousInitialArmAngleDegrees = 15.0;
 // Velocidade máxima, em graus por segundo, aplicada ao servo do pulso pela
 // Raspberry. Reduzir este valor suaviza o movimento e diminui o impulso que
 // pode deslocar mecanicamente a garra; aumentar torna o pulso mais rápido.
-constexpr double kWristServoMaximumSpeedDegreesPerSecond = 180.0;
+constexpr double kWristServoMaximumSpeedDegreesPerSecond = 240.0;
 
 // Tempo, em milissegundos, que a pose completa permanece aplicada antes de o
 // pulso voltar a se mover após uma reativação. Isso dá à garra tempo para
@@ -1198,12 +1200,12 @@ constexpr int kServoMotionMaximumElapsedMs = 100;
 // Tempos conservadores, em milissegundos, reservados para que cada servo
 // conclua seu passo antes de o próximo começar. Não existe sensor físico de
 // posição, portanto esses valores devem ser validados com o mecanismo real.
-constexpr int kServoRoutineArmStepMs = 1000;
-constexpr int kServoRoutineWristStepMs = 1100;
-constexpr int kServoRoutineGripperStepMs = 350;
+constexpr int kServoRoutineArmStepMs = 750;
+constexpr int kServoRoutineWristStepMs = 850;
+constexpr int kServoRoutineGripperStepMs = 300;
 
 // Tempo, em milissegundos, para estabilizar a pose autônoma 15°/0°/0°.
-// Ele cobre o pior deslocamento do pulso pela rampa de 180°/s, inclusive após
+// Ele cobre o pior deslocamento do pulso pela rampa configurada, inclusive após
 // a pausa de reativação, antes de qualquer outro mecanismo começar a mover.
 constexpr int kServoRoutineInitialPoseMs = 1300;
 

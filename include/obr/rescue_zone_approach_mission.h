@@ -30,11 +30,16 @@ public:
         const RescueZoneSnapshot& zones = {},
         RescueZoneTargetColor targetColor = RescueZoneTargetColor::Green);
     void reset();
+    // Suspende a contagem do avanço final quando o chamador zera os motores.
+    // O timeout global continua correndo para limitar a aproximação inteira.
+    void pause(std::chrono::steady_clock::time_point now);
 
 private:
     bool started_ = false;
     bool nearLatched_ = false;
     bool finalAdvanceActive_ = false;
+    bool paused_ = false;
+    std::chrono::steady_clock::time_point pausedAt_{};
     bool completed_ = false;
     bool failed_ = false;
     double lockedHeadingDegrees_ =

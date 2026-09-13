@@ -156,9 +156,11 @@ RescueRoomOutput completeDistanceStage(
     if (distanceCm == config::kRescuePostCollectionReverseDistanceCm)
     {
         require(output.servoPoseRequested &&
+                    output.servoPose.armDegrees == config::kServoRoutineArmPickupDegrees &&
+                    output.servoPose.wristDegrees == config::kServoRoutineWristForwardDegrees &&
                     output.servoPose.gripperDegrees ==
                         config::kServoRoutineGripperRetentionDegrees,
-                "A ré após a coleta deve manter a garra energizada em 5°.");
+                "A ré deve manter braço baixo, pulso imóvel e garra energizada em 5°.");
     }
 
     const long long counts = static_cast<long long>(std::ceil(
@@ -252,7 +254,8 @@ RescueRoomOutput reachDepositZone(
     bool green,
     Esp32TelemetrySnapshot& telemetry,
     ServoPose& servoPose,
-    Clock::time_point& now)
+    Clock::time_point& now,
+    bool pauseDuringAdvance = false)
 {
     RescueRoomOutput output;
     for (std::uint64_t sequence = 1; sequence <= 4; ++sequence)
@@ -266,6 +269,30 @@ RescueRoomOutput reachDepositZone(
             now);
         require(!output.failed,
                 "A busca nominal do triângulo não deve falhar.");
+        if (sequence == 3 && pauseDuringAdvance)
+        {
+            now += std::chrono::milliseconds(200);
+            telemetry.serialOpen = false;
+            output = updateMission(mission, previousVictim, confirmedZone(green, 4),
+                                   telemetry, servoPose, now);
+            require(output.leftPower == 0.0 && output.rightPower == 0.0 &&
+                        output.status.phase == "rescue_room_esp32_not_ready",
+                    "A perda transitória da ESP32 deve pausar o avanço.");
+            now += std::chrono::milliseconds(2000);
+            telemetry.serialOpen = true;
+            output = updateMission(mission, previousVictim, confirmedZone(green, 5),
+                                   telemetry, servoPose, now);
+            require(output.status.phase == "rescue_zone_approach_final_advance" &&
+                        output.leftPower == config::kRescueZoneApproachFinalAdvancePower,
+                    "O retorno da ESP32 deve retomar o avanço, sem antecipar o depósito.");
+            now += std::chrono::milliseconds(config::kRescueZoneApproachFinalAdvanceMs - 201);
+            output = updateMission(mission, previousVictim, confirmedZone(green, 6),
+                                   telemetry, servoPose, now);
+            require(output.status.phase == "rescue_zone_approach_final_advance",
+                    "Com 1.499 ms autorizados, o depósito continua bloqueado.");
+            now += std::chrono::milliseconds(1);
+            continue;
+        }
         now += sequence == 3
                    ? std::chrono::milliseconds(
                          config::kRescueZoneApproachFinalAdvanceMs)
@@ -282,10 +309,14 @@ void completeEntryAdvance(
     RescueRoomMission& mission,
     Esp32TelemetrySnapshot& telemetry,
     Clock::time_point& now,
-    std::uint64_t targetSequence)
+    std::uint64_t targetSequence,
+    double candidateTx = NAN)
 {
+    ForwardBallSnapshot entryFrame = emptyFrame(targetSequence, 1.0);
+    entryFrame.candidateVisible = std::isfinite(candidateTx);
+    entryFrame.candidateTxDegrees = candidateTx;
     RescueRoomOutput output = mission.update(
-        emptyFrame(targetSequence, 1.0),
+        entryFrame,
         {},
         telemetry,
         kRunSequence,
@@ -315,6 +346,131 @@ void completeEntryAdvance(
         emptyFrame(targetSequence, 3.0), {}, telemetry, kRunSequence, 0, {}, now);
     require(output.status.phase == "rescue_search_starting",
             "Sem vítima, o avanço deve entregar controle à varredura.");
+}
+
+void testSweepRemembersEntryCandidateAndDefaultsLeft()
+{
+    for (double hint : {static_cast<double>(NAN), -20.0, 20.0})
+    {
+        RescueRoomMission mission;
+        auto telemetry = readyTelemetry();
+        auto now = Clock::time_point{};
+        ServoPose pose;
+        const auto sequence = mission.ballTargetSequence(kRunSequence);
+        completeEntryAdvance(mission, telemetry, now, sequence, hint);
+        const auto output = updateMission(
+            mission, emptyFrame(sequence, 4.0), {}, telemetry, pose, now);
+        require(output.status.phase == "rescue_search_sweep" &&
+                    (hint > 0.0 ? output.leftPower > 0.0 : output.leftPower < 0.0),
+                "A busca deve lembrar o lado visto na entrada; sem pista, começa à esquerda.");
+    }
+}
+
+void testSweepTimeoutsReverseExpandAndStop()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+    auto frame = emptyFrame(sequence, 10.0);
+    for (int attempt = 0; attempt < 4; ++attempt)
+    {
+        auto output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require((attempt % 2 == 0 ? output.leftPower < 0.0 : output.leftPower > 0.0),
+                "Cada timeout deve alternar o sentido antes de ampliar a varredura.");
+        const int limitMs = attempt < 2 ? 3000 : 8000;
+        now += std::chrono::milliseconds(limitMs - 1);
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(output.leftPower != 0.0 && !output.failed,
+                "A tentativa deve manter seu orçamento de 3 ou 8 segundos.");
+        now += std::chrono::milliseconds(1);
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(output.status.phase == "rescue_search_turn_timeout" &&
+                    output.leftPower == 0.0 && output.rightPower == 0.0,
+                "No limite exato, deve zerar o PWM antes de inverter.");
+    }
+    const auto output = updateMission(mission, frame, {}, telemetry, pose, now);
+    require(output.failed && output.status.phase == "rescue_search_blocked" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Quatro tentativas bloqueadas devem terminar sem novo giro.");
+}
+
+void testSweepUsesActualHeadingAfterPartialTurn()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    telemetry.yawZDeg = 170.0;
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+    auto frame = emptyFrame(sequence, 10.0);
+    updateMission(mission, frame, {}, telemetry, pose, now);
+    telemetry.yawZDeg = 160.0;
+    now += std::chrono::milliseconds(3000);
+    updateMission(mission, frame, {}, telemetry, pose, now);
+    auto output = updateMission(mission, frame, {}, telemetry, pose, now);
+    require(output.leftPower > 0.0, "Após giro parcial à esquerda, deve inverter.");
+    telemetry.yawZDeg = -145.0;
+    now += std::chrono::milliseconds(100);
+    updateMission(mission, frame, {}, telemetry, pose, now);
+    now += std::chrono::milliseconds(config::kTurn90SettleMs);
+    output = updateMission(mission, frame, {}, telemetry, pose, now);
+    require(output.status.phase == "rescue_search_endpoint",
+            "O destino deve ser +45° da referência, incluindo a passagem por 180°.");
+}
+
+void testCandidateWaitDoesNotResetSweepTimeout()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+    auto candidate = emptyFrame(sequence, 10.0);
+    candidate.candidateVisible = true;
+    candidate.candidateTxDegrees = 20.0;
+    auto output = updateMission(mission, candidate, {}, telemetry, pose, now);
+    require(output.status.phase == "rescue_confirming_victim" && output.leftPower == 0.0,
+            "Uma candidata sozinha nunca libera alinhamento ou coleta.");
+    now += std::chrono::milliseconds(3000);
+    output = updateMission(mission, candidate, {}, telemetry, pose, now);
+    require(output.status.phase == "rescue_search_turn_timeout",
+            "Candidata sem confirmação não pode reiniciar o orçamento.");
+    telemetry.mpuOk = false;
+    output = updateMission(mission, emptyFrame(sequence, 11.0), {}, telemetry, pose, now);
+    require(output.leftPower == 0.0 && output.rightPower == 0.0,
+            "IMU inválida deve bloquear a próxima tentativa.");
+}
+
+void testReverseFailureNeverLiftsVictim()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+    const auto victim = lockedSilver(sequence, 10.0);
+    collectVictim(mission, victim, telemetry, pose, now);
+    auto output = updateMission(mission, victim, {}, telemetry, pose, now);
+    require(output.leftPower < 0.0 && pose.armDegrees == config::kServoRoutineArmPickupDegrees,
+            "Depois de prender, deve recuar com o braço baixo.");
+    now += std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs);
+    output = updateMission(mission, victim, {}, telemetry, pose, now);
+    require(output.failed && output.status.phase == "rescue_distance_stall" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0 &&
+                output.servoPoseRequested && pose.armDegrees == config::kServoRoutineArmPickupDegrees &&
+                pose.gripperDegrees == config::kServoRoutineGripperRetentionDegrees,
+            "Ré bloqueada deve falhar mantendo a vítima presa e o braço baixo.");
+    now += std::chrono::seconds(10);
+    output = updateMission(mission, victim, {}, telemetry, pose, now);
+    require(output.failed && output.servoPoseRequested &&
+                pose.armDegrees == config::kServoRoutineArmPickupDegrees,
+            "A falha não pode liberar uma elevação tardia.");
 }
 
 void testWaitsForYoloBeforeEntryAdvance()
@@ -457,16 +613,20 @@ void testRunsRequiredVictimsInPriorityOrder()
         servoPose,
         now,
         config::kRescuePostCollectionReverseDistanceCm);
+    require(output.status.phase == "rescue_collection_lifting" &&
+                servoPose.armDegrees == config::kServoRoutineArmPickupDegrees,
+            "A ré deve terminar antes de solicitar elevação.");
+    output = completeServoStage(mission, firstAlive, telemetry, servoPose, now,
+                                "rescue_first_alive_storage");
     require(output.status.phase == "rescue_first_alive_storage",
             "A primeira vítima viva deve seguir para o armazenamento interno.");
-    require(output.servoPoseRequested &&
-                output.servoPose.armDegrees ==
+    require(output.servoPose.armDegrees ==
                     config::kServoRoutineArmHomeDegrees &&
                 output.servoPose.wristDegrees ==
                     config::kServoRoutineWristForwardDegrees &&
                 output.servoPose.gripperDegrees ==
                     config::kServoRoutineGripperRetentionDegrees,
-            "A primeira ré deve conservar exatamente a pose 15°/180°/5°.");
+            "Após a elevação, a retenção deve usar a pose 15°/180°/5°.");
 
     output = completeServoStage(
         mission,
@@ -489,12 +649,14 @@ void testRunsRequiredVictimsInPriorityOrder()
         servoPose,
         now,
         config::kRescuePostCollectionReverseDistanceCm);
+    output = completeServoStage(mission, secondAlive, telemetry, servoPose, now,
+                                "rescue_deposit_zone_starting");
     require(output.status.phase == "rescue_deposit_zone_starting" &&
                 output.internalObjectStored,
             "A segunda prata deve iniciar o depósito mantendo a primeira guardada.");
 
     reachDepositZone(
-        mission, secondAlive, true, telemetry, servoPose, now);
+        mission, secondAlive, true, telemetry, servoPose, now, true);
     output = completeServoStage(
         mission,
         secondAlive,
@@ -526,7 +688,10 @@ void testRunsRequiredVictimsInPriorityOrder()
         servoPose,
         now,
         config::kRescuePostCollectionReverseDistanceCm);
-    require(output.status.phase == "rescue_deposit_zone_starting",
+    output = completeServoStage(mission, dead, telemetry, servoPose, now,
+                                "rescue_deposit_zone_starting");
+    require(output.status.phase == "rescue_deposit_zone_starting" &&
+                servoPose.armDegrees == config::kServoInitialAngleDegrees,
             "A vítima preta deve seguir diretamente ao depósito.");
 
     reachDepositZone(mission, dead, false, telemetry, servoPose, now);
@@ -547,6 +712,20 @@ void testRunsRequiredVictimsInPriorityOrder()
     require(output.status.phase == "rescue_final_verification" &&
                 std::string(mission.ballTargetType()) == "silver_ball",
             "Depois das entregas obrigatórias, a checagem extra deve recomeçar pelas vivas.");
+
+    const auto extra = lockedSilver(mission.ballTargetSequence(kRunSequence), 40.0);
+    output = collectVictim(mission, extra, telemetry, servoPose, now);
+    require(servoPose.armDegrees == config::kServoRoutineArmPickupDegrees,
+            "A vítima extra também deve permanecer baixa após fechar a garra.");
+    output = completeDistanceStage(mission, extra, telemetry, servoPose, now,
+                                   config::kRescuePostCollectionReverseDistanceCm);
+    require(output.status.phase == "rescue_collection_lifting",
+            "A vítima extra deve concluir a ré antes de levantar.");
+    output = completeServoStage(mission, extra, telemetry, servoPose, now,
+                                "rescue_deposit_zone_starting");
+    require(servoPose.armDegrees == config::kServoInitialAngleDegrees,
+            "A vítima extra sem armazenamento deve usar elevação para depósito direto.");
+    reachDepositZone(mission, extra, true, telemetry, servoPose, now);
 }
 
 void testBlocksWristWhenServoOutputIsLostAfterFirstCapture()
@@ -569,8 +748,8 @@ void testBlocksWristWhenServoOutputIsLostAfterFirstCapture()
         servoPose,
         now,
         config::kRescuePostCollectionReverseDistanceCm);
-    require(output.status.phase == "rescue_first_alive_storage",
-            "O teste deve chegar ao armazenamento da primeira vítima.");
+    output = completeServoStage(mission, firstAlive, telemetry, servoPose, now,
+                                "rescue_first_alive_storage");
 
     telemetry.armServoEnabled = false;
     now += std::chrono::milliseconds(20);
@@ -588,6 +767,11 @@ int main()
     try
     {
         testWaitsForYoloBeforeEntryAdvance();
+        testSweepRemembersEntryCandidateAndDefaultsLeft();
+        testSweepTimeoutsReverseExpandAndStop();
+        testSweepUsesActualHeadingAfterPartialTurn();
+        testCandidateWaitDoesNotResetSweepTimeout();
+        testReverseFailureNeverLiftsVictim();
         testTransientEsp32LossPausesWithoutKillingMission();
         testPreparesOpenGripperBeforeApproach();
         testRunsRequiredVictimsInPriorityOrder();

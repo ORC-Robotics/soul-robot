@@ -65,6 +65,7 @@ private:
         ApproachVictim,
         SecureCapture,
         ReverseAfterCollection,
+        LiftAfterCollection,
         StoreFirstAlive,
         FindDepositZone,
         DepositVictims,
@@ -75,10 +76,10 @@ private:
 
     enum class SweepStep
     {
-        Right45,
-        Left45,
-        Right75,
-        Left75,
+        First45,
+        Opposite45,
+        First75,
+        Opposite75,
         Finished
     };
 
@@ -111,7 +112,16 @@ private:
     Phase phase_ = Phase::EntryAdvance;
     VictimType desiredVictimType_ = VictimType::Alive;
     VictimType carriedVictimType_ = VictimType::Alive;
-    SweepStep sweepStep_ = SweepStep::Right45;
+    SweepStep sweepStep_ = SweepStep::First45;
+    // O lado observado pertence à vítima atual. O heading fixa os limites da
+    // varredura, mesmo quando um giro é interrompido antes de chegar ao destino.
+    int candidateSide_ = -1;
+    int sweepFirstSide_ = -1;
+    bool sweepReferenceSet_ = false;
+    double sweepReferenceYaw_ = 0.0;
+    bool sweepAttemptStarted_ = false;
+    int sweepTimeoutCount_ = 0;
+    std::chrono::steady_clock::time_point sweepAttemptStartedAt_{};
     bool sweepTurnStarted_ = false;
     bool waitingForSweepFrame_ = false;
     bool finalVerification_ = false;
@@ -129,6 +139,7 @@ private:
     ServoPose pendingServoPose_{};
     std::chrono::steady_clock::time_point servoEnableDeadline_{};
     ServoRoutineKind depositRoutineKind_ = ServoRoutineKind::Deposit;
+    ServoRoutineKind liftRoutineKind_ = ServoRoutineKind::LiftAfterReverse;
     ImuTurnController sweepTurnController_;
     BallAlignmentMission initialVictimAlignmentMission_;
     RescueAreaMission victimApproachMission_;
@@ -140,7 +151,10 @@ private:
     RescueRoomOutput updateSearch(
         const ForwardBallSnapshot& ball,
         const Esp32TelemetrySnapshot& telemetry,
-        std::uint64_t expectedTargetSequence);
+        std::uint64_t expectedTargetSequence,
+        std::chrono::steady_clock::time_point now);
+    // Avança a tentativa sem reutilizar o relógio ou o giro interrompido.
+    void advanceSweepStep();
     RescueRoomOutput updateServo(
         ServoRoutineKind kind,
         const Esp32TelemetrySnapshot& telemetry,

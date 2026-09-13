@@ -209,7 +209,7 @@ void testMicroPivotUsesFixedSettlingAndNewFrame()
         zoneSnapshot(true, -0.30, 2),
         telemetry,
         RescueZoneTargetColor::Green,
-        start + std::chrono::milliseconds(80));
+        start + std::chrono::milliseconds(config::kRescueSearchPulseMs));
     require(
         output.leftPower == 0.0 && output.rightPower == 0.0,
         "O pulso deve terminar exatamente com PWM zero.");
@@ -220,7 +220,7 @@ void testMicroPivotUsesFixedSettlingAndNewFrame()
         zoneSnapshot(true, -0.30, 2),
         telemetry,
         RescueZoneTargetColor::Green,
-        start + std::chrono::milliseconds(180));
+        start + std::chrono::milliseconds(config::kRescueSearchPulseMs + config::kRescueSearchSettlingMs));
     require(
         output.leftPower == 0.0 && output.rightPower == 0.0 &&
             output.status.phase == "rescue_zone_align_waiting_new_frame",
@@ -230,7 +230,7 @@ void testMicroPivotUsesFixedSettlingAndNewFrame()
         zoneSnapshot(true, -0.30, 3),
         telemetry,
         RescueZoneTargetColor::Green,
-        start + std::chrono::milliseconds(181));
+        start + std::chrono::milliseconds(config::kRescueSearchPulseMs + config::kRescueSearchSettlingMs + 1));
     require(
         output.leftPower == -config::kRescueZoneAlignTurnPower &&
             output.rightPower == config::kRescueZoneAlignTurnPower,
@@ -254,7 +254,7 @@ void testPartialBoundsKeepTryingAfterThreePivots()
 
     for (int attempt = 0; attempt < 3; ++attempt)
     {
-        const int pulseEndMs = 80 + attempt * 180;
+        const int pulseEndMs = config::kRescueSearchPulseMs + attempt * (config::kRescueSearchPulseMs + config::kRescueSearchSettlingMs);
         output = mission.update(
             partialZoneSnapshot(
                 RescueZoneGeometryState::LeftBoundOnly,
@@ -272,7 +272,7 @@ void testPartialBoundsKeepTryingAfterThreePivots()
                 static_cast<std::uint64_t>(3 + attempt * 2)),
             telemetry,
             RescueZoneTargetColor::Green,
-            start + std::chrono::milliseconds(pulseEndMs + 100));
+            start + std::chrono::milliseconds(pulseEndMs + config::kRescueSearchSettlingMs));
     }
 
     require(

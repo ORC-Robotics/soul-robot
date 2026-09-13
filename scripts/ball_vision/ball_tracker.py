@@ -117,6 +117,7 @@ class BallTracker:
         self._missing_frames = 0
         self._acquisition_frames = 0
         self._acquisition_candidate = None
+        self.search_candidate = None
         self._last_raw_center = None
         self._velocity = (0.0, 0.0)
         self._locked = False
@@ -445,6 +446,8 @@ class BallTracker:
     def update(self, candidates, frame_width=None):
         """Retorna o alvo atual suavizado sem publicar frames antigos ausentes."""
 
+        # Expõe somente a candidata escolhida neste frame, sem antecipar o lock.
+        self.search_candidate = None
         if not candidates:
             self._confirmation_missing_frames += 1
             if (
@@ -494,6 +497,7 @@ class BallTracker:
                 self._acquisition_frames + 1 if same_candidate else 1
             )
             self._acquisition_candidate = selected
+            self.search_candidate = selected
             if self._acquisition_frames < self.config.acquisition_frames:
                 return []
             self._start_target(selected)
@@ -524,6 +528,7 @@ class BallTracker:
             # publicada para o C++ parar os motores e controlar o timeout.
             return []
 
+        self.search_candidate = selected
         self._missing_frames = 0
         self._acquisition_frames = 0
         self._ball_type = selected.ball_type

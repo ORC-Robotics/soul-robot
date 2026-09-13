@@ -251,6 +251,20 @@ void ServoRoutine::start(
         appendArm(config::kServoRoutineArmPickupDegrees,
                   "servo_capture_arm_pickup", "Movendo braço para 103°");
     }
+    else if (kind == ServoRoutineKind::GripForReverse)
+    {
+        // Conserva braço e pulso na coleta até o orquestrador concluir a ré.
+        appendGripWithRetention(
+            "servo_capture_gripper_press", "servo_capture_gripper_retention");
+    }
+    else if (kind == ServoRoutineKind::LiftAfterReverse ||
+             kind == ServoRoutineKind::LiftAfterReverseForDirectDeposit)
+    {
+        const bool direct = kind == ServoRoutineKind::LiftAfterReverseForDirectDeposit;
+        appendArm(direct ? config::kServoInitialAngleDegrees
+                         : config::kServoRoutineArmHomeDegrees,
+                  "servo_capture_arm_finish", "Elevando braço após concluir a ré");
+    }
     else if (kind == ServoRoutineKind::SecureCapture)
     {
         // Esta etapa é o sufixo já validado da coleta e conserva os mesmos

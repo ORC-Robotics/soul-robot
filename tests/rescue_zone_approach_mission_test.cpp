@@ -97,10 +97,10 @@ void testStopDistanceStartsTimedFinalAdvanceThenCompletes()
         -20.0, readyTelemetry(6.0, -20.0), start);
     require(
         !output.completed && !output.failed &&
-            output.leftPower == config::kRescueZoneApproachNearPower &&
-            output.rightPower == config::kRescueZoneApproachNearPower &&
+            output.leftPower == config::kRescueZoneApproachFinalAdvancePower &&
+            output.rightPower == config::kRescueZoneApproachFinalAdvancePower &&
             output.status.rescueZoneApproachSpeedState == "FINAL",
-        "Até 6 cm deve iniciar o avanço final com a potência NEAR.");
+        "Até 6 cm deve iniciar o avanço final com a potência exclusiva de 75%.");
 
     output = mission.update(
         -20.0, readyTelemetry(6.0, -20.0),
@@ -108,9 +108,9 @@ void testStopDistanceStartsTimedFinalAdvanceThenCompletes()
                     config::kRescueZoneApproachFinalAdvanceMs - 1));
     require(
         !output.completed && output.leftPower ==
-                                 config::kRescueZoneApproachNearPower &&
-            output.rightPower == config::kRescueZoneApproachNearPower,
-        "O avanço final deve continuar até completar os 600 ms.");
+                                 config::kRescueZoneApproachFinalAdvancePower &&
+            output.rightPower == config::kRescueZoneApproachFinalAdvancePower,
+        "O avanço final deve continuar até completar os 1.500 ms.");
 
     output = mission.update(
         -20.0, readyTelemetry(6.0, -20.0),
@@ -122,7 +122,7 @@ void testStopDistanceStartsTimedFinalAdvanceThenCompletes()
             output.status.rescueZoneApproachSpeedState == "STOP" &&
             output.status.rescueZoneApproachCompletionReason ==
                 "REACHED_DISTANCE",
-        "Ao completar 600 ms, a aproximação deve concluir com PWM zero.");
+        "Ao completar 1.500 ms, a aproximação deve concluir com PWM zero.");
 }
 
 void testCameraObstructionRunsFinalAdvanceBeforeCompleting()
@@ -139,8 +139,8 @@ void testCameraObstructionRunsFinalAdvanceBeforeCompleting()
         RescueZoneTargetColor::Red);
     require(
         !output.completed && !output.failed &&
-            output.leftPower == config::kRescueZoneApproachNearPower &&
-            output.rightPower == config::kRescueZoneApproachNearPower &&
+            output.leftPower == config::kRescueZoneApproachFinalAdvancePower &&
+            output.rightPower == config::kRescueZoneApproachFinalAdvancePower &&
             output.status.rescueZoneApproachSpeedState == "FINAL",
         "Zona alvo cobrindo 70% deve iniciar avanço final lento.");
     output = coveredMission.update(
@@ -153,7 +153,7 @@ void testCameraObstructionRunsFinalAdvanceBeforeCompleting()
             output.rightPower == 0.0 &&
             output.status.rescueZoneApproachCompletionReason ==
                 "CAMERA_OBSCURED",
-        "Após 600 ms, a parada visual deve concluir com PWM zero.");
+        "Após 1.500 ms, a parada visual deve concluir com PWM zero.");
 
     RescueZoneApproachMission obscuredMission;
     RescueZoneSnapshot obscuredZones;
@@ -164,9 +164,63 @@ void testCameraObstructionRunsFinalAdvanceBeforeCompleting()
         RescueZoneTargetColor::Green);
     require(
         !output.completed &&
-            output.leftPower == config::kRescueZoneApproachNearPower &&
-            output.rightPower == config::kRescueZoneApproachNearPower,
-        "Frame escuro ou uniforme também deve executar o avanço de 600 ms.");
+            output.leftPower == config::kRescueZoneApproachFinalAdvancePower &&
+            output.rightPower == config::kRescueZoneApproachFinalAdvancePower,
+        "Frame escuro ou uniforme também deve executar o avanço de 1.500 ms.");
+}
+
+void testFinalAdvancePausesWithoutExtendingGlobalTimeout()
+{
+    using namespace std::chrono;
+    const auto start = steady_clock::time_point{};
+    RescueZoneApproachMission mission;
+    auto telemetry = readyTelemetry(6.0);
+    mission.update(0.0, telemetry, start);
+    mission.pause(start + milliseconds(200));
+    mission.pause(start + milliseconds(1500));
+    auto output = mission.update(0.0, telemetry, start + milliseconds(2200));
+    require(!output.completed && output.leftPower == 0.75,
+            "Uma pausa longa não pode consumir o avanço obrigatório.");
+    output = mission.update(0.0, telemetry, start + milliseconds(3499));
+    require(!output.completed, "O avanço não pode terminar antes de 1.500 ms autorizados.");
+    output = mission.update(0.0, telemetry, start + milliseconds(3500));
+    require(output.completed && output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Somente o tempo autorizado completo deve liberar o depósito.");
+
+    mission.reset();
+    mission.update(0.0, telemetry, start);
+    mission.pause(start + milliseconds(200));
+    output = mission.update(0.0, telemetry,
+                            start + milliseconds(config::kRescueZoneApproachTimeoutMs + 1));
+    require(output.failed && !output.completed && output.leftPower == 0.0,
+            "A pausa não pode renovar o timeout global de segurança.");
+}
+
+void testFinalAdvanceDoesNotBypassSensorFailures()
+{
+    using namespace std::chrono;
+    const auto start = steady_clock::time_point{};
+    for (int fault = 0; fault < 2; ++fault)
+    {
+        RescueZoneApproachMission mission;
+        auto telemetry = readyTelemetry(6.0);
+        mission.update(0.0, telemetry, start);
+        if (fault == 0)
+        {
+            telemetry.ultrasonicDistanceCm = NAN;
+        }
+        else
+        {
+            telemetry.mpuOk = false;
+        }
+        auto output = mission.update(0.0, telemetry, start + milliseconds(100));
+        require(output.failed && !output.completed &&
+                    output.leftPower == 0.0 && output.rightPower == 0.0,
+                "Sensor inválido durante o avanço deve bloquear o depósito.");
+        output = mission.update(0.0, readyTelemetry(6.0), start + milliseconds(2000));
+        require(output.failed && !output.completed,
+                "A recuperação do sensor não pode transformar falha em sucesso.");
+    }
 }
 
 void testMissingInputsAndRuntimeStaleFailStopped()
@@ -255,6 +309,8 @@ int main()
         testNearLatchPreventsAccelerationAfterFalseJump();
         testStopDistanceStartsTimedFinalAdvanceThenCompletes();
         testCameraObstructionRunsFinalAdvanceBeforeCompleting();
+        testFinalAdvancePausesWithoutExtendingGlobalTimeout();
+        testFinalAdvanceDoesNotBypassSensorFailures();
         testMissingInputsAndRuntimeStaleFailStopped();
         testTimeoutAndEmergencyStopKeepZero();
         testAlignedHeadingPersistsForApproachSelection();

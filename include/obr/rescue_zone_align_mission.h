@@ -66,7 +66,15 @@ private:
     std::string terminalPhase_;
     std::string terminalAction_;
     std::string completionReason_;
+    std::string lastLoggedPhase_;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
+
+    // Separa o diagnóstico por transição da decisão de movimento, sem log no laço rápido.
+    RescueZoneAlignOutput updatePhase(
+        const RescueZoneSnapshot& zones,
+        const Esp32TelemetrySnapshot& telemetry,
+        RescueZoneTargetColor targetColor,
+        std::chrono::steady_clock::time_point now);
 
     RescueZoneAlignOutput evaluate(
         const RescueZoneSnapshot& zones,

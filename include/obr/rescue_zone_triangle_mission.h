@@ -30,6 +30,8 @@ public:
         std::chrono::steady_clock::time_point now =
             std::chrono::steady_clock::now());
     void reset();
+    // Propaga a pausa da missão para não contabilizar avanço com PWM zerado.
+    void pause(std::chrono::steady_clock::time_point now);
     bool requiresRescueZoneDetection() const;
 
 private:

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <string>
 
 namespace
@@ -82,12 +83,15 @@ RescueRoomOutput RescueRoomMission::update(
     }
     if (phase_ == Phase::Failed)
     {
+        applyCollectionRetention(output);
         output.failed = true;
         output.status = failureStatus_;
         return output;
     }
     if (!telemetry.readyForOperation())
     {
+        triangleMission_.pause(now);
+        applyCollectionRetention(output);
         // Uma perda transitória para o robô sem descartar toda a sequência.
         // Quando a telemetria voltar, a etapa atual continua do ponto seguro.
         output.status = makeStatus(
@@ -119,6 +123,18 @@ RescueRoomOutput RescueRoomMission::update(
 
     const std::uint64_t expectedTargetSequence =
         ballTargetSequence(autonomousRunSequence);
+
+    if (requiresBallDetection() && ball.sourceFresh &&
+        ball.targetSequence == expectedTargetSequence)
+    {
+        const double tx = matchesVictim(ball, desiredVictimType_, expectedTargetSequence)
+                              ? ball.txDegrees : ball.candidateTxDegrees;
+        if ((ball.candidateVisible || ball.detected) && std::isfinite(tx) &&
+            std::abs(tx) <= 45.0 && tx != 0.0)
+        {
+            candidateSide_ = tx < 0.0 ? -1 : 1;
+        }
+    }
 
     if (phase_ == Phase::EntryAdvance)
     {
@@ -170,7 +186,7 @@ RescueRoomOutput RescueRoomMission::update(
             return output;
         }
         phase_ = Phase::SearchVictim;
-        sweepStep_ = SweepStep::Right45;
+        sweepStep_ = SweepStep::First45;
         sweepTurnStarted_ = false;
         waitingForSweepFrame_ = false;
         output.completed = false;
@@ -182,7 +198,7 @@ RescueRoomOutput RescueRoomMission::update(
 
     if (phase_ == Phase::SearchVictim)
     {
-        return updateSearch(ball, telemetry, expectedTargetSequence);
+        return updateSearch(ball, telemetry, expectedTargetSequence, now);
     }
 
     if (phase_ == Phase::AlignVictim)
@@ -314,13 +330,8 @@ RescueRoomOutput RescueRoomMission::update(
 
     if (phase_ == Phase::SecureCapture)
     {
-        const bool willUseInternalStorage =
-            carriedVictimType_ == VictimType::Alive &&
-            (collectedAliveVictims_ == 0 || storedAliveVictim_);
         output = updateServo(
-            willUseInternalStorage
-                ? ServoRoutineKind::SecureCapture
-                : ServoRoutineKind::SecureCaptureForDirectDeposit,
+            ServoRoutineKind::GripForReverse,
             telemetry,
             autonomousRunSequence,
             servoConfirmationSequence,
@@ -333,9 +344,14 @@ RescueRoomOutput RescueRoomMission::update(
         }
         if (output.completed)
         {
-            // Somente agora a pose de retenção é válida: a garra já fechou e o
-            // braço terminou em 15°. Salvar a pose na preparação reaplicaria
-            // 103° durante a ré e derrubaria o braço sobre o pulso.
+            // A vítima já está presa, mas o braço continua em 103° e o pulso
+            // permanece imóvel. Somente uma ré concluída libera a elevação.
+            const bool willUseInternalStorage =
+                carriedVictimType_ == VictimType::Alive &&
+                (collectedAliveVictims_ == 0 || storedAliveVictim_);
+            liftRoutineKind_ = willUseInternalStorage
+                ? ServoRoutineKind::LiftAfterReverse
+                : ServoRoutineKind::LiftAfterReverseForDirectDeposit;
             collectionRetentionPose_ = output.servoPose;
             collectionRetentionPose_.gripperDegrees =
                 config::kServoRoutineGripperRetentionDegrees;
@@ -380,6 +396,33 @@ RescueRoomOutput RescueRoomMission::update(
 
         distanceMove_ = {};
         output.completed = false;
+        phase_ = Phase::LiftAfterCollection;
+        output.status = makeStatus(
+            "rescue_collection_lifting", "Ré concluída; liberando a elevação do braço");
+        return output;
+    }
+
+    if (phase_ == Phase::LiftAfterCollection)
+    {
+        output = updateServo(
+            liftRoutineKind_, telemetry, autonomousRunSequence,
+            servoConfirmationSequence, currentServoPose, now);
+        if (output.failed)
+        {
+            applyCollectionRetention(output);
+            fail(output.status);
+            return output;
+        }
+        // Atualiza a retenção conforme a elevação é solicitada para nunca
+        // reaplicar a pose baixa durante o deslocamento até o triângulo.
+        collectionRetentionPose_ = output.servoPose;
+        if (!output.completed)
+        {
+            return output;
+        }
+        servoRoutine_.resetExecution();
+        output.completed = false;
+        candidateSide_ = -1;
         if (carriedVictimType_ == VictimType::Alive &&
             collectedAliveVictims_ == 1 && !storedAliveVictim_)
         {
@@ -574,21 +617,30 @@ RescueRoomOutput RescueRoomMission::update(
     return output;
 }
 
+void RescueRoomMission::advanceSweepStep()
+{
+    switch (sweepStep_)
+    {
+    case SweepStep::First45: sweepStep_ = SweepStep::Opposite45; break;
+    case SweepStep::Opposite45: sweepStep_ = SweepStep::First75; break;
+    case SweepStep::First75: sweepStep_ = SweepStep::Opposite75; break;
+    case SweepStep::Opposite75: sweepStep_ = SweepStep::Finished; break;
+    case SweepStep::Finished: break;
+    }
+    sweepAttemptStarted_ = false;
+    sweepTurnStarted_ = false;
+    waitingForSweepFrame_ = false;
+    sweepTurnController_.reset();
+}
+
 RescueRoomOutput RescueRoomMission::updateSearch(
     const ForwardBallSnapshot& ball,
     const Esp32TelemetrySnapshot& telemetry,
-    std::uint64_t expectedTargetSequence)
+    std::uint64_t expectedTargetSequence,
+    std::chrono::steady_clock::time_point now)
 {
     RescueRoomOutput output;
     output.internalObjectStored = storedAliveVictim_;
-
-    if (!ball.sourceFresh || ball.targetSequence != expectedTargetSequence)
-    {
-        output.status = makeStatus(
-            "rescue_search_waiting_yolo",
-            "Parado: aguardando um resultado atual do YOLO");
-        return output;
-    }
     if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
     {
         sweepTurnController_.reset();
@@ -596,59 +648,63 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         initialVictimAlignmentMission_.reset();
         phase_ = Phase::AlignVictim;
         output.status = makeStatus(
-            "rescue_victim_acquired",
-            desiredVictimType_ == VictimType::Alive
-                ? "Vítima viva confirmada; motores parados antes da coleta"
-                : "Vítima morta confirmada; motores parados antes da coleta");
-        return output;
-    }
-    if (ball.candidateVisible)
-    {
-        // O filtro do YOLO publica candidatas somente do tipo solicitado. A
-        // confirmação temporal acontece com o robô parado para não perder o alvo.
-        output.status = makeStatus(
-            "rescue_confirming_victim",
-            "Motores parados: confirmando a vítima em frames consecutivos");
+            "rescue_victim_acquired", "Vítima confirmada; motores parados antes do alinhamento");
         return output;
     }
 
+    const bool wideSweep = sweepStep_ == SweepStep::First75 ||
+                           sweepStep_ == SweepStep::Opposite75;
+    const int timeoutMs = wideSweep ? config::kRescueVictimSecondSweepTimeoutMs
+                                    : config::kRescueVictimFirstSweepTimeoutMs;
+    // A espera por uma candidata não renova o orçamento. Mesmo com pausas,
+    // uma tentativa bloqueada termina sem insistir indefinidamente na parede.
+    if (sweepAttemptStarted_ && !waitingForSweepFrame_ &&
+        now - sweepAttemptStartedAt_ >= std::chrono::milliseconds(timeoutMs))
+    {
+        ++sweepTimeoutCount_;
+        advanceSweepStep();
+        output.status = makeStatus(
+            "rescue_search_turn_timeout", "Tempo do giro esgotado; parado antes da próxima tentativa");
+        std::cout << "Rescue sweep timeout: limitMs=" << timeoutMs
+                  << " yaw=" << telemetry.yawZDeg << '\n';
+        return output;
+    }
+    if (!ball.sourceFresh || ball.targetSequence != expectedTargetSequence ||
+        !ImuTurnController::imuReady(telemetry))
+    {
+        // Após a pausa, recalcula o ângulo restante pela posição real da IMU.
+        sweepTurnController_.reset();
+        sweepTurnStarted_ = false;
+        output.status = makeStatus(
+            "rescue_search_waiting_sensors", "Busca parada: aguardando YOLO e IMU atuais");
+        return output;
+    }
     if (waitingForSweepFrame_)
     {
         if (ball.timestamp <= sweepFrameTimestamp_)
         {
             output.status = makeStatus(
-                "rescue_search_waiting_frame",
-                "Motores parados: aguardando um frame novo no limite da varredura");
+                "rescue_search_waiting_frame", "Parado: aguardando frame posterior ao giro");
             return output;
         }
-        waitingForSweepFrame_ = false;
-        switch (sweepStep_)
-        {
-        case SweepStep::Right45:
-            sweepStep_ = SweepStep::Left45;
-            break;
-        case SweepStep::Left45:
-            sweepStep_ = SweepStep::Right75;
-            break;
-        case SweepStep::Right75:
-            sweepStep_ = SweepStep::Left75;
-            break;
-        case SweepStep::Left75:
-            sweepStep_ = SweepStep::Finished;
-            break;
-        case SweepStep::Finished:
-            break;
-        }
+        advanceSweepStep();
     }
-
     if (sweepStep_ == SweepStep::Finished)
     {
+        // São quatro destinos: os dois lados em 45° e os dois lados em 75°.
+        if (sweepTimeoutCount_ == 4)
+        {
+            output.failed = true;
+            output.status = makeStatus(
+                "rescue_search_blocked", "Busca interrompida: as quatro tentativas excederam o tempo limite");
+            fail(output.status);
+            return output;
+        }
         if (finalVerification_ && desiredVictimType_ == VictimType::Alive)
         {
             startVictimSearch(VictimType::Dead, true);
             output.status = makeStatus(
-                "rescue_final_dead_verification",
-                "Nenhuma vítima viva extra; verificando vítimas mortas extras");
+                "rescue_final_dead_verification", "Nenhuma vítima viva extra; verificando vítimas mortas extras");
             return output;
         }
         if (finalVerification_)
@@ -656,97 +712,105 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             phase_ = Phase::Completed;
             output.completed = true;
             output.status = makeStatus(
-                "rescue_room_completed",
-                "Nenhuma vítima adicional encontrada; missão concluída",
-                100.0);
+                "rescue_room_completed", "Nenhuma vítima adicional encontrada; missão concluída", 100.0);
             return output;
         }
-
         const VictimType missingType = desiredVictimType_;
         startVictimSearch(missingType, false);
         output.status = makeStatus(
-            missingType == VictimType::Alive
-                ? "rescue_required_alive_search_restarting"
-                : "rescue_required_dead_search_restarting",
-            missingType == VictimType::Alive
-                ? "Vítima viva ainda não confirmada; repetindo a varredura"
-                : "Vítima morta ainda não confirmada; repetindo a varredura");
+            missingType == VictimType::Alive ? "rescue_required_alive_search_restarting"
+                                            : "rescue_required_dead_search_restarting",
+            "Vítima obrigatória ainda não confirmada; repetindo a varredura");
+        return output;
+    }
+    if (!sweepReferenceSet_)
+    {
+        sweepReferenceSet_ = true;
+        sweepReferenceYaw_ = telemetry.yawZDeg;
+        sweepFirstSide_ = candidateSide_;
+    }
+    if (!sweepAttemptStarted_)
+    {
+        sweepAttemptStarted_ = true;
+        sweepAttemptStartedAt_ = now;
+    }
+    if (ball.candidateVisible)
+    {
+        if (sweepStep_ == SweepStep::First45)
+        {
+            sweepFirstSide_ = candidateSide_;
+        }
+        sweepTurnController_.reset();
+        sweepTurnStarted_ = false;
+        output.status = makeStatus(
+            "rescue_confirming_victim", "Motores parados: confirmando a candidata atual");
         return output;
     }
 
-    double targetDegrees = config::kRescueVictimFirstSweepDegrees;
-    ImuTurnDirection direction = ImuTurnDirection::Right;
-    const char* sweepName = "+45°";
-    if (sweepStep_ == SweepStep::Left45)
-    {
-        targetDegrees = config::kRescueVictimFirstSweepDegrees * 2.0;
-        direction = ImuTurnDirection::Left;
-        sweepName = "−45°";
-    }
-    else if (sweepStep_ == SweepStep::Right75)
-    {
-        targetDegrees = config::kRescueVictimFirstSweepDegrees +
-                        config::kRescueVictimSecondSweepDegrees;
-        direction = ImuTurnDirection::Right;
-        sweepName = "+75°";
-    }
-    else if (sweepStep_ == SweepStep::Left75)
-    {
-        targetDegrees = config::kRescueVictimSecondSweepDegrees * 2.0;
-        direction = ImuTurnDirection::Left;
-        sweepName = "−75°";
-    }
-
-    if (!sweepTurnStarted_)
-    {
-        if (!sweepTurnController_.start(
-                targetDegrees,
-                direction,
-                telemetry,
-                config::kRescueVictimSweepToleranceDegrees,
-                config::kTurn90CorrectionPulseMs,
-                -1,
-                config::kRescueSearchTurnPower,
-                config::kRescueVictimSweepTimeoutMs))
-        {
-            output.status = makeStatus(
-                "rescue_search_imu_unavailable",
-                "Busca pausada: aguardando uma leitura válida da IMU");
-            return output;
-        }
-        sweepTurnStarted_ = true;
-    }
-
-    const ImuTurnOutput turn = sweepTurnController_.update(telemetry);
-    output.leftPower = turn.leftPower;
-    output.rightPower = turn.rightPower;
-    output.status = makeStatus(
-        "rescue_search_sweep",
-        std::string("Procurando vítima no limite ") + sweepName,
-        turn.progressPercent);
-    if (turn.result == ImuTurnResult::Completed)
-    {
+    const bool opposite = sweepStep_ == SweepStep::Opposite45 ||
+                          sweepStep_ == SweepStep::Opposite75;
+    const double limit = (sweepStep_ == SweepStep::First75 ||
+                          sweepStep_ == SweepStep::Opposite75)
+                             ? config::kRescueVictimSecondSweepDegrees
+                             : config::kRescueVictimFirstSweepDegrees;
+    const double targetYaw = sweepReferenceYaw_ +
+                             sweepFirstSide_ * (opposite ? -limit : limit);
+    const double remaining = std::remainder(targetYaw - telemetry.yawZDeg, 360.0);
+    const auto reachedEndpoint = [&]() {
+        sweepTurnController_.reset();
         sweepTurnStarted_ = false;
         waitingForSweepFrame_ = true;
         sweepFrameTimestamp_ = ball.timestamp;
         output.leftPower = 0.0;
         output.rightPower = 0.0;
         output.status = makeStatus(
-            "rescue_search_endpoint",
-            std::string("Limite ") + sweepName +
-                " alcançado; confirmando a imagem com o robô parado");
+            "rescue_search_endpoint", "Limite alcançado; aguardando imagem com o robô parado");
+    };
+    if (!sweepTurnStarted_)
+    {
+        if (std::abs(remaining) <= config::kRescueVictimSweepToleranceDegrees)
+        {
+            reachedEndpoint();
+            return output;
+        }
+        const int legTimeoutMs = limit == config::kRescueVictimSecondSweepDegrees
+                                     ? config::kRescueVictimSecondSweepTimeoutMs
+                                     : config::kRescueVictimFirstSweepTimeoutMs;
+        if (!sweepTurnController_.start(
+                std::abs(remaining), remaining < 0.0 ? ImuTurnDirection::Left : ImuTurnDirection::Right,
+                telemetry, config::kRescueVictimSweepToleranceDegrees,
+                config::kTurn90CorrectionPulseMs, -1, config::kRescueSearchTurnPower,
+                legTimeoutMs, now))
+        {
+            output.status = makeStatus("rescue_search_imu_unavailable", "Busca parada: giro indisponível");
+            return output;
+        }
+        sweepTurnStarted_ = true;
+    }
+    const ImuTurnOutput turn = sweepTurnController_.update(telemetry, now);
+    output.leftPower = turn.leftPower;
+    output.rightPower = turn.rightPower;
+    output.status = makeStatus(
+        "rescue_search_sweep", "Procurando vítima no heading " + std::to_string(targetYaw),
+        turn.progressPercent);
+    if (turn.result == ImuTurnResult::Completed)
+    {
+        // Confere o destino absoluto: o controlador de giro mede a magnitude
+        // percorrida, mas um deslocamento no sentido errado não conclui a busca.
+        if (std::abs(remaining) <= config::kRescueVictimSweepToleranceDegrees)
+        {
+            reachedEndpoint();
+        }
+        else
+        {
+            sweepTurnStarted_ = false;
+        }
     }
     else if (turn.result == ImuTurnResult::Failed)
     {
-        // Reinicia a varredura a partir da posição atual quando a IMU voltar.
-        // Nenhum comando permanece ativo depois da falha do giro.
         sweepTurnController_.reset();
-        sweepStep_ = SweepStep::Right45;
         sweepTurnStarted_ = false;
-        waitingForSweepFrame_ = false;
-        output.status = makeStatus(
-            "rescue_search_turn_restarting",
-            "Giro não concluído: parado até reiniciar a varredura");
+        output.status = makeStatus("rescue_search_turn_paused", turn.action);
     }
     return output;
 }
@@ -1058,10 +1122,17 @@ void RescueRoomMission::startVictimSearch(
     VictimType type,
     bool finalVerification)
 {
+    if (desiredVictimType_ != type)
+    {
+        candidateSide_ = -1;
+    }
     desiredVictimType_ = type;
     finalVerification_ = finalVerification;
     ++ballTargetGeneration_;
-    sweepStep_ = SweepStep::Right45;
+    sweepStep_ = SweepStep::First45;
+    sweepReferenceSet_ = false;
+    sweepAttemptStarted_ = false;
+    sweepTimeoutCount_ = 0;
     sweepTurnStarted_ = false;
     waitingForSweepFrame_ = false;
     sweepFrameTimestamp_ = 0.0;
@@ -1144,7 +1215,14 @@ void RescueRoomMission::reset()
     phase_ = Phase::EntryAdvance;
     desiredVictimType_ = VictimType::Alive;
     carriedVictimType_ = VictimType::Alive;
-    sweepStep_ = SweepStep::Right45;
+    candidateSide_ = -1;
+    sweepFirstSide_ = -1;
+    sweepReferenceYaw_ = 0.0;
+    liftRoutineKind_ = ServoRoutineKind::LiftAfterReverse;
+    sweepStep_ = SweepStep::First45;
+    sweepReferenceSet_ = false;
+    sweepAttemptStarted_ = false;
+    sweepTimeoutCount_ = 0;
     sweepTurnStarted_ = false;
     waitingForSweepFrame_ = false;
     finalVerification_ = false;

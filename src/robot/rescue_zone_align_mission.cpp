@@ -4,6 +4,7 @@
 #include "obr/imu_turn_controller.h"
 
 #include <cmath>
+#include <iostream>
 
 namespace
 {
@@ -16,6 +17,32 @@ const RescueZoneObservation& selectedZone(
 }
 
 RescueZoneAlignOutput RescueZoneAlignMission::update(
+    const RescueZoneSnapshot& zones,
+    const Esp32TelemetrySnapshot& telemetry,
+    RescueZoneTargetColor targetColor,
+    std::chrono::steady_clock::time_point now)
+{
+    const RescueZoneAlignOutput output = updatePhase(zones, telemetry, targetColor, now);
+    if (output.status.phase != lastLoggedPhase_)
+    {
+        lastLoggedPhase_ = output.status.phase;
+        const auto& zone = selectedZone(zones, targetColor);
+        std::cout << "Rescue zone alignment: phase=" << output.status.phase
+                  << " reason=" << output.status.action
+                  << " sequence=" << zones.sequence
+                  << " visionFresh=" << zones.sourceFresh
+                  << " candidate=" << zone.candidateDetected << " detected=" << zone.detected
+                  << " direction=" << output.status.rescueZoneAlignState
+                  << " imuReady=" << ImuTurnController::imuReady(telemetry)
+                  << " requested=" << output.leftPower << ',' << output.rightPower
+                  << " applied=" << telemetry.appliedLeftPower << ',' << telemetry.appliedRightPower
+                  << " encoderRates=" << telemetry.leftEncoderRate << ',' << telemetry.rightEncoderRate
+                  << '\n';
+    }
+    return output;
+}
+
+RescueZoneAlignOutput RescueZoneAlignMission::updatePhase(
     const RescueZoneSnapshot& zones,
     const Esp32TelemetrySnapshot& telemetry,
     RescueZoneTargetColor targetColor,
@@ -450,5 +477,6 @@ void RescueZoneAlignMission::reset()
     terminalPhase_.clear();
     terminalAction_.clear();
     completionReason_.clear();
+    lastLoggedPhase_.clear();
     phaseStartedAt_ = {};
 }
