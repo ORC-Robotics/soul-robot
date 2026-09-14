@@ -95,6 +95,7 @@ from .stream_display import (
     draw_green_roi_overlays,
     draw_line_illumination_overlay,
     draw_line_mode_green_overlays,
+    draw_silver_shadow_overlay,
     encode_frame,
     get_display_mode,
     handle_signal,
@@ -940,6 +941,10 @@ class DownwardCameraApplication:
                     )
 
                 if camera_profile["role"] == "down":
+                    # A decisão e a probabilidade da prata ficam visíveis no
+                    # stream sem alterar a imagem usada pelo controlador.
+                    draw_silver_shadow_overlay(frame, silver_shadow_status)
+
                     # O overlay Fusion é desenhado por último para permanecer legível
                     # mesmo quando a validação de verde também está visível.
                     draw_fusion_style_line_overlay(
