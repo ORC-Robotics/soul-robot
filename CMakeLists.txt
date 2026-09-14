@@ -25,11 +25,13 @@ add_executable(robot_test
     src/robot/imu_turn_controller.cpp
     src/robot/line_course_mission.cpp
     src/robot/line_centering_controller.cpp
+    src/robot/rescue_exit_mission.cpp
     src/robot/main_mission.cpp
     src/robot/mission_controller.cpp
     src/robot/oled_event_notifier.cpp
     src/robot/robot_state.cpp
     src/robot/rescue_area_mission.cpp
+    src/robot/encoder_distance_controller.cpp
     src/robot/rescue_room_mission.cpp
     src/robot/rescue_zone_align_mission.cpp
     src/robot/rescue_zone_approach_mission.cpp
@@ -53,6 +55,14 @@ else()
 endif()
 
 if(BUILD_TESTING)
+    add_executable(rescue_exit_mission_test
+        tests/rescue_exit_mission_test.cpp
+        src/robot/rescue_exit_mission.cpp
+        src/robot/encoder_distance_controller.cpp
+        src/robot/imu_turn_controller.cpp
+    )
+    target_include_directories(rescue_exit_mission_test PRIVATE include)
+    add_test(NAME rescue_exit_mission_test COMMAND rescue_exit_mission_test)
     add_executable(main_mission_test
         tests/main_mission_test.cpp
         src/hal/camera_monitor.cpp
@@ -61,11 +71,13 @@ if(BUILD_TESTING)
         src/robot/imu_turn_controller.cpp
         src/robot/line_course_mission.cpp
         src/robot/line_centering_controller.cpp
+        src/robot/rescue_exit_mission.cpp
         src/robot/main_mission.cpp
         src/robot/mission_controller.cpp
         src/robot/obstacle_avoidance.cpp
         src/robot/ball_alignment_mission.cpp
         src/robot/rescue_area_mission.cpp
+        src/robot/encoder_distance_controller.cpp
         src/robot/rescue_room_mission.cpp
         src/robot/rescue_zone_align_mission.cpp
         src/robot/rescue_zone_approach_mission.cpp
@@ -82,6 +94,7 @@ if(BUILD_TESTING)
         target_link_libraries(main_mission_test pthread)
     endif()
     add_test(NAME main_mission_test COMMAND main_mission_test)
+    add_test(NAME rescue_exit_integration_test COMMAND main_mission_test --exit-only)
 
     add_executable(ball_alignment_mission_test
         tests/ball_alignment_mission_test.cpp
@@ -113,6 +126,7 @@ if(BUILD_TESTING)
         src/robot/ball_alignment_mission.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/rescue_area_mission.cpp
+        src/robot/encoder_distance_controller.cpp
         src/robot/rescue_room_mission.cpp
         src/robot/rescue_zone_align_mission.cpp
         src/robot/rescue_zone_approach_mission.cpp

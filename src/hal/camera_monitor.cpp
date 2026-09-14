@@ -1,6 +1,7 @@
 #include "obr/camera_monitor.h"
 
 #include "obr/config.h"
+#include "obr/robot_state.h"
 
 #include <chrono>
 #include <cmath>
@@ -404,9 +405,14 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
     snapshot.greenInterpretation = GreenInterpretation::None;
+    snapshot.redValid = false;
+    snapshot.redConfirmed = false;
+    snapshot.redClearConfirmed = false;
     snapshot.courseMarkerConfirmed = false;
     snapshot.courseMarker = CourseMarker::None;
     snapshot.silverCandidateDetected = false;
+    snapshot.silverClassifierFresh = false;
+    snapshot.exitLineUnbranched = false;
     snapshot.rescueExitConfirmed = false;
     if (hasCachedSnapshot)
     {
@@ -480,7 +486,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
 {
     try
     {
-        std::ifstream file(config::kCameraLineStatusPath);
+        std::ifstream file(lineStatusPath_.empty() ? config::kCameraLineStatusPath : lineStatusPath_);
         if (!file)
         {
             return unavailableLineSnapshot(
@@ -496,6 +502,18 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         const std::string json = content.str();
 
         CameraLineSnapshot candidate;
+        bool silverAvailable = false;
+        double silverTimestamp = 0.0;
+        if (tryGetJsonBool(json, "silverClassifierAvailable", silverAvailable) && silverAvailable &&
+            tryGetJsonNumber(json, "silverTimestamp", silverTimestamp) &&
+            tryGetJsonUnsignedInteger(json, "silverSequence", candidate.silverSequence))
+        {
+            const double silverAgeMs = (currentUnixSeconds() - silverTimestamp) * 1000.0;
+            candidate.silverClassifierFresh = candidate.silverSequence > 0 &&
+                std::isfinite(silverAgeMs) && silverAgeMs >= 0.0 &&
+                silverAgeMs <= config::kCameraLineStatusTimeoutMs;
+        }
+        tryGetJsonBool(json, "exitLineUnbranched", candidate.exitLineUnbranched);
         std::string greenInterpretation;
         std::string lineControlSource;
         if (!tryGetJsonNumber(
@@ -534,6 +552,21 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
 
         // Os marcadores são opcionais até o detector físico ser calibrado.
         // Um processo antigo nunca inicia resgate nem conclui a missão por engano.
+        // Campos ausentes ou incoerentes não confirmam nem rearmam a chegada.
+        candidate.redValid =
+            tryGetJsonBool(json, "redValid", candidate.redValid) && candidate.redValid &&
+            tryGetJsonNumber(json, "redRatio", candidate.redRatio) &&
+            std::isfinite(candidate.redRatio) && candidate.redRatio >= 0.0 && candidate.redRatio <= 1.0 &&
+            tryGetJsonBool(json, "redConfirmed", candidate.redConfirmed) &&
+            tryGetJsonBool(json, "redClearConfirmed", candidate.redClearConfirmed);
+        if (!candidate.redValid ||
+            (candidate.redConfirmed && candidate.redRatio < config::kRedFinishMinRatio) ||
+            (candidate.redClearConfirmed && candidate.redRatio >= config::kRedFinishMinRatio))
+        {
+            candidate.redValid = false;
+            candidate.redConfirmed = false;
+            candidate.redClearConfirmed = false;
+        }
         bool courseMarkerConfirmed = false;
         if (tryGetJsonBool(
                 json, "courseMarkerConfirmed", courseMarkerConfirmed))
@@ -555,8 +588,14 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             return unavailableLineSnapshot(
                 cachedLineSnapshot_, hasCachedLineSnapshot_);
         }
-        tryGetJsonBool(
+        const bool silverDecisionValid = tryGetJsonBool(
             json, "silverCandidateDetected", candidate.silverCandidateDetected);
+        // Disponibilidade não basta: uma decisão ausente ou truncada de prata
+        // nunca pode ser interpretada como confirmação de piso sem prata.
+        candidate.silverClassifierFresh = candidate.silverClassifierFresh &&
+            silverDecisionValid &&
+            tryGetJsonBool(json, "courseMarkerConfirmed", courseMarkerConfirmed) &&
+            tryGetJsonString(json, "courseMarker", courseMarker);
         tryGetJsonBool(
             json, "rescueExitConfirmed", candidate.rescueExitConfirmed);
 
@@ -703,6 +742,37 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
         const std::string json = content.str();
 
         ForwardLineSnapshot candidate;
+        std::string exitCandidates;
+        bool exitValid = tryGetJsonBool(json, "exitAnalysisActive", candidate.exitAnalysisActive) &&
+            candidate.exitAnalysisActive &&
+            tryGetJsonUnsignedInteger(json, "exitRunSequence", candidate.exitRunSequence) &&
+            candidate.exitRunSequence > 0 &&
+            tryGetJsonBool(json, "exitCameraObscured", candidate.cameraObscured) &&
+            tryGetJsonObject(json, "exitCandidates", exitCandidates);
+        for (std::size_t index = 0; exitValid && index < candidate.exitCandidates.size(); ++index)
+        {
+            std::string sector;
+            std::uint64_t bands = 0, nearest = 0;
+            auto& observation = candidate.exitCandidates[index];
+            exitValid = tryGetJsonObject(exitCandidates, "sector" + std::to_string(index), sector) &&
+                tryGetJsonBool(sector, "visible", observation.visible) &&
+                tryGetJsonNumber(sector, "txDegrees", observation.txDegrees) &&
+                std::isfinite(observation.txDegrees) &&
+                std::abs(observation.txDegrees) <= config::kBallAlignmentMaximumVisualErrorDegrees &&
+                tryGetJsonNumber(sector, "score", observation.score) &&
+                std::isfinite(observation.score) && observation.score >= 0.0 && observation.score <= 1.0 &&
+                tryGetJsonUnsignedInteger(sector, "depthBands", bands) && bands <= 3 &&
+                tryGetJsonUnsignedInteger(sector, "nearestBand", nearest) && nearest <= 2 &&
+                tryGetJsonBool(sector, "tapeValid", observation.tapeValid) &&
+                (!observation.visible || (bands > 0 && observation.score > 0.0));
+            observation.depthBands = static_cast<int>(bands);
+            observation.nearestBand = static_cast<int>(nearest);
+        }
+        if (!exitValid)
+        {
+            candidate.exitAnalysisActive = false;
+            candidate.exitCandidates = {};
+        }
         std::uint64_t pathVersion = 0;
         if (!tryGetJsonUnsignedInteger(json, "forwardPathVersion", pathVersion) || pathVersion != 2 ||
             !tryGetJsonString(json, "forwardPathState", candidate.pathState) ||
@@ -1099,5 +1169,42 @@ bool CameraMonitor::publishRescueZoneDetectionInput(
         std::remove(config::kRescueZoneStatusPath);
     }
     return true;
+#endif
+}
+
+// O arquivo é substituído atomicamente; o Python rejeita heartbeat vencido.
+bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
+                                      const AutonomousStatus& status) const
+{
+#ifdef _WIN32
+    (void)enabled;
+    (void)runSequence;
+    (void)status;
+    return true;
+#else
+    const std::string temporary = std::string(config::kRescueExitControlPath) + ".tmp";
+    {
+        std::ofstream file(temporary, std::ios::trunc);
+        if (!file) return false;
+        file << std::setprecision(17)
+             << "{\"enabled\":" << (enabled ? "true" : "false")
+             << ",\"redMinRatio\":" << config::kRedFinishMinRatio
+             << ",\"redConfirmFrames\":" << config::kRedFinishConfirmFrames
+             << ",\"redMaxFrameGapMs\":" << config::kCameraLineStatusTimeoutMs
+             << ",\"runSequence\":" << runSequence
+             << ",\"timestamp\":" << currentUnixSeconds()
+             << ",\"phase\":" << std::quoted(status.phase)
+             << ",\"sector\":" << status.exitSector
+             << ",\"confidence\":" << status.exitConfidence
+             << ",\"heading\":" << status.exitHeadingDegrees
+             << ",\"round\":" << status.exitRound
+             << ",\"advanceCm\":" << status.exitAdvanceCm
+             << ",\"reverseCm\":" << status.exitReverseCm
+             << ",\"rejections\":" << std::quoted(status.exitRejections)
+             << ",\"lastFailure\":" << std::quoted(status.exitLastFailure) << '}';
+        file.close();
+        if (!file) return false;
+    }
+    return std::rename(temporary.c_str(), config::kRescueExitControlPath) == 0;
 #endif
 }

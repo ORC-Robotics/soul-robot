@@ -16,7 +16,7 @@ bool ServoController::apply(const RobotSnapshot& state)
 {
     const auto now = std::chrono::steady_clock::now();
 
-    if (state.servoCalibrationActive && !state.emergencyStop)
+    if (state.servoCalibrationActive && !state.emergencyStop && !state.missionFinished)
     {
         // A calibração usa pulsos brutos enviados de forma explícita pelo
         // operador. O laço normal não pode substituí-los por ângulos nem enviar
@@ -28,7 +28,7 @@ bool ServoController::apply(const RobotSnapshot& state)
     const bool anyServoRequested = state.armServoRequested ||
                                    state.wristServoRequested ||
                                    state.gripperServoRequested;
-    if (!operatingMode || state.emergencyStop || !anyServoRequested)
+    if (state.missionFinished || !operatingMode || state.emergencyStop || !anyServoRequested)
     {
         return disableAll();
     }

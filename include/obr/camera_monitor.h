@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
+
+struct AutonomousStatus;
 #include <limits>
 #include <string>
 #include <utility>
@@ -41,6 +44,10 @@ struct CameraCurveDiagnostics
 // verde antes de usá-la em alertas ou em uma decisão segura de movimento.
 struct CameraLineSnapshot
 {
+    // A saída exige classificador operacional e geometria sem ramificações.
+    bool silverClassifierFresh = false;
+    std::uint64_t silverSequence = 0;
+    bool exitLineUnbranched = false;
     bool sourceFresh = false;
     double lineFollowerLeftPower = 0.0;
     double lineFollowerRightPower = 0.0;
@@ -57,6 +64,11 @@ struct CameraLineSnapshot
 
     // Marcadores de transição só têm efeito depois da confirmação temporal
     // feita pela visão. A ausência destes campos preserva o percurso atual.
+    // Evidência HSV independente de preto, verde e do classificador de prata.
+    bool redValid = false;
+    double redRatio = 0.0;
+    bool redConfirmed = false;
+    bool redClearConfirmed = false;
     bool courseMarkerConfirmed = false;
     CourseMarker courseMarker = CourseMarker::None;
     // Expõe a candidata ainda não confirmada para a manobra curta de entrada.
@@ -81,10 +93,26 @@ struct CameraLineSnapshot
     CameraCurveDiagnostics curveDiagnostics;
 };
 
+// Evidência de um componente preto por setor; nunca contém comandos de motor.
+struct ExitCandidate
+{
+    bool visible = false;
+    double txDegrees = 0.0;
+    double score = 0.0;
+    int depthBands = 0;
+    int nearestBand = 0;
+    bool tapeValid = false;
+};
+
 // Trajetória frontal auxiliar. O Python inferior usa sua evidência para GAP;
 // nenhum consumidor deve convertê-la em comando de motor.
 struct ForwardLineSnapshot
 {
+    // Contrato separado: apenas RescueExitMission usa estas evidências para aproximação.
+    bool exitAnalysisActive = false;
+    std::uint64_t exitRunSequence = 0;
+    bool cameraObscured = false;
+    std::array<ExitCandidate, 5> exitCandidates{};
     bool sourceFresh = false;
     bool visible = false;
     double position = std::numeric_limits<double>::quiet_NaN();
@@ -181,13 +209,18 @@ public:
     explicit CameraMonitor(
         std::string forwardLineStatusPath = {},
         std::string rescueZoneStatusPath = {},
-        std::string forwardBallStatusPath = {})
+        std::string forwardBallStatusPath = {},
+        std::string lineStatusPath = {})
         : forwardLineStatusPath_(std::move(forwardLineStatusPath)),
           rescueZoneStatusPath_(std::move(rescueZoneStatusPath)),
-          forwardBallStatusPath_(std::move(forwardBallStatusPath)) {}
+          forwardBallStatusPath_(std::move(forwardBallStatusPath)),
+          lineStatusPath_(std::move(lineStatusPath)) {}
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
+    // Publica o heartbeat e o diagnóstico da busca sem conceder autoridade de motor.
+    bool publishExitControl(bool enabled, std::uint64_t runSequence,
+                            const AutonomousStatus& status) const;
     ForwardBallSnapshot forwardBallSnapshot() const;
     RescueZoneSnapshot rescueZoneSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;
@@ -204,6 +237,7 @@ private:
     std::string forwardLineStatusPath_;
     std::string rescueZoneStatusPath_;
     std::string forwardBallStatusPath_;
+    std::string lineStatusPath_;
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
     ForwardLineSnapshot cachedForwardLineSnapshot_;

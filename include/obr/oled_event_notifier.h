@@ -10,6 +10,8 @@ class OledEventNotifier
 public:
     explicit OledEventNotifier(Esp32Bridge& esp32);
 
+    // A chegada tem prioridade e tenta novamente se o display estiver indisponível.
+    void updateRedFinish(bool confirmed, bool missionFinished, bool displayAvailable);
     void updateLineEvents(const CameraLineSnapshot& cameraSnapshot,
                           bool displayAvailable);
     void updateObstacleDetour(bool obstacleConfirmed, bool displayAvailable);
@@ -21,6 +23,8 @@ public:
 
 private:
     Esp32Bridge& esp32_;
+    bool redAlertPending_ = false;
+    bool redAlertPriority_ = false;
     bool greenAlertLatched_ = false;
     GreenInterpretation lastGreenInterpretation_ = GreenInterpretation::None;
     bool gapAlertLatched_ = false;

@@ -783,6 +783,10 @@ câmera e só informa `ONLINE` após uma publicação atual da visão.
 
 ## VS Code
 
+Para operar e testar a busca após o resgate, consulte
+[Busca da saída](docs/rescue-exit.md). O modo isolado `rescue_exit` também retoma
+o seguidor normal quando a CAM0 confirma a saída.
+
 Atalhos úteis:
 
 - `Terminal > Run Build Task` para rodar `Deploy Raspberry`;

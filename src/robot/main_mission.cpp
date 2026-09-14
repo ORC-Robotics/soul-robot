@@ -16,12 +16,18 @@ AutonomousStatus makeStatus(
 
 }
 
-void MainMission::reset()
+void MainMission::reset(bool startAtExit)
 {
-    phase_ = Phase::InitialLineCourse;
+    phase_ = startAtExit ? Phase::ExitSearch : Phase::InitialLineCourse;
     lineCourseMission_.reset();
     silverEntryManeuver_.reset();
     rescueRoomMission_.reset();
+    rescueExitMission_.reset();
+}
+
+bool MainMission::requiresExitVision() const
+{
+    return phase_ == Phase::ExitSearch;
 }
 
 bool MainMission::requiresRescueVision() const
@@ -98,20 +104,12 @@ void MainMission::update(
 {
     const RobotSnapshot snapshot = robotState.snapshot();
     if (snapshot.mode != "autonomous" ||
-        snapshot.autonomousMission != AutonomousMission::MainMission)
+        (snapshot.autonomousMission != AutonomousMission::MainMission &&
+         snapshot.autonomousMission != AutonomousMission::RescueExit))
     {
         return;
     }
 
-    if (phase_ == Phase::Completed)
-    {
-        robotState.driveAutonomous(0.0, 0.0);
-        robotState.updateAutonomousStatus(makeStatus(
-            "main_mission_completed",
-            "Missão concluída: resgate finalizado e robô parado",
-            100.0));
-        return;
-    }
     if (phase_ == Phase::Failed)
     {
         robotState.driveAutonomous(0.0, 0.0);
@@ -183,13 +181,33 @@ void MainMission::update(
         }
         if (output.completed)
         {
-            phase_ = Phase::Completed;
+            phase_ = Phase::ExitSearch;
+            rescueExitMission_.reset();
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
-                "main_mission_completed",
-                "Resgate concluído: robô parado antes da futura busca da saída",
-                100.0));
+                "rescue_exit_starting",
+                "Varredura final concluída; iniciando busca da saída",
+                0.0));
         }
+        return;
+    }
+
+    if (phase_ == Phase::ExitSearch)
+    {
+        const auto exit = rescueExitMission_.update(cameraLineSnapshot, forwardLineSnapshot,
+                                                   esp32Telemetry, autonomousRunSequence);
+        robotState.driveAutonomous(exit.leftPower, exit.rightPower);
+        if (exit.failed)
+        {
+            phase_ = Phase::Failed;
+            robotState.stop();
+        }
+        else if (exit.completed)
+        {
+            phase_ = Phase::FinalLineCourse;
+            lineCourseMission_.reset();
+        }
+        robotState.updateAutonomousStatus(exit.status);
         return;
     }
 

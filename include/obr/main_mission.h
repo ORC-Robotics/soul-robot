@@ -4,6 +4,7 @@
 #include "obr/esp32_bridge.h"
 #include "obr/line_course_mission.h"
 #include "obr/rescue_room_mission.h"
+#include "obr/rescue_exit_mission.h"
 #include "obr/robot_state.h"
 #include "obr/silver_entry_maneuver.h"
 
@@ -14,7 +15,8 @@
 class MainMission
 {
 public:
-    void reset();
+    void reset(bool startAtExit = false);
+    bool requiresExitVision() const;
     bool requiresRescueVision() const;
     bool requiresRescueZoneDetection() const;
     std::uint64_t rescueBallTargetSequence(
@@ -49,7 +51,8 @@ private:
     {
         InitialLineCourse,
         RescueArea,
-        Completed,
+        ExitSearch,
+        FinalLineCourse,
         Failed
     };
 
@@ -57,4 +60,5 @@ private:
     LineCourseMission lineCourseMission_;
     SilverEntryManeuver silverEntryManeuver_;
     RescueRoomMission rescueRoomMission_;
+    RescueExitMission rescueExitMission_;
 };

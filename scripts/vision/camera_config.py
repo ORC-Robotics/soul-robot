@@ -1,4 +1,11 @@
 """Configuração e perfis das câmeras do robô."""
+# HSV do vermelho na escala OpenCV: H de 0 a 179, S/V de 0 a 255.
+# Os mínimos de saturação e brilho rejeitam branco e preto da pista.
+RED_HUE_LOW_MAX = 10
+RED_HUE_HIGH_MIN = 170
+RED_MIN_SATURATION = 100
+RED_MIN_VALUE = 70
+
 
 import os
 

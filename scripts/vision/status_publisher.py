@@ -52,6 +52,7 @@ def save_line_status(
     green_status,
     specular_repair_status=None,
     silver_status=None,
+    red_status=None,
 ):
     """Publica controle visual e telemetria leve no IPC rápido da linha."""
 
@@ -191,7 +192,13 @@ def save_line_status(
                     "bottomFusionReacquireReady", "forwardPresenceState"):
             if key in line_follower_command:
                 line_status[key] = line_follower_command[key]
+        if isinstance(red_status, dict):
+            line_status.update(red_status)
         marker_status = silver_status if isinstance(silver_status, dict) else {}
+        line_status["exitLineUnbranched"] = line_follower_command.get("exitLineUnbranched") is True
+        line_status["silverClassifierAvailable"] = marker_status.get("silverShadowAvailable") is True
+        line_status["silverTimestamp"] = marker_status.get("silverShadowTimestamp", 0.0)
+        line_status["silverSequence"] = marker_status.get("silverShadowSequence", 0)
         line_status["courseMarkerConfirmed"] = (
             marker_status.get("courseMarkerConfirmed") is True
         )

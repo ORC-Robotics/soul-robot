@@ -501,6 +501,11 @@ void DashboardServer::handleCommand(const std::string& message)
                 std::cerr << "Invalid drive-distance target ignored\n";
             }
         }
+        else if (message.find("\"mission\":\"rescue_exit\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::RescueExit);
+            std::cout << "Autonomous mission selected: rescue_exit\n";
+        }
         else if (message.find("\"mission\":\"rescue_area\"") != std::string::npos)
         {
             // Selecionar a etapa não liga o detector. O gate só abre depois
@@ -924,6 +929,9 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"rescueZoneTargetColor\":\""
          << rescueZoneTargetColorName(state.rescueZoneTargetColor) << "\""
          << ",\"autonomousRunSequence\":" << state.autonomousRunSequence
+         << ",\"missionFinished\":" << (state.missionFinished ? "true" : "false")
+         << ",\"redRatio\":" << state.redRatio
+         << ",\"redValid\":" << (state.redValid ? "true" : "false")
          << ",\"rawMotorCommand\":" << (state.rawMotorCommand ? "true" : "false")
          << ",\"autonomousPhase\":\"" << state.autonomousStatus.phase << "\""
          << ",\"autonomousAction\":\"" << state.autonomousStatus.action << "\""
@@ -1067,6 +1075,14 @@ std::string DashboardServer::buildTelemetryJson(
                 state.autonomousStatus.rescueZoneSearchCompletionReason)
          << ",\"rescueZoneTrianglePhase\":"
          << std::quoted(state.autonomousStatus.rescueZoneTrianglePhase)
+         << ",\"exitSector\":" << state.autonomousStatus.exitSector
+         << ",\"exitConfidence\":" << state.autonomousStatus.exitConfidence
+         << ",\"exitHeadingDegrees\":" << state.autonomousStatus.exitHeadingDegrees
+         << ",\"exitRound\":" << state.autonomousStatus.exitRound
+         << ",\"exitAdvanceCm\":" << state.autonomousStatus.exitAdvanceCm
+         << ",\"exitReverseCm\":" << state.autonomousStatus.exitReverseCm
+         << ",\"exitRejections\":" << std::quoted(state.autonomousStatus.exitRejections)
+         << ",\"exitLastFailure\":" << std::quoted(state.autonomousStatus.exitLastFailure)
           << ",\"left\":" << state.left
           << ",\"right\":" << state.right
          << ",\"requestedLeft\":" << state.left
@@ -1820,6 +1836,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="rescue_zone_align">ALIGN_ZONE · CENTRALIZAR ÁREA</option>
                 <option value="rescue_zone_approach">APPROACH_ZONE · APROXIMAR ÁREA</option>
                 <option value="rescue_zone_triangle">TRIÂNGULO · BUSCAR E APROXIMAR</option>
+                <option value="rescue_exit">SAÍDA · BUSCAR E RETOMAR PERCURSO</option>
                 <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
                 <option value="servo_initialize">SERVOS · POSE HOME 15/0/0</option>
@@ -1829,6 +1846,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="servo_full_sequence">SERVOS · SEQUÊNCIA COM ARMAZENAMENTO</option>
                 <option value="servo_full_sequence_two">SERVOS · SEQUÊNCIA SEM ARMAZENAMENTO</option>
               </select>
+              <pre id="exitSearchDetails" hidden style="white-space:pre-wrap"></pre>
               <span id="missionHint" class="mission-hint">Segue-faixa com retorno verde e desvio ultrassônico de obstáculo.</span>
               <div id="distanceMissionSettings" class="distance-mission-settings" hidden>
                 <span class="distance-input-label">Distância alvo</span>
@@ -2385,6 +2403,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Aproximando da área com ULTRA e heading travado"
           : selectedMission === "rescue_zone_triangle"
             ? `Buscando, alinhando e aproximando da área ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
+          : selectedMission === "rescue_exit"
+            ? "Busca a saída e continua no seguidor normal. Posicione o robô na sala antes de iniciar."
           : selectedMission === "rescue_area"
             ? "Detectando, alinhando e aproximando da vítima mais próxima"
           : selectedMission === "obstacle_avoidance"
@@ -2444,6 +2464,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Avança pelo lockedHeading, desacelera com o ULTRA e para se a CAM1 ficar obstruída."
           : mission === "rescue_zone_triangle"
             ? "Orquestra SEARCH_ZONE, ALIGN_ZONE e APPROACH_ZONE sem duplicar seus controles."
+          : mission === "rescue_exit"
+            ? "Busca a saída pela CAM1 e retoma o percurso após confirmação da CAM0."
           : mission === "rescue_area"
             ? "Liga o detector frontal, alinha, aproxima e conclui com um avanço curto pelos encoders."
           : mission === "obstacle_avoidance"
@@ -2651,6 +2673,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "rescue_zone_align" ? `ALIGN_ZONE · ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
           : mission === "rescue_zone_approach" ? "APPROACH_ZONE"
           : mission === "rescue_zone_triangle" ? `TRIÂNGULO · ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
+          : mission === "rescue_exit" ? "Saída · Buscar e retomar percurso"
           : mission === "rescue_area" ? "Resgate · Detectar e seguir"
           : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
           : mission === "servo_initialize" ? "Servos · Inicialização"
@@ -2662,7 +2685,10 @@ std::string DashboardServer::dashboardHtml()
           : "Missão principal";
       const turnAroundActive = phase.startsWith("turnaround_");
       const obstacleActive = phase.startsWith("obstacle_");
-      element("machineBehavior").textContent = mission === "turn_right_90"
+      const exitActive = phase.startsWith("rescue_exit_");
+      element("machineBehavior").textContent = exitActive
+        ? `SAÍDA · SETOR ${data.exitSector} · RODADA ${data.exitRound}`
+        : mission === "turn_right_90"
         ? "TESTE DE GIRO"
           : mission === "drive_distance"
             ? "TESTE DE DISTÂNCIA"
@@ -2689,6 +2715,12 @@ std::string DashboardServer::dashboardHtml()
       element("machineAppliedSpeed").textContent = fresh
         ? `${formatNumber(data.esp32AppliedLeftPower, 2)} / ${formatNumber(data.esp32AppliedRightPower, 2)}`
         : "-- / --";
+      const exitDetails = element("exitSearchDetails");
+      exitDetails.hidden = !exitActive;
+      exitDetails.textContent = `Setor ${data.exitSector} · confiança ${formatNumber(data.exitConfidence, 3)} · heading ${formatNumber(data.exitHeadingDegrees, 1)}° · rodada ${data.exitRound}
+Avanço ${formatNumber(data.exitAdvanceCm, 1)} cm · ré ${formatNumber(data.exitReverseCm, 1)} cm
+Rejeições: ${data.exitRejections || "nenhuma"}
+Última falha: ${data.exitLastFailure || "nenhuma"}`;
       const distanceMission = mission === "drive_distance";
       element("machineDistanceTarget").textContent = distanceMission ? `${formatNumber(data.driveDistanceTargetCm, 1)} cm` : "-- cm";
       element("machineDistanceSides").textContent = distanceMission

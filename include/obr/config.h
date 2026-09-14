@@ -4,6 +4,12 @@
 
 namespace config
 {
+// Fração mínima de vermelho na união dos sensores: 0,10 corresponde a 10%.
+// Aumentar reduz a sensibilidade; diminuir pode confirmar manchas pequenas.
+constexpr double kRedFinishMinRatio = 0.10;
+// Frames consecutivos para confirmar vermelho ou rearmar após sair da faixa.
+constexpr int kRedFinishConfirmFrames = 4;
+
 // Porta HTTP usada pelo dashboard e pelo WebSocket.
 // Se mudar este valor, atualize também a URL usada para acessar o robô.
 constexpr int kDashboardPort = 8080;
@@ -440,6 +446,33 @@ constexpr double kRescuePostDepositReversePower = 0.80;
 // Ré, em centímetros, feita depois da primeira entrega preta obrigatória.
 // O afastamento maior evita iniciar a verificação final diante do depósito vermelho.
 constexpr double kRescueFinalDeadDepositReverseDistanceCm = 40.0;
+
+// Busca da saída: limites em graus, frames e milissegundos. Limites maiores
+// ampliam as tentativas, mas aumentam o deslocamento antes de uma falha segura.
+constexpr double kRescueExitScanDegrees = 30.0;
+constexpr double kRescueExitRejectedToleranceDegrees = 15.0;
+constexpr int kRescueExitCandidateFrames = 3;
+constexpr int kRescueExitAcquisitionFrames = 4;
+constexpr int kRescueExitSensorTimeoutMs = 2000;
+constexpr int kRescueExitCandidateLostMs = 500;
+constexpr int kRescueExitApproachTimeoutMs = 10000;
+constexpr int kRescueExitTotalTimeoutMs = 120000;
+// Compartilha as potências validadas dos triângulos e da busca de vítimas.
+constexpr double kRescueExitTurnPower = kRescueSearchTurnPower;
+constexpr double kRescueExitApproachPower = kRescueZoneApproachMidPower;
+constexpr double kRescueExitCorrection = kRescueZoneApproachMaximumHeadingCorrection;
+constexpr double kRescueExitReverseMaximumCm = kRescueFinalDeadDepositReverseDistanceCm;
+// O heartbeat expira sem renovar autoridade visual após Stop ou queda da aplicação.
+constexpr const char* kRescueExitControlPath = "/dev/shm/obr_rescue_exit_control.json";
+constexpr int kRescueExitControlIntervalMs = 100;
+constexpr int kRescueExitControlTimeoutMs = 500;
+static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
+              kRescueExitCandidateLostMs < kRescueExitApproachTimeoutMs &&
+              kRescueExitApproachTimeoutMs < kRescueExitTotalTimeoutMs &&
+              kRescueExitApproachPower - kRescueExitCorrection >= kMotorRunMinimumPower &&
+              kRescueExitApproachPower + kRescueExitCorrection <= kMaxMotorOutput,
+              "Limites da busca da saída devem preservar as janelas e potências seguras.");
+
 
 // Tempos máximos, em milissegundos, dos deslocamentos internos do resgate.
 // A ausência de progresso ou de telemetria recente interrompe a missão antes.

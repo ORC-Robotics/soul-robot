@@ -43,6 +43,12 @@ void MotorController::apply(const RobotSnapshot& state)
         return;
     }
 
+    // Nenhuma compensação de potência pode reativar uma execução concluída.
+    if (state.missionFinished)
+    {
+        stop();
+        return;
+    }
     if (state.servoCalibrationActive)
     {
         // Durante a calibração, MOTOR com potência zero renova o watchdog sem

@@ -14,6 +14,8 @@ except ImportError:
 from .calibration_capture import CalibrationCapture
 from .gap_validation import GapValidator, read_json_snapshot, FORWARD_STATUS_PATH
 from .line_control import LineFollowerController
+from .rescue_exit import read_exit_control, read_camera_control, exit_line_is_unbranched
+from .red_detection import RedFinishDetector, draw_red_overlay
 from .maneuver_state import LineManeuverState
 from .status_publisher import LineStatusPublisher
 from .camera import (
@@ -121,6 +123,7 @@ class DownwardCameraApplication:
         vision_profile = camera_profile["vision"]
         camera_details = {}
         status_publisher = LineStatusPublisher()
+        red_detector = RedFinishDetector()
         self.dataset_recorder = None
         silver_shadow_monitor = None
         silver_shadow_status = empty_silver_shadow_status(
@@ -388,10 +391,17 @@ class DownwardCameraApplication:
                     time.perf_counter() - green_processing_started
                 ) * 1000.0
 
+                exit_control = read_exit_control()
+                if exit_control["enabled"] and silver_shadow_monitor is None:
+                    silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
                 line_timestamp = time.time()
                 line_sequence += 1
+                red_status, red_mask = red_detector.process(
+                    raw_frame, camera_format, line_timestamp,
+                    read_camera_control() if line_ipc_enabled else {},
+                )
                 if (
-                    SILVER_DETECTION_ENABLED
+                    (SILVER_DETECTION_ENABLED or exit_control["enabled"])
                     and silver_shadow_monitor is not None
                 ):
                     silver_shadow_status = silver_shadow_monitor.process(
@@ -716,6 +726,10 @@ class DownwardCameraApplication:
                         )
                     line_follower_command.update(gap_validator.diagnostics())
 
+                line_follower_command["exitLineUnbranched"] = bool(
+                    exit_control["enabled"] and
+                    exit_line_is_unbranched(line_candidate_mask, fusion_style_line)
+                )
                 line_control_ms = (
                     time.perf_counter() - line_control_started
                 ) * 1000.0
@@ -739,6 +753,7 @@ class DownwardCameraApplication:
                         green_status,
                         specular_repair_status=specular_repair_status,
                         silver_status=silver_shadow_status,
+                        red_status=red_status,
                     )
 
                 if green_capture_requested:
@@ -932,6 +947,9 @@ class DownwardCameraApplication:
                         fusion_style_line,
                         line_follower_command,
                     )
+
+                if line_ipc_enabled:
+                    draw_red_overlay(frame, red_status, red_mask)
 
                 now = time.monotonic()
                 elapsed = now - previous_time

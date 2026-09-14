@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/ball_alignment_mission.h"
+#include "obr/encoder_distance_controller.h"
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
@@ -83,32 +84,6 @@ private:
         Finished
     };
 
-    enum class DistancePhase
-    {
-        Idle,
-        Preparing,
-        Driving,
-        Settling,
-        Completed,
-        Failed
-    };
-
-    struct DistanceMove
-    {
-        DistancePhase phase = DistancePhase::Idle;
-        double targetCm = 0.0;
-        double power = 0.0;
-        int directionSign = 1;
-        long long startLeftCount = 0;
-        long long startRightCount = 0;
-        long long lastUptimeMs = 0;
-        double lastProgressCounts = 0.0;
-        int differenceSamples = 0;
-        std::chrono::steady_clock::time_point phaseStartedAt{};
-        std::chrono::steady_clock::time_point lastProgressAt{};
-        AutonomousStatus failureStatus;
-    };
-
     Phase phase_ = Phase::EntryAdvance;
     VictimType desiredVictimType_ = VictimType::Alive;
     VictimType carriedVictimType_ = VictimType::Alive;
@@ -145,7 +120,7 @@ private:
     RescueAreaMission victimApproachMission_;
     RescueZoneTriangleMission triangleMission_;
     ServoRoutine servoRoutine_;
-    DistanceMove distanceMove_;
+    EncoderDistanceController distanceController_;
     AutonomousStatus failureStatus_;
 
     RescueRoomOutput updateSearch(

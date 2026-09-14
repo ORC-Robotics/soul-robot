@@ -36,6 +36,7 @@ except Exception as error:
 
 from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 from vision.forward_path import ForwardPathTracker
+from vision.rescue_exit import analyze_exit_candidates, read_exit_control, draw_exit_overlay
 from vision.gap_validation import read_json_snapshot
 from vision.obstacle_black import (
     analyze_obstacle_black,
@@ -633,13 +634,17 @@ def process_forward_frame(
     tracker=None,
     now=None,
     diagnostics=None,
+    exit_control=None,
 ):
     """Aplica somente a segmentação preta configurada para o perfil frontal."""
 
     profile = camera_line_frame.CAMERA_PROFILES["forward"]
+    vision_profile = dict(profile["vision"])
+    if exit_control and exit_control.get("enabled"):
+        vision_profile["line_roi_start_ratio"] = 0.0
     filtered_mask, roi_start_y = camera_line_frame.create_filtered_line_mask(
         frame,
-        profile["vision"],
+        vision_profile,
         camera_format,
     )
     if roi_start_y == 0 and filtered_mask.shape == frame.shape[:2]:
@@ -662,9 +667,13 @@ def process_forward_frame(
         # A cópia só é solicitada nos frames diagnósticos. A mesma máscara
         # continua sendo entregue ao detector, sem qualquer reprocessamento.
         diagnostics["mask"] = full_filtered_mask
-    return calculate_forward_line_assist(
-        full_filtered_mask, reference, tracker, now
-    )
+    reading = calculate_forward_line_assist(full_filtered_mask, reference, tracker, now)
+    if exit_control and exit_control.get("enabled"):
+        reading["exitAnalysisActive"] = True
+        reading["exitRunSequence"] = exit_control["runSequence"]
+        reading["exitCandidates"] = analyze_exit_candidates(full_filtered_mask, FORWARD_ASSIST_MIN_COMPONENT_AREA_PX)
+        reading["exitCameraObscured"] = measure_rescue_zone_frame_obstruction(frame)["obscured"]
+    return reading
 
 
 def process_forward_frame_for_mode(
@@ -675,6 +684,7 @@ def process_forward_frame_for_mode(
     tracker=None,
     now=None,
     diagnostics=None,
+    exit_control=None,
 ):
     """Suspende totalmente o Forward Assist enquanto o resgate usa o YOLO."""
 
@@ -702,6 +712,7 @@ def process_forward_frame_for_mode(
         tracker,
         now,
         diagnostics,
+        exit_control,
     )
 
 
@@ -778,6 +789,10 @@ def save_forward_line_status(reading, timestamp, sequence):
                 reading.get("parabolaNearForwardVisible", False)
             ),
         }
+        status.update({"exitAnalysisActive": reading.get("exitAnalysisActive", False),
+                       "exitRunSequence": reading.get("exitRunSequence", 0),
+                       "exitCameraObscured": reading.get("exitCameraObscured", False),
+                       "exitCandidates": reading.get("exitCandidates", {})})
         if status["forwardPathState"] not in ("PRESENT", "UNCERTAIN", "ABSENT"):
             raise ValueError("Estado frontal desconhecido")
         if status["forwardLinePresent"] != (status["forwardPathState"] == "PRESENT"):
@@ -1262,6 +1277,7 @@ def main():
                             flush=True,
                         )
                         forward_reacquisition_recorder = None
+                exit_control = read_exit_control()
                 reading = process_forward_frame_for_mode(
                     frame, camera_format,
                     ball_detection_active,
@@ -1269,9 +1285,10 @@ def main():
                     path_tracker,
                     line_timestamp,
                     forward_diagnostics,
+                    exit_control,
                 )
                 try:
-                    if ball_detection_active or rescue_zone_active:
+                    if ball_detection_active or rescue_zone_active or exit_control.get("enabled"):
                         obstacle_black = empty_obstacle_black(
                             frame.shape, line_sequence + 1
                         )
@@ -1480,6 +1497,8 @@ def main():
                         rescue_zone_results,
                         rescue_zone_input,
                     )
+                elif reading.get("exitAnalysisActive"):
+                    draw_exit_overlay(display_frame, reading, exit_control)
                 else:
                     draw_obstacle_black_overlay(display_frame, obstacle_black)
                     draw_parabola_black_overlay(display_frame, parabola_black)

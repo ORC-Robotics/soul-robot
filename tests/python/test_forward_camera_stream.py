@@ -37,10 +37,51 @@ FORWARD_SPEC = importlib.util.spec_from_file_location(
     FORWARD_SCRIPT_PATH,
 )
 forward_camera_stream = importlib.util.module_from_spec(FORWARD_SPEC)
-FORWARD_SPEC.loader.exec_module(forward_camera_stream)
+# Estes testes verificam captura, IPC e segmentação; a inferência YOLO tem sua
+# própria suíte. A importação não deve carregar pesos nem exigir ONNX Runtime.
+with mock.patch("ball_vision.pipeline.YoloBallDetector"):
+    FORWARD_SPEC.loader.exec_module(forward_camera_stream)
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+    def test_exit_evidence_is_serialized_before_atomic_replace(self):
+        frame = np.full((120, 160, 3), 150, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        with mock.patch.object(camera_line_frame, "create_filtered_line_mask", return_value=(mask, 0)):
+            reading = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", exit_control={"enabled": True, "runSequence": 8})
+        output = mock.mock_open()
+        with mock.patch("builtins.open", output), mock.patch.object(forward_camera_stream.os, "replace") as replace:
+            self.assertTrue(forward_camera_stream.save_forward_line_status(reading, 123.5, 7))
+            payload = json.loads("".join(call.args[0] for call in output().write.call_args_list))
+            self.assertTrue(payload["exitAnalysisActive"])
+            self.assertEqual(payload["exitCandidates"], reading["exitCandidates"])
+            self.assertEqual(payload["exitRunSequence"], 8)
+            self.assertTrue(payload["exitCameraObscured"])
+            replace.assert_called_once_with(forward_camera_stream.TEMP_FORWARD_LINE_STATUS_PATH,
+                                            forward_camera_stream.FORWARD_LINE_STATUS_PATH)
+
+    def test_exit_reuses_mask_and_existing_obstruction_detector(self):
+        frame = np.full((120, 160, 3), 150, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        with (
+            mock.patch.object(camera_line_frame, "create_filtered_line_mask", return_value=(mask, 0)) as segment,
+            mock.patch.object(forward_camera_stream, "measure_rescue_zone_frame_obstruction", wraps=forward_camera_stream.measure_rescue_zone_frame_obstruction) as obstruction,
+        ):
+            reading = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", exit_control={"enabled": True, "runSequence": 8})
+            segment.assert_called_once()
+            obstruction.assert_called_once_with(frame)
+            self.assertTrue(reading["exitAnalysisActive"])
+            self.assertEqual(reading["exitRunSequence"], 8)
+            self.assertTrue(reading["exitCameraObscured"])
+            self.assertEqual(len(reading["exitCandidates"]), 5)
+            self.assertEqual(segment.call_args.args[1]["line_roi_start_ratio"], 0.0)
+        normal = forward_camera_stream.process_forward_frame(frame, "RGB888")
+        self.assertNotIn("exitCandidates", normal)
+
     def test_candidate_direction_is_published_without_confirming_detection(self):
         pipeline = mock.Mock()
         pipeline.target_locked = False
@@ -630,6 +671,16 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 "obstacleBlackLargestComponent",
                 "obstacleBlackSequence",
                 "obstacleBlackVisible",
+                "parabolaLeftBlack",
+                "parabolaRightBlack",
+                "parabolaSequence",
+                "parabolaNearForwardBlack",
+                "parabolaNearForwardLargest",
+                "parabolaNearForwardVisible",
+                "exitAnalysisActive",
+                "exitRunSequence",
+                "exitCameraObscured",
+                "exitCandidates",
             },
         )
         self.assertEqual(status["forwardLineSequence"], 7)

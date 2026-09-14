@@ -1476,10 +1476,215 @@ void testRescueZoneTriangleGateFollowsInternalPhase()
 }
 }
 
-int main()
+// Valida a mesma transição de saída na missão principal e no seletor isolado.
+void testExitAcquisitionRestoresFollower()
+{
+    for (const auto selected : {AutonomousMission::MainMission, AutonomousMission::RescueExit})
+    {
+        RobotState state;
+        state.setAutonomousMission(selected);
+        state.startAutonomous();
+        auto telemetry = readyTelemetry();
+        telemetry.ultrasonicDistanceCm = 100.0;
+        MainMission main;
+        main.reset(true);
+        MissionController controller;
+        auto bottom = freshVision(GreenInterpretation::None);
+        bottom.silverClassifierFresh = bottom.exitLineUnbranched = bottom.normalSteeringValid = true;
+        bottom.lineControlSource = "fusion";
+        ForwardLineSnapshot forward;
+        forward.sourceFresh = forward.exitAnalysisActive = true;
+        forward.exitRunSequence = state.snapshot().autonomousRunSequence;
+        forward.exitCandidates[2] = {true, 0.0, 0.5, 2, 1, true};
+        bool acquired = false;
+        for (int frame = 1; frame <= 20; ++frame)
+        {
+            bottom.lineTimestamp = forward.timestamp = frame;
+            bottom.lineSequence = bottom.silverSequence = forward.sequence = frame;
+            if (selected == AutonomousMission::MainMission)
+                main.update(state, telemetry, true, bottom, forward);
+            else
+                controller.update(state, telemetry, true, bottom, forward, {});
+            const auto snapshot = state.snapshot();
+            acquired = acquired || snapshot.autonomousStatus.phase == "rescue_exit_acquired";
+            if (acquired && snapshot.autonomousStatus.phase == "line_following")
+            {
+                requireFollowingLine(snapshot, "Saída deve devolver o controle à CAM0");
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+        require(acquired, "A integração não confirmou a saída");
+        requireFollowingLine(state.snapshot(), "Percurso posterior ao resgate");
+        // Prata posterior não pode reabrir a sequência de entrada no resgate.
+        bottom.silverCandidateDetected = bottom.courseMarkerConfirmed = true;
+        bottom.courseMarker = CourseMarker::Gray;
+        if (selected == AutonomousMission::MainMission)
+            main.update(state, telemetry, true, bottom, forward);
+        else
+            controller.update(state, telemetry, true, bottom, forward, {});
+        requireFollowingLine(state.snapshot(), "Prata no percurso final");
+        require(!controller.requiresExitVision(state.snapshot()), "Gate da saída continuou aberto após aquisição");
+    }
+}
+
+void testExitFailureDiagnosticSurvivesStop()
+{
+    RobotState state;
+    state.setAutonomousMission(AutonomousMission::RescueExit);
+    state.startAutonomous();
+    state.stop();
+    AutonomousStatus failure;
+    failure.phase = "rescue_exit_failed";
+    failure.exitLastFailure = "Câmera indisponível";
+    state.updateAutonomousStatus(failure);
+    require(state.snapshot().autonomousStatus.exitLastFailure == failure.exitLastFailure,
+            "Stop apagou o diagnóstico de falha da saída");
+}
+
+void testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision()
+{
+    const auto directory = std::filesystem::temp_directory_path();
+    const auto frontPath = directory / "obr_exit_front_test.json";
+    const auto bottomPath = directory / "obr_exit_bottom_test.json";
+    CameraMonitor monitor(frontPath.string(), {}, {}, bottomPath.string());
+    const auto publish = [&](double silverAge, const std::string& angle, bool exitActive) {
+        const double now = std::chrono::duration<double>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        std::ofstream front(frontPath);
+        front << std::setprecision(17)
+              << "{\"forwardPathVersion\":2,\"forwardPathState\":\"ABSENT\","
+                 "\"forwardLinePresent\":false,\"forwardLineVisible\":false,"
+                 "\"forwardPathConfidence\":0,\"forwardLineSequence\":12,"
+                 "\"forwardLineTimestamp\":" << now
+              << ",\"exitAnalysisActive\":" << (exitActive ? "true" : "false")
+              << ",\"exitRunSequence\":7,\"exitCameraObscured\":true,\"exitCandidates\":{";
+        for (int sector = 0; sector < 5; ++sector)
+        {
+            if (sector) front << ',';
+            front << "\"sector" << sector << "\":{\"visible\":true,\"txDegrees\":" << angle
+                  << ",\"score\":0.2,\"depthBands\":2,\"nearestBand\":1,\"tapeValid\":false}";
+        }
+        front << "}}";
+        std::ofstream bottom(bottomPath);
+        bottom << std::setprecision(17)
+               << "{\"lineFollowerLeftPower\":0.7,\"lineFollowerRightPower\":0.7,"
+                  "\"lineNearDetected\":true,\"greenPathBlackValid\":false,\"greenCandidateCount\":0,"
+                  "\"greenConfirmed\":false,\"greenInterpretation\":\"SEM_DECISAO\","
+                  "\"lineSequence\":12,\"lineTimestamp\":" << now
+               << ",\"silverClassifierAvailable\":true,\"silverSequence\":10,\"silverTimestamp\":" << now - silverAge
+               << ",\"exitLineUnbranched\":true,\"silverCandidateDetected\":false,"
+                  "\"courseMarkerConfirmed\":false,\"courseMarker\":\"NONE\"}";
+    };
+    publish(0.0, "-12", true);
+    const auto front = monitor.forwardLineSnapshot();
+    require(front.sourceFresh && front.exitAnalysisActive && front.cameraObscured &&
+            front.exitRunSequence == 7 && front.exitCandidates[3].txDegrees == -12.0,
+            "Contrato frontal da saída não foi lido corretamente");
+    require(monitor.lineSnapshot().silverClassifierFresh && monitor.lineSnapshot().exitLineUnbranched,
+            "Contrato inferior da saída não foi lido corretamente");
+    publish(1.0, "-12", true);
+    require(monitor.lineSnapshot().sourceFresh && !monitor.lineSnapshot().silverClassifierFresh,
+            "Classificador vencido deve bloquear saída sem invalidar o segue-faixa");
+    for (const auto angle : {"null", "200", "NaN"})
+    {
+        publish(0.0, angle, true);
+        const auto invalid = monitor.forwardLineSnapshot();
+        require(invalid.sourceFresh && !invalid.exitAnalysisActive,
+                "Candidata inválida não pode autorizar a saída nem derrubar o contrato normal");
+    }
+    publish(0.0, "0", false);
+    require(!monitor.forwardLineSnapshot().exitAnalysisActive, "Gate fechado liberou candidata");
+    {
+        std::ifstream file(bottomPath);
+        std::ostringstream content;
+        content << file.rdbuf();
+        auto invalidDecision = content.str();
+        const std::string field = "\"silverCandidateDetected\":false";
+        invalidDecision.replace(invalidDecision.find(field), field.size(), "\"silverCandidateDetected\":null");
+        file.close();
+        std::ofstream invalid(bottomPath);
+        invalid << invalidDecision;
+    }
+    const auto invalidBottom = monitor.lineSnapshot();
+    require(invalidBottom.sourceFresh && !invalidBottom.silverClassifierFresh,
+            "Decisão inválida de prata foi interpretada como ausência de prata");
+    std::filesystem::remove(frontPath);
+    std::filesystem::remove(bottomPath);
+}
+
+// A conclusão bloqueia a execução atual; o START não rearma a mesma faixa.
+void testRedFinishStopsAndRearms()
+{
+    RobotState state;
+    CameraLineSnapshot camera;
+    camera.sourceFresh = camera.redValid = camera.redConfirmed = true;
+    camera.redRatio = 0.2;
+    camera.lineSequence = 1;
+    camera.lineTimestamp = 1.0;
+    state.startAutonomous();
+    state.driveAutonomous(0.3, 0.3);
+    require(state.observeRedFinish(camera), "Red must finish the run");
+    state.driveAutonomous(0.4, 0.4);
+    state.driveRawDiagnostic(0.4, 0.4);
+    state.updateAutonomousStatus({"running", "Residual action"});
+    state.enforceCommandTimeout(std::chrono::milliseconds(0));
+    state.stop();
+    require(state.snapshot().missionFinished && state.snapshot().left == 0.0 &&
+            state.snapshot().right == 0.0 && !state.snapshot().armServoRequested &&
+            state.snapshot().autonomousStatus.phase == "mission_finished",
+            "Residual commands must preserve completed stop");
+    require(!state.setAutonomousServoPose({}), "Completed run must reject servo pose");
+    require(state.tryStartAutonomous(), "Physical START must allow another run");
+    require(!state.snapshot().missionFinished, "START must clear completion");
+    camera.lineSequence++; camera.lineTimestamp += 0.02;
+    require(!state.observeRedFinish(camera), "Same red patch must remain disarmed");
+    state.driveAutonomous(0.2, 0.2);
+    require(state.snapshot().left > 0.0, "New run must be able to leave red");
+    camera.redConfirmed = false; camera.redClearConfirmed = true; camera.redRatio = 0.0;
+    camera.sourceFresh = false;
+    camera.lineSequence++; camera.lineTimestamp += 0.02;
+    state.observeRedFinish(camera);
+    camera.sourceFresh = true; camera.redConfirmed = true;
+    camera.redClearConfirmed = false; camera.redRatio = 0.2;
+    camera.lineSequence++; camera.lineTimestamp += 0.02;
+    require(!state.observeRedFinish(camera), "Stale absence cannot rearm");
+    camera.redConfirmed = false; camera.redClearConfirmed = true; camera.redRatio = 0.0;
+    camera.lineSequence++; camera.lineTimestamp += 0.02;
+    state.observeRedFinish(camera);
+    camera.redConfirmed = true; camera.redClearConfirmed = false; camera.redRatio = 0.2;
+    require(!state.observeRedFinish(camera), "Repeated IPC cannot confirm");
+    camera.lineSequence++; camera.lineTimestamp += 0.02;
+    require(state.observeRedFinish(camera), "New patch must finish after rearm");
+    state.setAutonomousMission(AutonomousMission::DriveDistance);
+    require(!state.snapshot().missionFinished && state.snapshot().mode == "stopped",
+            "Mission selection must clear completion without movement");
+    state.start();
+    state.drive(0.2, 0.2);
+    require(state.snapshot().left > 0.0, "Manual START must remain available");
+    state.emergencyStop();
+    require(!state.tryStartAutonomous() && state.snapshot().left == 0.0,
+            "Physical START must not clear emergency stop");
+}
+
+int main(int argc, char** argv)
 {
     try
     {
+        testRedFinishStopsAndRearms();
+        if (argc > 1 && std::string(argv[1]) == "--red-only")
+        {
+            std::cout << "red_finish_test: OK\n";
+            return 0;
+        }
+        testExitAcquisitionRestoresFollower();
+        testExitFailureDiagnosticSurvivesStop();
+        testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision();
+        if (argc > 1 && std::string(argv[1]) == "--exit-only")
+        {
+            std::cout << "rescue_exit_integration_test: OK\n";
+            return 0;
+        }
         testBallIpcCandidateDirectionIsOptionalAndCannotConfirmTarget();
         testNormalLineFollowerCommandsMotors();
         testNormalLineFollowerCompensatesRampPower();

@@ -73,7 +73,8 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
-    if (mission == AutonomousMission::RescueArea ||
+    if (mission == AutonomousMission::RescueExit ||
+        mission == AutonomousMission::RescueArea ||
         mission == AutonomousMission::RescueZoneDetection ||
         mission == AutonomousMission::RescueZoneSearch ||
         mission == AutonomousMission::RescueZoneTriangle ||
@@ -239,6 +240,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
     bool rescueZoneGateKnown =
         cameraMonitor.publishRescueZoneDetectionInput(
             false, false, false, 0.0);
+    auto lastExitInputTime = std::chrono::steady_clock::time_point{};
+    bool exitGateFailureLogged = false;
     bool rescueZoneGateEnabled = false;
     bool rescueZoneGateFailureLogged = false;
     auto lastRescueZoneInputTime =
@@ -293,6 +296,18 @@ int RobotApplication::run(const std::atomic<bool>& running)
         }
 
         const RobotSnapshot stateAtLoopStart = robotState.snapshot();
+        const auto exitInputTime = std::chrono::steady_clock::now();
+        if (exitInputTime - lastExitInputTime >=
+            std::chrono::milliseconds(config::kRescueExitControlIntervalMs))
+        {
+            const bool published = cameraMonitor.publishExitControl(
+                missionController.requiresExitVision(stateAtLoopStart),
+                stateAtLoopStart.autonomousRunSequence, stateAtLoopStart.autonomousStatus);
+            if (!published && !exitGateFailureLogged)
+                std::cerr << "Falha ao publicar controle da busca da saída\n";
+            exitGateFailureLogged = !published;
+            lastExitInputTime = exitInputTime;
+        }
         const bool rescueZoneDetectionRequired =
             missionController.requiresRescueZoneDetection(stateAtLoopStart);
         const bool rescueZoneFresh =
@@ -345,6 +360,13 @@ int RobotApplication::run(const std::atomic<bool>& running)
 
         const bool cameraReady = cameraMonitor.ready();
         const CameraLineSnapshot cameraLineSnapshot = cameraMonitor.lineSnapshot();
+        // A chegada interrompe a saída física antes de OLED, botões e missões.
+        const bool redFinishConfirmed = robotState.observeRedFinish(cameraLineSnapshot);
+        if (redFinishConfirmed)
+        {
+            motors.stop();
+            servos.apply(robotState.snapshot());
+        }
         const ForwardLineSnapshot forwardLineSnapshot =
             cameraMonitor.forwardLineSnapshot();
         const ForwardBallSnapshot forwardBallSnapshot =
@@ -354,6 +376,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
         const bool oledEventDisplayAvailable = esp32Telemetry.sensorFresh &&
                                                esp32Telemetry.oledOk &&
                                                esp32Telemetry.raspberrySystemReady;
+        oledEvents.updateRedFinish(redFinishConfirmed, robotState.snapshot().missionFinished,
+                                   oledEventDisplayAvailable);
         oledEvents.updateLineEvents(
             cameraLineSnapshot, oledEventDisplayAvailable);
         const auto cameraLineDiagnosticTime = std::chrono::steady_clock::now();
@@ -708,6 +732,7 @@ int RobotApplication::run(const std::atomic<bool>& running)
     servos.disableAll();
     cameraMonitor.publishRescueZoneDetectionInput(
         false, false, false, 0.0);
+    cameraMonitor.publishExitControl(false, 0, {});
     forwardBallVision.stop();
     esp32.sendSystemStarting();
     dashboard.stop();

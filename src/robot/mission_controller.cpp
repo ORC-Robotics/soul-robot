@@ -90,6 +90,14 @@ DriveDistanceCommand calculateDriveDistanceCommand(
 }
 }
 
+bool MissionController::requiresExitVision(const RobotSnapshot& snapshot) const
+{
+    return snapshot.mode == "autonomous" && !snapshot.emergencyStop &&
+        (snapshot.autonomousMission == AutonomousMission::MainMission ||
+         snapshot.autonomousMission == AutonomousMission::RescueExit) &&
+        mainMission_.requiresExitVision();
+}
+
 bool MissionController::requiresForwardBallDetection(
     const RobotSnapshot& snapshot) const
 {
@@ -166,7 +174,7 @@ void MissionController::update(
     const RescueZoneSnapshot& rescueZoneSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
-    if (snapshot.mode != "autonomous")
+    if (snapshot.missionFinished || snapshot.mode != "autonomous")
     {
         resetMissionState();
         activeAutonomousRunSequence_ = 0;
@@ -179,6 +187,7 @@ void MissionController::update(
         // interna de uma execução anterior depois de Stop seguido de Auto.
         resetMissionState();
         activeAutonomousRunSequence_ = snapshot.autonomousRunSequence;
+        if (snapshot.autonomousMission == AutonomousMission::RescueExit) mainMission_.reset(true);
     }
 
     switch (snapshot.autonomousMission)
@@ -283,6 +292,7 @@ void MissionController::update(
             robotState, ServoRoutineKind::FullSequenceTwo, snapshot,
             esp32Telemetry);
         return;
+    case AutonomousMission::RescueExit:
     case AutonomousMission::MainMission:
     default:
         testTurnController_.reset();

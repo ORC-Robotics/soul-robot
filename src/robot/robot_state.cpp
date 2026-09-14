@@ -1,6 +1,8 @@
 #include "obr/robot_state.h"
 
 #include "obr/config.h"
+#include "obr/camera_monitor.h"
+#include <iostream>
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +51,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "rescue_zone_approach";
     case AutonomousMission::RescueZoneTriangle:
         return "rescue_zone_triangle";
+    case AutonomousMission::RescueExit:
+        return "rescue_exit";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
@@ -90,9 +94,52 @@ RobotSnapshot RobotState::snapshot() const
     return snapshot;
 }
 
+bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.redValid = camera.sourceFresh && camera.redValid &&
+        std::isfinite(camera.redRatio) && camera.redRatio >= 0.0 && camera.redRatio <= 1.0;
+    if (!state_.redValid || !std::isfinite(camera.lineTimestamp) ||
+        camera.lineTimestamp <= lastRedTimestamp_ || camera.lineSequence == 0 ||
+        camera.lineSequence == lastRedSequence_)
+        return false;
+    lastRedTimestamp_ = camera.lineTimestamp;
+    lastRedSequence_ = camera.lineSequence;
+    state_.redRatio = camera.redRatio;
+    if (!redFinishArmed_)
+    {
+        if (camera.redClearConfirmed && !camera.redConfirmed &&
+            camera.redRatio < config::kRedFinishMinRatio)
+        {
+            redFinishArmed_ = true;
+            std::cout << "Red finish detection rearmed after leaving the marker\n";
+        }
+        return false;
+    }
+    if (!camera.redConfirmed || camera.redClearConfirmed ||
+        camera.redRatio < config::kRedFinishMinRatio || state_.missionFinished)
+        return false;
+
+    // A trava é independente do E-Stop e cancela a execução inteira sob o mutex.
+    // O STOP físico é enviado pelo runtime antes de qualquer alerta ou missão.
+    redFinishArmed_ = false;
+    state_.missionFinished = true;
+    state_.mode = state_.emergencyStop ? "emergency" : "stopped";
+    state_.left = state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.encoderSynchronizationAllowed = true;
+    state_.servoCalibrationActive = false;
+    disableServosLocked();
+    state_.autonomousStatus = {"mission_finished", "Chegada confirmada: Vermelho", 100.0};
+    lastCommand_ = std::chrono::steady_clock::now();
+    std::cout << "Mission finished: red marker confirmed; motors stopped\n";
+    return true;
+}
+
 void RobotState::start()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    state_.missionFinished = false;
     state_.emergencyStop = false;
     state_.mode = "manual";
     state_.left = 0.0;
@@ -110,6 +157,7 @@ void RobotState::start()
 void RobotState::startAutonomous()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    state_.missionFinished = false;
     state_.emergencyStop = false;
     state_.mode = "autonomous";
     state_.left = 0.0;
@@ -148,6 +196,7 @@ bool RobotState::tryStartAutonomous()
         return false;
     }
 
+    state_.missionFinished = false;
     state_.mode = "autonomous";
     state_.left = 0.0;
     state_.right = 0.0;
@@ -177,6 +226,7 @@ bool RobotState::tryStartAutonomous()
 void RobotState::setAutonomousMission(AutonomousMission mission)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    state_.missionFinished = false;
 
     // Trocar a missão sempre para o robô. Isso impede que uma nova estratégia
     // assuma os motores no meio de um movimento iniciado pela missão anterior.
@@ -217,6 +267,7 @@ bool RobotState::setDriveDistanceTargetCm(double targetCm)
 void RobotState::setRescueZoneTargetColor(RescueZoneTargetColor color)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    state_.missionFinished = false;
     // Alterar o alvo para o robô antes da próxima partida. Assim, uma manobra
     // iniciada para uma cor nunca continua usando a seleção nova no meio do giro.
     state_.mode = state_.emergencyStop ? "emergency" : "stopped";
@@ -255,6 +306,7 @@ bool RobotState::setRescueZoneLockedHeading(double headingDegrees)
 void RobotState::stop()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.missionFinished) return;
     state_.mode = "stopped";
     state_.left = 0.0;
     state_.right = 0.0;
@@ -286,7 +338,7 @@ void RobotState::drive(double left, double right)
     std::lock_guard<std::mutex> lock(mutex_);
     lastCommand_ = std::chrono::steady_clock::now();
 
-    if (state_.emergencyStop || state_.mode != "manual")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "manual")
     {
         // Comandos de movimento só são aceitos depois do Start.
         // Isso impede que o dashboard tire o robô do modo parado por acidente.
@@ -308,7 +360,7 @@ void RobotState::driveRawDiagnostic(double left, double right)
     std::lock_guard<std::mutex> lock(mutex_);
     lastCommand_ = std::chrono::steady_clock::now();
 
-    if (state_.emergencyStop || state_.mode != "manual")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "manual")
     {
         // O diagnóstico direto continua bloqueado fora do modo manual para não
         // permitir que o dashboard contorne a parada ou o E-Stop.
@@ -333,7 +385,7 @@ void RobotState::driveAutonomous(
     std::lock_guard<std::mutex> lock(mutex_);
     lastCommand_ = std::chrono::steady_clock::now();
 
-    if (state_.emergencyStop || state_.mode != "autonomous")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "autonomous")
     {
         // O controlador autônomo só pode mover o robô quando o modo autônomo
         // foi ativado explicitamente pelo dashboard.
@@ -354,7 +406,7 @@ bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.emergencyStop || state_.mode != "manual")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "manual")
     {
         return false;
     }
@@ -419,7 +471,7 @@ bool RobotState::setAutonomousServoPose(const ServoPose& pose)
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.emergencyStop || state_.mode != "autonomous")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "autonomous")
     {
         return false;
     }
@@ -454,7 +506,7 @@ bool RobotState::setAutonomousServoPose(const ServoPose& pose)
 bool RobotState::setAutonomousServoOutputEnabled(ServoId servo, bool enabled)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.emergencyStop || state_.mode != "autonomous")
+    if (state_.missionFinished || state_.emergencyStop || state_.mode != "autonomous")
     {
         return false;
     }
@@ -532,6 +584,7 @@ bool RobotState::beginServoCalibration()
     // Este modo mantém somente os motores em zero e permite que o controlador
     // dedicado envie um pulso bruto a um único servo. O botão Parar encerra o
     // modo ao chamar stop() e remove essa autorização imediatamente.
+    state_.missionFinished = false;
     state_.servoCalibrationActive = true;
     state_.mode = "servo_calibration";
     state_.left = 0.0;
@@ -567,6 +620,7 @@ void RobotState::endServoCalibration()
 void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.missionFinished) return;
 
     // Uma atualização atrasada do controlador autônomo não pode substituir no painel
     // um estado manual, parado ou de emergência que acabou de ser solicitado.
@@ -600,7 +654,8 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     const bool terminalRescueZoneTriangleStatus =
         status.phase == "rescue_zone_triangle_success" ||
         status.phase == "rescue_zone_triangle_failed";
-    const bool terminalMissionStatus = status.phase == "completed" ||
+    const bool terminalMissionStatus = status.phase == "rescue_exit_failed" ||
+                                       status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||
                                        status.phase == "turn_correction_failed" ||

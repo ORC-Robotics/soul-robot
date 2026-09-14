@@ -20,6 +20,7 @@
 class MissionController
 {
 public:
+    bool requiresExitVision(const RobotSnapshot& snapshot) const;
     bool requiresForwardBallDetection(const RobotSnapshot& snapshot) const;
     bool requiresRescueZoneDetection(const RobotSnapshot& snapshot) const;
     std::uint64_t forwardBallTargetSequence(

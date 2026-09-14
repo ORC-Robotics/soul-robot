@@ -9,11 +9,24 @@ OledEventNotifier::OledEventNotifier(Esp32Bridge& esp32)
 {
 }
 
+void OledEventNotifier::updateRedFinish(
+    bool confirmed, bool missionFinished, bool displayAvailable)
+{
+    redAlertPending_ = redAlertPending_ || confirmed;
+    redAlertPriority_ = missionFinished || redAlertPending_;
+    if (redAlertPending_ && displayAvailable &&
+        esp32_.sendOledLargeMessage("Vermelho", "CHEGADA", config::kOledNavigationAlertDurationMs))
+    {
+        redAlertPending_ = false;
+        std::cout << "OLED red finish alert\n";
+    }
+}
+
 void OledEventNotifier::updateLineEvents(
     const CameraLineSnapshot& cameraSnapshot,
     bool displayAvailable)
 {
-    if (!cameraSnapshot.sourceFresh)
+    if (redAlertPriority_ || !cameraSnapshot.sourceFresh)
     {
         // Uma leitura antiga não confirma nem rearma eventos visuais.
         return;
@@ -91,6 +104,7 @@ void OledEventNotifier::updateObstacleDetour(
     bool obstacleConfirmed,
     bool displayAvailable)
 {
+    if (redAlertPriority_) return;
     if (!obstacleConfirmed)
     {
         obstacleAlertLatched_ = false;

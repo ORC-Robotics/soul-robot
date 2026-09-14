@@ -8,6 +8,8 @@
 #include <mutex>
 #include <string>
 
+struct CameraLineSnapshot;
+
 enum class AutonomousMission
 {
     MainMission,
@@ -19,6 +21,7 @@ enum class AutonomousMission
     RescueZoneApproach,
     RescueZoneTriangle,
     RescueArea,
+    RescueExit,
     ObstacleAvoidance,
     ServoInitialize,
     ServoCapture,
@@ -110,6 +113,15 @@ struct AutonomousStatus
     std::string rescueZoneSearchState = "SEARCHING";
     std::string rescueZoneSearchCompletionReason;
     std::string rescueZoneTrianglePhase;
+    // Diagnóstico da busca: heading em graus e deslocamentos em centímetros.
+    int exitSector = -1;
+    double exitConfidence = 0.0;
+    double exitHeadingDegrees = 0.0;
+    int exitRound = 1;
+    std::string exitRejections;
+    std::string exitLastFailure;
+    double exitAdvanceCm = 0.0;
+    double exitReverseCm = 0.0;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.
@@ -118,6 +130,10 @@ struct RobotSnapshot
     std::string mode = "stopped";
     AutonomousMission autonomousMission = AutonomousMission::MainMission;
     bool emergencyStop = false;
+    // Conclusão da execução atual; somente uma ação explícita libera o estado.
+    bool missionFinished = false;
+    double redRatio = 0.0;
+    bool redValid = false;
     double left = 0.0;
     double right = 0.0;
     bool rawMotorCommand = false;
@@ -149,6 +165,8 @@ class RobotState
 public:
     RobotSnapshot snapshot() const;
 
+    // Consome evidência nova da CAM0 e retorna true somente ao encerrar a execução.
+    bool observeRedFinish(const CameraLineSnapshot& camera);
     void start();
     void startAutonomous();
     bool tryStartAutonomous();
@@ -179,6 +197,10 @@ public:
 private:
     mutable std::mutex mutex_;
     RobotSnapshot state_;
+    // O rearme visual sobrevive ao START, para permitir sair da mesma faixa.
+    bool redFinishArmed_ = true;
+    double lastRedTimestamp_ = 0.0;
+    std::uint64_t lastRedSequence_ = 0;
     std::chrono::steady_clock::time_point lastCommand_ = std::chrono::steady_clock::now();
     std::chrono::steady_clock::time_point lastManualServoCommand_ =
         std::chrono::steady_clock::now();
