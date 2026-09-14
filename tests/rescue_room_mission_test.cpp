@@ -436,7 +436,12 @@ void testCandidateWaitDoesNotResetSweepTimeout()
     auto output = updateMission(mission, candidate, {}, telemetry, pose, now);
     require(output.status.phase == "rescue_confirming_victim" && output.leftPower == 0.0,
             "Uma candidata sozinha nunca libera alinhamento ou coleta.");
-    now += std::chrono::milliseconds(3000);
+    now += std::chrono::milliseconds(100);
+    output = updateMission(mission, emptyFrame(sequence, 10.1), {}, telemetry, pose, now);
+    require(output.status.phase == "rescue_reacquiring_candidate" &&
+                output.leftPower > 0.0 && output.rightPower < 0.0,
+            "Um frame intercalado deve retornar ao último ponto visto da candidata.");
+    now += std::chrono::milliseconds(2900);
     output = updateMission(mission, candidate, {}, telemetry, pose, now);
     require(output.status.phase == "rescue_search_turn_timeout",
             "Candidata sem confirmação não pode reiniciar o orçamento.");
@@ -444,6 +449,117 @@ void testCandidateWaitDoesNotResetSweepTimeout()
     output = updateMission(mission, emptyFrame(sequence, 11.0), {}, telemetry, pose, now);
     require(output.leftPower == 0.0 && output.rightPower == 0.0,
             "IMU inválida deve bloquear a próxima tentativa.");
+}
+
+void testDelicateMotionUsesOneShortKick()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+
+    const auto frame = emptyFrame(sequence, 4.0);
+    RescueRoomOutput output = updateMission(
+        mission, frame, {}, telemetry, pose, now);
+    require(
+        std::abs(output.leftPower) == config::kRescueDelicateMotionKickPower &&
+            std::abs(output.rightPower) == config::kRescueDelicateMotionKickPower,
+        "O primeiro ciclo do giro deve usar o micropulso de 0,80.");
+
+    now += std::chrono::milliseconds(
+        config::kRescueDelicateMotionKickDurationMs);
+    output = updateMission(mission, frame, {}, telemetry, pose, now);
+    require(
+        std::abs(output.leftPower) == config::kRescueSearchTurnPower &&
+            std::abs(output.rightPower) == config::kRescueSearchTurnPower,
+        "Após o micropulso, o mesmo giro deve retomar a potência original.");
+}
+
+void testRequiredVictimSearchBecomesContinuousAfterInitialSweep()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    auto now = Clock::time_point{};
+    ServoPose pose;
+    const auto sequence = mission.ballTargetSequence(kRunSequence);
+    completeEntryAdvance(mission, telemetry, now, sequence);
+
+    double frameTimestamp = 10.0;
+    const double endpoints[] = {-45.0, 45.0, -75.0, 75.0};
+    for (const double endpoint : endpoints)
+    {
+        ForwardBallSnapshot frame = emptyFrame(sequence, frameTimestamp);
+        RescueRoomOutput output = updateMission(
+            mission, frame, {}, telemetry, pose, now);
+        require(
+            output.status.phase == "rescue_search_sweep",
+            "A varredura inicial deve comandar cada heading antes da busca "
+            "contínua.");
+
+        telemetry.yawZDeg = endpoint;
+        now += std::chrono::milliseconds(20);
+        updateMission(mission, frame, {}, telemetry, pose, now);
+        now += std::chrono::milliseconds(config::kTurn90SettleMs);
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(
+            output.status.phase == "rescue_search_endpoint" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Cada heading inicial deve terminar parado antes do próximo.");
+        frameTimestamp += 1.0;
+    }
+
+    RescueRoomOutput output = updateMission(
+        mission,
+        emptyFrame(sequence, frameTimestamp),
+        {}, telemetry, pose, now);
+    require(
+        output.status.phase == "rescue_required_alive_search_continuous" &&
+            output.leftPower == 0.0 && output.rightPower == 0.0,
+        "Ao terminar os headings, a busca obrigatória deve preparar o giro "
+        "contínuo.");
+
+    output = updateMission(
+        mission,
+        emptyFrame(sequence, frameTimestamp + 1.0),
+        {}, telemetry, pose, now);
+    require(
+        output.status.phase == "rescue_search_continuous" &&
+            output.leftPower < 0.0 && output.rightPower > 0.0,
+        "A busca pós-varredura deve girar continuamente para um único lado.");
+
+    telemetry.yawZDeg = -120.0;
+    now += std::chrono::seconds(10);
+    output = updateMission(
+        mission,
+        emptyFrame(sequence, frameTimestamp + 2.0),
+        {}, telemetry, pose, now);
+    require(
+        output.status.phase == "rescue_search_continuous" &&
+            output.leftPower < 0.0 && output.rightPower > 0.0,
+        "A busca contínua não deve inverter nem reutilizar os headings iniciais.");
+
+    now += std::chrono::milliseconds(
+        config::kRescueContinuousSearchStallTimeoutMs - 1);
+    telemetry.yawZDeg = -106.0;
+    output = updateMission(
+        mission,
+        emptyFrame(sequence, frameTimestamp + 3.0),
+        {}, telemetry, pose, now);
+    require(
+        output.leftPower < 0.0 && output.rightPower > 0.0,
+        "Antes de dois segundos dentro da faixa de 15 graus, a busca deve preservar o sentido.");
+
+    now += std::chrono::milliseconds(1);
+    output = updateMission(
+        mission,
+        emptyFrame(sequence, frameTimestamp + 4.0),
+        {}, telemetry, pose, now);
+    require(
+        output.status.phase == "rescue_search_continuous" &&
+            output.leftPower > 0.0 && output.rightPower < 0.0,
+        "Após dois segundos dentro de 15 graus, a busca deve inverter o giro.");
 }
 
 void testReverseFailureNeverLiftsVictim()
@@ -640,6 +756,12 @@ void testRunsRequiredVictimsInPriorityOrder()
             "Depois de armazenar a primeira prata, a segunda continua prioritária.");
 
     targetSequence = mission.ballTargetSequence(kRunSequence);
+    output = updateMission(
+        mission, emptyFrame(targetSequence, 19.0), {}, telemetry, servoPose, now);
+    require(output.status.phase == "rescue_search_continuous" &&
+                output.leftPower != 0.0 &&
+                output.rightPower == -output.leftPower,
+            "Depois da primeira coleta, a busca seguinte deve girar continuamente sem repetir headings.");
     ForwardBallSnapshot secondAlive = lockedSilver(targetSequence, 20.0);
     collectVictim(mission, secondAlive, telemetry, servoPose, now);
     output = completeDistanceStage(
@@ -708,7 +830,7 @@ void testRunsRequiredVictimsInPriorityOrder()
         telemetry,
         servoPose,
         now,
-        config::kRescueFinalDeadDepositReverseDistanceCm);
+        config::kRescueFinalDepositReverseDistanceCm);
     require(output.status.phase == "rescue_final_verification" &&
                 std::string(mission.ballTargetType()) == "silver_ball",
             "Depois das entregas obrigatórias, a checagem extra deve recomeçar pelas vivas.");
@@ -726,6 +848,15 @@ void testRunsRequiredVictimsInPriorityOrder()
     require(servoPose.armDegrees == config::kServoInitialAngleDegrees,
             "A vítima extra sem armazenamento deve usar elevação para depósito direto.");
     reachDepositZone(mission, extra, true, telemetry, servoPose, now);
+    output = completeServoStage(mission, extra, telemetry, servoPose, now,
+                                "rescue_deposit_completed");
+    require(output.status.action.find("ré de 40 cm") != std::string::npos,
+            "A vítima viva da verificação final não selecionou a ré de 40 cm.");
+    output = completeDistanceStage(mission, extra, telemetry, servoPose, now,
+                                   config::kRescueFinalDepositReverseDistanceCm);
+    require(output.status.phase == "rescue_final_verification" &&
+                std::string(mission.ballTargetType()) == "silver_ball",
+            "Após a ré final verde, a verificação deve recomeçar pelas vítimas vivas.");
 }
 
 void testBlocksWristWhenServoOutputIsLostAfterFirstCapture()
@@ -768,9 +899,11 @@ int main()
     {
         testWaitsForYoloBeforeEntryAdvance();
         testSweepRemembersEntryCandidateAndDefaultsLeft();
+        testDelicateMotionUsesOneShortKick();
         testSweepTimeoutsReverseExpandAndStop();
         testSweepUsesActualHeadingAfterPartialTurn();
         testCandidateWaitDoesNotResetSweepTimeout();
+        testRequiredVictimSearchBecomesContinuousAfterInitialSweep();
         testReverseFailureNeverLiftsVictim();
         testTransientEsp32LossPausesWithoutKillingMission();
         testPreparesOpenGripperBeforeApproach();

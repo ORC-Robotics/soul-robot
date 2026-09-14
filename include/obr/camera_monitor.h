@@ -102,10 +102,20 @@ struct ExitCandidate
     int depthBands = 0;
     int nearestBand = 0;
     bool tapeValid = false;
+    bool guidanceValid = false;
+    double guidanceAngleDegrees = 90.0;
+    double entryAngleDegrees = 90.0;
+    double entryOffsetNormalized = 0.0;
+    double entryDepthNormalized = 0.0;
+    double entryX = 0.0;
+    double entryY = 0.0;
+    bool blockedByColor = false;
+    bool grayNoiseLikely = false;
+    bool solidBlack = false;
 };
 
 // Trajetória frontal auxiliar. O Python inferior usa sua evidência para GAP;
-// nenhum consumidor deve convertê-la em comando de motor.
+// após a saída, a Raspberry pode usar somente o lado para recuperar a CAM0.
 struct ForwardLineSnapshot
 {
     // Contrato separado: apenas RescueExitMission usa estas evidências para aproximação.

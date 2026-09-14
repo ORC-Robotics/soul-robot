@@ -113,7 +113,7 @@ struct AutonomousStatus
     std::string rescueZoneSearchState = "SEARCHING";
     std::string rescueZoneSearchCompletionReason;
     std::string rescueZoneTrianglePhase;
-    // Diagnóstico da busca: heading em graus e deslocamentos em centímetros.
+    // Diagnóstico da busca e exploração: headings em graus e distâncias em centímetros.
     int exitSector = -1;
     double exitConfidence = 0.0;
     double exitHeadingDegrees = 0.0;
@@ -122,6 +122,10 @@ struct AutonomousStatus
     std::string exitLastFailure;
     double exitAdvanceCm = 0.0;
     double exitReverseCm = 0.0;
+    double exitExplorationHeadingDegrees = 0.0;
+    int exitExplorationAttempt = 0;
+    double exitExplorationAdvanceCm = 0.0;
+    std::string exitExplorationBlockReason;
 };
 
 // Cópia imutável do estado atual usada por outros módulos sem segurar o mutex.

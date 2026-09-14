@@ -330,7 +330,7 @@ void DashboardServer::handleClient(SocketHandle client)
     if (request.find("GET /forward-camera-stream.mjpg") == 0)
     {
         if (!proxyCameraStream(client, request, config::kForwardCameraStreamPort,
-                               config::kForwardCameraStreamPath, false))
+                               config::kForwardCameraStreamPath, true))
         {
             sendHttpNotFound(client);
         }
@@ -468,6 +468,11 @@ void DashboardServer::handleCommand(const std::string& message)
     else if (message.find("\"command\":\"auto\"") != std::string::npos)
     {
         endServoCalibrationIfActive();
+        if (!readyLed_.isReady())
+        {
+            std::cout << "Autonomous start ignored: system readiness is not stable\n";
+            return;
+        }
         esp32_.sendClearEmergencyStop();
         robotState_.startAutonomous();
         std::cout << "Autonomous start received\n";
@@ -1081,6 +1086,14 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"exitRound\":" << state.autonomousStatus.exitRound
          << ",\"exitAdvanceCm\":" << state.autonomousStatus.exitAdvanceCm
          << ",\"exitReverseCm\":" << state.autonomousStatus.exitReverseCm
+         << ",\"exitExplorationHeadingDegrees\":"
+         << state.autonomousStatus.exitExplorationHeadingDegrees
+         << ",\"exitExplorationAttempt\":"
+         << state.autonomousStatus.exitExplorationAttempt
+         << ",\"exitExplorationAdvanceCm\":"
+         << state.autonomousStatus.exitExplorationAdvanceCm
+         << ",\"exitExplorationBlockReason\":"
+         << std::quoted(state.autonomousStatus.exitExplorationBlockReason)
          << ",\"exitRejections\":" << std::quoted(state.autonomousStatus.exitRejections)
          << ",\"exitLastFailure\":" << std::quoted(state.autonomousStatus.exitLastFailure)
           << ",\"left\":" << state.left
@@ -1873,7 +1886,7 @@ std::string DashboardServer::dashboardHtml()
 
             <div class="mode-buttons operation-mode-buttons">
               <button id="manualButton" onclick="sendCommand('start')">Manual</button>
-              <button id="autoButton" onclick="startAutonomousMission()">Autônomo</button>
+              <button id="autoButton" onclick="startAutonomousMission()" disabled>Autônomo</button>
               <button id="calibrationButton" class="warning" onclick="sendCommand('calibrate')" aria-label="Calibrar sensores; mantenha o robô parado" title="Mantenha o robô parado durante a calibração" disabled>Calibrar</button>
               <button id="stopButton" class="danger operation-stop" onclick="sendCommand('stop')">Parar</button>
             </div>
@@ -2211,6 +2224,7 @@ std::string DashboardServer::dashboardHtml()
         role: "Resgate e percepção frontal",
         streamUrl: "/forward-camera-stream.mjpg",
         statusUrl: "/forward-camera-status.json",
+        displayMode: "real",
         status: "INICIANDO",
         enabled: true,
         active: false,
@@ -2719,6 +2733,8 @@ std::string DashboardServer::dashboardHtml()
       exitDetails.hidden = !exitActive;
       exitDetails.textContent = `Setor ${data.exitSector} · confiança ${formatNumber(data.exitConfidence, 3)} · heading ${formatNumber(data.exitHeadingDegrees, 1)}° · rodada ${data.exitRound}
 Avanço ${formatNumber(data.exitAdvanceCm, 1)} cm · ré ${formatNumber(data.exitReverseCm, 1)} cm
+Exploração ${data.exitExplorationAttempt || 0}/3 · heading ${formatNumber(data.exitExplorationHeadingDegrees, 1)}° · ${formatNumber(data.exitExplorationAdvanceCm, 1)} cm
+Bloqueio da exploração: ${data.exitExplorationBlockReason || "nenhum"}
 Rejeições: ${data.exitRejections || "nenhuma"}
 Última falha: ${data.exitLastFailure || "nenhuma"}`;
       const distanceMission = mission === "drive_distance";
@@ -2839,6 +2855,8 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       element("serialState").className = serialOpen ? "state-good" : "state-bad";
       element("readyLedState").textContent = data.systemReady === true ? "aceso · sistema pronto" : "apagado · aguardando";
       element("readyLedState").className = data.systemReady === true ? "state-good" : "state-warn";
+      element("autoButton").disabled =
+        data.systemReady !== true || calibrating || servoCalibrating || systemEmergency;
       element("raspberryCommandTimeout").textContent = `${formatNumber(data.raspberryCommandTimeoutMs, 0)} ms`;
       element("esp32MotorTimeout").textContent = `${formatNumber(data.esp32MotorCommandTimeoutMs, 0)} ms`;
 
@@ -3771,16 +3789,18 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       });
     }
 
-    function selectDownwardCameraMode(mode) {
+    function selectCameraMode(cameraId, mode) {
       if (!["real", "line"].includes(mode)) return;
-      const camera = cameras.downward;
+      const camera = cameras[cameraId];
+      if (!camera) return;
       camera.displayMode = mode;
       mountedCameraModeButtons.forEach(button => {
+        if (button.dataset.cameraId !== cameraId) return;
         const selected = button.dataset.cameraMode === mode;
         button.classList.toggle("active", selected);
         button.setAttribute("aria-pressed", selected ? "true" : "false");
       });
-      const image = mountedCameraImages.get("downward");
+      const image = mountedCameraImages.get(cameraId);
       const frame = image?.closest(".camera-frame");
       if (image && frame) connectCameraImage(camera, image, frame, cameraRenderGeneration);
     }
@@ -3789,7 +3809,7 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       const selector = document.createElement("div");
       selector.className = "camera-mode-selector";
       selector.setAttribute("role", "group");
-      selector.setAttribute("aria-label", "Modo visual da câmera inferior");
+      selector.setAttribute("aria-label", `Modo visual da ${camera.name.toLowerCase()}`);
       const modes = [
         ["real", "REAL"],
         ["line", "LINHA"]
@@ -3799,10 +3819,11 @@ Rejeições: ${data.exitRejections || "nenhuma"}
         const selected = camera.displayMode === mode;
         button.type = "button";
         button.className = `camera-mode-button${selected ? " active" : ""}`;
+        button.dataset.cameraId = camera.id;
         button.dataset.cameraMode = mode;
         button.textContent = label;
         button.setAttribute("aria-pressed", selected ? "true" : "false");
-        button.addEventListener("click", () => selectDownwardCameraMode(mode));
+        button.addEventListener("click", () => selectCameraMode(camera.id, mode));
         mountedCameraModeButtons.push(button);
         selector.appendChild(button);
       });
@@ -3996,7 +4017,7 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       const name = document.createElement("strong");
       name.textContent = camera.name;
       identity.appendChild(name);
-      if (camera.id === "downward") identity.appendChild(buildCameraModeSelector(camera));
+      identity.appendChild(buildCameraModeSelector(camera));
       const actions = document.createElement("div");
       actions.className = "camera-feed-actions";
       if (camera.id === "downward") actions.appendChild(buildLineCameraToggle());

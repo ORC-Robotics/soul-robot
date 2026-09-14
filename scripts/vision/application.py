@@ -85,6 +85,8 @@ from .normal_trajectory import (
     draw_normal_trajectory_overlay,
 )
 from .silver_detection import (
+    EXIT_SILVER_CONFIRMATION_FRAMES,
+    SILVER_CONFIRMATION_FRAMES,
     SilverShadowMonitor,
     empty_silver_shadow_status,
 )
@@ -409,6 +411,11 @@ class DownwardCameraApplication:
                         raw_frame,
                         line_sequence,
                         line_timestamp,
+                        required_confirmation_frames=(
+                            EXIT_SILVER_CONFIRMATION_FRAMES
+                            if exit_control["enabled"]
+                            else SILVER_CONFIRMATION_FRAMES
+                        ),
                     )
                 green_raw_interpretation = green_interpretation["interpretation"]
                 green_tracker_result = green_tracker.update(

@@ -171,6 +171,7 @@ bool motorDriverAwake = false;
 uint8_t mpuAddress = 0;
 uint8_t oledAddress = 0;
 bool startButtonPressed = false;
+bool rawStartButtonPressed = false;
 bool calibrationActive = false;
 bool calibrationStopLatched = false;
 bool servoCalibrationActive = false;
@@ -197,6 +198,7 @@ uint32_t lastEncoderRateMs = 0;
 uint32_t lastUltrasonicTriggerMs = 0;
 uint32_t lastButtonChangeMs = 0;
 uint32_t startButtonPressedSinceMs = 0;
+uint32_t lastStartButtonShortEventMs = 0;
 uint32_t lastMpuIntegrationUs = 0;
 uint32_t lastOledRefreshMs = 0;
 bool startButtonLongPressHandled = false;
@@ -1710,13 +1712,20 @@ void updateEncoderRatesIfDue()
 
 void updateStartButton()
 {
-  constexpr uint32_t kDebounceMs = 30;
   const uint32_t nowMs = millis();
-  const bool rawPressed = digitalRead(kStartButtonPin) == LOW;
-  if (rawPressed != startButtonPressed && nowMs - lastButtonChangeMs >= kDebounceMs)
+  const bool sampledPressed = digitalRead(kStartButtonPin) == LOW;
+  if (sampledPressed != rawStartButtonPressed)
   {
-    startButtonPressed = rawPressed;
+    // A janela começa novamente a cada oscilação elétrica. O estado estável
+    // só muda quando a leitura permanece igual durante todo o debounce.
+    rawStartButtonPressed = sampledPressed;
     lastButtonChangeMs = nowMs;
+  }
+
+  if (rawStartButtonPressed != startButtonPressed &&
+      nowMs - lastButtonChangeMs >= kStartButtonDebounceMs)
+  {
+    startButtonPressed = rawStartButtonPressed;
     if (startButtonPressed)
     {
       startButtonPressedSinceMs = nowMs;
@@ -1726,11 +1735,14 @@ void updateStartButton()
     {
       const uint32_t pressDurationMs = nowMs - startButtonPressedSinceMs;
       if (!startButtonLongPressHandled && startButtonPressedSinceMs != 0 &&
-          pressDurationMs >= kStartButtonMinimumPressMs)
+          pressDurationMs >= kStartButtonMinimumPressMs &&
+          (lastStartButtonShortEventMs == 0 ||
+           nowMs - lastStartButtonShortEventMs >= kStartButtonDuplicateGuardMs))
       {
         // O evento só é emitido ao soltar para distinguir um toque curto da
         // pressão de 5 segundos reservada à calibração dos sensores.
         Serial.println("START_BUTTON,SHORT");
+        lastStartButtonShortEventMs = nowMs;
       }
       startButtonPressedSinceMs = 0;
       startButtonLongPressHandled = false;
@@ -2588,6 +2600,10 @@ void setup()
   loadServoCalibrations();
 
   pinMode(kStartButtonPin, INPUT_PULLUP);
+  rawStartButtonPressed = digitalRead(kStartButtonPin) == LOW;
+  startButtonPressed = rawStartButtonPressed;
+  lastButtonChangeMs = millis();
+  startButtonPressedSinceMs = startButtonPressed ? lastButtonChangeMs : 0;
   setupEncoders();
   setupUltrasonic();
 

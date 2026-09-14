@@ -92,10 +92,23 @@ DriveDistanceCommand calculateDriveDistanceCommand(
 
 bool MissionController::requiresExitVision(const RobotSnapshot& snapshot) const
 {
-    return snapshot.mode == "autonomous" && !snapshot.emergencyStop &&
-        (snapshot.autonomousMission == AutonomousMission::MainMission ||
-         snapshot.autonomousMission == AutonomousMission::RescueExit) &&
-        mainMission_.requiresExitVision();
+    if (snapshot.emergencyStop)
+    {
+        return false;
+    }
+
+    // No modo Manual, a missão isolada mantém apenas o diagnóstico visual
+    // da saída. Este gate não concede autoridade aos motores: o movimento
+    // continua dependendo exclusivamente dos comandos manuais do RobotState.
+    if (snapshot.mode == "manual")
+    {
+        return snapshot.autonomousMission == AutonomousMission::RescueExit;
+    }
+
+    return snapshot.mode == "autonomous" &&
+           (snapshot.autonomousMission == AutonomousMission::MainMission ||
+            snapshot.autonomousMission == AutonomousMission::RescueExit) &&
+           mainMission_.requiresExitVision();
 }
 
 bool MissionController::requiresForwardBallDetection(
@@ -131,8 +144,12 @@ bool MissionController::requiresRescueZoneDetection(
                rescueZoneTriangleMission_.requiresRescueZoneDetection();
     }
     if (snapshot.mode == "autonomous" &&
-        snapshot.autonomousMission == AutonomousMission::MainMission)
+        (snapshot.autonomousMission == AutonomousMission::MainMission ||
+         snapshot.autonomousMission == AutonomousMission::RescueExit))
     {
+        // O modo isolado de saída reutiliza a mesma RescueExitMission da missão
+        // principal. Sem este gate, a geometria aguarda os triângulos por dois
+        // segundos e cai na varredura antiga em setores intermediários.
         return mainMission_.requiresRescueZoneDetection();
     }
     return snapshot.autonomousMission ==

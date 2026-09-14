@@ -511,7 +511,7 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             const double silverAgeMs = (currentUnixSeconds() - silverTimestamp) * 1000.0;
             candidate.silverClassifierFresh = candidate.silverSequence > 0 &&
                 std::isfinite(silverAgeMs) && silverAgeMs >= 0.0 &&
-                silverAgeMs <= config::kCameraLineStatusTimeoutMs;
+                silverAgeMs <= config::kSilverClassifierStatusTimeoutMs;
         }
         tryGetJsonBool(json, "exitLineUnbranched", candidate.exitLineUnbranched);
         std::string greenInterpretation;
@@ -752,6 +752,7 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
         for (std::size_t index = 0; exitValid && index < candidate.exitCandidates.size(); ++index)
         {
             std::string sector;
+            std::string entryPoint;
             std::uint64_t bands = 0, nearest = 0;
             auto& observation = candidate.exitCandidates[index];
             exitValid = tryGetJsonObject(exitCandidates, "sector" + std::to_string(index), sector) &&
@@ -764,7 +765,36 @@ ForwardLineSnapshot CameraMonitor::forwardLineSnapshot()
                 tryGetJsonUnsignedInteger(sector, "depthBands", bands) && bands <= 3 &&
                 tryGetJsonUnsignedInteger(sector, "nearestBand", nearest) && nearest <= 2 &&
                 tryGetJsonBool(sector, "tapeValid", observation.tapeValid) &&
-                (!observation.visible || (bands > 0 && observation.score > 0.0));
+                tryGetJsonBool(sector, "guidanceValid", observation.guidanceValid) &&
+                tryGetJsonBool(sector, "blockedByColor", observation.blockedByColor) &&
+                tryGetJsonBool(sector, "grayNoiseLikely", observation.grayNoiseLikely) &&
+                tryGetJsonBool(sector, "solidBlack", observation.solidBlack) &&
+                (!observation.blockedByColor || !observation.visible) &&
+                (!observation.grayNoiseLikely || !observation.guidanceValid) &&
+                tryGetJsonNumber(sector, "guidanceAngleDegrees", observation.guidanceAngleDegrees) &&
+                std::isfinite(observation.guidanceAngleDegrees) &&
+                observation.guidanceAngleDegrees >= 0.0 &&
+                observation.guidanceAngleDegrees <= 180.0 &&
+                tryGetJsonNumber(sector, "entryAngleDegrees", observation.entryAngleDegrees) &&
+                std::isfinite(observation.entryAngleDegrees) &&
+                observation.entryAngleDegrees >= 0.0 &&
+                observation.entryAngleDegrees <= 180.0 &&
+                tryGetJsonNumber(sector, "entryOffsetNormalized", observation.entryOffsetNormalized) &&
+                std::isfinite(observation.entryOffsetNormalized) &&
+                observation.entryOffsetNormalized >= -1.0 &&
+                observation.entryOffsetNormalized <= 1.0 &&
+                tryGetJsonNumber(sector, "entryDepthNormalized", observation.entryDepthNormalized) &&
+                std::isfinite(observation.entryDepthNormalized) &&
+                observation.entryDepthNormalized >= 0.0 &&
+                observation.entryDepthNormalized <= 1.0 &&
+                (!observation.visible ||
+                 (tryGetJsonObject(sector, "entryPoint", entryPoint) &&
+                  tryGetJsonNumber(entryPoint, "x", observation.entryX) &&
+                  tryGetJsonNumber(entryPoint, "y", observation.entryY) &&
+                  std::isfinite(observation.entryX) && observation.entryX >= 0.0 &&
+                  std::isfinite(observation.entryY) && observation.entryY >= 0.0)) &&
+                (!observation.visible || (bands > 0 && observation.score > 0.0 &&
+                                           observation.guidanceValid));
             observation.depthBands = static_cast<int>(bands);
             observation.nearestBand = static_cast<int>(nearest);
         }
@@ -1182,6 +1212,11 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
     (void)status;
     return true;
 #else
+    // O protocolo visual exige um identificador positivo. Antes da primeira
+    // execução autônoma, o modo Manual usa 1 somente para manter o overlay;
+    // esse valor não concede autoridade de movimento nem altera o RobotState.
+    const std::uint64_t visionRunSequence =
+        enabled && runSequence == 0 ? 1 : runSequence;
     const std::string temporary = std::string(config::kRescueExitControlPath) + ".tmp";
     {
         std::ofstream file(temporary, std::ios::trunc);
@@ -1191,7 +1226,7 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
              << ",\"redMinRatio\":" << config::kRedFinishMinRatio
              << ",\"redConfirmFrames\":" << config::kRedFinishConfirmFrames
              << ",\"redMaxFrameGapMs\":" << config::kCameraLineStatusTimeoutMs
-             << ",\"runSequence\":" << runSequence
+             << ",\"runSequence\":" << visionRunSequence
              << ",\"timestamp\":" << currentUnixSeconds()
              << ",\"phase\":" << std::quoted(status.phase)
              << ",\"sector\":" << status.exitSector
@@ -1200,6 +1235,11 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
              << ",\"round\":" << status.exitRound
              << ",\"advanceCm\":" << status.exitAdvanceCm
              << ",\"reverseCm\":" << status.exitReverseCm
+             << ",\"explorationHeading\":" << status.exitExplorationHeadingDegrees
+             << ",\"explorationAttempt\":" << status.exitExplorationAttempt
+             << ",\"explorationAdvanceCm\":" << status.exitExplorationAdvanceCm
+             << ",\"explorationBlockReason\":"
+             << std::quoted(status.exitExplorationBlockReason)
              << ",\"rejections\":" << std::quoted(status.exitRejections)
              << ",\"lastFailure\":" << std::quoted(status.exitLastFailure) << '}';
         file.close();

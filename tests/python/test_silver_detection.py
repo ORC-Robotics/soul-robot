@@ -10,6 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from silver_classifier import SilverClassification
 from vision.silver_detection import (
+    EXIT_SILVER_CONFIRMATION_FRAMES,
     SILVER_CONFIRMATION_FPS,
     SILVER_SEARCH_FPS,
     SilverLineDetector,
@@ -55,25 +56,33 @@ def classification(black, other, silver):
 
 class SilverLineDetectorTest(unittest.TestCase):
     def test_detects_silver_with_confidence_and_margin(self):
-        detector = SilverLineDetector(FixedClassifier(classification(0.05, 0.10, 0.85)))
+        detector = SilverLineDetector(FixedClassifier(classification(0.01, 0.02, 0.97)))
 
         result = detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
 
         self.assertTrue(result.detected)
         self.assertEqual(result.label, "silver")
-        self.assertAlmostEqual(result.silver_margin, 0.75)
+        self.assertAlmostEqual(result.silver_margin, 0.95)
 
     def test_rejects_silver_below_minimum_confidence(self):
-        detector = SilverLineDetector(FixedClassifier(classification(0.20, 0.21, 0.59)))
+        detector = SilverLineDetector(FixedClassifier(classification(0.05, 0.04, 0.91)))
 
         result = detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
 
         self.assertFalse(result.detected)
         self.assertEqual(result.label, "silver")
 
+    def test_accepts_silver_at_minimum_confidence_boundary(self):
+        detector = SilverLineDetector(FixedClassifier(classification(0.05, 0.03, 0.92)))
+
+        result = detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
+
+        self.assertTrue(result.detected)
+
     def test_rejects_silver_without_margin_over_other(self):
         detector = SilverLineDetector(
             FixedClassifier(classification(0.02, 0.14, 0.84)),
+            minimum_silver_confidence=0.70,
             minimum_silver_margin=0.75,
         )
 
@@ -110,7 +119,7 @@ class SilverLineDetectorTest(unittest.TestCase):
 
     def test_shadow_publishes_diagnostics_without_changing_detection(self):
         detector = SilverLineDetector(
-            FixedClassifier(classification(0.05, 0.10, 0.85))
+            FixedClassifier(classification(0.01, 0.02, 0.97))
         )
         monitor = SilverShadowMonitor(detector)
 
@@ -124,8 +133,8 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertTrue(status["silverShadowAvailable"])
         self.assertTrue(status["silverShadowDetected"])
         self.assertEqual(status["silverShadowLabel"], "silver")
-        self.assertAlmostEqual(status["silverShadowProbability"], 0.85)
-        self.assertAlmostEqual(status["silverShadowMargin"], 0.75)
+        self.assertAlmostEqual(status["silverShadowProbability"], 0.97)
+        self.assertAlmostEqual(status["silverShadowMargin"], 0.95)
         self.assertEqual(status["silverShadowSequence"], 7)
         self.assertEqual(status["silverShadowTimestamp"], 123.5)
 
@@ -145,7 +154,7 @@ class SilverLineDetectorTest(unittest.TestCase):
 
     def test_shadow_uses_30_fps_cadence_and_confirms_four_positive_frames(self):
         positive_detector = SilverLineDetector(
-            FixedClassifier(classification(0.05, 0.10, 0.85))
+            FixedClassifier(classification(0.01, 0.02, 0.97))
         )
         positive_result = positive_detector.detect(
             np.zeros((10, 20, 3), dtype=np.uint8)
@@ -174,7 +183,7 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertEqual(detector.calls, 4)
 
     def test_shadow_negative_resets_confirmation_and_search_cadence(self):
-        fixed = FixedClassifier(classification(0.05, 0.10, 0.85))
+        fixed = FixedClassifier(classification(0.01, 0.02, 0.97))
         silver_detector = SilverLineDetector(fixed)
         positive = silver_detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
         fixed.classification = classification(0.80, 0.05, 0.15)
@@ -190,6 +199,36 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertFalse(reset["courseMarkerConfirmed"])
         self.assertEqual(reset["courseMarker"], "NONE")
         self.assertEqual(reset["silverInferenceTargetFps"], SILVER_SEARCH_FPS)
+
+    def test_exit_mode_confirms_silver_in_two_new_frames(self):
+        positive_detector = SilverLineDetector(
+            FixedClassifier(classification(0.01, 0.02, 0.97))
+        )
+        positive = positive_detector.detect(
+            np.zeros((10, 20, 3), dtype=np.uint8)
+        )
+        monitor = SilverShadowMonitor(SequenceDetector([positive, positive]))
+        frame = np.zeros((10, 20, 3), dtype=np.uint8)
+
+        with mock.patch("builtins.print"):
+            first = monitor.process(
+                frame,
+                1,
+                10.0,
+                monotonic_time=0.0,
+                required_confirmation_frames=EXIT_SILVER_CONFIRMATION_FRAMES,
+            )
+            confirmed = monitor.process(
+                frame,
+                2,
+                10.04,
+                monotonic_time=0.04,
+                required_confirmation_frames=EXIT_SILVER_CONFIRMATION_FRAMES,
+            )
+
+        self.assertFalse(first["courseMarkerConfirmed"])
+        self.assertTrue(confirmed["courseMarkerConfirmed"])
+        self.assertEqual(confirmed["silverConfirmationRequiredFrames"], 2)
 
 
 if __name__ == "__main__":

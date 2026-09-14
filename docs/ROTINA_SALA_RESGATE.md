@@ -14,9 +14,17 @@ permanece parado.
    `45°` com até 3 segundos por tentativa e depois em `75°` com até 8 segundos
    por tentativa. Cada limite usa o heading real, seguido de parada e frame novo.
    Um timeout zera os motores antes de trocar de tentativa; quatro timeouts
-   encerram a busca com `rescue_search_blocked`.
-4. Ao confirmar uma vítima, cancela a varredura e faz primeiro o alinhamento
-   visual, ainda sem movimentar os servos.
+   encerram a busca com `rescue_search_blocked`. Se os quatro headings forem
+   concluídos sem encontrar uma vítima obrigatória, o robô continua girando no
+   primeiro sentido escolhido até encontrar uma candidata, sem repetir os ângulos.
+   Durante essa busca contínua, se o heading permanecer dentro de uma faixa de
+   `15°` por 2 segundos apesar do comando de giro, o robô considera que pode
+   estar preso em uma parede e inverte imediatamente o sentido da busca.
+4. Ao observar uma candidata, interrompe a varredura para estabilizar os frames
+   de confirmação. Se ela piscar, gira de volta ao último heading visto em vez
+   de continuar a varredura genérica. Ao confirmar uma vítima, faz o
+   alinhamento visual; a aproximação pode começar dentro de ±5° e continua
+   corrigindo a direção enquanto persegue o alvo, ainda sem movimentar os servos.
 5. Depois do alinhamento, leva braço/pulso/garra à posição de coleta com a garra
    aberta e só então libera a aproximação pelo YOLO.
 6. Depois que o YOLO conclui a aproximação, executa o fechamento e a retenção
@@ -32,21 +40,31 @@ permanece parado.
    Ao atingir 6 cm ou detectar obstrução/cobertura da câmera, executa avanço
    obrigatório por 1.500 ms a 0,75 antes de liberar o depósito. Pausas por perda
    da ESP32 não consomem esse tempo; falhas de sensores e timeout global bloqueiam
-   o depósito. O tempo não comprova distância física percorrida.
+   o depósito. Se a zona desaparecer durante o alinhamento, o robô retorna
+   automaticamente à busca giratória. O tempo não comprova distância física
+   percorrida.
 10. Executa o trecho já validado que entrega a vítima carregada, retira a vítima
    armazenada e também a entrega no triângulo verde.
-11. Recua 20 cm e passa a solicitar exclusivamente `black_ball`.
+11. Recua 20 cm e passa a solicitar exclusivamente `black_ball`. Essa busca
+    obrigatória começa diretamente como giro contínuo para um único lado, sem
+    executar antes os headings alternados de 45° e 75°.
 12. Coleta a vítima morta, recua 15 cm, encontra o triângulo vermelho, entrega e
     recua 40 cm antes da verificação final.
 13. Faz uma verificação final completa por vítimas vivas e depois mortas. Uma
     vítima extra encontrada é coletada e entregue na cor correspondente; após a
-    entrega, a verificação recomeça pelas vivas.
+    entrega, recua 40 cm tanto no triângulo verde quanto no vermelho e a
+    verificação recomeça pelas vivas.
 14. Quando as duas varreduras finais terminam sem alvo, zera a tração e publica
     `rescue_room_completed`.
 
+Durante essa rotina, cada novo movimento não reto recebe um único micropulso de
+0,80 por 80 ms para vencer a inércia. Depois desse intervalo, o comando retorna
+automaticamente às potências originais da etapa. Retas, paradas, segue-linha e
+busca da saída não recebem esse reforço.
+
 Uma vítima obrigatória ausente após as duas amplitudes não é tratada como missão
-concluída: o robô reinicia a varredura para o mesmo tipo. Isso evita declarar
-sucesso ou encerrar a missão por uma única detecção perdida.
+concluída: o robô inicia uma busca contínua para o mesmo tipo. Isso evita declarar
+sucesso, repetir os mesmos headings ou encerrar a missão por uma detecção perdida.
 
 ## Integração dos servos
 
@@ -104,7 +122,7 @@ Todos os valores ajustáveis ficam em `include/obr/config.h`:
 - `kWristServoMaximumSpeedDegreesPerSecond` e tempos `kServoRoutine*StepMs`;
 - `kRescuePostCollectionReverseDistanceCm` e potência correspondente;
 - `kRescuePostDepositReverseDistanceCm` e potência correspondente;
-- `kRescueFinalDeadDepositReverseDistanceCm`, usado antes da busca final;
+- `kRescueFinalDepositReverseDistanceCm`, usado antes e durante a busca final;
 - timeouts e tolerâncias com prefixo `kRescueDistance`.
 
 ## Checklist de teste físico

@@ -266,6 +266,12 @@ int RobotApplication::run(const std::atomic<bool>& running)
     bool previousStartButtonPressed = false;
     bool consumeNextStartButtonShortPress = false;
     bool startupComplete = false;
+    bool readinessTimingActive = false;
+    auto readinessStableSince = std::chrono::steady_clock::now();
+    AutonomousMission readinessMission = AutonomousMission::MainMission;
+    auto lastAcceptedStartButtonShortTime =
+        std::chrono::steady_clock::now() -
+        std::chrono::milliseconds(config::kStartButtonDuplicateGuardMs);
     bool systemDisplayStatusSent = false;
     bool lastSystemDisplayReady = false;
     auto lastSystemDisplayStatusTime = std::chrono::steady_clock::now();
@@ -433,13 +439,24 @@ int RobotApplication::run(const std::atomic<bool>& running)
         if (esp32Telemetry.startButtonPressSequence != handledStartButtonPressSequence)
         {
             handledStartButtonPressSequence = esp32Telemetry.startButtonPressSequence;
-            if (consumeNextStartButtonShortPress)
+            const auto startButtonShortTime = std::chrono::steady_clock::now();
+            const bool duplicateShortEvent =
+                startButtonShortTime - lastAcceptedStartButtonShortTime <
+                std::chrono::milliseconds(config::kStartButtonDuplicateGuardMs);
+            if (duplicateShortEvent)
             {
+                std::cout << "Physical Start duplicate short event ignored: sequence="
+                          << handledStartButtonPressSequence << "\n";
+            }
+            else if (consumeNextStartButtonShortPress)
+            {
+                lastAcceptedStartButtonShortTime = startButtonShortTime;
                 consumeNextStartButtonShortPress = false;
                 std::cout << "Physical Start short event consumed after stopping the robot\n";
             }
             else
             {
+                lastAcceptedStartButtonShortTime = startButtonShortTime;
                 const RobotSnapshot stateBeforeStart = robotState.snapshot();
                 if ((stateBeforeStart.mode == "manual" ||
                      stateBeforeStart.mode == "autonomous") &&
@@ -459,7 +476,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
                         cameraLineSnapshot);
                     const bool startAllowed = stateBeforeStart.mode == "stopped" &&
                                               !stateBeforeStart.emergencyStop &&
-                                              esp32Telemetry.readyForOperation() && missionReady;
+                                              esp32Telemetry.readyForOperation() && missionReady &&
+                                              readyLed.isReady();
                     const bool clearSent = startAllowed && esp32.sendClearEmergencyStop();
                     const bool started = clearSent && robotState.tryStartAutonomous();
                     if (started)
@@ -525,9 +543,28 @@ int RobotApplication::run(const std::atomic<bool>& running)
                       esp32Telemetry,
                       cameraReady,
                       cameraLineSnapshot);
-        const bool systemReady = esp32Telemetry.readyForOperation() &&
-                                 !robotSnapshot.emergencyStop &&
-                                 selectedPerceptionReady;
+        const bool instantaneousSystemReady =
+            esp32Telemetry.readyForOperation() &&
+            !robotSnapshot.emergencyStop && selectedPerceptionReady;
+        const auto readinessTime = std::chrono::steady_clock::now();
+        if (robotSnapshot.autonomousMission != readinessMission)
+        {
+            readinessMission = robotSnapshot.autonomousMission;
+            readinessTimingActive = false;
+        }
+        if (!instantaneousSystemReady)
+        {
+            readinessTimingActive = false;
+        }
+        else if (!readinessTimingActive)
+        {
+            readinessTimingActive = true;
+            readinessStableSince = readinessTime;
+        }
+        const bool systemReady =
+            instantaneousSystemReady && readinessTimingActive &&
+            readinessTime - readinessStableSince >=
+                std::chrono::milliseconds(config::kSystemReadyStableMs);
         readyLed.setReady(systemReady);
 
         // A conclusão do boot fica travada até o processo reiniciar. Uma falha

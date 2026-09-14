@@ -8,7 +8,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import camera_line_frame
 import cv2  # type: ignore
@@ -36,7 +36,15 @@ except Exception as error:
 
 from ball_vision import BallVisionPipeline, BallVisionResult, build_esp32_payload
 from vision.forward_path import ForwardPathTracker
-from vision.rescue_exit import analyze_exit_candidates, read_exit_control, draw_exit_overlay
+from vision.rescue_exit import (
+    analyze_exit_candidates,
+    create_exit_black_mask,
+    create_exit_display_frame,
+    draw_exit_overlay,
+    empty_exit_candidates,
+    read_exit_control,
+    remove_rescue_zones_from_black,
+)
 from vision.gap_validation import read_json_snapshot
 from vision.obstacle_black import (
     analyze_obstacle_black,
@@ -79,11 +87,14 @@ TEMP_RESCUE_ZONE_STATUS_PATH = "/dev/shm/obr_rescue_zone_status.tmp.json"
 # ficam indisponíveis mesmo se o serviço encerrar sem escrever o valor zero.
 RESCUE_ZONE_INPUT_TIMEOUT_SECONDS = 0.30
 
-# Um frame dominado pela zona, muito escuro ou praticamente uniforme indica
-# que a CAM1 encostou na área e já não fornece orientação visual útil.
+# A sala de resgate mantém a proteção original para aproximação da zona.
+# Só a saída distingue piso claro uniforme de lente coberta.
 RESCUE_ZONE_OBSCURED_DARK_VALUE = 60
 RESCUE_ZONE_OBSCURED_DARK_FRACTION = 0.70
 RESCUE_ZONE_OBSCURED_LUMA_STDDEV = 8.0
+RESCUE_ZONE_OBSCURED_DIM_LUMA = 110
+RESCUE_ZONE_OBSCURED_SATURATION_VALUE = 100
+RESCUE_ZONE_OBSCURED_SATURATION_FRACTION = 0.70
 STREAM_PORT = 8091
 STREAM_PATH = "/stream.mjpg"
 STATUS_FPS = 5
@@ -91,6 +102,9 @@ STATUS_FPS = 5
 # reduzem o atraso do controle sem acumular frames: se uma análise demorar mais
 # que o intervalo, a próxima começa somente depois que a anterior terminar.
 BALL_DETECTION_FPS = 4
+# Uma inferência que ultrapassa esta janela é considerada travada. O processo
+# frontal encerra e o supervisor o relança sem reiniciar a missão no C++.
+BALL_ANALYSIS_TIMEOUT_SECONDS = 3.0
 IDLE_POLL_SECONDS = 0.10
 ERROR_RETRY_SECONDS = 1.0
 
@@ -217,6 +231,8 @@ latest_jpeg = None
 latest_jpeg_sequence = 0
 active_stream_clients = 0
 frame_condition = threading.Condition()
+selected_display_mode = "real"
+display_mode_lock = threading.Lock()
 ball_vision_pipeline = BallVisionPipeline()
 active_ball_target_sequence = 0
 active_ball_target_type = "any"
@@ -455,7 +471,7 @@ def requested_ball_target():
         return 0, "any"
 
 
-def measure_rescue_zone_frame_obstruction(frame_bgr):
+def measure_rescue_zone_frame_obstruction(frame_bgr, *, exit_mode=False):
     """Mede condições visuais que indicam lente coberta pela área."""
 
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -463,11 +479,22 @@ def measure_rescue_zone_frame_obstruction(frame_bgr):
         np.count_nonzero(gray <= RESCUE_ZONE_OBSCURED_DARK_VALUE)
     ) / float(gray.size)
     luma_stddev = float(np.std(gray))
+    obscured = (dark_fraction >= RESCUE_ZONE_OBSCURED_DARK_FRACTION or
+                luma_stddev <= RESCUE_ZONE_OBSCURED_LUMA_STDDEV)
+    if (exit_mode and dark_fraction < RESCUE_ZONE_OBSCURED_DARK_FRACTION and
+            luma_stddev <= RESCUE_ZONE_OBSCURED_LUMA_STDDEV):
+        # Uma parede/piso claro e neutro também pode ser uniforme. Só a
+        # uniformidade escura ou de cor intensa impede orientação segura.
+        if float(np.mean(gray)) <= RESCUE_ZONE_OBSCURED_DIM_LUMA:
+            obscured = True
+        else:
+            saturation = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)[:, :, 1]
+            saturated_fraction = float(np.count_nonzero(
+                saturation >= RESCUE_ZONE_OBSCURED_SATURATION_VALUE
+            )) / float(saturation.size)
+            obscured = saturated_fraction >= RESCUE_ZONE_OBSCURED_SATURATION_FRACTION
     return {
-        "obscured": (
-            dark_fraction >= RESCUE_ZONE_OBSCURED_DARK_FRACTION
-            or luma_stddev <= RESCUE_ZONE_OBSCURED_LUMA_STDDEV
-        ),
+        "obscured": obscured,
         "darkFraction": round(dark_fraction, 4),
         "lumaStdDev": round(luma_stddev, 3),
     }
@@ -627,6 +654,54 @@ def calculate_forward_line_assist(filtered_line_mask, reference=None, tracker=No
                            FORWARD_ASSIST_MIN_COMPONENT_AREA_PX)
 
 
+# Uma rota preta já conferida não precisa pagar novamente o custo do detector
+# colorido em todos os frames. O lock pertence apenas à execução atual.
+EXIT_COLOR_LOCK_HEADING_TOLERANCE_DEGREES = 15.0
+EXIT_COLOR_LOCK_LOST_SECONDS = 0.300
+EXIT_COLOR_RECHECK_SECONDS = 0.500
+
+
+def new_exit_color_lock():
+    """Cria o estado simples que limita o detector colorido a uma conferência."""
+
+    return {
+        "runSequence": 0,
+        "cleared": False,
+        "txDegrees": 0.0,
+        "lastSeenAt": 0.0,
+        "checkedAt": 0.0,
+        "blockedSectors": set(),
+        "sector": -1,
+        "phase": "",
+    }
+
+
+def reset_exit_color_lock(lock, run_sequence=0):
+    """Rearma a conferência quando a rota ou a execução muda."""
+
+    if lock is None:
+        return
+    lock.update({
+        "runSequence": int(run_sequence),
+        "cleared": False,
+        "txDegrees": 0.0,
+        "lastSeenAt": 0.0,
+        "checkedAt": 0.0,
+        "blockedSectors": set(),
+        "sector": -1,
+        "phase": "",
+    })
+
+
+def best_exit_guidance(candidates):
+    """Seleciona somente uma geometria preta liberada para controle."""
+
+    valid = [candidate for candidate in candidates.values()
+             if candidate.get("guidanceValid")]
+    return max(valid, key=lambda candidate: candidate.get("score", 0.0),
+               default=None)
+
+
 def process_forward_frame(
     frame,
     camera_format,
@@ -635,44 +710,184 @@ def process_forward_frame(
     now=None,
     diagnostics=None,
     exit_control=None,
+    exit_color_lock=None,
 ):
     """Aplica somente a segmentação preta configurada para o perfil frontal."""
 
-    profile = camera_line_frame.CAMERA_PROFILES["forward"]
-    vision_profile = dict(profile["vision"])
-    if exit_control and exit_control.get("enabled"):
-        vision_profile["line_roi_start_ratio"] = 0.0
-    filtered_mask, roi_start_y = camera_line_frame.create_filtered_line_mask(
-        frame,
-        vision_profile,
-        camera_format,
-    )
-    if roi_start_y == 0 and filtered_mask.shape == frame.shape[:2]:
-        full_filtered_mask = filtered_mask
+    exit_active = bool(exit_control and exit_control.get("enabled"))
+    frame_time = time.time() if now is None else float(now)
+    if not exit_active:
+        reset_exit_color_lock(exit_color_lock)
+    if exit_active:
+        # A saída usa contraste local do frame inteiro. O perfil estrutural do
+        # seguidor normal apagava justamente a fita frontal distante.
+        full_filtered_mask = create_exit_black_mask(frame)
     else:
-        # A ROI do assistente é relativa ao frame completo, mesmo se a segmentação
-        # frontal ganhar no futuro um recorte vertical próprio.
-        full_filtered_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        available_height = min(
-            filtered_mask.shape[0],
-            full_filtered_mask.shape[0] - roi_start_y,
+        profile = camera_line_frame.CAMERA_PROFILES["forward"]
+        vision_profile = dict(profile["vision"])
+        filtered_mask, roi_start_y = camera_line_frame.create_filtered_line_mask(
+            frame,
+            vision_profile,
+            camera_format,
         )
-        available_width = min(filtered_mask.shape[1], full_filtered_mask.shape[1])
-        if available_height > 0 and available_width > 0:
-            full_filtered_mask[
-                roi_start_y:roi_start_y + available_height,
-                :available_width,
-            ] = filtered_mask[:available_height, :available_width]
-    if diagnostics is not None:
-        # A cópia só é solicitada nos frames diagnósticos. A mesma máscara
-        # continua sendo entregue ao detector, sem qualquer reprocessamento.
-        diagnostics["mask"] = full_filtered_mask
-    reading = calculate_forward_line_assist(full_filtered_mask, reference, tracker, now)
-    if exit_control and exit_control.get("enabled"):
+        if roi_start_y == 0 and filtered_mask.shape == frame.shape[:2]:
+            full_filtered_mask = filtered_mask
+        else:
+            full_filtered_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+            available_height = min(
+                filtered_mask.shape[0],
+                full_filtered_mask.shape[0] - roi_start_y,
+            )
+            available_width = min(filtered_mask.shape[1], full_filtered_mask.shape[1])
+            if available_height > 0 and available_width > 0:
+                full_filtered_mask[
+                    roi_start_y:roi_start_y + available_height,
+                    :available_width,
+                ] = filtered_mask[:available_height, :available_width]
+    if exit_active:
+        # O Forward Assist normal não comanda a saída. Evitar seu tracker
+        # pesado libera tempo de CPU para a rota preta e aumenta o FPS da CAM1.
+        reading = {
+            "forwardLineVisible": False,
+            "forwardLinePosition": None,
+            "forwardLineConfidence": 0.0,
+            "forwardLinePresent": False,
+            "forwardPathState": "UNCERTAIN",
+            "forwardPathReferenceValid": False,
+            "forwardPathReferenceSequence": 0,
+            "forwardPathReferenceTimestamp": 0.0,
+            "forwardPathComponents": {},
+        }
+    else:
+        reading = calculate_forward_line_assist(
+            full_filtered_mask, reference, tracker, now
+        )
+    if exit_active:
         reading["exitAnalysisActive"] = True
         reading["exitRunSequence"] = exit_control["runSequence"]
-        reading["exitCandidates"] = analyze_exit_candidates(full_filtered_mask, FORWARD_ASSIST_MIN_COMPONENT_AREA_PX)
-        reading["exitCameraObscured"] = measure_rescue_zone_frame_obstruction(frame)["obscured"]
+        run_sequence = int(exit_control["runSequence"])
+        if (exit_color_lock is not None and
+                exit_color_lock.get("runSequence") != run_sequence):
+            reset_exit_color_lock(exit_color_lock, run_sequence)
+
+        phase = str(exit_control.get("phase", ""))
+        previous_phase = (exit_color_lock or {}).get("phase", "")
+        rearm_phase = phase != previous_phase and any(token in phase for token in (
+            "turning", "settling", "rejected", "backing", "retry", "failed", "starting"
+        ))
+        if rearm_phase:
+            reset_exit_color_lock(exit_color_lock, run_sequence)
+        if exit_color_lock is not None:
+            exit_color_lock["phase"] = phase
+
+        blocked_sectors = set((exit_color_lock or {}).get("blockedSectors", ()))
+        corner_lightweight = (
+            phase.startswith("rescue_exit_corner_recovery_") or
+            (phase == "rescue_exit_corner_exploring" and
+             phase == previous_phase)
+        )
+        if corner_lightweight:
+            # A geometria já escolheu o corner. Nesse trecho, a CAM1 conserva
+            # somente a proteção visual e deixa a CAM0 assumir a linha. O
+            # primeiro frame ainda mede o lado usado numa possível recuperação.
+            reading["exitCandidates"] = empty_exit_candidates(
+                full_filtered_mask.shape[1]
+            )
+        else:
+            reading["exitCandidates"] = analyze_exit_candidates(
+                full_filtered_mask,
+                FORWARD_ASSIST_MIN_COMPONENT_AREA_PX,
+                blocked_sectors,
+            )
+
+        candidate = best_exit_guidance(reading["exitCandidates"])
+        candidate_sector = next((index for index in range(5)
+                                 if reading["exitCandidates"][f"sector{index}"] is candidate), -1)
+        lock_matches = bool(
+            exit_color_lock is not None and
+            exit_color_lock.get("cleared") and
+            candidate is not None and
+            frame_time - float(exit_color_lock.get("lastSeenAt", 0.0)) <=
+                EXIT_COLOR_LOCK_LOST_SECONDS and
+            frame_time - float(exit_color_lock.get("checkedAt", 0.0)) <
+                EXIT_COLOR_RECHECK_SECONDS and
+            candidate_sector == exit_color_lock.get("sector") and
+            abs(float(candidate["txDegrees"]) -
+                float(exit_color_lock.get("txDegrees", 0.0))) <=
+                EXIT_COLOR_LOCK_HEADING_TOLERANCE_DEGREES
+        )
+        idle_color_check = bool(
+            candidate is None and
+            any(token in phase for token in ("searching", "settling", "final_scan")) and
+            (exit_color_lock is None or
+             frame_time - float(exit_color_lock.get("checkedAt", 0.0)) >=
+                 EXIT_COLOR_RECHECK_SECONDS)
+        )
+        if corner_lightweight:
+            reading["exitColorStatus"] = "COLOR CLEARED"
+        elif lock_matches:
+            exit_color_lock["txDegrees"] = float(candidate["txDegrees"])
+            exit_color_lock["lastSeenAt"] = frame_time
+            reading["exitColorStatus"] = "COLOR CLEARED"
+        elif candidate is not None or idle_color_check:
+            reading["exitColorStatus"] = "COLOR CHECK"
+            cleaned_mask, removed_zone, blocked_sectors = remove_rescue_zones_from_black(
+                frame, full_filtered_mask
+            )
+            if removed_zone:
+                full_filtered_mask = cleaned_mask
+            reading["exitCandidates"] = analyze_exit_candidates(
+                full_filtered_mask,
+                FORWARD_ASSIST_MIN_COMPONENT_AREA_PX,
+                blocked_sectors,
+            )
+            candidate = best_exit_guidance(reading["exitCandidates"])
+            if exit_color_lock is not None:
+                exit_color_lock.update({
+                    "runSequence": run_sequence,
+                    "cleared": candidate is not None,
+                    "txDegrees": float(candidate["txDegrees"]) if candidate else 0.0,
+                    "lastSeenAt": frame_time if candidate else 0.0,
+                    "checkedAt": frame_time,
+                    "blockedSectors": blocked_sectors,
+                    "sector": next((index for index in range(5)
+                                    if reading["exitCandidates"][f"sector{index}"] is candidate), -1),
+                })
+            if candidate is not None:
+                reading["exitColorStatus"] = "COLOR CLEARED"
+        else:
+            check_recent = bool(
+                exit_color_lock is not None and
+                frame_time - float(exit_color_lock.get("checkedAt", 0.0)) <
+                    EXIT_COLOR_RECHECK_SECONDS
+            )
+            blocked_recent = bool(exit_color_lock is not None and blocked_sectors and
+                                  frame_time - float(exit_color_lock.get("checkedAt", 0.0)) <
+                                      EXIT_COLOR_RECHECK_SECONDS)
+            lock_recent = bool(
+                exit_color_lock is not None and
+                exit_color_lock.get("cleared") and
+                frame_time - float(exit_color_lock.get("lastSeenAt", 0.0)) <=
+                    EXIT_COLOR_LOCK_LOST_SECONDS
+            )
+            if lock_recent or blocked_recent or check_recent:
+                reading["exitColorStatus"] = "COLOR CHECK" if blocked_recent else "COLOR CLEARED"
+            else:
+                reset_exit_color_lock(exit_color_lock, run_sequence)
+                reading["exitColorStatus"] = "COLOR REARMED"
+        if exit_color_lock is not None:
+            # Preserva a fase mesmo quando a primeira amostra não encontra
+            # candidata; o modo leve deve começar já no frame seguinte.
+            exit_color_lock["phase"] = phase
+        # Em toda a saída, piso claro uniforme não basta para declarar a câmera
+        # obstruída. Quadros escuros ou com cor intensa ainda param o robô.
+        reading["exitCameraObscured"] = measure_rescue_zone_frame_obstruction(
+            frame, exit_mode=True
+        )["obscured"]
+    if diagnostics is not None:
+        # No modo de saída, LINHA mostra exatamente a máscara final após retirar
+        # os hulls coloridos; nenhuma imagem intermediária é apresentada.
+        diagnostics["mask"] = full_filtered_mask
     return reading
 
 
@@ -685,6 +900,7 @@ def process_forward_frame_for_mode(
     now=None,
     diagnostics=None,
     exit_control=None,
+    exit_color_lock=None,
 ):
     """Suspende totalmente o Forward Assist enquanto o resgate usa o YOLO."""
 
@@ -713,6 +929,7 @@ def process_forward_frame_for_mode(
         now,
         diagnostics,
         exit_control,
+        exit_color_lock,
     )
 
 
@@ -792,6 +1009,7 @@ def save_forward_line_status(reading, timestamp, sequence):
         status.update({"exitAnalysisActive": reading.get("exitAnalysisActive", False),
                        "exitRunSequence": reading.get("exitRunSequence", 0),
                        "exitCameraObscured": reading.get("exitCameraObscured", False),
+                       "exitColorStatus": reading.get("exitColorStatus", "COLOR REARMED"),
                        "exitCandidates": reading.get("exitCandidates", {})})
         if status["forwardPathState"] not in ("PRESENT", "UNCERTAIN", "ABSENT"):
             raise ValueError("Estado frontal desconhecido")
@@ -927,6 +1145,20 @@ def stream_has_clients():
         return active_stream_clients > 0
 
 
+def set_display_mode(value):
+    """Troca somente o quadro publicado; a decisão visual usa a mesma máscara."""
+    global selected_display_mode
+    mode = str(value or "").strip().lower()
+    with display_mode_lock:
+        selected_display_mode = mode if mode in ("real", "line") else "real"
+
+
+def get_display_mode():
+    """Retorna o modo de diagnóstico solicitado pelo dashboard."""
+    with display_mode_lock:
+        return selected_display_mode
+
+
 def handle_signal(signum, frame):
     """Solicita encerramento limpo do servidor e da câmera."""
 
@@ -946,7 +1178,8 @@ class ForwardStreamHandler(BaseHTTPRequestHandler):
         del format_text, args
 
     def do_GET(self):
-        if urlsplit(self.path).path != STREAM_PATH:
+        request_url = urlsplit(self.path)
+        if request_url.path != STREAM_PATH:
             self.send_response(404)
             self.end_headers()
             return
@@ -956,6 +1189,9 @@ class ForwardStreamHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Forward camera disabled")
             return
+
+        query = parse_qs(request_url.query)
+        set_display_mode(query.get("mode", ["real"])[0])
 
         self.send_response(200)
         self.send_header("Age", "0")
@@ -1099,6 +1335,7 @@ def main():
     ball_analysis_reset_pending = False
     ball_analysis_future = None
     ball_analysis_future_generation = 0
+    ball_analysis_started_time = 0.0
     ball_analysis_executor = ThreadPoolExecutor(
         max_workers=1,
         thread_name_prefix="ball-yolo",
@@ -1115,6 +1352,7 @@ def main():
     obstacle_black_error_reported = False
     rescue_zone_temporal_filter = RescueZoneTemporalFilter()
     path_tracker = ForwardPathTracker()
+    exit_color_lock = new_exit_color_lock()
     rescue_zone_profiler = RescueZoneCycleProfiler(
         RESCUE_ZONE_PROFILE_ENABLED
     )
@@ -1286,6 +1524,7 @@ def main():
                     line_timestamp,
                     forward_diagnostics,
                     exit_control,
+                    exit_color_lock,
                 )
                 try:
                     if ball_detection_active or rescue_zone_active or exit_control.get("enabled"):
@@ -1419,6 +1658,24 @@ def main():
                     )
                     save_ball_control_status(False, ball_status)
                 else:
+                    if (
+                        ball_analysis_future is not None
+                        and not ball_analysis_future.done()
+                        and ball_analysis_started_time > 0.0
+                        and ball_time - ball_analysis_started_time
+                        >= BALL_ANALYSIS_TIMEOUT_SECONDS
+                    ):
+                        # Uma chamada nativa travada não pode ser cancelada com
+                        # segurança pela thread. O supervisor reinicia só a CAM1;
+                        # o C++ mantém os motores em zero até receber frames novos.
+                        print(
+                            "Watchdog do YOLO: inferência travada por "
+                            f"{ball_time - ball_analysis_started_time:.1f} s; "
+                            "reiniciando a câmera frontal.",
+                            flush=True,
+                        )
+                        os._exit(70)
+
                     if ball_analysis_future is not None and ball_analysis_future.done():
                         completed_observation, completed_candidates, completed_status = (
                             ball_analysis_future.result()
@@ -1429,6 +1686,7 @@ def main():
                             ball_status = completed_status
                             save_ball_control_status(True, ball_status)
                         ball_analysis_future = None
+                        ball_analysis_started_time = 0.0
 
                     if ball_analysis_future is None:
                         if ball_analysis_reset_pending:
@@ -1449,6 +1707,7 @@ def main():
                                 frame.copy(),
                                 True,
                             )
+                            ball_analysis_started_time = ball_time
                             last_ball_analysis_time = ball_time
             except Exception as error:
                 stream_active = False
@@ -1456,6 +1715,7 @@ def main():
                 close_forward_camera(camera)
                 camera = None
                 path_tracker = ForwardPathTracker()
+                reset_exit_color_lock(exit_color_lock)
                 rescue_zone_results = None
                 rescue_zone_input = None
                 rescue_zone_temporal_filter.reset()
@@ -1485,7 +1745,12 @@ def main():
             has_stream_client = enabled and stream_has_clients()
             if has_stream_client or diagnostic_capture_due:
                 stage_started = time.perf_counter() if profile_this_cycle else 0.0
-                display_frame = frame.copy()
+                black_mask = (forward_diagnostics or {}).get("mask")
+                display_frame = (
+                    create_exit_display_frame(frame, black_mask, get_display_mode())
+                    if reading.get("exitAnalysisActive")
+                    else frame.copy()
+                )
                 if ball_detection_active:
                     display_frame = ball_vision_pipeline.draw(
                         display_frame,
@@ -1498,7 +1763,12 @@ def main():
                         rescue_zone_input,
                     )
                 elif reading.get("exitAnalysisActive"):
-                    draw_exit_overlay(display_frame, reading, exit_control)
+                    draw_exit_overlay(
+                        display_frame,
+                        reading,
+                        exit_control,
+                        black_mask,
+                    )
                 else:
                     draw_obstacle_black_overlay(display_frame, obstacle_black)
                     draw_parabola_black_overlay(display_frame, parabola_black)

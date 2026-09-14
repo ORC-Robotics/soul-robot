@@ -209,6 +209,13 @@ constexpr uint32_t kSensorCalibrationHoldMs = 5000;
 // Pulsos menores são ignorados como ruído ou contato mecânico do botão.
 constexpr uint32_t kStartButtonMinimumPressMs = 80;
 
+// Tempo durante o qual o nível elétrico precisa permanecer igual antes de ser
+// aceito. Isso evita comandos duplicados causados pelo contato mecânico.
+constexpr uint32_t kStartButtonDebounceMs = 50;
+
+// Intervalo mínimo entre dois toques curtos publicados para a Raspberry.
+constexpr uint32_t kStartButtonDuplicateGuardMs = 300;
+
 // Períodos de leitura e envio. Esses valores evitam sobrecarregar o I2C,
 // o navegador e a UART durante o loop principal.
 constexpr uint32_t kImuReadIntervalMs = 20;

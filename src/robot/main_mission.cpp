@@ -1,4 +1,7 @@
 #include "obr/main_mission.h"
+#include "obr/config.h"
+
+#include <cmath>
 
 namespace
 {
@@ -23,6 +26,8 @@ void MainMission::reset(bool startAtExit)
     silverEntryManeuver_.reset();
     rescueRoomMission_.reset();
     rescueExitMission_.reset();
+    savedEntryHeadingValid_ = false;
+    savedEntryHeadingDegrees_ = 0.0;
 }
 
 bool MainMission::requiresExitVision() const
@@ -38,8 +43,10 @@ bool MainMission::requiresRescueVision() const
 
 bool MainMission::requiresRescueZoneDetection() const
 {
-    return phase_ == Phase::RescueArea &&
-           rescueRoomMission_.requiresRescueZoneDetection();
+    return (phase_ == Phase::ExitSearch &&
+            rescueExitMission_.requiresRescueZoneDetection()) ||
+           (phase_ == Phase::RescueArea &&
+            rescueRoomMission_.requiresRescueZoneDetection());
 }
 
 std::uint64_t MainMission::rescueBallTargetSequence(
@@ -126,6 +133,16 @@ void MainMission::update(
             esp32Telemetry);
         if (silverEntry.completed)
         {
+            // O yaw atual aponta para dentro da sala. A direção oposta será
+            // apenas uma preferência para ordenar os corners na saída.
+            savedEntryHeadingValid_ = std::isfinite(esp32Telemetry.yawZDeg);
+            if (savedEntryHeadingValid_)
+            {
+                savedEntryHeadingDegrees_ = std::remainder(
+                    esp32Telemetry.yawZDeg +
+                        config::kRescueExitSavedEntryReverseDegrees,
+                    360.0);
+            }
             // A faixa cinza entrega autoridade diretamente à rotina completa.
             // O primeiro avanço ainda aguarda o gate do YOLO publicar um frame.
             lineCourseMission_.reset();
@@ -183,6 +200,9 @@ void MainMission::update(
         {
             phase_ = Phase::ExitSearch;
             rescueExitMission_.reset();
+            if (savedEntryHeadingValid_)
+                rescueExitMission_.setKnownEntryHeading(
+                    savedEntryHeadingDegrees_);
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
                 "rescue_exit_starting",
@@ -194,8 +214,9 @@ void MainMission::update(
 
     if (phase_ == Phase::ExitSearch)
     {
-        const auto exit = rescueExitMission_.update(cameraLineSnapshot, forwardLineSnapshot,
-                                                   esp32Telemetry, autonomousRunSequence);
+        const auto exit = rescueExitMission_.update(
+            cameraLineSnapshot, forwardLineSnapshot, rescueZoneSnapshot,
+            esp32Telemetry, autonomousRunSequence);
         robotState.driveAutonomous(exit.leftPower, exit.rightPower);
         if (exit.failed)
         {
@@ -216,5 +237,6 @@ void MainMission::update(
         esp32Telemetry,
         cameraReady,
         cameraLineSnapshot,
-        forwardLineSnapshot);
+        forwardLineSnapshot,
+        phase_ == Phase::FinalLineCourse);
 }

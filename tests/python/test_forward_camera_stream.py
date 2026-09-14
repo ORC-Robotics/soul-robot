@@ -48,7 +48,7 @@ class ForwardCameraStreamTest(unittest.TestCase):
         frame = np.full((120, 160, 3), 150, np.uint8)
         mask = np.zeros((120, 160), np.uint8)
         mask[10:100, 75:85] = 255
-        with mock.patch.object(camera_line_frame, "create_filtered_line_mask", return_value=(mask, 0)):
+        with mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask):
             reading = forward_camera_stream.process_forward_frame(
                 frame, "RGB888", exit_control={"enabled": True, "runSequence": 8})
         output = mock.mock_open()
@@ -58,29 +58,151 @@ class ForwardCameraStreamTest(unittest.TestCase):
             self.assertTrue(payload["exitAnalysisActive"])
             self.assertEqual(payload["exitCandidates"], reading["exitCandidates"])
             self.assertEqual(payload["exitRunSequence"], 8)
-            self.assertTrue(payload["exitCameraObscured"])
+            self.assertFalse(payload["exitCameraObscured"])
+            candidate = max(
+                payload["exitCandidates"].values(),
+                key=lambda item: item["score"],
+            )
+            self.assertTrue(candidate["guidanceValid"])
+            self.assertIsInstance(candidate["guidanceAngleDegrees"], float)
+            self.assertIsNotNone(candidate["nearPoint"])
+            self.assertIsNotNone(candidate["farPoint"])
+            self.assertIsNotNone(candidate["entryPoint"])
+            self.assertIsInstance(candidate["entryAngleDegrees"], float)
+            self.assertGreaterEqual(candidate["entryDepthNormalized"], 0.0)
+            self.assertLessEqual(candidate["entryDepthNormalized"], 1.0)
             replace.assert_called_once_with(forward_camera_stream.TEMP_FORWARD_LINE_STATUS_PATH,
                                             forward_camera_stream.FORWARD_LINE_STATUS_PATH)
 
-    def test_exit_reuses_mask_and_existing_obstruction_detector(self):
+    def test_exit_uses_own_mask_and_checks_zones_only_while_choosing_heading(self):
         frame = np.full((120, 160, 3), 150, np.uint8)
         mask = np.zeros((120, 160), np.uint8)
         mask[10:100, 75:85] = 255
         with (
-            mock.patch.object(camera_line_frame, "create_filtered_line_mask", return_value=(mask, 0)) as segment,
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask) as segment,
             mock.patch.object(forward_camera_stream, "measure_rescue_zone_frame_obstruction", wraps=forward_camera_stream.measure_rescue_zone_frame_obstruction) as obstruction,
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black", return_value=(np.zeros_like(mask), True, set())) as color_zones,
         ):
             reading = forward_camera_stream.process_forward_frame(
-                frame, "RGB888", exit_control={"enabled": True, "runSequence": 8})
-            segment.assert_called_once()
-            obstruction.assert_called_once_with(frame)
+                frame, "RGB888", exit_control={"enabled": True, "runSequence": 8,
+                                                 "phase": "rescue_exit_searching"})
+            segment.assert_called_once_with(frame)
+            obstruction.assert_called_once_with(frame, exit_mode=True)
+            color_zones.assert_called_once_with(frame, mask)
             self.assertTrue(reading["exitAnalysisActive"])
             self.assertEqual(reading["exitRunSequence"], 8)
-            self.assertTrue(reading["exitCameraObscured"])
+            self.assertFalse(reading["exitCameraObscured"])
             self.assertEqual(len(reading["exitCandidates"]), 5)
-            self.assertEqual(segment.call_args.args[1]["line_roi_start_ratio"], 0.0)
+            self.assertFalse(reading["exitCandidates"]["sector2"]["visible"])
+            approaching = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", exit_control={"enabled": True, "runSequence": 8,
+                                                 "phase": "rescue_exit_approaching"})
+            self.assertEqual(color_zones.call_count, 2)
+            self.assertTrue(approaching["exitCameraObscured"])
         normal = forward_camera_stream.process_forward_frame(frame, "RGB888")
         self.assertNotIn("exitCandidates", normal)
+        self.assertEqual(color_zones.call_count, 2)
+
+    def test_valid_exit_route_disables_color_detector_until_rearmed(self):
+        frame = np.full((120, 160, 3), 150, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        color_lock = forward_camera_stream.new_exit_color_lock()
+        control = {"enabled": True, "runSequence": 8,
+                   "phase": "rescue_exit_searching"}
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask",
+                              return_value=mask),
+            mock.patch.object(forward_camera_stream,
+                              "remove_rescue_zones_from_black",
+                              return_value=(mask, False, set())) as color_zones,
+        ):
+            first = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.0, exit_control=control,
+                exit_color_lock=color_lock)
+            second = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.1, exit_control=control,
+                exit_color_lock=color_lock)
+            self.assertEqual(color_zones.call_count, 1)
+            self.assertEqual(first["exitColorStatus"], "COLOR CLEARED")
+            self.assertEqual(second["exitColorStatus"], "COLOR CLEARED")
+
+            turning = dict(control, phase="rescue_exit_turning")
+            rearmed = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.2, exit_control=turning,
+                exit_color_lock=color_lock)
+            self.assertEqual(rearmed["exitColorStatus"], "COLOR CLEARED")
+            self.assertEqual(color_zones.call_count, 2)
+            forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.3, exit_control=control,
+                exit_color_lock=color_lock)
+            self.assertEqual(color_zones.call_count, 2)
+            forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.7, exit_control=control,
+                exit_color_lock=color_lock)
+            self.assertEqual(color_zones.call_count, 3)
+            forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.8,
+                exit_control=dict(control, runSequence=9),
+                exit_color_lock=color_lock)
+            self.assertEqual(color_zones.call_count, 4)
+
+    def test_calibrated_triangle_sector_never_publishes_exit(self):
+        frame = np.full((120, 160, 3), 180, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask),
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black",
+                              return_value=(mask, False, {2})) as color_zones,
+        ):
+            reading = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.0,
+                exit_control={"enabled": True, "runSequence": 8,
+                              "phase": "rescue_exit_searching"},
+                exit_color_lock=forward_camera_stream.new_exit_color_lock())
+        color_zones.assert_called_once()
+        self.assertFalse(reading["exitCandidates"]["sector2"]["guidanceValid"])
+        self.assertTrue(reading["exitCandidates"]["sector2"]["blockedByColor"])
+        self.assertAlmostEqual(reading["exitCandidates"]["sector2"]["txDegrees"], 0.0)
+        self.assertEqual(reading["exitColorStatus"], "COLOR CHECK")
+
+    def test_search_maps_triangle_even_without_black_route(self):
+        frame = np.full((120, 160, 3), 180, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask",
+                              return_value=mask),
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black",
+                              return_value=(mask, True, {4})) as color_zones,
+        ):
+            reading = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.0,
+                exit_control={"enabled": True, "runSequence": 8,
+                              "phase": "rescue_exit_searching"},
+                exit_color_lock=forward_camera_stream.new_exit_color_lock())
+
+        color_zones.assert_called_once_with(frame, mask)
+        self.assertTrue(reading["exitCandidates"]["sector4"]["blockedByColor"])
+        self.assertGreater(reading["exitCandidates"]["sector4"]["txDegrees"], 0.0)
+
+    def test_color_detector_rechecks_continuously_followed_route(self):
+        frame = np.full((120, 160, 3), 180, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        color_lock = forward_camera_stream.new_exit_color_lock()
+        control = {"enabled": True, "runSequence": 8,
+                   "phase": "rescue_exit_approaching"}
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask),
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black",
+                              return_value=(mask, False, set())) as color_zones,
+        ):
+            for timestamp in (100.0, 100.2, 100.4, 100.51):
+                forward_camera_stream.process_forward_frame(
+                    frame, "RGB888", now=timestamp, exit_control=control,
+                    exit_color_lock=color_lock)
+        self.assertEqual(color_zones.call_count, 2)
 
     def test_candidate_direction_is_published_without_confirming_detection(self):
         pipeline = mock.Mock()
@@ -124,6 +246,8 @@ class ForwardCameraStreamTest(unittest.TestCase):
     def test_rescue_zone_frame_obstruction_covers_real_closeup_patterns(self):
         dark_frame = np.full((120, 160, 3), (18, 14, 51), dtype=np.uint8)
         cyan_frame = np.full((120, 160, 3), (220, 190, 20), dtype=np.uint8)
+        bright_floor = np.full((120, 160, 3), (205, 240, 203), dtype=np.uint8)
+        dim_uniform = np.full((120, 160, 3), 90, dtype=np.uint8)
         textured_frame = np.zeros((120, 160, 3), dtype=np.uint8)
         textured_frame[:, ::2] = 255
 
@@ -135,6 +259,26 @@ class ForwardCameraStreamTest(unittest.TestCase):
         self.assertTrue(
             forward_camera_stream.measure_rescue_zone_frame_obstruction(
                 cyan_frame
+            )["obscured"]
+        )
+        self.assertTrue(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                cyan_frame, exit_mode=True
+            )["obscured"]
+        )
+        self.assertFalse(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                bright_floor, exit_mode=True
+            )["obscured"]
+        )
+        self.assertTrue(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                bright_floor
+            )["obscured"]
+        )
+        self.assertTrue(
+            forward_camera_stream.measure_rescue_zone_frame_obstruction(
+                dim_uniform, exit_mode=True
             )["obscured"]
         )
         self.assertFalse(
@@ -533,6 +677,10 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 forward_camera_stream,
                 "TEMP_STATUS_PATH",
                 temporary_path,
+            ), mock.patch.object(
+                type(forward_camera_stream.ball_vision_pipeline),
+                "silver_processing_scale",
+                1.0,
             ), mock.patch.dict(os.environ, {}, clear=True):
                 forward_camera_stream.save_status(False, False, "disabled")
 
@@ -680,6 +828,7 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 "exitAnalysisActive",
                 "exitRunSequence",
                 "exitCameraObscured",
+                "exitColorStatus",
                 "exitCandidates",
             },
         )

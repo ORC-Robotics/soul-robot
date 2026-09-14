@@ -99,6 +99,21 @@ private:
     std::chrono::steady_clock::time_point sweepAttemptStartedAt_{};
     bool sweepTurnStarted_ = false;
     bool waitingForSweepFrame_ = false;
+    // A alternância angular só é permitida na primeira busca, quando nenhuma
+    // vítima foi encontrada durante a entrada na sala.
+    bool initialAlternatingSweepAllowed_ = true;
+    // Mantém o giro em um único sentido depois da primeira vítima encontrada.
+    bool continuousSearchActive_ = false;
+    // Detecta quando a busca contínua comanda o giro, mas a IMU não confirma
+    // avanço angular suficiente. Nesse caso, o sentido é invertido com segurança.
+    bool continuousSearchProgressWatchActive_ = false;
+    double continuousSearchProgressYaw_ = 0.0;
+    std::chrono::steady_clock::time_point continuousSearchProgressStartedAt_{};
+    // Impede que frames intercalados façam a busca ultrapassar uma candidata em confirmação.
+    bool candidateConfirmationActive_ = false;
+    std::chrono::steady_clock::time_point candidateLastSeenAt_{};
+    bool candidateHeadingValid_ = false;
+    double candidateHeadingDegrees_ = 0.0;
     bool finalVerification_ = false;
     bool storedAliveVictim_ = false;
     bool collectionRetentionActive_ = false;
@@ -113,6 +128,12 @@ private:
     ServoPose collectionRetentionPose_{};
     ServoPose pendingServoPose_{};
     std::chrono::steady_clock::time_point servoEnableDeadline_{};
+    // Registra um único impulso por movimento delicado. Manter este estado na
+    // sala impede que o reforço alcance o segue-linha ou a busca da saída.
+    bool delicateMotionActive_ = false;
+    int delicateMotionLeftDirection_ = 0;
+    int delicateMotionRightDirection_ = 0;
+    std::chrono::steady_clock::time_point delicateMotionKickDeadline_{};
     ServoRoutineKind depositRoutineKind_ = ServoRoutineKind::Deposit;
     ServoRoutineKind liftRoutineKind_ = ServoRoutineKind::LiftAfterReverse;
     ImuTurnController sweepTurnController_;
@@ -127,6 +148,19 @@ private:
         const ForwardBallSnapshot& ball,
         const Esp32TelemetrySnapshot& telemetry,
         std::uint64_t expectedTargetSequence,
+        std::chrono::steady_clock::time_point now);
+    RescueRoomOutput updateStep(
+        const ForwardBallSnapshot& ball,
+        const RescueZoneSnapshot& zones,
+        const Esp32TelemetrySnapshot& telemetry,
+        std::uint64_t autonomousRunSequence,
+        unsigned long long servoConfirmationSequence,
+        const ServoPose& currentServoPose,
+        std::chrono::steady_clock::time_point now);
+    // Reforça apenas o começo de curvas, pivôs e rodas isoladas, preservando o
+    // sentido solicitado e retornando automaticamente às potências da missão.
+    void applyDelicateMotionKick(
+        RescueRoomOutput& output,
         std::chrono::steady_clock::time_point now);
     // Avança a tentativa sem reutilizar o relógio ou o giro interrompido.
     void advanceSweepStep();

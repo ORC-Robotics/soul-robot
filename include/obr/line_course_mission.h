@@ -18,7 +18,8 @@ public:
         const Esp32TelemetrySnapshot& esp32Telemetry,
         bool cameraReady,
         const CameraLineSnapshot& cameraLineSnapshot,
-        const ForwardLineSnapshot& forwardLineSnapshot);
+        const ForwardLineSnapshot& forwardLineSnapshot,
+        bool allowForwardLostRecovery = false);
 
 private:
     ObstacleAvoidance obstacleAvoidance_;

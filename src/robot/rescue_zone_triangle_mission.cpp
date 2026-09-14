@@ -39,6 +39,24 @@ RescueZoneTriangleOutput RescueZoneTriangleMission::update(
 
     if (phase_ == Phase::Align)
     {
+        const RescueZoneObservation& target =
+            targetColor == RescueZoneTargetColor::Red ? zones.red : zones.green;
+        if (zones.sourceFresh && !target.detected)
+        {
+            // Se a confirmação desaparecer, o triângulo não voltará ao campo
+            // de visão sozinho. Retomar a busca evita uma espera permanente.
+            phase_ = Phase::Search;
+            searchMission_.reset();
+            alignMission_.reset();
+            const RescueZoneSearchOutput search =
+                searchMission_.update(zones, targetColor);
+            output.leftPower = search.leftPower;
+            output.rightPower = search.rightPower;
+            output.status = search.status;
+            markPhase(output.status, "SEARCH");
+            return output;
+        }
+
         const RescueZoneAlignOutput align =
             alignMission_.update(zones, telemetry, targetColor, now);
         output.leftPower = align.leftPower;

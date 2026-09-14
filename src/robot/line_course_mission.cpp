@@ -69,7 +69,8 @@ void LineCourseMission::update(
     const Esp32TelemetrySnapshot& esp32Telemetry,
     bool cameraReady,
     const CameraLineSnapshot& cameraLineSnapshot,
-    const ForwardLineSnapshot& forwardLineSnapshot)
+    const ForwardLineSnapshot& forwardLineSnapshot,
+    bool allowForwardLostRecovery)
 {
     const RobotSnapshot robotSnapshot = robotState.snapshot();
     if (robotSnapshot.mode != "autonomous")
@@ -152,7 +153,8 @@ void LineCourseMission::update(
             robotState,
             esp32Telemetry,
             cameraLineSnapshot,
-            forwardLineSnapshot))
+            forwardLineSnapshot,
+            allowForwardLostRecovery))
     {
         return;
     }

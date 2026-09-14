@@ -4,10 +4,12 @@
 #include "obr/esp32_bridge.h"
 #include "obr/robot_state.h"
 
+#include <chrono>
+#include <cstdint>
 #include <string>
 
-// Transporta o diagnóstico frontal, sem autoridade de motor. GAP e LOST são
-// executados pelo controle inferior e seu recovery existente.
+// Recupera a linha pelo último lado visto na CAM1 somente quando o chamador
+// libera essa autoridade; fora desse caso, transporta apenas diagnóstico.
 class ForwardLineAssist
 {
 public:
@@ -16,7 +18,8 @@ public:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,
         const CameraLineSnapshot& cameraLineSnapshot,
-        const ForwardLineSnapshot& forwardLineSnapshot);
+        const ForwardLineSnapshot& forwardLineSnapshot,
+        bool allowRecovery = false);
     AutonomousStatus status(
         const std::string& phase,
         const std::string& action,
@@ -24,4 +27,11 @@ public:
 
 private:
     CameraLineSnapshot bottom_;
+    int recoveryDirectionSign_ = 0;
+    int bottomLossFrames_ = 0;
+    int bottomStableFrames_ = 0;
+    std::uint64_t lastBottomSequence_ = 0;
+    bool recovering_ = false;
+    double recoveryStartYawDegrees_ = 0.0;
+    std::chrono::steady_clock::time_point recoveryStartedAt_{};
 };

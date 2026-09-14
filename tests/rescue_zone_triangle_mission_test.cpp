@@ -42,6 +42,24 @@ RescueZoneSnapshot foundUnknownGreen(std::uint64_t sequence)
     return zones;
 }
 
+RescueZoneSnapshot missingZones(std::uint64_t sequence)
+{
+    RescueZoneSnapshot zones;
+    zones.sourceFresh = true;
+    zones.sequence = sequence;
+    zones.timestamp = static_cast<double>(sequence);
+    return zones;
+}
+
+RescueZoneSnapshot foundUnknownRed(std::uint64_t sequence)
+{
+    RescueZoneSnapshot zones = missingZones(sequence);
+    zones.red.candidateDetected = true;
+    zones.red.detected = true;
+    zones.red.geometryState = RescueZoneGeometryState::BoundsUnknown;
+    return zones;
+}
+
 void testOrchestratesSearchAlignApproachAndSuccess()
 {
     RescueZoneTriangleMission mission;
@@ -109,6 +127,29 @@ void testEmergencyStopOverridesEveryTrianglePhase()
             "E-Stop deve zerar o TRIÂNGULO durante " + phase + ".");
     }
 }
+
+void testLostZoneReturnsFromAlignToSearch()
+{
+    RescueZoneTriangleMission mission;
+    const auto start = std::chrono::steady_clock::now();
+    const Esp32TelemetrySnapshot telemetry = readyTelemetry(30.0, 0.0);
+
+    RescueZoneTriangleOutput output = mission.update(
+        foundUnknownRed(1), telemetry, RescueZoneTargetColor::Red, start);
+    require(
+        output.status.rescueZoneTrianglePhase == "ALIGN",
+        "A zona encontrada deve iniciar ALIGN antes do teste de perda.");
+
+    output = mission.update(
+        missingZones(2), telemetry, RescueZoneTargetColor::Red,
+        start + std::chrono::milliseconds(20));
+    require(
+        output.status.rescueZoneTrianglePhase == "SEARCH" &&
+            output.status.phase == "rescue_zone_searching" &&
+            output.leftPower == config::kRescueZoneSearchTurnPower &&
+            output.rightPower == -config::kRescueZoneSearchTurnPower,
+        "A perda confirmada durante ALIGN deve retomar SEARCH com movimento.");
+}
 }
 
 int main()
@@ -117,6 +158,7 @@ int main()
     {
         testOrchestratesSearchAlignApproachAndSuccess();
         testEmergencyStopOverridesEveryTrianglePhase();
+        testLostZoneReturnsFromAlignToSearch();
     }
     catch (const std::exception& error)
     {

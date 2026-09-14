@@ -51,6 +51,27 @@ RescueRoomOutput RescueRoomMission::update(
     const ServoPose& currentServoPose,
     std::chrono::steady_clock::time_point now)
 {
+    RescueRoomOutput output = updateStep(
+        ball,
+        zones,
+        telemetry,
+        autonomousRunSequence,
+        servoConfirmationSequence,
+        currentServoPose,
+        now);
+    applyDelicateMotionKick(output, now);
+    return output;
+}
+
+RescueRoomOutput RescueRoomMission::updateStep(
+    const ForwardBallSnapshot& ball,
+    const RescueZoneSnapshot& zones,
+    const Esp32TelemetrySnapshot& telemetry,
+    std::uint64_t autonomousRunSequence,
+    unsigned long long servoConfirmationSequence,
+    const ServoPose& currentServoPose,
+    std::chrono::steady_clock::time_point now)
+{
     RescueRoomOutput output;
     output.internalObjectStored = storedAliveVictim_;
 
@@ -115,6 +136,8 @@ RescueRoomOutput RescueRoomMission::update(
             std::abs(tx) <= 45.0 && tx != 0.0)
         {
             candidateSide_ = tx < 0.0 ? -1 : 1;
+            candidateHeadingDegrees_ = std::remainder(telemetry.yawZDeg + tx, 360.0);
+            candidateHeadingValid_ = true;
         }
     }
 
@@ -158,6 +181,7 @@ RescueRoomOutput RescueRoomMission::update(
         distanceController_.reset();
         if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
         {
+            initialAlternatingSweepAllowed_ = false;
             carriedVictimType_ = desiredVictimType_;
             initialVictimAlignmentMission_.reset();
             phase_ = Phase::AlignVictim;
@@ -524,9 +548,13 @@ RescueRoomOutput RescueRoomMission::update(
                 deliveredAliveVictims_ >= 2 &&
                 deliveredDeadVictims_ == 1 &&
                 !finalVerification_;
+            // A última vítima pode ser depositada no vermelho ou no verde.
+            // Nos dois casos, 40 cm deixam a busca da saída longe do triângulo.
+            const bool finalDepositReverse =
+                requiredDeadDeliveryCompleted || finalVerification_;
             postDepositReverseDistanceCm_ =
-                requiredDeadDeliveryCompleted
-                    ? config::kRescueFinalDeadDepositReverseDistanceCm
+                finalDepositReverse
+                    ? config::kRescueFinalDepositReverseDistanceCm
                     : config::kRescuePostDepositReverseDistanceCm;
             startDistance(
                 postDepositReverseDistanceCm_,
@@ -538,8 +566,8 @@ RescueRoomOutput RescueRoomMission::update(
             output.internalObjectStored = false;
             output.status = makeStatus(
                 "rescue_deposit_completed",
-                requiredDeadDeliveryCompleted
-                    ? "Entrega preta concluída; iniciando ré de 40 cm"
+                finalDepositReverse
+                    ? "Entrega final concluída; iniciando ré de 40 cm"
                     : "Entrega concluída; iniciando ré de 20 cm");
         }
         return output;
@@ -552,8 +580,8 @@ RescueRoomOutput RescueRoomMission::update(
             now,
             "rescue_deposit_reversing",
             postDepositReverseDistanceCm_ ==
-                    config::kRescueFinalDeadDepositReverseDistanceCm
-                ? "Recuando 40 cm antes da verificação final"
+                    config::kRescueFinalDepositReverseDistanceCm
+                ? "Recuando 40 cm antes de continuar a verificação final"
                 : "Recuando 20 cm para liberar o triângulo");
         if (output.failed)
         {
@@ -599,6 +627,78 @@ RescueRoomOutput RescueRoomMission::update(
     return output;
 }
 
+void RescueRoomMission::applyDelicateMotionKick(
+    RescueRoomOutput& output,
+    std::chrono::steady_clock::time_point now)
+{
+    constexpr double kStraightTolerance = 0.001;
+    const auto direction = [=](double power) {
+        if (power > kStraightTolerance) return 1;
+        if (power < -kStraightTolerance) return -1;
+        return 0;
+    };
+
+    const int leftDirection = direction(output.leftPower);
+    const int rightDirection = direction(output.rightPower);
+    const bool encoderStraightMotion =
+        output.status.phase == "rescue_entry_advancing" ||
+        output.status.phase == "rescue_collection_reversing" ||
+        output.status.phase == "rescue_deposit_reversing";
+    const bool straightMotion =
+        encoderStraightMotion ||
+        (leftDirection != 0 && leftDirection == rightDirection &&
+         std::abs(std::abs(output.leftPower) - std::abs(output.rightPower)) <=
+             kStraightTolerance);
+    const bool delicateMotion =
+        (leftDirection != 0 || rightDirection != 0) && !straightMotion;
+
+    if (!delicateMotion)
+    {
+        // Paradas e retas encerram o trecho. Um novo giro receberá somente um
+        // novo impulso, em vez de renovar 0,80 continuamente a cada ciclo.
+        delicateMotionActive_ = false;
+        delicateMotionLeftDirection_ = 0;
+        delicateMotionRightDirection_ = 0;
+        delicateMotionKickDeadline_ = {};
+        return;
+    }
+
+    const bool directionChanged =
+        leftDirection != delicateMotionLeftDirection_ ||
+        rightDirection != delicateMotionRightDirection_;
+    if (!delicateMotionActive_ || directionChanged)
+    {
+        delicateMotionActive_ = true;
+        delicateMotionLeftDirection_ = leftDirection;
+        delicateMotionRightDirection_ = rightDirection;
+        delicateMotionKickDeadline_ =
+            now + std::chrono::milliseconds(
+                      config::kRescueDelicateMotionKickDurationMs);
+    }
+
+    if (now >= delicateMotionKickDeadline_)
+    {
+        return;
+    }
+
+    // Zero continua zero em pivôs de uma roda. Nos demais lados, 0,80 funciona
+    // como piso temporário e nunca reduz um comando que já seja mais forte.
+    if (leftDirection != 0)
+    {
+        output.leftPower = std::copysign(
+            std::max(std::abs(output.leftPower),
+                     config::kRescueDelicateMotionKickPower),
+            output.leftPower);
+    }
+    if (rightDirection != 0)
+    {
+        output.rightPower = std::copysign(
+            std::max(std::abs(output.rightPower),
+                     config::kRescueDelicateMotionKickPower),
+            output.rightPower);
+    }
+}
+
 void RescueRoomMission::advanceSweepStep()
 {
     switch (sweepStep_)
@@ -625,6 +725,10 @@ RescueRoomOutput RescueRoomMission::updateSearch(
     output.internalObjectStored = storedAliveVictim_;
     if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
     {
+        // Depois que qualquer vítima foi encontrada, uma eventual busca
+        // posterior nunca volta aos headings alternados da entrada.
+        initialAlternatingSweepAllowed_ = false;
+        continuousSearchProgressWatchActive_ = false;
         sweepTurnController_.reset();
         carriedVictimType_ = desiredVictimType_;
         initialVictimAlignmentMission_.reset();
@@ -640,7 +744,8 @@ RescueRoomOutput RescueRoomMission::updateSearch(
                                     : config::kRescueVictimFirstSweepTimeoutMs;
     // A espera por uma candidata não renova o orçamento. Mesmo com pausas,
     // uma tentativa bloqueada termina sem insistir indefinidamente na parede.
-    if (sweepAttemptStarted_ && !waitingForSweepFrame_ &&
+    if (!continuousSearchActive_ && sweepAttemptStarted_ &&
+        !waitingForSweepFrame_ &&
         now - sweepAttemptStartedAt_ >= std::chrono::milliseconds(timeoutMs))
     {
         ++sweepTimeoutCount_;
@@ -655,10 +760,110 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         !ImuTurnController::imuReady(telemetry))
     {
         // Após a pausa, recalcula o ângulo restante pela posição real da IMU.
+        // O tempo parado por falta de sensores não caracteriza colisão.
+        continuousSearchProgressWatchActive_ = false;
         sweepTurnController_.reset();
         sweepTurnStarted_ = false;
         output.status = makeStatus(
             "rescue_search_waiting_sensors", "Busca parada: aguardando YOLO e IMU atuais");
+        return output;
+    }
+    if (ball.candidateVisible)
+    {
+        if (!sweepAttemptStarted_)
+        {
+            sweepAttemptStarted_ = true;
+            sweepAttemptStartedAt_ = now;
+        }
+        if (sweepStep_ == SweepStep::First45) sweepFirstSide_ = candidateSide_;
+        candidateConfirmationActive_ = true;
+        candidateLastSeenAt_ = now;
+    }
+    if (candidateConfirmationActive_ &&
+        now - candidateLastSeenAt_ < std::chrono::milliseconds(config::kRescueVictimCandidateHoldMs))
+    {
+        // A busca para intencionalmente enquanto confirma ou recupera a
+        // candidata; essa espera não deve disparar a inversão antitravamento.
+        continuousSearchProgressWatchActive_ = false;
+        sweepTurnController_.reset();
+        sweepTurnStarted_ = false;
+        if (!ball.candidateVisible && candidateHeadingValid_)
+        {
+            // Se a candidata piscar, retorna ao último heading visto em vez de retomar a varredura.
+            const double remaining = std::remainder(
+                candidateHeadingDegrees_ - telemetry.yawZDeg, 360.0);
+            if (std::abs(remaining) > config::kBallApproachStartToleranceDegrees)
+            {
+                output.leftPower = remaining < 0.0
+                                       ? -config::kRescueSearchTurnPower
+                                       : config::kRescueSearchTurnPower;
+                output.rightPower = -output.leftPower;
+                output.status = makeStatus(
+                    "rescue_reacquiring_candidate",
+                    "Retornando ao último ponto visto da candidata");
+                return output;
+            }
+        }
+        output.status = makeStatus(
+            "rescue_confirming_victim", "Motores parados: confirmando a candidata atual");
+        return output;
+    }
+    candidateConfirmationActive_ = false;
+    if (continuousSearchActive_)
+    {
+        bool reversedAfterStall = false;
+        if (!continuousSearchProgressWatchActive_)
+        {
+            continuousSearchProgressWatchActive_ = true;
+            continuousSearchProgressYaw_ = telemetry.yawZDeg;
+            continuousSearchProgressStartedAt_ = now;
+        }
+        else
+        {
+            // std::remainder preserva a menor diferença também ao cruzar
+            // +180°/-180°, evitando um falso progresso de quase 360°.
+            const double angularProgress = std::abs(std::remainder(
+                telemetry.yawZDeg - continuousSearchProgressYaw_, 360.0));
+            if (angularProgress >=
+                config::kRescueContinuousSearchMinimumProgressDegrees)
+            {
+                continuousSearchProgressYaw_ = telemetry.yawZDeg;
+                continuousSearchProgressStartedAt_ = now;
+            }
+            else if (now - continuousSearchProgressStartedAt_ >=
+                     std::chrono::milliseconds(
+                         config::kRescueContinuousSearchStallTimeoutMs))
+            {
+                // Pouco avanço angular com os motores comandados indica que o
+                // robô pode estar pressionando uma parede. O sentido oposto é
+                // aplicado imediatamente e recebe uma nova janela de progresso.
+                sweepFirstSide_ = -sweepFirstSide_;
+                continuousSearchProgressYaw_ = telemetry.yawZDeg;
+                continuousSearchProgressStartedAt_ = now;
+                reversedAfterStall = true;
+                std::cout
+                    << "Rescue continuous search reversed: progressDegrees="
+                    << angularProgress
+                    << " limitDegrees="
+                    << config::kRescueContinuousSearchMinimumProgressDegrees
+                    << " timeoutMs="
+                    << config::kRescueContinuousSearchStallTimeoutMs << '\n';
+            }
+        }
+
+        // Depois da varredura angular, mantém o sentido enquanto a IMU
+        // confirma progresso. Se ficar preso, o watchdog escolhe o lado oposto.
+        output.leftPower = sweepFirstSide_ * config::kRescueSearchTurnPower;
+        output.rightPower = -output.leftPower;
+        output.status = makeStatus(
+            "rescue_search_continuous",
+            reversedAfterStall
+                ? (sweepFirstSide_ < 0
+                       ? "Pouco avanço na IMU; busca invertida para a esquerda"
+                       : "Pouco avanço na IMU; busca invertida para a direita")
+                : (sweepFirstSide_ < 0
+                       ? "Busca contínua de vítima girando para a esquerda"
+                       : "Busca contínua de vítima girando para a direita"));
         return output;
     }
     if (waitingForSweepFrame_)
@@ -698,11 +903,16 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             return output;
         }
         const VictimType missingType = desiredVictimType_;
-        startVictimSearch(missingType, false);
+        initialAlternatingSweepAllowed_ = false;
+        continuousSearchActive_ = true;
+        continuousSearchProgressWatchActive_ = false;
+        sweepTurnController_.reset();
+        sweepTurnStarted_ = false;
+        waitingForSweepFrame_ = false;
         output.status = makeStatus(
-            missingType == VictimType::Alive ? "rescue_required_alive_search_restarting"
-                                            : "rescue_required_dead_search_restarting",
-            "Vítima obrigatória ainda não confirmada; repetindo a varredura");
+            missingType == VictimType::Alive ? "rescue_required_alive_search_continuous"
+                                            : "rescue_required_dead_search_continuous",
+            "Vítima obrigatória ainda não confirmada; iniciando busca contínua");
         return output;
     }
     if (!sweepReferenceSet_)
@@ -716,19 +926,6 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         sweepAttemptStarted_ = true;
         sweepAttemptStartedAt_ = now;
     }
-    if (ball.candidateVisible)
-    {
-        if (sweepStep_ == SweepStep::First45)
-        {
-            sweepFirstSide_ = candidateSide_;
-        }
-        sweepTurnController_.reset();
-        sweepTurnStarted_ = false;
-        output.status = makeStatus(
-            "rescue_confirming_victim", "Motores parados: confirmando a candidata atual");
-        return output;
-    }
-
     const bool opposite = sweepStep_ == SweepStep::Opposite45 ||
                           sweepStep_ == SweepStep::Opposite75;
     const double limit = (sweepStep_ == SweepStep::First75 ||
@@ -931,6 +1128,13 @@ void RescueRoomMission::startVictimSearch(
     sweepTimeoutCount_ = 0;
     sweepTurnStarted_ = false;
     waitingForSweepFrame_ = false;
+    // Apenas a primeira busca sem vítima na entrada usa headings alternados.
+    // Após encontrar ou recolher qualquer vítima, toda nova busca gira direto.
+    continuousSearchActive_ = !initialAlternatingSweepAllowed_;
+    if (continuousSearchActive_) sweepFirstSide_ = candidateSide_ < 0 ? -1 : 1;
+    continuousSearchProgressWatchActive_ = false;
+    candidateConfirmationActive_ = false;
+    candidateHeadingValid_ = false;
     sweepFrameTimestamp_ = 0.0;
     sweepTurnController_.reset();
     initialVictimAlignmentMission_.reset();
@@ -1021,6 +1225,13 @@ void RescueRoomMission::reset()
     sweepTimeoutCount_ = 0;
     sweepTurnStarted_ = false;
     waitingForSweepFrame_ = false;
+    initialAlternatingSweepAllowed_ = true;
+    continuousSearchActive_ = false;
+    continuousSearchProgressWatchActive_ = false;
+    continuousSearchProgressYaw_ = 0.0;
+    continuousSearchProgressStartedAt_ = {};
+    candidateConfirmationActive_ = false;
+    candidateHeadingValid_ = false;
     finalVerification_ = false;
     storedAliveVictim_ = false;
     collectionRetentionActive_ = false;
@@ -1036,6 +1247,10 @@ void RescueRoomMission::reset()
     collectionRetentionPose_ = {};
     pendingServoPose_ = {};
     servoEnableDeadline_ = {};
+    delicateMotionActive_ = false;
+    delicateMotionLeftDirection_ = 0;
+    delicateMotionRightDirection_ = 0;
+    delicateMotionKickDeadline_ = {};
     depositRoutineKind_ = ServoRoutineKind::Deposit;
     sweepTurnController_.reset();
     initialVictimAlignmentMission_.reset();

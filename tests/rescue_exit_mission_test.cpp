@@ -1,4 +1,5 @@
 #include "obr/rescue_exit_mission.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -15,6 +16,7 @@ struct Fixture
     RescueExitMission mission;
     CameraLineSnapshot bottom;
     ForwardLineSnapshot forward;
+    RescueZoneSnapshot zones;
     Esp32TelemetrySnapshot telemetry;
     std::chrono::steady_clock::time_point now{};
     RescueExitOutput last;
@@ -41,59 +43,97 @@ struct Fixture
             ++bottom.lineSequence;
             ++forward.sequence;
         }
-        last = mission.update(bottom, forward, telemetry, 7, now);
+        last = mission.update(bottom, forward, zones, telemetry, 7, now);
         require(std::abs(last.leftPower) <= 1 && std::abs(last.rightPower) <= 1, "Potências fora da faixa");
         return last;
     }
     void candidate(double angle = 0)
     {
-        forward.exitCandidates[2] = {true, angle, 0.3, 2, 1, true};
+        forward.exitCandidates[2] = {
+            true, angle, 0.3, 2, 1, true, true,
+            std::clamp(90.0 + angle, 0.0, 180.0)};
     }
     void approach()
     {
-        candidate();
+        // O heading inicial representa o corner vermelho proibido na estratégia geométrica.
+        candidate(30.0);
         for (int i = 0; i < 12; ++i)
-            if (tick().leftPower > 0 && last.rightPower > 0) return;
+            if (tick().leftPower > 0 && last.rightPower > 0)
+            {
+                candidate();
+                return;
+            }
         throw std::runtime_error("Não iniciou aproximação");
     }
     void black()
     {
         bottom.normalSteeringValid = bottom.exitLineUnbranched = true;
         bottom.lineControlSource = "fusion";
+        bottom.lineFollowerLeftPower = 0.72;
+        bottom.lineFollowerRightPower = 0.69;
+    }
+    void advanceBottomValidation()
+    {
+        const long long counts = std::llround(
+            config::kRescueExitBottomValidationAdvanceCm *
+            config::kEncoderCountsPerCentimeter);
+        telemetry.leftEncoderCount += counts;
+        telemetry.rightEncoderCount += counts;
     }
 };
 
 void testFreshAcquisitionAndSilverPriority()
 {
     Fixture f;
+    require(f.mission.requiresRescueZoneDetection(),
+            "Detector colorido não iniciou ativo para classificar os corners");
     f.approach();
+    require(!f.mission.requiresRescueZoneDetection(),
+            "Detector colorido separado permaneceu ativo durante o avanço do corner");
     f.black();
-    for (int i = 0; i < 3; ++i) require(!f.tick().completed, "Confirmou cedo demais");
     for (int i = 0; i < 3; ++i) require(!f.tick(1, false).completed, "Contou frame repetido");
-    require(f.tick().completed && f.last.leftPower == 0, "Não confirmou quatro imagens novas");
+    for (int i = 1; i < config::kRescueExitAcquisitionFrames; ++i)
+        require(!f.tick().completed, "Transferiu antes de verificar a prata");
+    require(!f.tick().completed &&
+                f.last.status.phase == "rescue_exit_validating_bottom",
+            "Fusion inferior encerrou a saída antes da janela da prata");
+    f.advanceBottomValidation();
+    require(f.tick().completed && f.last.leftPower == f.bottom.lineFollowerLeftPower,
+            "Não transferiu após validar a janela física da prata");
     Fixture silver;
     silver.approach();
     silver.black();
-    for (int i = 0; i < 3; ++i) silver.tick();
     silver.bottom.courseMarkerConfirmed = true;
     silver.bottom.courseMarker = CourseMarker::Gray;
-    require(!silver.tick().completed && silver.last.status.phase == "rescue_exit_rejected", "Prata perdeu prioridade");
+    require(!silver.tick().completed &&
+                silver.last.status.phase == "rescue_exit_corner_backing",
+            "Prata não iniciou o retorno ao ponto de referência");
     require(silver.last.status.exitRejections.find("permanente") != std::string::npos, "Prata não bloqueou direção");
 }
 
-void testInvalidGeometryAndClassifierStop()
+void testSimplifiedCam0AndClassifierStop()
 {
     Fixture f;
     f.approach();
     f.black();
     f.bottom.exitLineUnbranched = false;
-    for (int i = 0; i < 5; ++i) require(!f.tick().completed, "Aceitou bifurcação");
-    f.bottom.silverClassifierFresh = false;
-    require(f.tick().leftPower == 0 && !f.last.failed, "Não parou sem classificador");
-    require(f.tick(2000).failed, "Não encerrou após perda de sensor");
+    for (int i = 1; i < config::kRescueExitAcquisitionFrames; ++i)
+        require(!f.tick().completed, "Transferiu antes da janela da prata");
+    require(!f.tick().completed, "Fusion encerrou a saída antes de procurar prata");
+    f.advanceBottomValidation();
+    require(f.tick().completed, "A topologia diagnóstica ainda bloqueou a confirmação");
+
+    Fixture invalid;
+    invalid.approach();
+    invalid.black();
+    invalid.bottom.normalSteeringValid = false;
+    for (int i = 0; i < 5; ++i) require(!invalid.tick().completed, "Aceitou Fusion sem direção válida");
+    invalid.bottom.silverClassifierFresh = false;
+    require(invalid.tick(300).leftPower > 0 && !invalid.last.failed,
+            "Oscilação curta da CAM0 bloqueou uma candidata FAR/MID");
 }
 
-void testObscuredReverseIsLimitedToTravel()
+void testObscuredStartsSingleCornerRecovery()
 {
     for (double advance : {8.0, 55.0})
     {
@@ -104,52 +144,226 @@ void testObscuredReverseIsLimitedToTravel()
         f.telemetry.rightEncoderCount += counts;
         f.forward.cameraObscured = true;
         auto output = f.tick();
-        require(output.leftPower == 0 && output.status.phase == "rescue_exit_rejected", "Obstrução não parou");
-        const double target = output.status.targetDistanceCm;
-        require(target <= 40 && target <= advance + 1, "Ré ultrapassa a tentativa");
-        require(f.tick().leftPower == -config::kRescuePostDepositReversePower, "Ré não reutiliza potência");
-        f.telemetry.leftEncoderCount -= std::llround(target * config::kEncoderCountsPerCentimeter) + 1;
-        f.telemetry.rightEncoderCount -= std::llround(target * config::kEncoderCountsPerCentimeter) + 1;
-        require(f.tick().leftPower == 0, "Ré não freou ao alcançar a distância");
-        f.tick(config::kRescueDistanceSettleMs);
-        require(f.last.status.exitReverseCm >= target, "Diagnóstico perdeu a distância recuada");
+        require(output.leftPower == 0 &&
+                    output.status.phase == "rescue_exit_corner_recovery_backing",
+                "Obstrução não iniciou a recuperação do mesmo corner");
+        require(output.status.targetDistanceCm ==
+                    config::kRescueExitCornerCollisionReverseCm,
+                "Recuperação não configurou a ré de 15 cm");
+        require(f.tick().leftPower == -config::kRescueExitExplorationPower,
+                "Ré de recuperação não usou a potência configurada");
     }
 }
 
-void testLostCandidateStopsAndDoesNotSwitch()
+void testLostCandidateResumesGeometryExploration()
 {
     Fixture f;
     f.approach();
     f.forward.exitCandidates = {};
-    f.forward.exitCandidates[4] = {true, 30, 1.0, 2, 1, true};
-    require(f.tick().leftPower == 0, "Continuou sem o alvo travado");
-    require(f.tick(500).status.phase == "rescue_exit_rejected", "Não rejeitou alvo perdido");
+    require(f.tick(200).leftPower > 0, "Não reteve a última curva durante oscilação curta");
+    const auto resumed = f.tick(101);
+    require(resumed.status.phase == "rescue_exit_corner_exploring" &&
+                resumed.leftPower == config::kRescueExitExplorationPower &&
+                resumed.rightPower == config::kRescueExitExplorationPower,
+            "Fusion perdida não devolveu o controle ao avanço reto do corner");
+    const long long counts = std::llround(20.0 * config::kEncoderCountsPerCentimeter);
+    f.telemetry.leftEncoderCount += counts;
+    f.telemetry.rightEncoderCount += counts;
+    require(f.tick().status.phase == "rescue_exit_exploring" &&
+                f.last.leftPower > 0 && f.last.rightPower > 0,
+            "Corner geométrico desistiu antes de avançar ao menos 20 cm");
 }
 
-void testScanTwoRoundsAndPower()
+void testSlowForwardCadenceAndScoreOscillation()
 {
     Fixture f;
-    bool sawSecond = false;
-    int movingTicks = 0;
+    f.tick(1);
+    f.candidate();
+    f.forward.sourceFresh = false;
+    f.forward.ageMs = 160.0;
+    f.tick(160);
+    f.forward.exitCandidates[2].score = 0.18;
+    f.tick(160);
+    f.forward.exitCandidates[2].score = 0.74;
+    const auto acquired = f.tick(160);
+    require(acquired.status.phase == "rescue_exit_corner_exploring" &&
+                acquired.leftPower > 0 && acquired.rightPower > 0,
+            "Cadência de 160 ms ou score oscilante bloqueou a Fusion frontal");
+}
+
+void testScanStartsBoundedActiveExploration()
+{
+    Fixture f;
+    bool sawExploration = false;
+    bool sawFinalScan = false;
     for (int tick = 0; tick < 2000; ++tick)
     {
         const auto output = f.tick();
-        sawSecond = sawSecond || output.status.exitRound == 2;
-        if (output.leftPower > 0)
+        if (output.status.phase == "rescue_exit_turning" ||
+            output.status.phase == "rescue_exit_exploration_turning")
         {
-            require(output.leftPower == config::kRescueSearchTurnPower && output.rightPower == -output.leftPower,
+            require(output.leftPower == 0.0 ||
+                    (std::abs(output.leftPower) == config::kRescueExitTurnPower &&
+                     output.rightPower == -output.leftPower),
                     "Giro mudou a potência do resgate");
-            f.telemetry.yawZDeg = std::remainder(f.telemetry.yawZDeg + 10.0, 360.0);
-            ++movingTicks;
+            if (output.leftPower != 0.0)
+                f.telemetry.yawZDeg = std::remainder(
+                    f.telemetry.yawZDeg + (output.leftPower > 0.0 ? 10.0 : -10.0),
+                    360.0);
         }
-        if (output.failed)
+        if (output.status.phase == "rescue_exit_exploring")
         {
-            require(sawSecond && movingTicks == 72, "Não executou exatamente duas varreduras");
-            require(output.status.exitLastFailure == "Duas rodadas sem saída válida", "Encerrou por falha inesperada");
+            sawExploration = true;
+            require(output.leftPower == config::kRescueExitExplorationPower &&
+                        output.rightPower == config::kRescueExitExplorationPower,
+                    "Exploração não usou 0,80 em linha reta");
+            const long long counts = std::llround(
+                10.0 * config::kEncoderCountsPerCentimeter);
+            f.telemetry.leftEncoderCount += counts;
+            f.telemetry.rightEncoderCount += counts;
+        }
+        sawFinalScan = sawFinalScan || output.status.exitRound == 2;
+        require(output.status.exitExplorationAttempt <=
+                    config::kRescueExitExplorationMaximumAttempts,
+                "Exploração ultrapassou três tentativas");
+        require(output.status.exitExplorationAdvanceCm <=
+                    config::kRescueExitExplorationTotalCm + 1.0,
+                "Exploração ultrapassou 60 cm");
+        if (sawFinalScan) break;
+    }
+    require(sawExploration && sawFinalScan,
+            "Varredura vazia não explorou antes da rodada final");
+}
+
+void testCandidateStopsActiveScan()
+{
+    Fixture f;
+    RescueExitOutput output;
+    for (int tick = 0; tick < 60; ++tick)
+    {
+        output = f.tick();
+        if (output.status.phase == "rescue_exit_geometry_turning" ||
+            output.status.phase == "rescue_exit_turning") break;
+    }
+    require((output.status.phase == "rescue_exit_geometry_turning" ||
+             output.status.phase == "rescue_exit_turning") &&
+                output.leftPower > 0 && output.rightPower < 0,
+            "Busca geométrica não iniciou o giro usado pelo teste");
+    f.candidate(30.0);
+    output = f.tick();
+    require(output.status.phase == "rescue_exit_searching" &&
+                output.leftPower == 0 && output.rightPower == 0,
+            "Primeira candidata não interrompeu imediatamente o giro");
+    f.tick();
+    output = f.tick();
+    require(output.status.phase == "rescue_exit_corner_exploring" &&
+            output.leftPower > 0 && output.rightPower > 0,
+            "Terceiro frame não retomou imediatamente o avanço reto do corner");
+}
+
+void testPartialFusionGuidesExploration()
+{
+    Fixture f;
+    f.tick(1);
+    f.candidate(30.0);
+    f.tick(160);
+    f.forward.exitCandidates = {};
+    f.tick(config::kRescueExitCandidateReviewMs);
+
+    for (int tick = 0; tick < 1000; ++tick)
+    {
+        const auto output = f.tick();
+        if ((output.status.phase == "rescue_exit_turning" ||
+             output.status.phase == "rescue_exit_exploration_turning") &&
+            output.leftPower != 0.0)
+        {
+            f.telemetry.yawZDeg = std::remainder(
+                f.telemetry.yawZDeg + (output.leftPower > 0.0 ? 10.0 : -10.0),
+                360.0);
+        }
+        if (output.status.phase == "rescue_exit_exploring")
+        {
+            require(ImuTurnController::angularDistanceDegrees(
+                        output.status.exitExplorationHeadingDegrees, 30.0) <= 1.0,
+                    "Pista Fusion parcial não definiu o heading da exploração");
             return;
         }
     }
-    throw std::runtime_error("Varredura não terminou");
+    throw std::runtime_error("Pista Fusion parcial não iniciou exploração");
+}
+
+void testBottomFusionTakesOverDuringExploration()
+{
+    Fixture f;
+    for (int tick = 0; tick < 1000; ++tick)
+    {
+        const auto output = f.tick();
+        if ((output.status.phase == "rescue_exit_turning" ||
+             output.status.phase == "rescue_exit_exploration_turning") &&
+            output.leftPower != 0.0)
+        {
+            f.telemetry.yawZDeg = std::remainder(
+                f.telemetry.yawZDeg + (output.leftPower > 0.0 ? 10.0 : -10.0),
+                360.0);
+        }
+        if (output.status.phase == "rescue_exit_exploring")
+        {
+            f.black();
+            RescueExitOutput acquired;
+            for (int frame = 0; frame < config::kRescueExitAcquisitionFrames; ++frame)
+                acquired = f.tick();
+            require(!acquired.completed &&
+                        acquired.status.phase == "rescue_exit_validating_bottom",
+                    "Fusion inferior encerrou a exploração antes da janela da prata");
+            f.advanceBottomValidation();
+            acquired = f.tick();
+            require(acquired.completed &&
+                        acquired.leftPower == f.bottom.lineFollowerLeftPower &&
+                        acquired.rightPower == f.bottom.lineFollowerRightPower,
+                    "Fusion inferior não assumiu durante a exploração");
+            return;
+        }
+    }
+    throw std::runtime_error("Teste não alcançou a exploração ativa");
+}
+
+void testCandidateIsReviewedBeforeAnotherTurn()
+{
+    Fixture f;
+    f.tick(1);
+    f.candidate();
+    require(f.tick(160).leftPower == 0, "Primeira evidência não parou a busca");
+    f.forward.exitCandidates = {};
+    f.forward.exitCandidates[4] = {true, 40, 1.0, 2, 1, true, true, 130.0};
+    require(f.tick(160).leftPower == 0 && f.last.rightPower == 0,
+            "Outra direção roubou a candidata durante a revisão");
+    f.forward.exitCandidates = {};
+    for (int frame = 0; frame < 2; ++frame)
+    {
+        const auto waiting = f.tick(160);
+        require(waiting.status.phase == "rescue_exit_searching" &&
+                    waiting.leftPower == 0 && waiting.rightPower == 0,
+                "Frame perdido iniciou outro giro antes de revisar a candidata");
+    }
+    f.candidate();
+    require(f.tick(160).leftPower == 0, "Segundo frame consistente iniciou avanço cedo");
+    const auto acquired = f.tick(160);
+    require(acquired.status.phase == "rescue_exit_corner_exploring" &&
+            acquired.leftPower > 0 && acquired.rightPower > 0,
+            "Candidata reobservada não retomou o avanço no terceiro frame");
+
+    Fixture expired;
+    expired.tick(1);
+    expired.candidate();
+    expired.tick(160);
+    expired.forward.exitCandidates = {};
+    expired.tick(config::kRescueExitCandidateReviewMs);
+    for (int frame = 0; frame < config::kRescueExitCandidateFrames; ++frame)
+        expired.tick(160);
+    require(expired.last.status.phase == "rescue_exit_searching",
+            "Revisão expirada impediu a retomada da varredura");
+    require(expired.tick().status.phase == "rescue_exit_turning",
+            "Varredura não retomou após imagens vazias novas");
 }
 
 void testHeadingWrapRejectsSameEntrance()
@@ -169,6 +383,31 @@ void testHeadingWrapRejectsSameEntrance()
     }
 }
 
+void testSilverConeAndStraightGeometryAdvance()
+{
+    Fixture silver;
+    silver.approach();
+    silver.bottom.courseMarkerConfirmed = true;
+    silver.bottom.courseMarker = CourseMarker::Gray;
+    require(silver.tick().status.exitRejections.find("±35") != std::string::npos,
+            "Entrada prata não recebeu o cone amplo");
+
+    Fixture curve;
+    curve.approach();
+    curve.forward.exitCandidates[2].guidanceAngleDegrees = 55.0;
+    curve.forward.exitCandidates[2].entryAngleDegrees = 150.0;
+    curve.forward.exitCandidates[2].entryOffsetNormalized = 0.60;
+    const auto distant = curve.tick();
+    require(distant.leftPower == config::kRescueExitExplorationPower &&
+                distant.rightPower == config::kRescueExitExplorationPower,
+            "Fusion frontal desviou o avanço reto do corner distante");
+    curve.forward.exitCandidates[2].entryDepthNormalized = 0.90;
+    const auto near = curve.tick();
+    require(near.leftPower == config::kRescueExitExplorationPower &&
+                near.rightPower == config::kRescueExitExplorationPower,
+            "Fusion frontal desviou o avanço reto do corner próximo");
+}
+
 void testFailuresStayStopped()
 {
     for (int failure = 0; failure < 4; ++failure)
@@ -177,20 +416,22 @@ void testFailuresStayStopped()
         f.approach();
         if (failure == 0) f.telemetry.emergencyStopActive = true;
         if (failure == 1) f.telemetry.sensorFresh = false;
-        if (failure == 2) f.forward.sourceFresh = false;
+        if (failure == 2) f.forward.exitAnalysisActive = false;
         if (failure == 3) f.forward.exitRunSequence = 6;
         require(f.tick().leftPower == 0, "Falha não zerou motores");
         require(f.tick(2000).failed, "Falha persistente não encerrou");
     }
     Fixture stalled;
     stalled.approach();
-    require(stalled.tick(config::kRescueDistanceStallTimeoutMs).failed, "Travamento não encerrou");
+    require(stalled.tick(config::kRescueDistanceStallTimeoutMs).status.phase ==
+                "rescue_exit_corner_recovery_backing",
+            "Travamento não iniciou a recuperação do mesmo corner");
     Fixture total;
     total.tick();
     require(total.tick(config::kRescueExitTotalTimeoutMs).failed, "Tempo total não encerrou");
 }
 
-void testExitBehindAndOneTemporaryRetry()
+void testExitBehind()
 {
     Fixture behind;
     bool reached = false;
@@ -210,39 +451,59 @@ void testExitBehindAndOneTemporaryRetry()
         require(!output.failed, "Busca encerrou antes de observar a saída atrás");
     }
     require(reached, "Não tentou a candidata atrás do robô");
-
-    Fixture retry;
-    int attempts = 0;
-    for (int tick = 0; tick < 2000; ++tick)
-    {
-        const double angle = std::remainder(-retry.telemetry.yawZDeg, 360.0);
-        retry.forward.exitCandidates = {};
-        if (std::abs(angle) < 10) retry.candidate(angle);
-        retry.forward.cameraObscured = retry.last.status.phase == "rescue_exit_candidate";
-        const auto output = retry.tick();
-        if (output.status.phase == "rescue_exit_candidate") ++attempts;
-        if (output.leftPower > 0 && output.rightPower < 0)
-            retry.telemetry.yawZDeg = std::remainder(retry.telemetry.yawZDeg + 10.0, 360.0);
-        if (output.failed)
-        {
-            require(attempts == 2 && output.status.exitRound == 2,
-                    "Rejeição temporária deve liberar exatamente uma nova tentativa");
-            return;
-        }
-    }
-    throw std::runtime_error("Busca repetiu rejeições temporárias indefinidamente");
 }
 
-void testNearConfidenceDoesNotRegressAndSilverWaitIsNotStall()
+void testGeometryStraightAndHandoff()
 {
-    Fixture f;
-    f.approach();
-    f.forward.exitCandidates[2].nearestBand = 2;
-    f.tick();
-    f.forward.exitCandidates[2].nearestBand = 0;
-    f.forward.exitCandidates[2].depthBands = 1;
-    f.forward.exitCandidates[2].tapeValid = false;
-    require(f.tick().leftPower == 0, "Aproximação voltou a aceitar uma massa distante depois do NEAR");
+    Fixture tracking;
+    tracking.approach();
+    tracking.candidate(29.0);
+    const auto curve = tracking.tick();
+    require(curve.status.phase == "rescue_exit_corner_exploring" &&
+                curve.leftPower == config::kRescueExitExplorationPower &&
+                curve.rightPower == config::kRescueExitExplorationPower,
+            "CAM1 desviou o corner geométrico distante");
+    tracking.forward.exitCandidates[2].entryDepthNormalized = 0.90;
+    const auto nearRight = tracking.tick();
+    require(nearRight.leftPower == config::kRescueExitExplorationPower &&
+                nearRight.rightPower == config::kRescueExitExplorationPower,
+            "CAM1 desviou o corner geométrico próximo à direita");
+
+    Fixture straight;
+    straight.approach();
+    const auto centered = straight.tick();
+    require(centered.leftPower == config::kRescueExitExplorationPower &&
+                centered.rightPower == config::kRescueExitExplorationPower,
+            "Corner centralizado não manteve o avanço reto");
+
+    Fixture left;
+    left.approach();
+    left.candidate(30.0);
+    left.forward.exitCandidates[2].guidanceAngleDegrees = 61.0;
+    left.forward.exitCandidates[2].entryDepthNormalized = 0.90;
+    const auto leftCurve = left.tick();
+    require(leftCurve.leftPower == config::kRescueExitExplorationPower &&
+                leftCurve.rightPower == config::kRescueExitExplorationPower,
+            "CAM1 desviou o corner geométrico próximo à esquerda");
+
+    Fixture handoff;
+    handoff.approach();
+    handoff.black();
+    for (int i = 1; i < config::kRescueExitAcquisitionFrames; ++i)
+        require(!handoff.tick().completed, "CAM0 assumiu antes da janela da prata");
+    require(!handoff.tick().completed,
+            "CAM0 encerrou a saída antes da janela física da prata");
+    handoff.advanceBottomValidation();
+    require(handoff.tick().completed,
+            "CAM0 não assumiu após a janela física da prata");
+
+    Fixture obscured;
+    obscured.approach();
+    obscured.forward.cameraObscured = true;
+    require(obscured.tick().status.phase == "rescue_exit_corner_recovery_backing" &&
+            obscured.last.leftPower == 0 && obscured.last.rightPower == 0,
+            "Obstrução não iniciou a recuperação segura do corner");
+
     Fixture silver;
     silver.approach();
     silver.bottom.silverCandidateDetected = true;
@@ -250,6 +511,7 @@ void testNearConfidenceDoesNotRegressAndSilverWaitIsNotStall()
     silver.bottom.silverCandidateDetected = false;
     require(silver.tick().leftPower > 0 && !silver.last.failed, "Espera deliberada foi tratada como travamento");
 }
+
 }
 
 int main()
@@ -257,14 +519,20 @@ int main()
     try
     {
         testFreshAcquisitionAndSilverPriority();
-        testInvalidGeometryAndClassifierStop();
-        testObscuredReverseIsLimitedToTravel();
-        testLostCandidateStopsAndDoesNotSwitch();
-        testScanTwoRoundsAndPower();
+        testSimplifiedCam0AndClassifierStop();
+        testObscuredStartsSingleCornerRecovery();
+        testLostCandidateResumesGeometryExploration();
+        testSlowForwardCadenceAndScoreOscillation();
+        testScanStartsBoundedActiveExploration();
+        testCandidateStopsActiveScan();
+        testPartialFusionGuidesExploration();
+        testBottomFusionTakesOverDuringExploration();
+        testCandidateIsReviewedBeforeAnotherTurn();
         testHeadingWrapRejectsSameEntrance();
+        testSilverConeAndStraightGeometryAdvance();
         testFailuresStayStopped();
-        testExitBehindAndOneTemporaryRetry();
-        testNearConfidenceDoesNotRegressAndSilverWaitIsNotStall();
+        testExitBehind();
+        testGeometryStraightAndHandoff();
         std::cout << "rescue_exit_mission_test: OK\n";
     }
     catch (const std::exception& error)

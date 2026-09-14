@@ -53,9 +53,9 @@ Para continuar melhorando o marcador:
 6. calibre confiança, margem e confirmação temporal somente depois dessas
    medições.
 
-Elevar apenas o limiar de 70% não é uma correção comprovada: já houve falso
-positivo acima de 85%, e ainda não foi medida a distribuição dos positivos
-reais fora do treino.
+Elevar apenas o limiar não substitui a validação: já houve falso positivo acima
+de 85%. O limite operacional foi ajustado para 92% depois que a fita verdadeira
+permaneceu acima desse valor e um reflexo roxo chegou a 89,8% na pista.
 
 ## Fotografar na Raspberry Pi
 
@@ -131,9 +131,9 @@ Depois do treinamento, `vision.silver_detection.SilverLineDetector` carrega o
 modelo correspondente com `from_camera_model("down")` ou
 `from_camera_model("forward")`. `detect(frame)` retorna `detected`, a classe
 vencedora, as probabilidades e a margem da faixa prata sobre a concorrente mais
-forte. Os limites iniciais são 70% de confiança e 15 pontos percentuais de
-margem. A busca roda a 6 FPS; após o primeiro positivo, a confirmação roda a
-15 FPS e exige quatro positivos consecutivos. Calibre esses valores com as
+forte. Os limites atuais são 92% de confiança e 15 pontos percentuais de
+margem. A busca e a confirmação rodam em até 30 FPS e exigem quatro positivos
+consecutivos. Calibre esses valores com as
 métricas e falsos positivos do dataset real antes de operar a missão principal.
 
 ## Validação antes de operar

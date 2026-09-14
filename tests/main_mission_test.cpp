@@ -376,12 +376,12 @@ void testNormalLineFollowerCompensatesRampPower()
 {
     MissionFixture uphillFixture;
     uphillFixture.telemetry.rampAngleDeg =
-        config::kLineFollowingUphillThresholdDeg;
+        config::kLineFollowingUphillThresholdDeg - 0.1;
     RobotSnapshot snapshot = uphillFixture.update(normalLineVision(0.75, 0.75));
     require(
-        closeTo(snapshot.left, 0.80) && closeTo(snapshot.right, 0.80) &&
+        closeTo(snapshot.left, 0.75) && closeTo(snapshot.right, 0.75) &&
             !snapshot.encoderSynchronizationAllowed,
-        "A partir de 5 graus, a subida deve limitar a potência em 0,80.");
+        "Abaixo de 4 graus, a subida não deve alterar a potência.");
 
     MissionFixture steepUphillFixture;
     steepUphillFixture.telemetry.rampAngleDeg =
@@ -390,7 +390,7 @@ void testNormalLineFollowerCompensatesRampPower()
     require(
         closeTo(snapshot.left, 0.85) && closeTo(snapshot.right, 0.85) &&
             !snapshot.encoderSynchronizationAllowed,
-        "A partir de 10 graus, a subida deve liberar até 0,85.");
+        "A partir de 4 graus, a subida deve liberar até 0,85.");
 
     MissionFixture downhillFixture;
     downhillFixture.telemetry.rampAngleDeg =
@@ -408,7 +408,7 @@ void testNormalLineFollowerCompensatesRampPower()
     require(
         closeTo(snapshot.left, 0.70) && closeTo(snapshot.right, 0.76) &&
             !snapshot.encoderSynchronizationAllowed,
-        "Inclinação imediatamente abaixo de 5 graus não deve acelerar.");
+        "Inclinação imediatamente abaixo de 4 graus não deve acelerar.");
 }
 
 void testRampCompensationRequiresFreshValidImu()
@@ -1495,7 +1495,7 @@ void testExitAcquisitionRestoresFollower()
         ForwardLineSnapshot forward;
         forward.sourceFresh = forward.exitAnalysisActive = true;
         forward.exitRunSequence = state.snapshot().autonomousRunSequence;
-        forward.exitCandidates[2] = {true, 0.0, 0.5, 2, 1, true};
+        forward.exitCandidates[2] = {true, 30.0, 0.5, 2, 1, true, true, 90.0};
         bool acquired = false;
         for (int frame = 1; frame <= 20; ++frame)
         {
@@ -1507,6 +1507,10 @@ void testExitAcquisitionRestoresFollower()
                 controller.update(state, telemetry, true, bottom, forward, {});
             const auto snapshot = state.snapshot();
             acquired = acquired || snapshot.autonomousStatus.phase == "rescue_exit_acquired";
+            if (snapshot.autonomousStatus.phase == "rescue_exit_acquired")
+                require(closeTo(snapshot.left, bottom.lineFollowerLeftPower) &&
+                            closeTo(snapshot.right, bottom.lineFollowerRightPower),
+                        "O handoff deve aplicar o Fusion inferior sem ciclo parado");
             if (acquired && snapshot.autonomousStatus.phase == "line_following")
             {
                 requireFollowingLine(snapshot, "Saída deve devolver o controle à CAM0");
@@ -1542,13 +1546,73 @@ void testExitFailureDiagnosticSurvivesStop()
             "Stop apagou o diagnóstico de falha da saída");
 }
 
+void testPostExitRecoveryUsesFrontDirectionAndReturnsToBottom()
+{
+    RobotState state;
+    state.setAutonomousMission(AutonomousMission::MainMission);
+    state.startAutonomous();
+    LineCourseMission mission;
+    auto telemetry = readyTelemetry();
+    const auto frontLeft = forwardVision(1, -0.70);
+
+    auto lost = virtualBlindVision(1, false);
+    lost.gapValidationDecision = "LOST";
+    mission.update(state, telemetry, true, lost, frontLeft, true);
+    lost.lineSequence = 2;
+    mission.update(state, telemetry, true, lost, frontLeft, true);
+    auto snapshot = state.snapshot();
+    require(closeTo(snapshot.left, -config::kForwardAssistSearchSpinPower) &&
+                closeTo(snapshot.right, config::kForwardAssistSearchSpinPower) &&
+                snapshot.autonomousStatus.phase == "forward_line_recovery",
+            "Perda da CAM0 não girou para o lado indicado pela CAM1");
+
+    auto recovered = bottomVision(3, true, true, "LEFT");
+    mission.update(state, telemetry, true, recovered, frontLeft, true);
+    recovered.lineSequence = 4;
+    mission.update(state, telemetry, true, recovered, frontLeft, true);
+    snapshot = state.snapshot();
+    require(closeTo(snapshot.left, recovered.lineFollowerLeftPower) &&
+                closeTo(snapshot.right, recovered.lineFollowerRightPower),
+            "CAM0 recuperada não reassumiu após dois frames normais");
+}
+
+void testRescueExitKeepsVisionGateActiveInManualMode()
+{
+    RobotState state;
+    MissionController controller;
+    state.setAutonomousMission(AutonomousMission::RescueExit);
+
+    state.start();
+    require(
+        controller.requiresExitVision(state.snapshot()),
+        "SAÍDA selecionada deve preservar o overlay no modo Manual");
+
+    state.drive(0.35, -0.25);
+    const auto manual = state.snapshot();
+    require(
+        closeTo(manual.left, 0.35) && closeTo(manual.right, -0.25),
+        "O gate visual da saída não deve substituir os comandos manuais");
+
+    state.stop();
+    require(
+        !controller.requiresExitVision(state.snapshot()),
+        "Stop deve fechar imediatamente o gate visual da saída");
+
+    state.start();
+    state.emergencyStop();
+    require(
+        !controller.requiresExitVision(state.snapshot()),
+        "E-Stop deve fechar o gate visual da saída");
+}
+
 void testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision()
 {
     const auto directory = std::filesystem::temp_directory_path();
     const auto frontPath = directory / "obr_exit_front_test.json";
     const auto bottomPath = directory / "obr_exit_bottom_test.json";
     CameraMonitor monitor(frontPath.string(), {}, {}, bottomPath.string());
-    const auto publish = [&](double silverAge, const std::string& angle, bool exitActive) {
+    const auto publish = [&](double silverAge, const std::string& angle, bool exitActive,
+                             const std::string& guidanceAngle = "78") {
         const double now = std::chrono::duration<double>(
             std::chrono::system_clock::now().time_since_epoch()).count();
         std::ofstream front(frontPath);
@@ -1563,7 +1627,13 @@ void testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision()
         {
             if (sector) front << ',';
             front << "\"sector" << sector << "\":{\"visible\":true,\"txDegrees\":" << angle
-                  << ",\"score\":0.2,\"depthBands\":2,\"nearestBand\":1,\"tapeValid\":false}";
+                  << ",\"score\":0.2,\"depthBands\":2,\"nearestBand\":1,\"tapeValid\":false,"
+                     "\"guidanceValid\":true,\"guidanceAngleDegrees\":" << guidanceAngle
+                  << ",\"entryAngleDegrees\":90,\"entryOffsetNormalized\":0,"
+                     "\"entryDepthNormalized\":0.75,"
+                     "\"blockedByColor\":false,\"grayNoiseLikely\":false,"
+                     "\"solidBlack\":true,"
+                     "\"entryPoint\":{\"x\":480,\"y\":400}}";
         }
         front << "}}";
         std::ofstream bottom(bottomPath);
@@ -1583,6 +1653,9 @@ void testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision()
             "Contrato frontal da saída não foi lido corretamente");
     require(monitor.lineSnapshot().silverClassifierFresh && monitor.lineSnapshot().exitLineUnbranched,
             "Contrato inferior da saída não foi lido corretamente");
+    publish(0.3, "-12", true);
+    require(monitor.lineSnapshot().sourceFresh && monitor.lineSnapshot().silverClassifierFresh,
+            "Janela própria de 500 ms da prata dependeu do timeout de 125 ms da CAM0");
     publish(1.0, "-12", true);
     require(monitor.lineSnapshot().sourceFresh && !monitor.lineSnapshot().silverClassifierFresh,
             "Classificador vencido deve bloquear saída sem invalidar o segue-faixa");
@@ -1592,6 +1665,13 @@ void testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision()
         const auto invalid = monitor.forwardLineSnapshot();
         require(invalid.sourceFresh && !invalid.exitAnalysisActive,
                 "Candidata inválida não pode autorizar a saída nem derrubar o contrato normal");
+    }
+    for (const auto guidanceAngle : {"null", "181", "NaN"})
+    {
+        publish(0.0, "0", true, guidanceAngle);
+        const auto invalid = monitor.forwardLineSnapshot();
+        require(invalid.sourceFresh && !invalid.exitAnalysisActive,
+                "Ângulo near/far inválido autorizou a saída");
     }
     publish(0.0, "0", false);
     require(!monitor.forwardLineSnapshot().exitAnalysisActive, "Gate fechado liberou candidata");
@@ -1679,6 +1759,7 @@ int main(int argc, char** argv)
         }
         testExitAcquisitionRestoresFollower();
         testExitFailureDiagnosticSurvivesStop();
+        testRescueExitKeepsVisionGateActiveInManualMode();
         testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision();
         if (argc > 1 && std::string(argv[1]) == "--exit-only")
         {
@@ -1706,6 +1787,7 @@ int main(int argc, char** argv)
         testVisualSearchRejectsUnvalidatedFusionWithoutNear();
         testForwardValidatorNeverOverridesBottomCommands();
         testStaleForwardDoesNotBlockNativeRecoveryOrNormalLine();
+        testPostExitRecoveryUsesFrontDirectionAndReturnsToBottom();
         testGapAndGreenKeepNativeAuthorityWithoutImu();
         testForwardIpcAcceptsGeometryWithoutPowersAndRejectsInvalidSources();
         testUnavailableCameraStopsMission();

@@ -15,9 +15,9 @@ MODELS_DIR = PROJECT_ROOT / "assets" / "models"
 CAMERA_ROLES = ("down", "forward")
 FULL_FRAME_ROI = (0.0, 0.0, 1.0, 1.0)
 
-# Estes limites são iniciais e devem ser calibrados com o conjunto de teste real.
-# Exigir confiança e vantagem sobre as outras classes reduz falsos positivos.
-DEFAULT_SILVER_CONFIDENCE = 0.70
+# O limite de 92% mantém distância do reflexo roxo que chegou a 89,8% na pista,
+# sem exigir os 95% que dificultaram a confirmação da fita prata fina.
+DEFAULT_SILVER_CONFIDENCE = 0.92
 DEFAULT_SILVER_MARGIN = 0.15
 
 # A busca e a confirmação usam até 30 inferências por segundo. Essa cadência
@@ -27,6 +27,9 @@ DEFAULT_SILVER_MARGIN = 0.15
 SILVER_SEARCH_FPS = 30.0
 SILVER_CONFIRMATION_FPS = 30.0
 SILVER_CONFIRMATION_FRAMES = 4
+# Durante a saída, dois frames reduzem a distância percorrida sobre a entrada
+# cinza. Fora desse modo, os quatro frames originais continuam preservados.
+EXIT_SILVER_CONFIRMATION_FRAMES = 2
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,7 @@ class SilverShadowMonitor:
         self.last_detected = False
         self.last_marker_confirmed = False
         self.confirmation_frames = 0
+        self.required_confirmation_frames = SILVER_CONFIRMATION_FRAMES
         self.target_fps = SILVER_SEARCH_FPS
         self.last_inference_monotonic = None
         if detector is not None:
@@ -211,11 +215,25 @@ class SilverShadowMonitor:
         )
         return cls(detector=detector)
 
-    def process(self, frame_bgr, sequence, timestamp, monotonic_time=None):
-        """Executa a inferência na cadência atual e confirma quatro positivos."""
+    def process(
+        self,
+        frame_bgr,
+        sequence,
+        timestamp,
+        monotonic_time=None,
+        required_confirmation_frames=SILVER_CONFIRMATION_FRAMES,
+    ):
+        """Executa a inferência e confirma a quantidade solicitada de positivos."""
 
         if self.detector is None:
             return self.status
+
+        required_frames = max(1, int(required_confirmation_frames))
+        if required_frames != self.required_confirmation_frames:
+            # A troca de missão não pode reaproveitar positivos de outro modo.
+            self.required_confirmation_frames = required_frames
+            self.confirmation_frames = 0
+            self.last_marker_confirmed = False
 
         current_monotonic = (
             time.monotonic()
@@ -244,14 +262,14 @@ class SilverShadowMonitor:
 
         if result.detected:
             self.confirmation_frames = min(
-                SILVER_CONFIRMATION_FRAMES,
+                required_frames,
                 self.confirmation_frames + 1,
             )
         else:
             self.confirmation_frames = 0
 
         marker_confirmed = (
-            self.confirmation_frames >= SILVER_CONFIRMATION_FRAMES
+            self.confirmation_frames >= required_frames
         )
         self.target_fps = (
             SILVER_CONFIRMATION_FPS
@@ -273,7 +291,7 @@ class SilverShadowMonitor:
             "silverShadowTimestamp": float(timestamp),
             "silverShadowError": "",
             "silverConfirmationFrames": self.confirmation_frames,
-            "silverConfirmationRequiredFrames": SILVER_CONFIRMATION_FRAMES,
+            "silverConfirmationRequiredFrames": required_frames,
             "silverInferenceTargetFps": self.target_fps,
             "courseMarkerConfirmed": marker_confirmed,
             "courseMarker": "GRAY" if marker_confirmed else "NONE",
@@ -281,7 +299,8 @@ class SilverShadowMonitor:
 
         if marker_confirmed and not self.last_marker_confirmed:
             print(
-                "Entrada na área de resgate confirmada por quatro frames de prata.",
+                "Entrada na área de resgate confirmada por "
+                f"{required_frames} frames de prata.",
                 flush=True,
             )
 

@@ -10,6 +10,38 @@ PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 FORWARD_CAMERA_PID=""
 ROBOT_PID=""
 
+run_forward_camera_supervisor() {
+  local camera_pid=""
+  local camera_status=0
+
+  stop_supervised_camera() {
+    trap - EXIT INT TERM
+    if [[ -n "$camera_pid" ]] && kill -0 "$camera_pid" >/dev/null 2>&1; then
+      kill "$camera_pid"
+      wait "$camera_pid" >/dev/null 2>&1 || true
+    fi
+    exit 0
+  }
+
+  trap stop_supervised_camera EXIT INT TERM
+  while true; do
+    OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
+    OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS="${OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS:-0}" \
+      "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
+    camera_pid="$!"
+    set +e
+    wait "$camera_pid"
+    camera_status="$?"
+    set -e
+    camera_pid=""
+    if [[ "$camera_status" -eq 0 ]]; then
+      return 0
+    fi
+    echo "Forward camera exited with status $camera_status; restarting in 1 second" >&2
+    sleep 1
+  done
+}
+
 if [[ ! -x "$PYTHON_BIN" ]]; then
   # O ambiente virtual é preferido, mas uma instalação sem venv pode usar o
   # Python do sistema quando todas as dependências já estiverem disponíveis.
@@ -61,9 +93,7 @@ if [[ -f "$FORWARD_CAMERA_SCRIPT" ]]; then
   # As medianas cromáticas ficam desligadas por padrão. O operador pode
   # habilitá-las temporariamente por variável de ambiente para coletar amostras.
   pkill -f "$FORWARD_CAMERA_PATTERN" >/dev/null 2>&1 || true
-  OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
-  OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS="${OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS:-0}" \
-    "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
+  run_forward_camera_supervisor &
   FORWARD_CAMERA_PID="$!"
 else
   echo "Forward camera script not found: $FORWARD_CAMERA_SCRIPT"
