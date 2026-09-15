@@ -151,7 +151,7 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
             "O corte por yaw deve iniciar a estabilização.");
 
     output = mission.update(
-        ball(5.0, 40.0, 2.0),
+        ball(9.0, 40.0, 2.0),
         stoppedTelemetry(2.0),
         kTargetSequence,
         start + std::chrono::milliseconds(

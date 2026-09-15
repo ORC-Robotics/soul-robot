@@ -130,7 +130,12 @@ RescueRoomOutput RescueRoomMission::updateStep(
     if (requiresBallDetection() && ball.sourceFresh &&
         ball.targetSequence == expectedTargetSequence)
     {
-        const double tx = matchesVictim(ball, desiredVictimType_, expectedTargetSequence)
+        const bool matchingVictim =
+            matchesVictim(ball, desiredVictimType_, expectedTargetSequence) ||
+            (finalVerification_ &&
+             (matchesVictim(ball, VictimType::Alive, expectedTargetSequence) ||
+              matchesVictim(ball, VictimType::Dead, expectedTargetSequence)));
+        const double tx = matchingVictim
                               ? ball.txDegrees : ball.candidateTxDegrees;
         if ((ball.candidateVisible || ball.detected) && std::isfinite(tx) &&
             std::abs(tx) <= 45.0 && tx != 0.0)
@@ -495,6 +500,12 @@ RescueRoomOutput RescueRoomMission::updateStep(
         output.failed = triangle.failed;
         output.internalObjectStored = storedAliveVictim_;
         applyCollectionRetention(output);
+        if (triangle.lockedHeadingUpdated)
+        {
+            // Preserva o yaw do último triângulo mesmo após a ré e a
+            // varredura final, que podem mudar a orientação atual do robô.
+            lastTriangleHeadingDegrees_ = triangle.lockedHeading;
+        }
         if (triangle.failed)
         {
             fail(triangle.status);
@@ -614,7 +625,7 @@ RescueRoomOutput RescueRoomMission::updateStep(
             startVictimSearch(VictimType::Alive, true);
             output.status = makeStatus(
                 "rescue_final_verification",
-                "Entregas obrigatórias concluídas; verificando vítimas vivas extras");
+                "Entregas obrigatórias concluídas; iniciando uma volta por vítimas extras");
         }
         return output;
     }
@@ -723,14 +734,29 @@ RescueRoomOutput RescueRoomMission::updateSearch(
 {
     RescueRoomOutput output;
     output.internalObjectStored = storedAliveVictim_;
-    if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
+    // Esta é a pose já validada da sequência com armazenamento imediatamente
+    // antes de o pulso avançar para 180°. Ela recolhe o conjunto durante os
+    // giros de busca e permanece aplicada até uma vítima ser confirmada.
+    output.servoPoseRequested = true;
+    output.servoPose = {
+        config::kServoRoutineArmStorageTransitionDegrees,
+        config::kServoRoutineWristStorageClearanceDegrees,
+        config::kServoRoutineGripperClosedDegrees};
+    const bool matchingVictim =
+        matchesVictim(ball, desiredVictimType_, expectedTargetSequence) ||
+        (finalVerification_ &&
+         (matchesVictim(ball, VictimType::Alive, expectedTargetSequence) ||
+          matchesVictim(ball, VictimType::Dead, expectedTargetSequence)));
+    if (matchingVictim)
     {
         // Depois que qualquer vítima foi encontrada, uma eventual busca
         // posterior nunca volta aos headings alternados da entrada.
         initialAlternatingSweepAllowed_ = false;
         continuousSearchProgressWatchActive_ = false;
         sweepTurnController_.reset();
-        carriedVictimType_ = desiredVictimType_;
+        carriedVictimType_ = ball.type == "black_ball"
+                                 ? VictimType::Dead
+                                 : VictimType::Alive;
         initialVictimAlignmentMission_.reset();
         phase_ = Phase::AlignVictim;
         output.status = makeStatus(
@@ -768,6 +794,48 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             "rescue_search_waiting_sensors", "Busca parada: aguardando YOLO e IMU atuais");
         return output;
     }
+    if (finalVerification_)
+    {
+        if (!finalSearchStarted_)
+        {
+            finalSearchStarted_ = true;
+            finalSearchStartedAt_ = now;
+            finalSearchLastYaw_ = telemetry.yawZDeg;
+        }
+        else
+        {
+            // Soma somente o avanço no sentido da varredura. Um retorno breve
+            // para rever uma candidata não pode fingir que um setor foi coberto.
+            const double yawDelta = std::remainder(
+                telemetry.yawZDeg - finalSearchLastYaw_, 360.0);
+            finalSearchAccumulatedDegrees_ = std::max(
+                0.0,
+                finalSearchAccumulatedDegrees_ +
+                    yawDelta * static_cast<double>(sweepFirstSide_));
+            finalSearchLastYaw_ = telemetry.yawZDeg;
+        }
+
+        const bool rotationCompleted =
+            finalSearchAccumulatedDegrees_ >=
+            config::kRescueFinalVictimSearchDegrees;
+        const bool searchTimedOut =
+            now - finalSearchStartedAt_ >= std::chrono::milliseconds(
+                config::kRescueFinalVictimSearchTimeoutMs);
+        if (rotationCompleted || searchTimedOut)
+        {
+            phase_ = Phase::Completed;
+            continuousSearchActive_ = false;
+            continuousSearchProgressWatchActive_ = false;
+            output.completed = true;
+            output.status = makeStatus(
+                "rescue_room_completed",
+                rotationCompleted
+                    ? "Uma volta completa sem nova vítima; iniciando busca da saída"
+                    : "Tempo da busca final esgotado; iniciando busca da saída",
+                100.0);
+            return output;
+        }
+    }
     if (ball.candidateVisible)
     {
         if (!sweepAttemptStarted_)
@@ -775,7 +843,10 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             sweepAttemptStarted_ = true;
             sweepAttemptStartedAt_ = now;
         }
-        if (sweepStep_ == SweepStep::First45) sweepFirstSide_ = candidateSide_;
+        if (!continuousSearchActive_ && sweepStep_ == SweepStep::First45)
+        {
+            sweepFirstSide_ = candidateSide_;
+        }
         candidateConfirmationActive_ = true;
         candidateLastSeenAt_ = now;
     }
@@ -792,7 +863,7 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             // Se a candidata piscar, retorna ao último heading visto em vez de retomar a varredura.
             const double remaining = std::remainder(
                 candidateHeadingDegrees_ - telemetry.yawZDeg, 360.0);
-            if (std::abs(remaining) > config::kBallApproachStartToleranceDegrees)
+            if (std::abs(remaining) > config::kVictimApproachStartToleranceDegrees)
             {
                 output.leftPower = remaining < 0.0
                                        ? -config::kRescueSearchTurnPower
@@ -838,6 +909,13 @@ RescueRoomOutput RescueRoomMission::updateSearch(
                 // robô pode estar pressionando uma parede. O sentido oposto é
                 // aplicado imediatamente e recebe uma nova janela de progresso.
                 sweepFirstSide_ = -sweepFirstSide_;
+                if (finalVerification_)
+                {
+                    // Depois de inverter, exige uma nova volta completa nesse
+                    // sentido para não deixar um setor sem observar.
+                    finalSearchAccumulatedDegrees_ = 0.0;
+                    finalSearchLastYaw_ = telemetry.yawZDeg;
+                }
                 continuousSearchProgressYaw_ = telemetry.yawZDeg;
                 continuousSearchProgressStartedAt_ = now;
                 reversedAfterStall = true;
@@ -863,7 +941,12 @@ RescueRoomOutput RescueRoomMission::updateSearch(
                        : "Pouco avanço na IMU; busca invertida para a direita")
                 : (sweepFirstSide_ < 0
                        ? "Busca contínua de vítima girando para a esquerda"
-                       : "Busca contínua de vítima girando para a direita"));
+                       : "Busca contínua de vítima girando para a direita"),
+            finalVerification_
+                ? std::min(100.0,
+                           finalSearchAccumulatedDegrees_ * 100.0 /
+                               config::kRescueFinalVictimSearchDegrees)
+                : 0.0);
         return output;
     }
     if (waitingForSweepFrame_)
@@ -885,13 +968,6 @@ RescueRoomOutput RescueRoomMission::updateSearch(
             output.status = makeStatus(
                 "rescue_search_blocked", "Busca interrompida: as quatro tentativas excederam o tempo limite");
             fail(output.status);
-            return output;
-        }
-        if (finalVerification_ && desiredVictimType_ == VictimType::Alive)
-        {
-            startVictimSearch(VictimType::Dead, true);
-            output.status = makeStatus(
-                "rescue_final_dead_verification", "Nenhuma vítima viva extra; verificando vítimas mortas extras");
             return output;
         }
         if (finalVerification_)
@@ -1121,6 +1197,10 @@ void RescueRoomMission::startVictimSearch(
     }
     desiredVictimType_ = type;
     finalVerification_ = finalVerification;
+    finalSearchStarted_ = false;
+    finalSearchLastYaw_ = 0.0;
+    finalSearchAccumulatedDegrees_ = 0.0;
+    finalSearchStartedAt_ = {};
     ++ballTargetGeneration_;
     sweepStep_ = SweepStep::First45;
     sweepReferenceSet_ = false;
@@ -1130,7 +1210,8 @@ void RescueRoomMission::startVictimSearch(
     waitingForSweepFrame_ = false;
     // Apenas a primeira busca sem vítima na entrada usa headings alternados.
     // Após encontrar ou recolher qualquer vítima, toda nova busca gira direto.
-    continuousSearchActive_ = !initialAlternatingSweepAllowed_;
+    continuousSearchActive_ = finalVerification_ ||
+                              !initialAlternatingSweepAllowed_;
     if (continuousSearchActive_) sweepFirstSide_ = candidateSide_ < 0 ? -1 : 1;
     continuousSearchProgressWatchActive_ = false;
     candidateConfirmationActive_ = false;
@@ -1195,6 +1276,11 @@ bool RescueRoomMission::requiresRescueZoneDetection() const
            triangleMission_.requiresRescueZoneDetection();
 }
 
+double RescueRoomMission::lastTriangleHeadingDegrees() const
+{
+    return lastTriangleHeadingDegrees_;
+}
+
 std::uint64_t RescueRoomMission::ballTargetSequence(
     std::uint64_t autonomousRunSequence) const
 {
@@ -1205,6 +1291,10 @@ std::uint64_t RescueRoomMission::ballTargetSequence(
 
 const char* RescueRoomMission::ballTargetType() const
 {
+    if (finalVerification_)
+    {
+        return "any";
+    }
     return desiredVictimType_ == VictimType::Alive
                ? "silver_ball"
                : "black_ball";
@@ -1233,6 +1323,10 @@ void RescueRoomMission::reset()
     candidateConfirmationActive_ = false;
     candidateHeadingValid_ = false;
     finalVerification_ = false;
+    finalSearchStarted_ = false;
+    finalSearchLastYaw_ = 0.0;
+    finalSearchAccumulatedDegrees_ = 0.0;
+    finalSearchStartedAt_ = {};
     storedAliveVictim_ = false;
     collectionRetentionActive_ = false;
     servoMotionStarted_ = false;
@@ -1241,6 +1335,7 @@ void RescueRoomMission::reset()
     deliveredAliveVictims_ = 0;
     deliveredDeadVictims_ = 0;
     ballTargetGeneration_ = 0;
+    lastTriangleHeadingDegrees_ = std::numeric_limits<double>::quiet_NaN();
     sweepFrameTimestamp_ = 0.0;
     postDepositReverseDistanceCm_ =
         config::kRescuePostDepositReverseDistanceCm;

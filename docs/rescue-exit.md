@@ -6,32 +6,44 @@ controle da missão de resgate, com as distâncias já configuradas.
 
 ## Busca geométrica pelos corners
 
-Ao terminar a ré do triângulo vermelho, a missão salva a posição atual como
-origem aproximada e o yaw atual como o corner vermelho proibido. A partir dele,
-procura o triângulo verde somente em headings discretos separados por 74°, 106°
-e 180°, considerando os dois sentidos. Antes do avanço reto, o giro de ida recebe
-mais 15°; o retorno ao heading central continua exato. Os dois corners que não pertencem aos
-triângulos viram as únicas tentativas normais de saída.
+O heading travado na centralização do último triângulo, vermelho ou verde,
+define o yaw relativo 0°. Na missão principal, ele permanece salvo mesmo se a
+verificação final de vítimas girar o robô após a ré. No modo isolado, o yaw no
+instante da partida assume essa referência. A busca aponta para +100°, +170°
+e −96° relativos a ela. Se confirmar um triângulo vermelho ou verde em qualquer
+alvo, descarta aquela direção e passa à próxima. Após três imagens novas sem
+triângulo confirmado, gira para o mesmo yaw e inicia a reta, sem acréscimo
+angular. Headings já rejeitados são pulados; o retorno restaura o yaw 0° relativo.
 
 Cada tentativa retorna pela distância realmente medida nos encoders e restaura
 o yaw da origem antes de apontar para o segundo corner. Após três imagens novas
 sem triângulo confirmado, o robô avança reto naquele corner mesmo que ainda não
 exista Fusion. A CAM1 pode confirmar visualmente a faixa antes desse avanço, mas
-não corrige os motores durante o trajeto: a CAM0 passa a guiar somente depois de
-quatro frames Fusion válidos, mas a missão continua supervisionando a prata.
+não corrige os motores durante o trajeto. Quando a CAM0 vê preto próximo sem
+`Fusion`, o robô pausa a reta e executa dois pivôs contínuos com potência 0,75.
+O yaw do corner escolhe o primeiro sentido: em +170° (quina direita), começa
+girando à esquerda; em +100° ou -96° (lado esquerdo), começa à direita. Após
+650 ms, inverte imediatamente por mais 650 ms. A CAM0 procura `Fusion` novo durante
+todo o giro; se não houver, recua e tenta outro yaw.
+O `Fusion` só conta quando a CAM0 também confirma uma faixa única, sem T, X ou Y.
+No primeiro `Fusion` válido, o robô avança 3 cm reto, medidos pelos dois
+encoders. Depois volta aos pivôs; se a CAM0 ainda vê a faixa única, ela
+passa a guiar as rodas. Quatro frames novos iniciam a validação da saída;
+se a faixa aparecer como T ou o controle passar a `fusion-gap-reacquire`
+durante o cruzamento, isso não cancela a validação, mantendo a prioridade da prata.
 Enquanto avança no corner, a análise pesada
 de candidatas frontais também fica suspensa; permanece apenas a proteção visual.
 Isso evita oscilações entre headings frontais e reduz o uso de CPU.
-Se a geometria não puder ser confirmada, se os dois corners falharem ou se o
+Se a geometria não puder ser confirmada, se os três yaws falharem ou se o
 retorno perder a referência, o robô volta ao yaw central salvo e reinicia a
 própria sequência geométrica. A varredura angular anterior não é mais ativada.
 Bloqueios temporários são liberados; entrada prata e triângulos confirmados
-continuam proibidos.
+continuam proibidos. Após confirmar prata, a missão permite concluir somente
+o recuo e os giros de reposicionamento; um novo avanço continua bloqueado se
+a prata permanecer sob a CAM0.
 
-Na missão completa, o yaw observado na entrada prata é salvo com sentido
-invertido. Essa referência não bloqueia nenhum heading: ela apenas faz a
-primeira tentativa usar o corner candidato angularmente mais distante. O outro
-corner permanece disponível caso seja necessário, tolerando drift da IMU.
+Na missão completa, os alvos são testados na ordem +100°, +170° e −96° desde
+o último triângulo centralizado. A entrada prata não muda essa ordem.
 
 A CAM1 procura preto por contraste local no frame inteiro e organiza as
 continuações em cinco setores e três faixas de profundidade. Componentes muito
@@ -60,18 +72,36 @@ como diagnóstico da tentativa atual; ela não transfere o controle para a antig
 exploração angular. Nos corners geométricos, o avanço permanece reto até quatro
 frames novos do Fusion inferior iniciarem a validação pela CAM0. Depois do deslocamento, o mapa
 visual dependente da posição é reconstruído e a entrada prata continua bloqueada.
-A CAM0 começa a guiar após quatro frames inferiores novos com fonte `fusion`,
-direção normal válida e classificador de prata recente. A missão de saída só
-termina depois de mais 25 cm medidos pelos encoders; nesse trecho, qualquer
+A CAM0 começa a guiar após a reta de 3 cm, com um novo frame inferior de fonte
+`fusion`, direção normal válida, faixa sem ramificações e classificador de
+prata recente. A missão de saída só
+entra na validação após quatro frames e só termina depois de mais 25 cm
+medidos pelos encoders; nesse trecho, qualquer
 indício de prata para imediatamente e a confirmação rejeita o corner.
+A CAM1 pode rejeitar preto refletivo antes do primeiro Fusion único. Depois que
+a reta de 3 cm começa, somente o classificador de prata da CAM0 pode rejeitar
+essa saída, evitando que ruído frontal desfaça uma confirmação inferior válida.
 Depois da transferência, dois frames inferiores em `LOST` permitem à CAM1 girar
 para o último lado frontal válido. Dois frames normais novos devolvem novamente
 a autoridade à CAM0; essa assistência só existe no percurso posterior à saída.
 Prata tem prioridade: um indício pausa o avanço e a confirmação rejeita
-permanentemente uma faixa de ±35° em torno do heading acompanhado. A topologia da fita continua publicada apenas
-para diagnóstico.
+permanentemente uma faixa de ±35° em torno do heading acompanhado. A topologia
+da fita impede que o Fusion de um T, X ou Y inicie a aquisição da saída.
 
 ## Operação
+
+Para conferir somente a geometria, selecione **SAÍDA · TESTAR YAW DAS QUINAS**
+no painel. Coloque o robô parado no ponto de referência do triângulo vermelho
+ou verde e aponte-o para esse triângulo. Ao iniciar o modo Autônomo, o yaw atual
+vira a referência: o robô gira para +100°, +170° e −96° relativos a ela, nessa
+ordem, e fica parado por 2 segundos em cada direção. Depois da última pausa,
+encerra parado. Usa exatamente os headings do avanço reto da saída.
+O teste não avança, não procura fita ou triângulos e não move
+servos. O yaw medido aparece no indicador **Giro integrado**; o estado da missão
+mostra qual dos três alvos está sendo conferido. Stop e E-Stop interrompem o
+teste. O comando de seleção é
+`{"command":"set_autonomous_mission","mission":"rescue_corner_yaw_test"}`.
+O tempo de pausa fica em `kRescueCornerYawHoldMs`, em `include/obr/config.h`.
 
 No painel, selecione **SAÍDA · BUSCAR E RETOMAR PERCURSO** com o robô parado e
 posicionado na sala. Inicie pelo controle autônomo existente. O comando de
@@ -104,9 +134,12 @@ journalctl -u obr-robot -f
   o avanço de um corner já classificado e reativado ao retornar para classificar
   outro corner, reduzindo o custo de processamento da CAM1.
 - A textura cinza refletiva é avaliada por continuidade, solidez transversal e
-  fragmentação. Qualquer sinal ruim anula `guidanceValid`; uma faixa sólida
-  sempre recebe prioridade de score sobre uma rota fragmentada. O overlay REAL
-  e LINHA mostra as três medidas e o estado `COLOR CHECK/CLEARED/REARMED`.
+  fragmentação. Um preto muito ruidoso no yaw inspecionado é tratado como
+  indício de prata: antes da reta, o yaw é descartado; durante o avanço, o
+  robô para, recua a distância medida e tenta o próximo yaw. Isso também vale
+  antes de o Fusion da CAM0 concluir a saída. Uma linha preta contínua não
+  aciona esse veto. O overlay REAL e LINHA mostra as três medidas e o estado
+  `COLOR CHECK/CLEARED/REARMED`.
 - Para diagnóstico frontal, a orientação da candidata reutiliza
   `calculate_fusion_style_angle`. A fita
   transversal da entrada não produz orientação; o alvo vem da continuação que
@@ -125,11 +158,9 @@ journalctl -u obr-robot -f
   máximo 300 ms; depois o robô espera parado até 500 ms por uma leitura nova.
   Sem recuperação, recua somente a distância realmente avançada, limitada a
   40 cm, e tenta reencontrar a mesma faixa uma vez.
-- Durante o avanço, obstrução ou falta de progresso para imediatamente.
-  Em um corner geométrico, a primeira colisão preserva a tentativa: recua 15 cm,
-  gira 15° para o lado memorizado pela CAM1, avança 10 cm, restaura o heading da
-  abertura e continua no mesmo corner. Uma segunda colisão retorna ao centro.
-  Não há ultrassom nessa decisão.
+- Durante o avanço geométrico, obstrução ou falta de progresso para
+  imediatamente. O robô recua a distância avançada, volta à referência e
+  tenta o próximo yaw. Não há ultrassom nessa decisão.
 - A leitura normal da CAM0 vence em 125 ms, mas a última classificação de prata
   possui janela própria de 500 ms. A indisponibilidade real da CAM0 em NEAR
   para os motores imediatamente e encerra a tentativa após 2 s.
@@ -160,9 +191,11 @@ Os parâmetros de movimento ficam em `include/obr/config.h`, no bloco
 | Tolerância de acompanhamento | ±30° durante a tentativa |
 | Tolerância da confirmação inicial | ±15° entre frames novos |
 | Reobservação de candidata | Até 800 ms parada antes de voltar a girar |
-| Corners geométricos | 74°, 106° e 180°, com +15° antes da reta e tolerância de 24° |
+| Yaws de busca desde o triângulo | +100°, +170° e −96°, sem acréscimo antes da reta |
+| Pivôs de busca após preto próximo | 650 ms no sentido oposto ao lado definido pelo yaw e 650 ms contínuos no outro sentido, com potência 0,75 |
+| Reta antes do controle pelo Fusion | 3 cm por encoders após a primeira faixa única válida |
 | Tentativa por corner | 60 cm sem visão; com Fusion frontal recente, continua a 0,75 até a CAM0 |
-| Recuperação de parede no corner | Uma vez: ré 15 cm, desvio 15°, avanço 10 cm e restauração do heading |
+| Parede ou travamento no corner | Para, recua o avanço medido e tenta o próximo yaw |
 | Exploração por corner | Até 60 cm sem Fusion frontal recente |
 | Tolerância de direção rejeitada | ±15° comum; ±35° após prata confirmada |
 | Perda da candidata antes de NEAR | Mantém a última curva por até 300 ms, para e tenta reaquisição aos 500 ms |
@@ -176,8 +209,8 @@ Os parâmetros de movimento ficam em `include/obr/config.h`, no bloco
 
 As constantes específicas de análise de imagem ficam junto ao algoritmo em
 `scripts/vision/rescue_exit.py`, seguindo os módulos Python de visão existentes.
-`depthBands`, `tapeValid` e a topologia da CAM0 permanecem disponíveis para
-diagnóstico, mas não rejeitam uma aproximação. A associação angular de 30° evita
+`depthBands` e `tapeValid` permanecem disponíveis para diagnóstico; a topologia
+da CAM0 veta o Fusion ramificado na aquisição da saída. A associação angular de 30° evita
 trocar a candidata durante a perseguição; os 15° de headings rejeitados continuam
 independentes. Heading identifica uma direção aproximada, não uma posição no
 mapa. No fluxo geométrico, o recuo usa o avanço medido para retornar

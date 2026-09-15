@@ -278,7 +278,7 @@ BallAlignmentOutput BallAlignmentMission::update(
         ball.distanceCm <= config::kBallApproachStopDistanceCm &&
         absoluteTx <=
             (stopAfterAlignment
-                 ? config::kBallApproachStartToleranceDegrees
+                 ? config::kVictimApproachStartToleranceDegrees
                  : config::kBallCollectionNearAlignmentToleranceDegrees);
     if (victimAlreadyAtCollectionDistance)
     {
@@ -463,7 +463,7 @@ BallAlignmentOutput BallAlignmentMission::update(
             return output;
         }
 
-        if (absoluteTx <= config::kBallApproachStartToleranceDegrees)
+        if (absoluteTx <= config::kVictimApproachStartToleranceDegrees)
         {
             if (ball.timestamp > lastStableBallTimestamp_)
             {
@@ -529,7 +529,7 @@ BallAlignmentOutput BallAlignmentMission::update(
             output.status = makeStatus(
                 "ball_alignment_verifying",
                 "Confirmando posição para aproximar dentro de ±" +
-                    powerText(config::kBallApproachStartToleranceDegrees) +
+                    powerText(config::kVictimApproachStartToleranceDegrees) +
                     "°; tx=" + txText(ball.txDegrees),
                 progress);
             return output;

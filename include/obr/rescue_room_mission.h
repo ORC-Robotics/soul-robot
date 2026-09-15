@@ -12,6 +12,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <string>
 
 struct RescueRoomOutput
@@ -46,6 +47,7 @@ public:
 
     bool requiresBallDetection() const;
     bool requiresRescueZoneDetection() const;
+    double lastTriangleHeadingDegrees() const;
     std::uint64_t ballTargetSequence(
         std::uint64_t autonomousRunSequence) const;
     const char* ballTargetType() const;
@@ -115,6 +117,12 @@ private:
     bool candidateHeadingValid_ = false;
     double candidateHeadingDegrees_ = 0.0;
     bool finalVerification_ = false;
+    // Mede a volta final pela IMU e limita o tempo gasto procurando extras.
+    // Ao atingir qualquer limite, a missão para e libera a busca da saída.
+    bool finalSearchStarted_ = false;
+    double finalSearchLastYaw_ = 0.0;
+    double finalSearchAccumulatedDegrees_ = 0.0;
+    std::chrono::steady_clock::time_point finalSearchStartedAt_{};
     bool storedAliveVictim_ = false;
     bool collectionRetentionActive_ = false;
     bool servoMotionStarted_ = false;
@@ -140,6 +148,8 @@ private:
     BallAlignmentMission initialVictimAlignmentMission_;
     RescueAreaMission victimApproachMission_;
     RescueZoneTriangleMission triangleMission_;
+    double lastTriangleHeadingDegrees_ =
+        std::numeric_limits<double>::quiet_NaN();
     ServoRoutine servoRoutine_;
     EncoderDistanceController distanceController_;
     AutonomousStatus failureStatus_;

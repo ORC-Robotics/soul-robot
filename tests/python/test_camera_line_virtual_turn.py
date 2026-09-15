@@ -5110,7 +5110,7 @@ class GreenFusionTargetHoldTests(unittest.TestCase):
         })
         return line
 
-    def test_last_green_target_is_held_for_only_two_missing_frames(self):
+    def test_last_green_target_is_held_during_short_missing_window(self):
         valid_line = self.valid_fusion_line("DIREITA")
         state = camera_line_frame.update_green_fusion_target_hold(
             "DIREITA",
@@ -5125,7 +5125,10 @@ class GreenFusionTargetHoldTests(unittest.TestCase):
             green_direction="DIREITA",
             fusion_style_line=valid_line,
         )
-        for expected_missing_frames in (1, 2):
+        for expected_missing_frames in range(
+            1,
+            camera_line_frame.GREEN_FUSION_TARGET_HOLD_MAX_FRAMES + 1,
+        ):
             state = camera_line_frame.update_green_fusion_target_hold(
                 "DIREITA",
                 camera_line_frame.empty_fusion_style_line(),
@@ -5194,6 +5197,28 @@ class GreenFusionTargetHoldTests(unittest.TestCase):
 
 
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
+    def test_green_completion_waits_for_minimum_active_window(self):
+        self.assertEqual(
+            camera_line_frame.GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION,
+            24,
+        )
+
+    def test_green_entry_cannot_start_inside_initial_pivot_window(self):
+        self.assertFalse(
+            camera_line_frame.green_maneuver_entry_is_confirmed(
+                "DIREITA",
+                active_frames=8,
+                near_fine_position=0.80,
+            )
+        )
+        self.assertTrue(
+            camera_line_frame.green_maneuver_entry_is_confirmed(
+                "DIREITA",
+                active_frames=9,
+                near_fine_position=0.80,
+            )
+        )
+
     def test_green_geometric_completion_requires_three_consecutive_frames(self):
         completion_frames = 0
         for _frame_index in range(

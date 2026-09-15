@@ -27,10 +27,10 @@ from .camera_config import (
     DISPLAY_MODE_LINE,
     GPIO,
     GREEN_CAPTURE_REQUEST_PATH,
+    GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION,
     GREEN_PROCESSING_ENABLED,
     LEGACY_LINE_DEBUG_ENABLED,
     LIGHT_PIN_BOARD,
-    LIMIAR_CURVA_VERDE_INICIADA,
     Picamera2,
     QUADROS_CENTRALIZADO_PARA_CONCLUIR,
     SILVER_DETECTION_ENABLED,
@@ -50,6 +50,7 @@ from .fusion_guidance import (
     draw_fusion_style_line_overlay,
     extract_line_diagnostics,
     fusion_style_blind_search_direction,
+    green_maneuver_entry_is_confirmed,
     green_maneuver_is_geometrically_complete,
     select_confirmed_green_direction,
     update_fusion_style_history,
@@ -649,22 +650,19 @@ class DownwardCameraApplication:
 
                 # Confirma que o robô realmente começou a entrar no ramo
                 # indicado pelo marcador verde.
-                if not maneuver_state.green_curve_started:
-                    if (
-                        maneuver_state.green_direction == "ESQUERDA"
-                        and near_fine_position is not None
-                        and near_fine_position <= -LIMIAR_CURVA_VERDE_INICIADA
-                    ):
-                        maneuver_state.green_curve_started = True
-                        maneuver_state.green_centered_frames = 0
-
-                    elif (
-                        maneuver_state.green_direction == "DIREITA"
-                        and near_fine_position is not None
-                        and near_fine_position >= LIMIAR_CURVA_VERDE_INICIADA
-                    ):
-                        maneuver_state.green_curve_started = True
-                        maneuver_state.green_centered_frames = 0
+                if (
+                    not maneuver_state.green_curve_started
+                    and green_maneuver_entry_is_confirmed(
+                        maneuver_state.green_direction,
+                        maneuver_state.green_active_frames,
+                        near_fine_position,
+                    )
+                ):
+                    # A faixa lateral já pode ocupar o NEAR no instante em que o
+                    # verde aparece. A janela mínima evita concluir a curva com
+                    # esse segmento antes de o robô executar o pivô solicitado.
+                    maneuver_state.green_curve_started = True
+                    maneuver_state.green_centered_frames = 0
 
                 # Depois que a curva começou, exige alinhamento simultâneo no NEAR
                 # e em uma fileira frontal trusted antes de liberar a prioridade.
@@ -672,7 +670,11 @@ class DownwardCameraApplication:
                     maneuver_state.green_direction != "NENHUMA"
                     and maneuver_state.green_curve_started
                 ):
-                    if green_maneuver_is_geometrically_complete(
+                    completion_window_open = (
+                        maneuver_state.green_active_frames
+                        >= GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION
+                    )
+                    if completion_window_open and green_maneuver_is_geometrically_complete(
                         maneuver_state.green_curve_started,
                         near_fine_position,
                         line_follower_command["mediumTrusted"],

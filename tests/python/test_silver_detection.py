@@ -65,7 +65,7 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertAlmostEqual(result.silver_margin, 0.95)
 
     def test_rejects_silver_below_minimum_confidence(self):
-        detector = SilverLineDetector(FixedClassifier(classification(0.05, 0.04, 0.91)))
+        detector = SilverLineDetector(FixedClassifier(classification(0.11, 0.10, 0.79)))
 
         result = detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
 
@@ -73,7 +73,7 @@ class SilverLineDetectorTest(unittest.TestCase):
         self.assertEqual(result.label, "silver")
 
     def test_accepts_silver_at_minimum_confidence_boundary(self):
-        detector = SilverLineDetector(FixedClassifier(classification(0.05, 0.03, 0.92)))
+        detector = SilverLineDetector(FixedClassifier(classification(0.11, 0.09, 0.80)))
 
         result = detector.detect(np.zeros((10, 20, 3), dtype=np.uint8))
 

@@ -61,6 +61,4 @@ private:
     SilverEntryManeuver silverEntryManeuver_;
     RescueRoomMission rescueRoomMission_;
     RescueExitMission rescueExitMission_;
-    bool savedEntryHeadingValid_ = false;
-    double savedEntryHeadingDegrees_ = 0.0;
 };

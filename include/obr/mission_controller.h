@@ -43,6 +43,12 @@ private:
         Settling,
         CorrectionPulse
     };
+    enum class CornerYawPhase
+    {
+        Ready,
+        Turning,
+        Holding
+    };
 
     MainMission mainMission_;
     RescueAreaMission rescueAreaMission_;
@@ -55,6 +61,11 @@ private:
     ServoRoutine servoRoutine_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
+    CornerYawPhase cornerYawPhase_ = CornerYawPhase::Ready;
+    double cornerYawReferenceDegrees_ = 0.0;
+    bool cornerYawReferenceValid_ = false;
+    int cornerYawIndex_ = 0;
+    std::chrono::steady_clock::time_point cornerYawHoldStartedAt_{};
     long long distanceStartLeftCount_ = 0;
     long long distanceStartRightCount_ = 0;
     double activeDistanceTargetCm_ = 0.0;
@@ -68,6 +79,9 @@ private:
     unsigned long long activeAutonomousRunSequence_ = 0;
 
     void updateTurnRight90(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry);
+    void updateCornerYawTest(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);
     void updateDriveDistance(

@@ -1091,23 +1091,10 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         pair_compatible = vertical_compatible and orientation_compatible
         result["pair_compatible"] = pair_compatible
         if not pair_compatible:
-            if not vertical_compatible:
-                result["interpretation"] = "AMBIGUO"
-                return result
-            # Se o par não representa retorno, conserva a decisão individual
-            # do marcador mais próximo do robô em vez de bloquear a curva.
-            nearest_marker = max(
-                upper_valid_markers,
-                key=lambda item: item["geometry"]["center"][1],
-            )
-            interpretation = nearest_marker["interpretation"]
-            result["interpretation"] = interpretation
-            result["left_seen"] = interpretation == "ESQUERDA"
-            result["right_seen"] = interpretation == "DIREITA"
-            result["path_black_valid"] = interpretation in (
-                "ESQUERDA",
-                "DIREITA",
-            )
+            # Dois verdes nunca podem virar uma curva lateral por desempate.
+            # Se o par ainda não estiver coerente, aguarda outro frame para não
+            # executar esquerda ou direita em uma marca real de retorno.
+            result["interpretation"] = "AMBIGUO"
             return result
         result.update({
             "interpretation": "RETORNO_180",
@@ -1116,6 +1103,13 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
             "pair_compatible": True,
             "path_black_valid": True,
         })
+        return result
+
+    if len(green_contours) != 1:
+        # A presença de outro contorno verde pode ser o segundo marcador de um
+        # retorno de 180° ainda parcialmente oculto ou sem faixa preta válida.
+        # A leitura lateral só é segura quando existe exatamente um contorno.
+        result["interpretation"] = "AMBIGUO"
         return result
 
     marker = upper_valid_markers[0]
@@ -1154,6 +1148,16 @@ class GreenObservationTracker:
                 self.consecutive_samples,
             )
         self.last_sequence = line_sequence
+
+        if (
+            self.confirmed_interpretation == "RETORNO_180"
+            and interpretation != "SEM_DECISAO"
+        ):
+            # Dois verdes já confirmados não podem virar uma curva lateral
+            # enquanto um deles oscila ou sai parcialmente da imagem.
+            self.pending_interpretation = "RETORNO_180"
+            self.missing_samples = 0
+            return "RETORNO_180", True, self.consecutive_samples
 
         if interpretation in ("ESQUERDA", "DIREITA"):
             # O instante é renovado em todo frame detectado, inclusive durante

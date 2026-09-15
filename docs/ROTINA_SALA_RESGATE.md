@@ -1,9 +1,9 @@
 # Rotina autônoma da sala de resgate
 
 Este documento descreve a sequência executada pela `MainMission` depois que a
-faixa cinza confirma a entrada da sala. A busca da saída ainda não faz parte
-desta etapa: quando não restarem vítimas, o robô marca a missão como concluída e
-permanece parado.
+faixa cinza confirma a entrada da sala. Quando termina a verificação das vítimas
+extras, a `MainMission` mantém o robô parado durante a transição e inicia a busca
+da saída pelos corners.
 
 ## Ordem da missão
 
@@ -50,12 +50,14 @@ permanece parado.
     executar antes os headings alternados de 45° e 75°.
 12. Coleta a vítima morta, recua 15 cm, encontra o triângulo vermelho, entrega e
     recua 40 cm antes da verificação final.
-13. Faz uma verificação final completa por vítimas vivas e depois mortas. Uma
-    vítima extra encontrada é coletada e entregue na cor correspondente; após a
-    entrega, recua 40 cm tanto no triângulo verde quanto no vermelho e a
-    verificação recomeça pelas vivas.
-14. Quando as duas varreduras finais terminam sem alvo, zera a tração e publica
-    `rescue_room_completed`.
+13. Faz uma única volta de até `360°`, solicitando qualquer tipo de vítima
+    extra. Uma vítima encontrada é coletada e entregue na cor correspondente;
+    após a entrega, recua 40 cm e inicia uma nova verificação das que ainda
+    possam restar. Cada verificação também termina após 20 segundos para impedir
+    que o robô permaneça procurando indefinidamente se o giro ficar bloqueado.
+14. Ao completar a volta ou atingir o tempo limite sem alvo, zera a tração,
+    publica `rescue_room_completed` e entrega o controle à busca da saída, que
+    aponta para um corner usando o heading salvo do último triângulo.
 
 Durante essa rotina, cada novo movimento não reto recebe um único micropulso de
 0,80 por 80 ms para vencer a inércia. Depois desse intervalo, o comando retorna
@@ -138,14 +140,16 @@ Todos os valores ajustáveis ficam em `include/obr/config.h`:
    triângulo verde for alcançado.
 6. Testar uma vítima preta e confirmar que o triângulo vermelho é selecionado.
 7. Acrescentar uma quarta vítima e confirmar que a verificação final a coleta e
-   reinicia pelas vítimas vivas, respeitando a mesma ré antes da elevação.
-8. Confirmar que cada vítima cai completamente no buraco do triângulo e deixa
+   reinicia uma volta para qualquer tipo, respeitando a mesma ré antes da elevação.
+8. Sem vítimas extras, confirmar que o giro termina em 360° ou 20 segundos,
+   zera os motores e inicia o apontamento para o primeiro corner da saída.
+9. Confirmar que cada vítima cai completamente no buraco do triângulo e deixa
    de aparecer para a CAM1 antes da busca seguinte.
-9. Em cada fase móvel, acionar Stop e E-Stop; todos os motores devem zerar no
+10. Em cada fase móvel, acionar Stop e E-Stop; todos os motores devem zerar no
    mesmo ciclo e os servos devem continuar sustentando a última pose.
-10. Simular perda do heartbeat sem desconectar a alimentação dos servos;
+11. Simular perda do heartbeat sem desconectar a alimentação dos servos;
    confirmar que o braço não cai e que nenhum movimento novo é aceito.
-11. Não desconectar o PCA9685 nem a alimentação com o braço carregado: nenhuma
+12. Não desconectar o PCA9685 nem a alimentação com o braço carregado: nenhuma
    proteção de software consegue sustentar o mecanismo sem energia física.
 
 ## Diagnóstico e testes locais

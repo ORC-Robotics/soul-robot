@@ -10,12 +10,23 @@ namespace
 // Normaliza a diferença com sinal, incluindo a passagem por 0°/360°.
 double signedAngle(double angle) { return std::remainder(angle, 360.0); }
 
-// Prolonga somente o giro de ida ao corner, preservando seu sentido original.
-double cornerPreAdvanceTurn(double degrees)
+// Só veta a direção atual quando a CAM1 vê cinza ruidoso no próprio caminho.
+// Uma faixa suspeita em outro setor não deve descartar uma saída válida.
+bool frontGrayOnHeading(const ForwardLineSnapshot& forward,
+    double robotYawDegrees, double targetHeadingDegrees)
 {
-    if (std::abs(degrees) < 1e-6) return 0.0;
-    return degrees + std::copysign(
-        config::kRescueExitCornerPreAdvanceExtraDegrees, degrees);
+    if (!forward.sourceFresh || !std::isfinite(forward.ageMs) ||
+        forward.ageMs < 0.0 ||
+        forward.ageMs > config::kRescueExitForwardStatusTimeoutMs)
+        return false;
+    return std::any_of(forward.exitCandidates.begin(),
+        forward.exitCandidates.end(), [&](const auto& candidate) {
+            return candidate.grayNoiseLikely && std::isfinite(candidate.txDegrees) &&
+                ImuTurnController::angularDistanceDegrees(
+                    robotYawDegrees + candidate.txDegrees,
+                    targetHeadingDegrees) <=
+                    config::kRescueExitRejectedToleranceDegrees;
+        });
 }
 
 struct GuidancePowers
@@ -50,97 +61,41 @@ GuidancePowers mapGuidancePowers(double angleDegrees, bool steeringNear)
     return {config::kRescueExitApproachPower, config::kRescueExitApproachPower};
 }
 
+// O yaw de +170° aponta para a quina direita; o primeiro pivô deve ser para a
+// esquerda. Os yaws de +100° e -96° apontam para a esquerda e iniciam à direita.
+int initialLinePivotDirection(double cornerHeading, double referenceHeading)
+{
+    const double rightCornerHeading = signedAngle(
+        referenceHeading + config::kRescueExitSecondStraightYawDegrees);
+    const bool exitOnRight = ImuTurnController::angularDistanceDegrees(
+        cornerHeading, rightCornerHeading) <=
+        config::kRescueExitCornerGeometryToleranceDegrees;
+    return exitOnRight ? 1 : -1;
 }
 
-bool RescueExitMission::buildGeometryCandidates(double greenHeading)
-{
-    const double delta = signedAngle(greenHeading - geometryReferenceHeading_);
-    const double shortSide = config::kRescueExitCornerShortSeparationDegrees;
-    const double longSide = config::kRescueExitCornerLongSeparationDegrees;
-    const double diagonal = config::kRescueExitCornerDiagonalDegrees;
-    const double tolerance = config::kRescueExitCornerGeometryToleranceDegrees;
-    const std::array<double, 5> possibilities = {
-        shortSide, -shortSide, longSide, -longSide, diagonal};
-    int nearest = -1;
-    double nearestError = tolerance;
-    for (int index = 0; index < static_cast<int>(possibilities.size()); ++index)
-    {
-        const double error = std::abs(signedAngle(delta - possibilities[index]));
-        if (error <= nearestError)
-        {
-            nearest = index;
-            nearestError = error;
-        }
-    }
-
-    if (nearest == 0)
-        geometryCandidateHeadings_ = {
-            signedAngle(geometryReferenceHeading_ + diagonal),
-            signedAngle(geometryReferenceHeading_ - longSide)};
-    else if (nearest == 1)
-        geometryCandidateHeadings_ = {
-            signedAngle(geometryReferenceHeading_ + diagonal),
-            signedAngle(geometryReferenceHeading_ + longSide)};
-    else if (nearest == 2)
-        geometryCandidateHeadings_ = {
-            signedAngle(geometryReferenceHeading_ + diagonal),
-            signedAngle(geometryReferenceHeading_ - shortSide)};
-    else if (nearest == 3)
-        geometryCandidateHeadings_ = {
-            signedAngle(geometryReferenceHeading_ + diagonal),
-            signedAngle(geometryReferenceHeading_ + shortSide)};
-    else if (nearest == 4)
-    {
-        // Na diagonal, o yaw sozinho não distingue a orientação do retângulo.
-        // Esta dupla é testada primeiro pela própria estratégia geométrica.
-        geometryCandidateHeadings_ = {
-            signedAngle(geometryReferenceHeading_ + shortSide),
-            signedAngle(geometryReferenceHeading_ - longSide)};
-    }
-    else return false;
-
-    if (knownEntryHeadingValid_)
-    {
-        // A entrada salva é apenas uma preferência: tenta primeiro o corner
-        // angularmente mais distante, sem proibir a outra possibilidade.
-        const double firstDistance = ImuTurnController::angularDistanceDegrees(
-            geometryCandidateHeadings_[0], knownEntryHeadingDegrees_);
-        const double secondDistance = ImuTurnController::angularDistanceDegrees(
-            geometryCandidateHeadings_[1], knownEntryHeadingDegrees_);
-        if (secondDistance > firstDistance)
-            std::swap(geometryCandidateHeadings_[0], geometryCandidateHeadings_[1]);
-    }
-    return true;
 }
 
 bool RescueExitMission::startNextGeometryProbe(
     const Esp32TelemetrySnapshot& telemetry, Time now)
 {
-    // Visita somente os outros três corners, sempre a partir do vermelho salvo.
+    // Testa os três yaws calibrados desde o último triângulo.
+    // Headings já rejeitados não são visitados de novo.
     const std::array<double, 3> offsets = {
-        config::kRescueExitCornerShortSeparationDegrees,
-        config::kRescueExitCornerDiagonalDegrees,
-        -config::kRescueExitCornerLongSeparationDegrees};
+        config::kRescueExitFirstStraightYawDegrees,
+        config::kRescueExitSecondStraightYawDegrees,
+        config::kRescueExitThirdStraightYawDegrees};
     if (geometryProbeIndex_ >= static_cast<int>(offsets.size())) return false;
 
     std::array<double, 3> headings{};
     for (std::size_t index = 0; index < offsets.size(); ++index)
         headings[index] = signedAngle(geometryReferenceHeading_ + offsets[index]);
-    if (knownEntryHeadingValid_)
-    {
-        // A entrada salva apenas ordena a visita: o heading mais distante dela
-        // vem primeiro, mas os três corners continuam obrigatoriamente disponíveis.
-        std::stable_sort(headings.begin(), headings.end(), [&](double left, double right) {
-            return ImuTurnController::angularDistanceDegrees(
-                       left, knownEntryHeadingDegrees_) >
-                   ImuTurnController::angularDistanceDegrees(
-                       right, knownEntryHeadingDegrees_);
-        });
-    }
+    while (geometryProbeIndex_ < static_cast<int>(headings.size()) &&
+           rejected(headings[geometryProbeIndex_]))
+        ++geometryProbeIndex_;
+    if (geometryProbeIndex_ >= static_cast<int>(headings.size())) return false;
     const double nominalHeading = headings[geometryProbeIndex_++];
     geometryEmptyFrames_ = 0;
-    // A classificação precisa olhar para o centro geométrico do corner.
-    // Os 15° extras pertencem somente ao giro que antecede o avanço reto.
+    // A observação e a reta usam exatamente o mesmo yaw calibrado.
     const double turnDegrees = signedAngle(nominalHeading - telemetry.yawZDeg);
     targetHeading_ = nominalHeading;
     if (std::abs(turnDegrees) <= config::kBallApproachStartToleranceDegrees)
@@ -172,11 +127,13 @@ bool RescueExitMission::startGeometryCandidate(
     explorationTotalCm_ = explorationLastProgressCm_ = 0.0;
     advanceLeftCm_ = advanceRightCm_ = lastProgressCm_ = 0.0;
     geometryCandidateActive_ = true;
+    lineEntryAdvanceDone_ = false;
+    lineEntry_.reset();
     cornerRecoveryUsed_ = false;
     cornerRecoveryDistance_.reset();
     progressAt_ = now;
-    const double turnDegrees = cornerPreAdvanceTurn(
-        signedAngle(nominalHeading - telemetry.yawZDeg));
+    const double turnDegrees = signedAngle(
+        nominalHeading - telemetry.yawZDeg);
     explorationHeading_ = targetHeading_ =
         signedAngle(telemetry.yawZDeg + turnDegrees);
     if (std::abs(turnDegrees) <= config::kBallApproachStartToleranceDegrees)
@@ -218,6 +175,19 @@ void RescueExitMission::startGeometryReturn(
         startTurn(turnDegrees, telemetry, now))
         geometryReturnTurnStarted_ = true;
     phase_ = Phase::GeometryReturnTurning;
+}
+
+void RescueExitMission::startLineEntry(Time now)
+{
+    // O controlador mede a reta com os dois encoders. A curva do Fusion só
+    // recebe autoridade depois desses 3 cm e de uma nova leitura da CAM0.
+    lineEntry_.start(config::kRescueExitLineEntryAdvanceCm,
+                     config::kRescueExitExplorationPower, 1, now);
+    lineEntryAdvanceDone_ = true;
+    turn_.reset();
+    lineSearchSweepActive_ = false;
+    acquisitionFrames_ = 0;
+    phase_ = Phase::LineEntryAdvance;
 }
 
 bool RescueExitMission::startCornerCollisionRecovery(
@@ -334,12 +304,8 @@ RescueExitOutput RescueExitMission::updateGeometry(
         if ((greenConfirmed || redConfirmed) && geometryProbeIndex_ > 0)
         {
             geometryEmptyFrames_ = 0;
-            const auto& color = redConfirmed ? zones.red : zones.green;
-            const double colorHeading = color.aimValid ? signedAngle(
-                telemetry.yawZDeg + color.aimNormalized *
-                    config::kRescueExitCornerCameraHorizontalFovDegrees * 0.5) :
-                targetHeading_;
-            rejected_.push_back({colorHeading,
+            // Bloqueia o heading inspecionado, inclusive após reiniciar a busca.
+            rejected_.push_back({targetHeading_,
                 config::kRescueExitCornerGeometryToleranceDegrees, true});
             if (!startNextGeometryProbe(telemetry, now))
                 return fail("Todos os corners foram verificados sem saída livre");
@@ -368,6 +334,11 @@ RescueExitOutput RescueExitMission::updateGeometry(
             geometryCandidateHeadings_[1] = targetHeading_;
             geometryCandidateIndex_ = 0;
             geometryResumeProbesAfterReturn_ = true;
+            // O recuo e o giro podem atravessar a prata já rejeitada; um novo
+            // avanço só começa depois que a CAM0 deixar de confirmá-la.
+            if (silverBlockLatched_)
+                return output("rescue_exit_checking_silver",
+                              "Parado: aguardando a prata sair da CAM0");
             if (!startGeometryCandidate(telemetry, now))
                 return restartGeometry(telemetry, now,
                     "Corner livre rejeitado; repetindo somente a geometria");
@@ -605,10 +576,52 @@ RescueExitOutput RescueExitMission::updateExploration(
         return output("rescue_exit_checking_silver",
                       "Parado: confirmando possível prata durante a exploração");
     }
+    if (forward.cameraObscured)
+    {
+        if (geometryActive_ && geometryCandidateActive_)
+        {
+            startGeometryReturn(
+                "Parede no yaw atual; tentando o próximo", false, telemetry, now);
+            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+        }
+        startExplorationRecovery("CAM1 obstruída durante a exploração", now);
+        return output("rescue_exit_exploration_blocked", explorationBlockReason_.c_str());
+    }
+
+    const double progress = std::min(
+        explorationAttemptLeftCm_, explorationAttemptRightCm_);
+    if (progress >= explorationLastProgressCm_ +
+            config::kDriveDistanceMinimumProgressCounts /
+                config::kEncoderCountsPerCentimeter)
+    {
+        explorationLastProgressCm_ = progress;
+        progressAt_ = now;
+    }
+    if (now - progressAt_ >=
+        std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
+    {
+        if (geometryActive_ && geometryCandidateActive_)
+        {
+            startGeometryReturn(
+                "Sem progresso no yaw atual; tentando o próximo", false, telemetry, now);
+            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+        }
+        startExplorationRecovery("Rodas sem progresso durante a exploração", now);
+        return output("rescue_exit_exploration_blocked", explorationBlockReason_.c_str());
+    }
     if (bottomReady && newBottom)
     {
+        // Um Fusion vindo do braço lateral de um T não define saída.
+        // A CAM0 já publica a topologia da mesma faixa escolhida pelo Fusion.
         const bool validFusion = bottom.lineControlSource == "fusion" &&
-            bottom.normalSteeringValid;
+            bottom.normalSteeringValid && bottom.exitLineUnbranched;
+        if (validFusion && geometryActive_ && geometryCandidateActive_ &&
+            !lineEntryAdvanceDone_)
+        {
+            startLineEntry(now);
+            return output("rescue_exit_line_entry",
+                          "Fusion em faixa única; avançando 3 cm reto");
+        }
         if (!validFusion)
             acquisitionFrames_ = 0;
         else
@@ -631,24 +644,24 @@ RescueExitOutput RescueExitMission::updateExploration(
         {
             movingExploration_ = true;
             return output("rescue_exit_checking_bottom",
-                          "Mantendo a saída ativa enquanto a CAM0 verifica prata",
-                          config::kRescueExitExplorationPower,
-                          config::kRescueExitExplorationPower);
+                          "Fusion da CAM0 guiando enquanto confirma a saída",
+                          bottom.lineFollowerLeftPower,
+                          bottom.lineFollowerRightPower);
         }
-    }
-    if (forward.cameraObscured)
-    {
-        if (geometryActive_ && geometryCandidateActive_)
+        if (geometryActive_ && geometryCandidateActive_ &&
+            bottom.lineNearDetected)
         {
-            if (startCornerCollisionRecovery(telemetry, now))
-                return output("rescue_exit_corner_recovery_backing",
-                              "Parede detectada; preservando o corner e recuando 15 cm");
-            startGeometryReturn(
-                "Corner bloqueado pela proteção visual", false, telemetry, now);
-            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+            // Preto próximo sem Fusion não autoriza continuar reto.
+            lineSearchPreferredSign_ = initialLinePivotDirection(
+                explorationHeading_, geometryReferenceHeading_);
+            lineSearchStartedAt_ = now;
+            lineSearchStep_ = acquisitionFrames_ = 0;
+            lineSearchSweepActive_ = false;
+            turn_.reset();
+            phase_ = Phase::LineSeeking;
+            return output("rescue_exit_line_seeking",
+                          "Preto próximo sem Fusion; iniciando pivôs pelo yaw");
         }
-        startExplorationRecovery("CAM1 obstruída durante a exploração", now);
-        return output("rescue_exit_exploration_blocked", explorationBlockReason_.c_str());
     }
 
     if (newForward && geometryActive_ && geometryCandidateActive_)
@@ -690,30 +703,6 @@ RescueExitOutput RescueExitMission::updateExploration(
         }
     }
 
-    const double progress = std::min(
-        explorationAttemptLeftCm_, explorationAttemptRightCm_);
-    if (progress >= explorationLastProgressCm_ +
-            config::kDriveDistanceMinimumProgressCounts /
-                config::kEncoderCountsPerCentimeter)
-    {
-        explorationLastProgressCm_ = progress;
-        progressAt_ = now;
-    }
-    if (now - progressAt_ >=
-        std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
-    {
-        if (geometryActive_ && geometryCandidateActive_)
-        {
-            if (startCornerCollisionRecovery(telemetry, now))
-                return output("rescue_exit_corner_recovery_backing",
-                              "Sem progresso; preservando o corner e recuando 15 cm");
-            startGeometryReturn(
-                "Corner bloqueado por falta de progresso", false, telemetry, now);
-            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
-        }
-        startExplorationRecovery("Rodas sem progresso durante a exploração", now);
-        return output("rescue_exit_exploration_blocked", explorationBlockReason_.c_str());
-    }
     if (progress >= explorationAttemptTargetCm_ ||
         explorationTotalCm_ >= config::kRescueExitExplorationTotalCm)
     {
@@ -753,13 +742,126 @@ RescueExitOutput RescueExitMission::updateExploration(
                   config::kRescueExitExplorationPower);
 }
 
+RescueExitOutput RescueExitMission::updateLineSearch(
+    const CameraLineSnapshot& bottom,
+    const ForwardLineSnapshot& forward,
+    const Esp32TelemetrySnapshot& telemetry,
+    Time now, bool newForward, bool newBottom)
+{
+    (void)newForward;
+    if (forward.cameraObscured)
+    {
+        startGeometryReturn("Parede durante os pivôs de busca da linha", false,
+                            telemetry, now);
+        return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+    }
+    if (now - lineSearchStartedAt_ >=
+        std::chrono::milliseconds(config::kRescueExitLineSearchTimeoutMs))
+        return fail("Pivôs de busca da linha excederam o tempo seguro");
+    if (!bottom.sourceFresh || !bottom.silverClassifierFresh)
+        return output("rescue_exit_line_seeking",
+                      "Parado: aguardando CAM0 e classificador de prata");
+
+    const bool validFusion = bottom.sourceFresh && bottom.silverClassifierFresh &&
+        bottom.lineControlSource == "fusion" && bottom.normalSteeringValid &&
+        bottom.exitLineUnbranched;
+    // Depois da reta de 3 cm, o primeiro pivô precisa realmente chegar aos motores.
+    // Sem este gate, o Fusion anterior encerrava a busca antes de qualquer giro.
+    const bool initialPivotCompleted =
+        !lineEntryAdvanceDone_ || lineSearchStep_ > 0;
+    if (newBottom && validFusion && initialPivotCompleted)
+    {
+        if (!lineEntryAdvanceDone_)
+        {
+            startLineEntry(now);
+            return output("rescue_exit_line_entry",
+                          "Fusion único encontrado; avançando 3 cm reto");
+        }
+        // A primeira leitura válida já guia as rodas; quatro frames ainda são
+        // exigidos antes da janela física de validação da saída.
+        if (acquisitionFrames_ == 0) progressAt_ = now;
+        const double progress = std::min(
+            explorationAttemptLeftCm_, explorationAttemptRightCm_);
+        if (progress >= explorationLastProgressCm_ +
+                config::kDriveDistanceMinimumProgressCounts /
+                    config::kEncoderCountsPerCentimeter)
+        {
+            explorationLastProgressCm_ = progress;
+            progressAt_ = now;
+        }
+        if (now - progressAt_ >=
+            std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
+        {
+            startGeometryReturn("Fusion sem progresso após os pivôs", false,
+                                telemetry, now);
+            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+        }
+        turn_.reset();
+        lineSearchSweepActive_ = false;
+        ++acquisitionFrames_;
+        movingExploration_ = true;
+        if (acquisitionFrames_ >= config::kRescueExitAcquisitionFrames)
+        {
+            phase_ = Phase::BottomValidating;
+            bottomValidationStartLeft_ = telemetry.leftEncoderCount;
+            bottomValidationStartRight_ = telemetry.rightEncoderCount;
+            acquisitionFrames_ = 0;
+            return output("rescue_exit_validating_bottom",
+                          "Fusion encontrado; validando prata antes do handoff",
+                          bottom.lineFollowerLeftPower,
+                          bottom.lineFollowerRightPower);
+        }
+        return output("rescue_exit_line_seek_fusion",
+                      "Fusion encontrado; confirmando a trajetória",
+                      bottom.lineFollowerLeftPower,
+                      bottom.lineFollowerRightPower);
+    }
+    if (newBottom) acquisitionFrames_ = 0;
+
+    if (lineSearchStep_ >= 2)
+    {
+        startGeometryReturn("Linha sem Fusion após os dois pivôs", false,
+                            telemetry, now);
+        return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+    }
+    if (!lineSearchSweepActive_)
+    {
+        lineSearchStepStartedAt_ = now;
+        lineSearchSweepActive_ = true;
+    }
+    // Executa dois pivôs contínuos de 650 ms, sem parada entre os sentidos.
+    const int stepDurationMs = config::kRescueExitLineSearchSideMs;
+    if (now - lineSearchStepStartedAt_ >=
+        std::chrono::milliseconds(stepDurationMs))
+    {
+        ++lineSearchStep_;
+        lineSearchStepStartedAt_ = now;
+        if (lineSearchStep_ >= 2)
+        {
+            lineSearchSweepActive_ = false;
+            startGeometryReturn("Linha sem Fusion após os dois pivôs", false,
+                                telemetry, now);
+            return output("rescue_exit_corner_backing",
+                          explorationBlockReason_.c_str());
+        }
+    }
+    const int direction = lineSearchStep_ == 0 ?
+        lineSearchPreferredSign_ : -lineSearchPreferredSign_;
+    const double power = config::kRescueExitLineSearchTurnPower;
+    return output("rescue_exit_line_seeking",
+                  lineSearchStep_ == 0 ?
+                      "Primeiro pivô contínuo definido pelo yaw do corner" :
+                      "Segundo pivô contínuo no sentido oposto",
+                  -direction * power, direction * power);
+}
+
 void RescueExitMission::reset() { *this = RescueExitMission{}; }
 
-void RescueExitMission::setKnownEntryHeading(double headingDegrees)
+void RescueExitMission::setTriangleReferenceHeading(double headingDegrees)
 {
-    knownEntryHeadingValid_ = std::isfinite(headingDegrees);
-    if (knownEntryHeadingValid_)
-        knownEntryHeadingDegrees_ = signedAngle(headingDegrees);
+    triangleReferenceValid_ = std::isfinite(headingDegrees);
+    if (triangleReferenceValid_)
+        triangleReferenceHeading_ = signedAngle(headingDegrees);
 }
 
 bool RescueExitMission::requiresRescueZoneDetection() const
@@ -934,10 +1036,14 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     if (geometryActive_ && !geometryReferenceSaved_)
     {
         geometryReferenceSaved_ = true;
-        geometryReferenceHeading_ = signedAngle(telemetry.yawZDeg);
+        // A missão principal usa o yaw salvo na centralização, mesmo que a
+        // verificação final tenha girado o robô depois da ré do depósito.
+        geometryReferenceHeading_ = triangleReferenceValid_ ?
+            triangleReferenceHeading_ : signedAngle(telemetry.yawZDeg);
         geometryPhaseAt_ = now;
         lastZoneSequence_ = zones.sequence;
-        // A rotina começa depois da ré do depósito vermelho; esse corner já é proibido.
+        // A rotina começa após o depósito vermelho ou verde; o triângulo
+        // usado como referência já é proibido para a busca da saída.
         rejected_.push_back({geometryReferenceHeading_,
             config::kRescueExitCornerGeometryToleranceDegrees, true});
         phase_ = Phase::GeometrySettling;
@@ -976,7 +1082,15 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         bottom.courseMarker == CourseMarker::Gray;
     if (!silverReady || (!bottom.silverCandidateDetected && !silverConfirmed))
         silverBlockLatched_ = false;
-    if (silverConfirmed)
+    // Depois de registrar a prata, o retorno precisa terminar para que outro
+    // corner possa ser testado. A leitura persistente não pode prender a ré.
+    const bool returningFromRejectedSilver = silverBlockLatched_ &&
+        (phase_ == Phase::GeometryBacking ||
+         phase_ == Phase::GeometryReturnTurning ||
+         phase_ == Phase::GeometryTurning ||
+         phase_ == Phase::GeometrySettling ||
+         phase_ == Phase::ExplorationTurning);
+    if (silverConfirmed && !returningFromRejectedSilver)
     {
         acquisitionFrames_ = 0;
         if (!silverBlockLatched_)
@@ -994,10 +1108,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
             silverBlockLatched_ = true;
         }
 
-        if (geometryCandidateActive_ &&
-            (phase_ == Phase::Exploring || phase_ == Phase::Approaching ||
-             phase_ == Phase::CornerRecoveryAdvancing ||
-             phase_ == Phase::BottomValidating))
+        if (geometryCandidateActive_)
         {
             startGeometryReturn(
                 "Entrada prata confirmada globalmente pela CAM0", true,
@@ -1015,7 +1126,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         return output("rescue_exit_checking_silver",
                       "Parado: entrada prata confirmada pela CAM0");
     }
-    if (silverReady && bottom.silverCandidateDetected)
+    if (silverReady && bottom.silverCandidateDetected &&
+        !returningFromRejectedSilver)
     {
         progressAt_ = now;
         acquisitionFrames_ = 0;
@@ -1023,12 +1135,66 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
                       "Parado: confirmando possível prata pela CAM0");
     }
 
+    if (geometryActive_ && geometryCandidateActive_ && newForward &&
+        (phase_ == Phase::Approaching || phase_ == Phase::Exploring ||
+         (phase_ == Phase::LineSeeking && !lineEntryAdvanceDone_)) &&
+        frontGrayOnHeading(forward, telemetry.yawZDeg, explorationHeading_))
+    {
+        // A CAM1 veta ruído refletivo somente antes da confirmação da CAM0.
+        // Após o Fusion único, a própria CAM0 decide se existe prata na saída.
+        startGeometryReturn(
+            "CAM1 detectou preto ruidoso compatível com prata", true,
+            telemetry, now);
+        return output("rescue_exit_corner_backing",
+                      explorationBlockReason_.c_str());
+    }
+
+    if (phase_ == Phase::LineEntryAdvance)
+    {
+        if (forward.cameraObscured)
+        {
+            startGeometryReturn("Parede durante a reta de 3 cm", false,
+                                telemetry, now);
+            return output("rescue_exit_corner_backing", explorationBlockReason_.c_str());
+        }
+        const auto movement = lineEntry_.update(
+            telemetry, now, "rescue_exit_line_entry",
+            "Avançando 3 cm reto antes de procurar Fusion");
+        if (movement.failed) return fail(movement.status.action.c_str());
+        if (movement.completed)
+        {
+            phase_ = Phase::LineSeeking;
+            lineSearchPreferredSign_ = initialLinePivotDirection(
+                explorationHeading_, geometryReferenceHeading_);
+            lineSearchStartedAt_ = now;
+            lineSearchStep_ = acquisitionFrames_ = 0;
+            lineSearchSweepActive_ = false;
+            progressAt_ = now;
+            explorationLastProgressCm_ = std::min(
+                explorationAttemptLeftCm_, explorationAttemptRightCm_);
+            return output("rescue_exit_line_seeking",
+                          "Reta de 3 cm concluída; procurando Fusion à frente");
+        }
+        movingExploration_ = movement.leftPower > 0.0 && movement.rightPower > 0.0;
+        return output("rescue_exit_line_entry",
+                      "Avançando 3 cm reto com os encoders",
+                      movement.leftPower, movement.rightPower);
+    }
+
     if (phase_ == Phase::BottomValidating)
     {
         // Sem classificador recente, o Fusion não recebe autoridade para andar.
         // Isso preserva a prioridade da prata mesmo com a linha bem definida.
+        // A topologia já foi confirmada na aquisição; cruzar o T não cancela os 25 cm.
+        // No GAP, a CAM0 ainda publica Fusion com alvo e potência NORMAL de avanço.
+        const bool gapFusion = bottom.lineControlSource == "fusion-gap-reacquire" &&
+            bottom.lineFollowerLeftPower >= config::kForwardAssistNormalMinimumPower &&
+            bottom.lineFollowerLeftPower <= config::kForwardAssistNormalMaximumPower &&
+            bottom.lineFollowerRightPower >= config::kForwardAssistNormalMinimumPower &&
+            bottom.lineFollowerRightPower <= config::kForwardAssistNormalMaximumPower;
         const bool validBottomFusion = silverReady &&
-            bottom.lineControlSource == "fusion" && bottom.normalSteeringValid;
+            ((bottom.lineControlSource == "fusion" && bottom.normalSteeringValid) ||
+             gapFusion);
         if (!validBottomFusion)
         {
             if (!bottomMissing_)
@@ -1046,11 +1212,36 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
 
         if (forward.cameraObscured)
         {
-            if (geometryActive_ && geometryCandidateActive_ &&
-                startCornerCollisionRecovery(telemetry, now))
-                return output("rescue_exit_corner_recovery_backing",
-                              "Parede detectada durante a validação da CAM0");
+            if (geometryActive_ && geometryCandidateActive_)
+            {
+                startGeometryReturn(
+                    "Parede durante validação da CAM0; tentando outro yaw",
+                    false, telemetry, now);
+                return output("rescue_exit_corner_backing",
+                              explorationBlockReason_.c_str());
+            }
             return fail("Câmera frontal obstruída durante a validação da saída");
+        }
+
+        if (geometryActive_ && geometryCandidateActive_)
+        {
+            const double progress = std::min(
+                explorationAttemptLeftCm_, explorationAttemptRightCm_);
+            if (progress >= explorationLastProgressCm_ +
+                    config::kDriveDistanceMinimumProgressCounts /
+                        config::kEncoderCountsPerCentimeter)
+            {
+                explorationLastProgressCm_ = progress;
+                progressAt_ = now;
+            }
+            if (now - progressAt_ >=
+                std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
+            {
+                startGeometryReturn("CAM0 guiando sem progresso; tentando outro yaw",
+                                    false, telemetry, now);
+                return output("rescue_exit_corner_backing",
+                              explorationBlockReason_.c_str());
+            }
         }
 
         const double leftValidationCm = std::abs(static_cast<double>(
@@ -1078,6 +1269,10 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
                       bottom.lineFollowerLeftPower,
                       bottom.lineFollowerRightPower);
     }
+
+    if (phase_ == Phase::LineSeeking)
+        return updateLineSearch(bottom, forward, telemetry, now,
+                                newForward, newBottom);
 
     if (newForward && !forward.cameraObscured &&
         phase_ != Phase::Approaching && phase_ != Phase::Backing &&
@@ -1253,6 +1448,9 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
             return restartGeometry(telemetry, now,
                 "Corners verificados; repetindo somente a geometria");
         }
+        if (silverBlockLatched_)
+            return output("rescue_exit_checking_silver",
+                          "Parado: aguardando a prata sair da CAM0");
         if (startGeometryCandidate(telemetry, now))
             return output(phase_ == Phase::Exploring ?
                               "rescue_exit_corner_exploring" :
@@ -1276,6 +1474,18 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
             geometryPhaseAt_ = now;
             return output("rescue_exit_geometry_obscured",
                           "Parado: câmera frontal obstruída durante a geometria");
+        }
+        if (phase_ == Phase::GeometrySettling && geometryProbeIndex_ > 0 &&
+            newForward &&
+            frontGrayOnHeading(forward, telemetry.yawZDeg, targetHeading_))
+        {
+            // A CAM1 já vetou este yaw antes da reta; segue para outro alvo.
+            rejected_.push_back({targetHeading_,
+                config::kRescueExitSilverRejectedToleranceDegrees, true});
+            if (!startNextGeometryProbe(telemetry, now))
+                return fail("Todos os yaws foram rejeitados pela CAM1");
+            return output("rescue_exit_geometry_turning",
+                          "CAM1 viu cinza ruidoso; indo ao próximo yaw");
         }
         // A geometria termina primeiro a classificação vermelho/verde. Uma
         // rota preta não pode cancelar essa checagem no meio do giro.
@@ -1417,11 +1627,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         {
             if (geometryActive_ && geometryCandidateActive_)
             {
-                if (startCornerCollisionRecovery(telemetry, now))
-                    return output("rescue_exit_corner_recovery_backing",
-                                  "Parede detectada; tentando recuperar o mesmo corner");
                 startGeometryReturn(
-                    "Proteção visual interrompeu o corner", false, telemetry, now);
+                    "Parede no yaw atual; tentando o próximo", false, telemetry, now);
                 return output("rescue_exit_corner_backing",
                               explorationBlockReason_.c_str());
             }
@@ -1449,7 +1656,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         {
             // O próprio Fusion já valida a geometria. A prata é verificada
             // antes, portanto o primeiro frame novo pode assumir os motores.
-            const bool valid = bottom.lineControlSource == "fusion" && bottom.normalSteeringValid;
+            const bool valid = bottom.lineControlSource == "fusion" &&
+                bottom.normalSteeringValid && bottom.exitLineUnbranched;
             if (!valid) acquisitionFrames_ = 0;
             else ++acquisitionFrames_;
             if (acquisitionFrames_ >= config::kRescueExitAcquisitionFrames)
@@ -1804,11 +2012,8 @@ RescueExitOutput RescueExitMission::updateApproach(const ForwardLineSnapshot& fo
     {
         if (geometryActive_ && geometryCandidateActive_)
         {
-            if (startCornerCollisionRecovery(telemetry, now))
-                return output("rescue_exit_corner_recovery_backing",
-                              "Sem progresso; tentando recuperar o mesmo corner");
             startGeometryReturn(
-                "Rodas sem progresso durante o corner", false, telemetry, now);
+                "Rodas sem progresso; tentando o próximo yaw", false, telemetry, now);
             return output("rescue_exit_corner_backing",
                           explorationBlockReason_.c_str());
         }

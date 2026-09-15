@@ -15,9 +15,9 @@ MODELS_DIR = PROJECT_ROOT / "assets" / "models"
 CAMERA_ROLES = ("down", "forward")
 FULL_FRAME_ROI = (0.0, 0.0, 1.0, 1.0)
 
-# O limite de 92% mantém distância do reflexo roxo que chegou a 89,8% na pista,
-# sem exigir os 95% que dificultaram a confirmação da fita prata fina.
-DEFAULT_SILVER_CONFIDENCE = 0.92
+# O limite de 80% permite iniciar mais cedo a verificação da faixa cinza.
+# A margem e a confirmação temporal ainda rejeitam indícios fracos ou isolados.
+DEFAULT_SILVER_CONFIDENCE = 0.80
 DEFAULT_SILVER_MARGIN = 0.15
 
 # A busca e a confirmação usam até 30 inferências por segundo. Essa cadência

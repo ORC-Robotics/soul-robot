@@ -44,7 +44,7 @@ struct CameraCurveDiagnostics
 // verde antes de usá-la em alertas ou em uma decisão segura de movimento.
 struct CameraLineSnapshot
 {
-    // A saída exige classificador operacional e geometria sem ramificações.
+    // A aquisição da saída exige classificador operacional e geometria sem ramificações.
     bool silverClassifierFresh = false;
     std::uint64_t silverSequence = 0;
     bool exitLineUnbranched = false;

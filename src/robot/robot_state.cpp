@@ -53,6 +53,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "rescue_zone_triangle";
     case AutonomousMission::RescueExit:
         return "rescue_exit";
+    case AutonomousMission::RescueCornerYawTest:
+        return "rescue_corner_yaw_test";
     case AutonomousMission::RescueArea:
         return "rescue_area";
     case AutonomousMission::ObstacleAvoidance:
@@ -97,6 +99,11 @@ RobotSnapshot RobotState::snapshot() const
 bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    // O teste pode começar sobre o triângulo vermelho e só comanda pivôs.
+    // A chegada vermelha do percurso não deve encerrar essa calibração.
+    if (state_.mode == "autonomous" &&
+        state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
+        return false;
     state_.redValid = camera.sourceFresh && camera.redValid &&
         std::isfinite(camera.redRatio) && camera.redRatio >= 0.0 && camera.redRatio <= 1.0;
     if (!state_.redValid || !std::isfinite(camera.lineTimestamp) ||
@@ -169,10 +176,11 @@ void RobotState::startAutonomous()
         state_.autonomousMission == AutonomousMission::RescueZoneSearch ||
         state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
         state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
-        state_.autonomousMission == AutonomousMission::RescueZoneTriangle)
+        state_.autonomousMission == AutonomousMission::RescueZoneTriangle ||
+        state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
     {
-        // Estes modos usam apenas a câmera e, quando necessário, a tração lateral.
-        // Manter os servos desligados evita movimentos mecânicos não solicitados.
+        // Estes modos de teste não precisam mover os servos.
+        // Mantê-los desligados evita movimentos mecânicos não solicitados.
         disableServosLocked();
     }
     else
@@ -207,10 +215,11 @@ bool RobotState::tryStartAutonomous()
         state_.autonomousMission == AutonomousMission::RescueZoneSearch ||
         state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
         state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
-        state_.autonomousMission == AutonomousMission::RescueZoneTriangle)
+        state_.autonomousMission == AutonomousMission::RescueZoneTriangle ||
+        state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
     {
         // A partida física aplica a mesma condição segura do dashboard:
-        // os servos permanecem desligados durante o enquadramento visual.
+        // os servos permanecem desligados nesses modos de teste.
         disableServosLocked();
     }
     else
@@ -654,7 +663,9 @@ void RobotState::updateAutonomousStatus(const AutonomousStatus& status)
     const bool terminalRescueZoneTriangleStatus =
         status.phase == "rescue_zone_triangle_success" ||
         status.phase == "rescue_zone_triangle_failed";
-    const bool terminalMissionStatus = status.phase == "rescue_exit_failed" ||
+    const bool terminalMissionStatus = status.phase == "corner_yaw_completed" ||
+                                       status.phase == "corner_yaw_failed" ||
+                                       status.phase == "rescue_exit_failed" ||
                                        status.phase == "completed" ||
                                        status.phase == "turn_timeout" ||
                                        status.phase == "turn_imu_lost" ||

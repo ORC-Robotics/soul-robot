@@ -21,8 +21,8 @@ class RescueExitMission
 {
 public:
     void reset();
-    // Registra uma referência aproximada da entrada para ordenar os corners.
-    void setKnownEntryHeading(double headingDegrees);
+    // Usa o heading da centralização do último triângulo como yaw relativo zero.
+    void setTriangleReferenceHeading(double headingDegrees);
     // Mantém o detector colorido somente enquanto a geometria precisa classificar corners.
     bool requiresRescueZoneDetection() const;
     RescueExitOutput update(const CameraLineSnapshot& bottom,
@@ -36,6 +36,7 @@ private:
     enum class Phase {
         GeometrySettling, GeometryTurning, GeometryBacking,
         GeometryReturnTurning, Searching, Turning, ExplorationTurning, Exploring,
+        LineSeeking, LineEntryAdvance,
         ExplorationBacking, ExplorationSettling, Approaching, Backing,
         BottomValidating,
         CornerRecoveryBacking, CornerRecoveryTurningAway,
@@ -55,6 +56,7 @@ private:
     std::vector<Rejection> rejected_;
     ImuTurnController turn_;
     EncoderDistanceController reverse_;
+    EncoderDistanceController lineEntry_;
     EncoderDistanceController cornerRecoveryDistance_;
     bool started_ = false;
     bool sensorsMissing_ = false;
@@ -76,12 +78,18 @@ private:
     bool movingExploration_ = false;
     bool geometryActive_ = true;
     bool geometryReferenceSaved_ = false;
+    bool triangleReferenceValid_ = false;
     bool geometryCandidateActive_ = false;
     bool geometryReturnTurnStarted_ = false;
     bool geometryResumeProbesAfterReturn_ = false;
     bool cornerRecoveryUsed_ = false;
     bool silverBlockLatched_ = false;
-    bool knownEntryHeadingValid_ = false;
+    int lineSearchStep_ = 0;
+    int lineSearchPreferredSign_ = 1;
+    bool lineSearchSweepActive_ = false;
+    bool lineEntryAdvanceDone_ = false;
+    Time lineSearchStartedAt_{};
+    Time lineSearchStepStartedAt_{};
     Time startedAt_{}, missingSince_{}, bottomMissingSince_{}, observedAt_{}, attemptAt_{},
         lastSeenAt_{}, lastGuidanceAt_{}, progressAt_{}, explorationSettleAt_{},
         geometryPhaseAt_{};
@@ -105,7 +113,7 @@ private:
     double explorationAttemptTargetCm_ = 0.0;
     double explorationRecoveryTargetCm_ = 0.0;
     double geometryReferenceHeading_ = 0.0;
-    double knownEntryHeadingDegrees_ = 0.0;
+    double triangleReferenceHeading_ = 0.0;
     double cornerRecoveryReturnHeading_ = 0.0;
     int cornerRecoveryTurnSign_ = 1;
     std::array<double, 2> geometryCandidateHeadings_{};
@@ -125,13 +133,16 @@ private:
     RescueExitOutput updateExploration(const CameraLineSnapshot& bottom,
         const ForwardLineSnapshot& forward, const Esp32TelemetrySnapshot& telemetry,
         Time now, bool newForward, bool newBottom);
+    RescueExitOutput updateLineSearch(const CameraLineSnapshot& bottom,
+        const ForwardLineSnapshot& forward, const Esp32TelemetrySnapshot& telemetry,
+        Time now, bool newForward, bool newBottom);
     RescueExitOutput updateGeometry(const RescueZoneSnapshot& zones,
         const Esp32TelemetrySnapshot& telemetry, Time now);
-    bool buildGeometryCandidates(double greenHeading);
     bool startNextGeometryProbe(const Esp32TelemetrySnapshot& telemetry, Time now);
     bool startGeometryCandidate(const Esp32TelemetrySnapshot& telemetry, Time now);
     void startGeometryReturn(const char* reason, bool permanent,
         const Esp32TelemetrySnapshot& telemetry, Time now);
+    void startLineEntry(Time now);
     bool startCornerCollisionRecovery(
         const Esp32TelemetrySnapshot& telemetry, Time now);
     RescueExitOutput restartGeometry(

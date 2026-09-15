@@ -363,6 +363,14 @@ void testSweepRemembersEntryCandidateAndDefaultsLeft()
         require(output.status.phase == "rescue_search_sweep" &&
                     (hint > 0.0 ? output.leftPower > 0.0 : output.leftPower < 0.0),
                 "A busca deve lembrar o lado visto na entrada; sem pista, começa à esquerda.");
+        require(output.servoPoseRequested &&
+                    output.servoPose.armDegrees ==
+                        config::kServoRoutineArmStorageTransitionDegrees &&
+                    output.servoPose.wristDegrees ==
+                        config::kServoRoutineWristStorageClearanceDegrees &&
+                    output.servoPose.gripperDegrees ==
+                        config::kServoRoutineGripperClosedDegrees,
+                "A busca deve manter braço e pulso recolhidos contra colisões.");
     }
 }
 
@@ -754,6 +762,13 @@ void testRunsRequiredVictimsInPriorityOrder()
     require(output.internalObjectStored &&
                 std::string(mission.ballTargetType()) == "silver_ball",
             "Depois de armazenar a primeira prata, a segunda continua prioritária.");
+    require(servoPose.armDegrees ==
+                    config::kServoRoutineArmStorageTransitionDegrees &&
+                servoPose.wristDegrees ==
+                    config::kServoRoutineWristStorageClearanceDegrees &&
+                servoPose.gripperDegrees ==
+                    config::kServoRoutineGripperClosedDegrees,
+            "O armazenamento deve terminar na pose recolhida usada pela busca.");
 
     targetSequence = mission.ballTargetSequence(kRunSequence);
     output = updateMission(
@@ -832,8 +847,8 @@ void testRunsRequiredVictimsInPriorityOrder()
         now,
         config::kRescueFinalDepositReverseDistanceCm);
     require(output.status.phase == "rescue_final_verification" &&
-                std::string(mission.ballTargetType()) == "silver_ball",
-            "Depois das entregas obrigatórias, a checagem extra deve recomeçar pelas vivas.");
+                std::string(mission.ballTargetType()) == "any",
+            "Depois das entregas obrigatórias, uma única volta deve procurar qualquer vítima extra.");
 
     const auto extra = lockedSilver(mission.ballTargetSequence(kRunSequence), 40.0);
     output = collectVictim(mission, extra, telemetry, servoPose, now);
@@ -855,8 +870,32 @@ void testRunsRequiredVictimsInPriorityOrder()
     output = completeDistanceStage(mission, extra, telemetry, servoPose, now,
                                    config::kRescueFinalDepositReverseDistanceCm);
     require(output.status.phase == "rescue_final_verification" &&
-                std::string(mission.ballTargetType()) == "silver_ball",
-            "Após a ré final verde, a verificação deve recomeçar pelas vítimas vivas.");
+                std::string(mission.ballTargetType()) == "any",
+            "Após a ré final verde, a verificação deve procurar qualquer vítima extra.");
+
+    const std::uint64_t finalSequence =
+        mission.ballTargetSequence(kRunSequence);
+    double frameTimestamp = 100.0;
+    output = updateMission(
+        mission, emptyFrame(finalSequence, frameTimestamp++), {},
+        telemetry, servoPose, now);
+    require(output.status.phase == "rescue_search_continuous",
+            "A verificação final deve iniciar o único giro de 360°.");
+    const double yawStep = output.leftPower < 0.0 ? -90.0 : 90.0;
+
+    for (int quarterTurn = 0; quarterTurn < 4; ++quarterTurn)
+    {
+        telemetry.yawZDeg = std::remainder(
+            telemetry.yawZDeg + yawStep, 360.0);
+        now += std::chrono::milliseconds(100);
+        output = updateMission(
+            mission, emptyFrame(finalSequence, frameTimestamp++), {},
+            telemetry, servoPose, now);
+    }
+    require(output.completed &&
+                output.status.phase == "rescue_room_completed" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Uma volta completa deve parar os motores e liberar a busca da saída.");
 }
 
 void testBlocksWristWhenServoOutputIsLostAfterFirstCapture()

@@ -28,9 +28,11 @@ from .camera_config import (
     FUSION_TARGET_STABLE_FRAMES_FOR_FULL_SPEED,
     FUSION_TARGET_STABLE_SHIFT_WIDTH_RATIO,
     GREEN_CANDIDATE_HOLD_MAX_FRAMES,
+    GREEN_ENTRY_PIVOT_MAX_FRAMES,
     GREEN_FUSION_TARGET_HOLD_MAX_FRAMES,
     GREEN_TRUSTED_POSITION_CENTER_LIMIT,
     LIMIAR_CENTRALIZACAO_VERDE,
+    LIMIAR_CURVA_VERDE_INICIADA,
     NORMAL_BASE_POWER,
     NORMAL_FULL_STEERING_ERROR,
     NORMAL_INNER_MIN_POWER,
@@ -1806,3 +1808,23 @@ def green_maneuver_is_geometrically_complete(
         trusted_position is not None
         and abs(trusted_position) <= GREEN_TRUSTED_POSITION_CENTER_LIMIT
     )
+
+
+def green_maneuver_entry_is_confirmed(
+    active_direction,
+    active_frames,
+    near_fine_position,
+):
+    """Confirma a entrada lateral somente após o pivô inicial ter ocorrido."""
+
+    if active_direction not in ("ESQUERDA", "DIREITA"):
+        return False
+    if max(0, int(active_frames)) <= GREEN_ENTRY_PIVOT_MAX_FRAMES:
+        return False
+
+    near_position = finite_virtual_position(near_fine_position)
+    if near_position is None:
+        return False
+    if active_direction == "ESQUERDA":
+        return near_position <= -LIMIAR_CURVA_VERDE_INICIADA
+    return near_position >= LIMIAR_CURVA_VERDE_INICIADA

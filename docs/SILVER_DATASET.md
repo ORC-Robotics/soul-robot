@@ -131,7 +131,7 @@ Depois do treinamento, `vision.silver_detection.SilverLineDetector` carrega o
 modelo correspondente com `from_camera_model("down")` ou
 `from_camera_model("forward")`. `detect(frame)` retorna `detected`, a classe
 vencedora, as probabilidades e a margem da faixa prata sobre a concorrente mais
-forte. Os limites atuais são 92% de confiança e 15 pontos percentuais de
+forte. Os limites atuais são 80% de confiança e 15 pontos percentuais de
 margem. A busca e a confirmação rodam em até 30 FPS e exigem quatro positivos
 consecutivos. Calibre esses valores com as
 métricas e falsos positivos do dataset real antes de operar a missão principal.

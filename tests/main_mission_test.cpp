@@ -683,7 +683,7 @@ void testReturnStopsBeforeAndAfterCentering()
     require(
         snapshot.autonomousStatus.phase == "turnaround_recognition_delay" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
-        "O reconhecimento do retorno deve zerar os motores por um segundo.");
+        "O reconhecimento do retorno deve zerar os motores durante a pausa configurada.");
 
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kGreenTurnAroundRecognitionDelayMs + 20));
@@ -1061,6 +1061,23 @@ void testUnavailableCameraStopsMission()
         "Câmera indisponível deve encerrar a missão com motores zerados.");
 }
 
+void testTransientLineIpcLossPausesAndResumesMission()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot staleLine = freshVision(GreenInterpretation::None);
+    staleLine.sourceFresh = false;
+
+    RobotSnapshot snapshot = fixture.update(staleLine, true);
+    require(
+        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+            snapshot.right == 0.0 &&
+            snapshot.autonomousStatus.phase == "line_ipc_waiting",
+        "IPC visual antigo deve pausar com motores zerados sem encerrar a missão.");
+
+    snapshot = fixture.update(freshVision(GreenInterpretation::None), true);
+    requireFollowingLine(snapshot, "Retorno do IPC visual");
+}
+
 void testObstaclePausesIfBottomCameraBecomesUnavailable()
 {
     MissionFixture fixture;
@@ -1256,6 +1273,37 @@ void testRescueAlignmentModeKeepsExistingMotorAuthority()
             snapshot.autonomousStatus.phase ==
                 "ball_alignment_correction_pulse",
         "O resgate deve transferir o alvo travado ao alinhamento validado.");
+}
+
+void testCornerYawModeOnlyTurnsAndStopsOnImuLoss()
+{
+    RobotState robotState;
+    MissionController controller;
+    robotState.setAutonomousMission(AutonomousMission::RescueCornerYawTest);
+    robotState.startAutonomous();
+    RobotSnapshot snapshot = robotState.snapshot();
+    require(!snapshot.armServoRequested && !snapshot.wristServoRequested &&
+                !snapshot.gripperServoRequested,
+            "O teste de yaw não deve acionar servos.");
+    require(!controller.requiresExitVision(snapshot) &&
+                !controller.requiresRescueZoneDetection(snapshot),
+            "O teste de yaw não deve ligar a visão de saída ou triângulos.");
+
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    telemetry.yawZDeg = -120.0;
+    controller.update(robotState, telemetry, false, {}, {}, {});
+    snapshot = robotState.snapshot();
+    require(snapshot.autonomousStatus.phase == "corner_yaw_turning" &&
+                snapshot.left > 0.0 && snapshot.right < 0.0,
+            "O primeiro alvo deve comandar apenas pivô à direita.");
+
+    telemetry.mpuOk = false;
+    controller.update(robotState, telemetry, false, {}, {}, {});
+    snapshot = robotState.snapshot();
+    require(snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0 &&
+                snapshot.autonomousStatus.phase == "corner_yaw_failed",
+            "A perda da IMU deve encerrar o teste com motores parados.");
 }
 
 void testRescueZoneDetectionOnlyKeepsMotorsStopped()
@@ -1758,6 +1806,7 @@ int main(int argc, char** argv)
             return 0;
         }
         testExitAcquisitionRestoresFollower();
+        testCornerYawModeOnlyTurnsAndStopsOnImuLoss();
         testExitFailureDiagnosticSurvivesStop();
         testRescueExitKeepsVisionGateActiveInManualMode();
         testExitIpcRejectsInvalidEvidenceWithoutBreakingNormalVision();
@@ -1791,6 +1840,7 @@ int main(int argc, char** argv)
         testGapAndGreenKeepNativeAuthorityWithoutImu();
         testForwardIpcAcceptsGeometryWithoutPowersAndRejectsInvalidSources();
         testUnavailableCameraStopsMission();
+        testTransientLineIpcLossPausesAndResumesMission();
         testObstaclePausesIfBottomCameraBecomesUnavailable();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
         testRescueAlignmentModeKeepsExistingMotorAuthority();

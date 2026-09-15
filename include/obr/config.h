@@ -456,6 +456,12 @@ constexpr int kRescueVictimSecondSweepTimeoutMs = 8000;
 constexpr double kRescueContinuousSearchMinimumProgressDegrees = 15.0;
 constexpr int kRescueContinuousSearchStallTimeoutMs = 2000;
 
+// A verificação das vítimas extras cobre no máximo uma volta completa.
+// O tempo limite encerra a busca mesmo se o robô ficar preso e libera a rotina
+// da saída, que aponta para os corners usando o heading do último triângulo.
+constexpr double kRescueFinalVictimSearchDegrees = 360.0;
+constexpr int kRescueFinalVictimSearchTimeoutMs = 20000;
+
 // Ré feita depois de cada coleta para liberar a vítima da parede e criar espaço
 // para movimentar o mecanismo. Os encoders limitam o percurso a 15 cm.
 constexpr double kRescuePostCollectionReverseDistanceCm = 15.0;
@@ -479,9 +485,6 @@ constexpr double kRescueExitTrackingToleranceDegrees = 30.0;
 constexpr double kRescueExitRejectedToleranceDegrees = 15.0;
 // A prata confirma um vão de entrada inteiro; este cone impede novas investidas próximas.
 constexpr double kRescueExitSilverRejectedToleranceDegrees = 35.0;
-// Ao cruzar a prata, o robô aponta para dentro da sala. A direção oposta serve
-// apenas para ordenar os corners; drift da IMU impede tratá-la como bloqueio.
-constexpr double kRescueExitSavedEntryReverseDegrees = 180.0;
 // Variação máxima do heading entre frames usados para confirmar uma candidata distante.
 constexpr double kRescueExitCandidateHeadingToleranceDegrees = 15.0;
 constexpr int kRescueExitCandidateFrames = 3;
@@ -491,6 +494,15 @@ constexpr int kRescueExitCandidateReviewMs = 800;
 // Quatro frames novos apenas iniciam a validação pelo Fusion inferior.
 // A missão continua ativa para dar prioridade à prata antes do handoff.
 constexpr int kRescueExitAcquisitionFrames = 4;
+// Duração, em milissegundos, de cada pivô contínuo usado para procurar a faixa.
+constexpr int kRescueExitLineSearchSideMs = 650;
+// Potência normalizada dos pivôs de busca. O valor precisa vencer o atrito do robô.
+constexpr double kRescueExitLineSearchTurnPower = 0.75;
+// Tempo máximo, em milissegundos, para concluir os pivôs de busca da faixa.
+constexpr int kRescueExitLineSearchTimeoutMs = 12000;
+// Reta curta, em centímetros, por encoders após o primeiro Fusion de uma faixa
+// sem ramificações; evita seguir o braço lateral logo na borda.
+constexpr double kRescueExitLineEntryAdvanceCm = 3.0;
 // Distância mínima, em centímetros, percorrida com Fusion inferior estável
 // antes do handoff. Nesse trecho, qualquer indício de prata para o robô.
 constexpr double kRescueExitBottomValidationAdvanceCm = 25.0;
@@ -524,17 +536,16 @@ constexpr double kRescueExitExplorationTotalCm = 60.0;
 constexpr double kRescueExitExplorationRecoveryCm = 8.0;
 constexpr double kRescueExitExplorationOffsetDegrees = 30.0;
 constexpr int kRescueExitExplorationMaximumAttempts = 3;
-// Geometria aproximada dos quatro corners da sala retangular de 90 x 120 cm.
-// O heading salvo após a ré do triângulo vermelho é a origem desta construção.
-constexpr double kRescueExitCornerShortSeparationDegrees = 74.0;
-constexpr double kRescueExitCornerLongSeparationDegrees = 106.0;
-constexpr double kRescueExitCornerDiagonalDegrees = 180.0;
-// Acréscimo aplicado ao giro de ida antes do avanço reto para cada corner.
-// Compensa o enquadramento curto observado no robô sem alterar o retorno central.
-constexpr double kRescueExitCornerPreAdvanceExtraDegrees = 15.0;
+// Yaws de avanço reto medidos a partir do alinhamento do último triângulo.
+// O teste isolado usa os mesmos alvos para permitir a calibração na arena.
+constexpr double kRescueExitFirstStraightYawDegrees = 100.0;
+constexpr double kRescueExitSecondStraightYawDegrees = 170.0;
+constexpr double kRescueExitThirdStraightYawDegrees = -96.0;
+// Tempo parado, em milissegundos, em cada direção do teste isolado de yaw.
+// A pausa permite conferir visualmente para qual quina o robô está apontando.
+constexpr int kRescueCornerYawHoldMs = 2000;
 // Absorve o robô fora do centro e o triângulo fora do centro da imagem.
 constexpr double kRescueExitCornerGeometryToleranceDegrees = 24.0;
-constexpr double kRescueExitCornerCameraHorizontalFovDegrees = 62.0;
 // A tentativa termina antes deste limite se qualquer Fusion válido aparecer.
 constexpr double kRescueExitCornerAdvanceCm = 60.0;
 constexpr int kRescueExitCornerVisionTimeoutMs = 2000;
@@ -557,6 +568,12 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitBottomValidationAdvanceCm < kRescueExitCornerAdvanceCm &&
               kRescueExitCandidateReviewMs > kRescueExitForwardStatusTimeoutMs &&
               kRescueExitCandidateReviewMs < kRescueExitApproachTimeoutMs &&
+              kRescueExitLineSearchSideMs > 0 &&
+              kRescueExitLineSearchTurnPower >= kMotorStartMinimumPower &&
+              kRescueExitLineSearchTurnPower <= kMaxMotorOutput &&
+              kRescueExitLineSearchTimeoutMs > 0 &&
+              kRescueExitLineEntryAdvanceCm > 0.0 &&
+              kRescueExitLineEntryAdvanceCm < kRescueExitBottomValidationAdvanceCm &&
               kRescueExitForwardStatusTimeoutMs > kForwardLineStatusTimeoutMs &&
               kRescueExitGuidanceHoldMs < kRescueExitReacquisitionWaitMs &&
               kRescueExitReacquisitionWaitMs < kRescueExitForwardStatusTimeoutMs +
@@ -580,18 +597,16 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitExplorationRecoveryCm < kRescueExitExplorationAttemptCm &&
               kRescueExitExplorationOffsetDegrees == kRescueExitScanDegrees &&
               kRescueExitExplorationMaximumAttempts == 3 &&
-              kRescueExitCornerShortSeparationDegrees <
-                  kRescueExitCornerLongSeparationDegrees &&
-              kRescueExitCornerShortSeparationDegrees +
-                  kRescueExitCornerLongSeparationDegrees ==
-                  kRescueExitCornerDiagonalDegrees &&
-              kRescueExitCornerPreAdvanceExtraDegrees > 0.0 &&
-              kRescueExitCornerPreAdvanceExtraDegrees <
-                  kRescueExitCornerGeometryToleranceDegrees &&
+              kRescueExitFirstStraightYawDegrees > 0.0 &&
+              kRescueExitFirstStraightYawDegrees <
+                  kRescueExitSecondStraightYawDegrees &&
+              kRescueExitSecondStraightYawDegrees <= 180.0 &&
+              kRescueExitThirdStraightYawDegrees < 0.0 &&
+              kRescueExitThirdStraightYawDegrees > -180.0 &&
               kRescueExitCornerGeometryToleranceDegrees > 0.0 &&
               kRescueExitCornerGeometryToleranceDegrees <
-                  kRescueExitCornerShortSeparationDegrees * 0.5 &&
-              kRescueExitCornerCameraHorizontalFovDegrees > 0.0 &&
+                  (kRescueExitSecondStraightYawDegrees -
+                   kRescueExitFirstStraightYawDegrees) * 0.5 &&
               kRescueExitCornerAdvanceCm > 0.0 &&
               kRescueExitCornerCollisionReverseCm > 0.0 &&
               kRescueExitCornerCollisionReverseCm < kRescueExitCornerAdvanceCm &&
@@ -624,6 +639,10 @@ constexpr double kBallAlignmentDeadbandDegrees = 1.0;
 // precisa terminar toda a centralização parado porque continuará corrigindo
 // suavemente o heading enquanto avança.
 constexpr double kBallApproachStartToleranceDegrees = 5.0;
+
+// Margem exclusiva da vítima que libera o avanço com correção contínua.
+// O limite maior reduz o tempo parado no alinhamento inicial sem afetar a saída.
+constexpr double kVictimApproachStartToleranceDegrees = 8.0;
 
 // Metade do campo de visão horizontal de 62° usado para calcular o tx.
 // Este limite normaliza o tempo dos pulsos sem alterar o cálculo da câmera.
@@ -696,7 +715,7 @@ constexpr double kBallApproachStopDistanceCm = 5.0;
 // Margem angular aceita quando a vítima já atingiu a distância de coleta.
 // Muito perto, a caixa ocupa grande parte do frame e pequenos pivôs deixam de
 // ser úteis; esta tolerância libera o avanço final sem aceitar um grande desvio.
-constexpr double kBallCollectionNearAlignmentToleranceDegrees = 6.0;
+constexpr double kBallCollectionNearAlignmentToleranceDegrees = 10.0;
 
 // Distância adicional, em centímetros, percorrida depois que a câmera confirma
 // a vítima próxima. O avanço por encoder garante contato com o coletor sem
@@ -739,12 +758,12 @@ constexpr double kBallApproachMaximumHeadingAdjustmentDegrees = 3.0;
 constexpr double kBallApproachFullSteeringErrorDegrees = 3.0;
 
 static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
-                  kBallApproachStartToleranceDegrees >
+                  kVictimApproachStartToleranceDegrees >
                       kBallAlignmentDeadbandDegrees &&
                   kBallAlignmentMaximumVisualErrorDegrees >
                       kBallAlignmentFineCorrectionThresholdDegrees &&
                   kBallAlignmentFineCorrectionThresholdDegrees >
-                      kBallApproachStartToleranceDegrees &&
+                      kVictimApproachStartToleranceDegrees &&
                   kBallAlignmentCoarsePulsePower >=
                       kMotorStartMinimumPower &&
                   kBallAlignmentCoarsePulsePower <= kMaxMotorOutput &&
@@ -786,7 +805,7 @@ static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
                   kBallAlignmentTargetLossTimeoutMs > 0 &&
                   kBallApproachStopDistanceCm > 0.0 &&
                   kBallCollectionNearAlignmentToleranceDegrees >
-                      kBallApproachStartToleranceDegrees &&
+                      kVictimApproachStartToleranceDegrees &&
                   kBallCollectionNearAlignmentToleranceDegrees <
                       kBallAlignmentFineCorrectionThresholdDegrees &&
                   kVictimCollectionAdvanceDistanceCm > 0.0 &&
@@ -818,7 +837,7 @@ static_assert(kBallAlignmentDeadbandDegrees > 0.0 &&
                   kBallApproachVisualAlignedToleranceDegrees >=
                       kBallApproachHeadingDeadbandDegrees &&
                   kBallApproachVisualAlignedToleranceDegrees <
-                      kBallApproachStartToleranceDegrees &&
+                      kVictimApproachStartToleranceDegrees &&
                   kBallApproachVisualHeadingGain > 0.0 &&
                   kBallApproachVisualHeadingGain <= 1.0 &&
                   kBallApproachMaximumHeadingAdjustmentDegrees > 0.0 &&
@@ -846,6 +865,9 @@ static_assert(kRescueSearchTurnPower >= kMotorStartMinimumPower &&
                    kRescueContinuousSearchMinimumProgressDegrees > 0.0 &&
                    kRescueContinuousSearchMinimumProgressDegrees < 180.0 &&
                    kRescueContinuousSearchStallTimeoutMs > 0 &&
+                   kRescueFinalVictimSearchDegrees == 360.0 &&
+                   kRescueFinalVictimSearchTimeoutMs >
+                       kRescueContinuousSearchStallTimeoutMs &&
                    kRescuePostCollectionReverseDistanceCm > 0.0 &&
                   kRescuePostCollectionReversePower >=
                       kMotorStartMinimumPower &&
@@ -1061,7 +1083,7 @@ constexpr int kObstacleParabolaNearRequiredVotes = 2;
 constexpr int kObstacleCase3FusionWindowMs = 2000;
 // Avanço reto, em centímetros, executado antes do pivot do caso 3. A distância
 // cria folga do obstáculo e continua limitada pelos encoders e pelo timeout.
-constexpr double kObstacleParabolaReacquireForwardDistanceCm = 2.0;
+constexpr double kObstacleParabolaReacquireForwardDistanceCm = 5.0;
 // Limite angular, em graus, da busca lateral iniciada pelo caso 3.
 constexpr double kObstacleParabolaRearBlockDegrees = 65.0;
 // Limite menor, em graus, aplicado somente ao Fusion que tenta levar o robô para
@@ -1252,9 +1274,10 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
               "O controle fechado da missão de distância deve permanecer seguro.");
 
 // Sequência configurável do retorno sinalizado por dois marcadores verdes.
-// Ao reconhecer o retorno, o robô permanece parado antes de começar a alinhar.
+// Ao reconhecer o retorno, o robô permanece parado por 250 milissegundos antes
+// de alinhar. A pausa curta estabiliza a leitura sem atrasar a reação ao verde.
 // O atraso não bloqueia o loop, mantendo E-Stop e telemetria ativos.
-constexpr int kGreenTurnAroundRecognitionDelayMs = 1000;
+constexpr int kGreenTurnAroundRecognitionDelayMs = 250;
 // Deslocamento normalizado máximo aceito simultaneamente no NEAR e MEDIUM.
 // Reduzir este valor exige um alinhamento visual mais preciso antes do avanço.
 constexpr double kGreenTurnAroundCenteringTolerance = 0.20;

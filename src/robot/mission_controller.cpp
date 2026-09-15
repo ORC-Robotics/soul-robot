@@ -3,6 +3,7 @@
 #include "obr/config.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -212,6 +213,10 @@ void MissionController::update(
     case AutonomousMission::TurnRight90:
         distancePhase_ = DistancePhase::Idle;
         updateTurnRight90(robotState, esp32Telemetry);
+        return;
+    case AutonomousMission::RescueCornerYawTest:
+        distancePhase_ = DistancePhase::Idle;
+        updateCornerYawTest(robotState, esp32Telemetry);
         return;
     case AutonomousMission::DriveDistance:
         testTurnController_.reset();
@@ -629,6 +634,130 @@ void MissionController::updateTurnRight90(
     robotState.updateAutonomousStatus(status);
 }
 
+void MissionController::updateCornerYawTest(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& telemetry)
+{
+    // Os três alvos são relativos ao yaw capturado no início, tanto no
+    // triângulo vermelho quanto no verde. Este teste nunca avança em linha reta.
+    constexpr std::array<double, 3> offsets = {
+        config::kRescueExitFirstStraightYawDegrees,
+        config::kRescueExitSecondStraightYawDegrees,
+        config::kRescueExitThirdStraightYawDegrees};
+    const auto now = std::chrono::steady_clock::now();
+    robotState.driveAutonomous(0.0, 0.0);
+
+    if (!cornerYawReferenceValid_)
+    {
+        if (!telemetry.readyForOperation() ||
+            !ImuTurnController::imuReady(telemetry))
+        {
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "corner_yaw_waiting_imu", "Parado: aguardando IMU e ESP32"));
+            return;
+        }
+        cornerYawReferenceDegrees_ = telemetry.yawZDeg;
+        cornerYawReferenceValid_ = true;
+    }
+
+    if (!telemetry.readyForOperation() ||
+        !ImuTurnController::imuReady(telemetry))
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "corner_yaw_failed", "Teste interrompido: IMU ou ESP32 indisponível"));
+        return;
+    }
+
+    if (cornerYawIndex_ >= static_cast<int>(offsets.size()))
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "corner_yaw_completed", "Três direções verificadas; motores parados", 100.0));
+        return;
+    }
+
+    const int offsetDegrees = static_cast<int>(offsets[cornerYawIndex_]);
+    const std::string target = "Alvo " + std::to_string(cornerYawIndex_ + 1) +
+        "/3 (" + (offsetDegrees > 0 ? "+" : "") +
+        std::to_string(offsetDegrees) + "°): ";
+
+    if (cornerYawPhase_ == CornerYawPhase::Holding)
+    {
+        if (now - cornerYawHoldStartedAt_ <
+            std::chrono::milliseconds(config::kRescueCornerYawHoldMs))
+        {
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "corner_yaw_holding", target + "parado por 2 segundos"));
+            return;
+        }
+        ++cornerYawIndex_;
+        if (cornerYawIndex_ == static_cast<int>(offsets.size()))
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "corner_yaw_completed", "Três direções verificadas; motores parados", 100.0));
+            return;
+        }
+        cornerYawPhase_ = CornerYawPhase::Ready;
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "corner_yaw_next", "Pausa concluída; preparando o próximo yaw"));
+        return;
+    }
+
+    if (cornerYawPhase_ == CornerYawPhase::Ready)
+    {
+        const double targetYaw = std::remainder(
+            cornerYawReferenceDegrees_ + offsets[cornerYawIndex_], 360.0);
+        const double turnDegrees = std::remainder(
+            targetYaw - telemetry.yawZDeg, 360.0);
+        if (std::abs(turnDegrees) <= config::kBallApproachStartToleranceDegrees)
+        {
+            cornerYawPhase_ = CornerYawPhase::Holding;
+            cornerYawHoldStartedAt_ = now;
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "corner_yaw_holding", target + "já alinhado; parado por 2 segundos"));
+            return;
+        }
+        if (!testTurnController_.start(
+                std::abs(turnDegrees),
+                turnDegrees < 0.0 ? ImuTurnDirection::Left : ImuTurnDirection::Right,
+                telemetry,
+                config::kBallApproachStartToleranceDegrees,
+                0, 0,
+                config::kRescueExitTurnPower,
+                config::kRescueExitApproachTimeoutMs,
+                now))
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(makeAutonomousStatus(
+                "corner_yaw_failed", target + "não foi possível iniciar o giro"));
+            return;
+        }
+        cornerYawPhase_ = CornerYawPhase::Turning;
+    }
+
+    const ImuTurnOutput turn = testTurnController_.update(telemetry, now);
+    if (turn.result == ImuTurnResult::Failed)
+    {
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "corner_yaw_failed", target + turn.action));
+        return;
+    }
+    if (turn.result == ImuTurnResult::Completed)
+    {
+        cornerYawPhase_ = CornerYawPhase::Holding;
+        cornerYawHoldStartedAt_ = now;
+        robotState.updateAutonomousStatus(makeAutonomousStatus(
+            "corner_yaw_holding", target + "parado por 2 segundos"));
+        return;
+    }
+    robotState.driveAutonomous(turn.leftPower, turn.rightPower);
+    robotState.updateAutonomousStatus(makeAutonomousStatus(
+        "corner_yaw_turning", target + turn.action, turn.progressPercent));
+}
+
 void MissionController::updateDriveDistance(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
@@ -896,6 +1025,10 @@ void MissionController::resetMissionState()
     rescueZoneTriangleMission_.reset();
     obstacleAvoidanceTest_.reset();
     testTurnController_.reset();
+    cornerYawPhase_ = CornerYawPhase::Ready;
+    cornerYawReferenceDegrees_ = 0.0;
+    cornerYawReferenceValid_ = false;
+    cornerYawIndex_ = 0;
     servoRoutine_.resetExecution();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;

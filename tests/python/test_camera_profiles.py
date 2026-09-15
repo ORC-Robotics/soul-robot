@@ -861,6 +861,44 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(result["interpretation"], "AMBIGUO")
         self.assertFalse(result["pair_compatible"])
 
+    def test_orientation_incompatible_pair_never_becomes_lateral(self):
+        left = rectangle_contour(90, 180, 140, 230)
+        right = rectangle_contour(320, 182, 370, 232)
+        mask = marker_mask(
+            (319, 480),
+            [
+                (left, ("upper", "horizontal_right")),
+                (right, ("upper", "horizontal_left")),
+            ],
+        )
+        with mock.patch(
+            "vision.green_detection.black_roi_orientation_degrees",
+            side_effect=(0.0, 90.0),
+        ):
+            result = camera_line_frame.analyze_green_marker_contours(
+                [left, right],
+                mask,
+            )
+
+        self.assertEqual(result["interpretation"], "AMBIGUO")
+        self.assertFalse(result["path_black_valid"])
+
+    def test_second_unvalidated_marker_blocks_lateral_decision(self):
+        left = rectangle_contour(90, 180, 140, 230)
+        right = rectangle_contour(320, 182, 370, 232)
+        mask = marker_mask(
+            (319, 480),
+            [(right, ("upper", "horizontal_left"))],
+        )
+
+        result = camera_line_frame.analyze_green_marker_contours(
+            [left, right],
+            mask,
+        )
+
+        self.assertEqual(result["interpretation"], "AMBIGUO")
+        self.assertFalse(result["path_black_valid"])
+
     def test_diagonal_pair_does_not_require_lateral_confirmation(self):
         left_marker = rectangle_contour(70, 165, 125, 220)
         right_marker = rectangle_contour(285, 100, 340, 155)
@@ -887,16 +925,60 @@ class CameraProfilesTest(unittest.TestCase):
         tracker = camera_line_frame.GreenObservationTracker()
         first = tracker.update(1, "ESQUERDA", 1.0)
         repeated = tracker.update(1, "ESQUERDA", 1.1)
-        second = tracker.update(2, "ESQUERDA", 1.2)
         self.assertEqual(first, ("SEM_DECISAO", False, 1))
         self.assertEqual(repeated, first)
-        self.assertEqual(second, ("ESQUERDA", True, 2))
+
+        for sequence in range(2, 5):
+            pending = tracker.update(
+                sequence,
+                "ESQUERDA",
+                1.0 + sequence / 10.0,
+            )
+            self.assertEqual(
+                pending,
+                ("SEM_DECISAO", False, sequence),
+            )
+
+        confirmed = tracker.update(5, "ESQUERDA", 1.5)
+        self.assertEqual(confirmed, ("ESQUERDA", True, 5))
+
+    def test_partial_turnaround_does_not_confirm_lateral_first(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        first_left = tracker.update(1, "ESQUERDA", 1.0)
+        second_left = tracker.update(2, "ESQUERDA", 1.1)
+        tracker.update(3, "ESQUERDA", 1.2)
+        fourth_left = tracker.update(4, "ESQUERDA", 1.3)
+        first_turnaround = tracker.update(5, "RETORNO_180", 1.4)
+        tracker.update(6, "RETORNO_180", 1.5)
+        confirmed_turnaround = tracker.update(7, "RETORNO_180", 1.6)
+
+        self.assertEqual(first_left[0:2], ("SEM_DECISAO", False))
+        self.assertEqual(second_left[0:2], ("SEM_DECISAO", False))
+        self.assertEqual(fourth_left[0:2], ("SEM_DECISAO", False))
+        self.assertEqual(first_turnaround[0:2], ("SEM_DECISAO", False))
+        self.assertEqual(confirmed_turnaround[0:2], ("RETORNO_180", True))
 
     def test_green_tracker_never_confirms_ambiguous(self):
         tracker = camera_line_frame.GreenObservationTracker()
         tracker.update(1, "AMBIGUO", 1.0)
         result = tracker.update(2, "AMBIGUO", 1.1)
         self.assertEqual(result, ("AMBIGUO", False, 2))
+
+    def test_confirmed_turnaround_cannot_change_to_lateral_before_clear(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        tracker.update(1, "RETORNO_180", 1.0)
+        tracker.update(2, "RETORNO_180", 1.1)
+        confirmed = tracker.update(3, "RETORNO_180", 1.2)
+        first_right = tracker.update(4, "DIREITA", 1.3)
+        second_right = tracker.update(5, "DIREITA", 1.4)
+
+        self.assertEqual(confirmed[0:2], ("RETORNO_180", True))
+        self.assertEqual(first_right[0:2], ("RETORNO_180", True))
+        self.assertEqual(second_right[0:2], ("RETORNO_180", True))
+
+        tracker.update(6, "SEM_DECISAO", 1.5)
+        cleared = tracker.update(7, "SEM_DECISAO", 1.6)
+        self.assertEqual(cleared, ("SEM_DECISAO", False, 0))
 
     def test_green_classification_does_not_override_line_follower_directly(self):
         mask = np.full((40, 60), 255, dtype=np.uint8)

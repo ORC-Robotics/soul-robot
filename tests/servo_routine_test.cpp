@@ -196,9 +196,11 @@ int main()
                     closeTo(poseAt(steps, "servo_store_arm_clearance").armDegrees, 50.0) &&
                     closeTo(poseAt(steps, "servo_store_wrist_clearance").wristDegrees, 45.0) &&
                     closeTo(poseAt(steps, "servo_store_arm_transition").armDegrees, 20.0) &&
-                    closeTo(poseAt(steps, "servo_store_arm_ready").armDegrees, 0.0) &&
+                    closeTo(output.pose.armDegrees, 20.0) &&
+                    closeTo(output.pose.wristDegrees, 45.0) &&
+                    closeTo(output.pose.gripperDegrees, 0.0) &&
                     output.internalObjectStored,
-                "Storage must reach wrist zero before releasing the victim");
+                "Storage must finish tucked before the next victim search");
         requireWristClearance(steps);
 
         steps = runRoutine(ServoRoutineKind::FullSequence, 4, home, output);

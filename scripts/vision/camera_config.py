@@ -218,7 +218,7 @@ LINE_MIN_COMPONENT_CORE_RATIO = 0.15
 DOWN_LINE_MIN_COMPONENT_AREA_PX = 800
 DOWN_LINE_MIN_COMPONENT_THICKNESS_PX = 20.0
 DOWN_LINE_MIN_COMPONENT_CORE_RATIO = 0.25
-GREEN_MIN_AREA_RATIO = 1900.0 / (320.0 * 200.0)
+GREEN_MIN_AREA_RATIO = 1300.0 / (320.0 * 200.0)
 GREEN_MIN_AREA_PX = 80.0
 GREEN_MIN_DIMENSION_PX = 6.0
 GREEN_ASPECT_RATIO_MIN = 0.35
@@ -231,7 +231,9 @@ GREEN_PARTIAL_ASPECT_RATIO_MIN = 0.20
 GREEN_PARTIAL_EXTENT_MIN = 0.20
 GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
 GREEN_CONFIRMATION_FRAMES = 2
-GREEN_SINGLE_OBSERVATION_FRAMES = 2
+# Um verde lateral espera cinco frames para dar tempo de o segundo marcador de
+# um retorno de 180° entrar inteiro na imagem antes de iniciar a curva errada.
+GREEN_SINGLE_OBSERVATION_FRAMES = 5
 # O retorno exige uma amostra adicional porque combina dois marcadores e pode
 # surgir brevemente quando verdes de interseções diferentes entram no quadro.
 GREEN_TURNAROUND_CONFIRMATION_FRAMES = 3
@@ -239,9 +241,10 @@ GREEN_CLEAR_HYSTERESIS_FRAMES = 2
 # Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
 # um candidato verde aguarda confirmação. O limite evita um hold indefinido.
 GREEN_CANDIDATE_HOLD_MAX_FRAMES = 2
-# Mantém por no máximo dois frames o último target Fusion GREEN válido.
+# Mantém por no máximo oito frames o último target Fusion GREEN válido. Em
+# 30 FPS, isso tolera cerca de 270 milissegundos de ocultação durante o giro.
 # Depois disso, a recuperação existente assume no lado indicado pelo marcador.
-GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 2
+GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 8
 # Esta medida-base equivale a 5% da largura do frame e dimensiona as duas ROIs
 # sem prender o detector a uma resolução específica.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
@@ -729,6 +732,10 @@ LIMIAR_CENTRALIZACAO_VERDE = 0.18
 
 # Evita encerrar a prioridade por uma leitura central isolada.
 QUADROS_CENTRALIZADO_PARA_CONCLUIR = 3
+
+# A prioridade lateral deve durar pelo menos 0,8 segundo antes de aceitar a
+# geometria central. Isso impede que a faixa antiga conclua a curva durante o giro.
+GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION = 24
 
 # Limite lateral aceito em uma fileira trusted para confirmar que o ramo
 # escolhido pelo verde já migrou para a região central.

@@ -511,6 +511,11 @@ void DashboardServer::handleCommand(const std::string& message)
             robotState_.setAutonomousMission(AutonomousMission::RescueExit);
             std::cout << "Autonomous mission selected: rescue_exit\n";
         }
+        else if (message.find("\"mission\":\"rescue_corner_yaw_test\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::RescueCornerYawTest);
+            std::cout << "Autonomous mission selected: rescue_corner_yaw_test\n";
+        }
         else if (message.find("\"mission\":\"rescue_area\"") != std::string::npos)
         {
             // Selecionar a etapa não liga o detector. O gate só abre depois
@@ -1850,6 +1855,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="rescue_zone_approach">APPROACH_ZONE · APROXIMAR ÁREA</option>
                 <option value="rescue_zone_triangle">TRIÂNGULO · BUSCAR E APROXIMAR</option>
                 <option value="rescue_exit">SAÍDA · BUSCAR E RETOMAR PERCURSO</option>
+                <option value="rescue_corner_yaw_test">SAÍDA · TESTAR YAW DAS QUINAS</option>
                 <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
                 <option value="servo_initialize">SERVOS · POSE HOME 15/0/0</option>
@@ -2419,6 +2425,8 @@ std::string DashboardServer::dashboardHtml()
             ? `Buscando, alinhando e aproximando da área ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
           : selectedMission === "rescue_exit"
             ? "Busca a saída e continua no seguidor normal. Posicione o robô na sala antes de iniciar."
+          : selectedMission === "rescue_corner_yaw_test"
+            ? "Gira para +100°, +170° e −96° desde o yaw inicial; para 2 s em cada alvo."
           : selectedMission === "rescue_area"
             ? "Detectando, alinhando e aproximando da vítima mais próxima"
           : selectedMission === "obstacle_avoidance"
@@ -2480,6 +2488,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Orquestra SEARCH_ZONE, ALIGN_ZONE e APPROACH_ZONE sem duplicar seus controles."
           : mission === "rescue_exit"
             ? "Busca a saída pela CAM1 e retoma o percurso após confirmação da CAM0."
+          : mission === "rescue_corner_yaw_test"
+            ? "Posicione no triângulo vermelho ou verde. Só gira; cada yaw fica parado por 2 s."
           : mission === "rescue_area"
             ? "Liga o detector frontal, alinha, aproxima e conclui com um avanço curto pelos encoders."
           : mission === "obstacle_avoidance"
@@ -2688,6 +2698,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "rescue_zone_approach" ? "APPROACH_ZONE"
           : mission === "rescue_zone_triangle" ? `TRIÂNGULO · ${String(data.rescueZoneTargetColor || "green").toUpperCase()}`
           : mission === "rescue_exit" ? "Saída · Buscar e retomar percurso"
+          : mission === "rescue_corner_yaw_test" ? "Saída · Testar yaw das quinas"
           : mission === "rescue_area" ? "Resgate · Detectar e seguir"
           : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
           : mission === "servo_initialize" ? "Servos · Inicialização"

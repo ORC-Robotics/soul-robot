@@ -741,13 +741,14 @@ mudam o modo por conta própria.
 ```txt
 percurso inicial -> faixa cinza confirmada -> área de resgate
 -> duas vítimas vivas no triângulo verde -> vítima morta no triângulo vermelho
--> verificação de vítimas extras -> missão concluída e parada
+-> uma volta de verificação de vítimas extras -> busca da saída pelos corners
+-> percurso final de linha
 ```
 
 O percurso inicial usa `LineCourseMission`, portanto preserva segue-faixa,
 GREEN, GAP, SEARCH, assistência frontal, rampa e desvio de obstáculo. Depois do
-resgate, a missão fica parada; a busca da saída será integrada em uma etapa
-posterior.
+resgate, a busca da saída usa o heading do último triângulo como referência
+para apontar aos corners antes de devolver o controle ao segue-faixa.
 
 #### `turn_right_90`
 

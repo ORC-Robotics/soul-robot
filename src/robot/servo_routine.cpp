@@ -193,7 +193,7 @@ void ServoRoutine::start(
                                    this,
                                    &appendArm,
                                    &appendWrist,
-                                   &appendGripper]()
+                                   &appendGripper](bool finishReadyForCapture)
     {
         appendWrist(config::kServoRoutineWristInternalDegrees,
                     "servo_store_wrist_internal", "Movendo pulso para 0°");
@@ -212,10 +212,13 @@ void ServoRoutine::start(
                       "servo_store_gripper_close", "Fechando garra vazia em 0°");
         appendArm(config::kServoRoutineArmStorageTransitionDegrees,
                   "servo_store_arm_transition", "Movendo braço para 20°");
-        appendWrist(config::kServoRoutineWristForwardDegrees,
-                    "servo_store_wrist_forward", "Movendo pulso para 180°");
-        appendArm(config::kServoInitialAngleDegrees,
-                  "servo_store_arm_ready", "Movendo braço para 0°");
+        if (finishReadyForCapture)
+        {
+            appendWrist(config::kServoRoutineWristForwardDegrees,
+                        "servo_store_wrist_forward", "Movendo pulso para 180°");
+            appendArm(config::kServoInitialAngleDegrees,
+                      "servo_store_arm_ready", "Movendo braço para 0°");
+        }
         steps_.push_back({StepAction::MarkInternalStorage});
     };
 
@@ -289,7 +292,9 @@ void ServoRoutine::start(
     }
     else if (kind == ServoRoutineKind::InternalStorage)
     {
-        appendStorage();
+        // A missão começa outra busca nesta pose recolhida. Não avançar até
+        // 0°/180° evita expor o conjunto enquanto o robô gira pela sala.
+        appendStorage(false);
     }
     else if (kind == ServoRoutineKind::Deposit)
     {
@@ -346,7 +351,7 @@ void ServoRoutine::start(
         // Sequência completa com armazenamento da primeira vítima.
         steps_.push_back({StepAction::ClearInternalStorage});
         appendFirstCapture(config::kServoRoutineArmHomeDegrees);
-        appendStorage();
+        appendStorage(true);
         appendGripper(config::kServoRoutineGripperFullyOpenDegrees,
                       config::kServoRoutineGripperStepMs,
                       "servo_second_gripper_open", "Abrindo garra completamente em 180°");

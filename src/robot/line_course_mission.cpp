@@ -121,18 +121,27 @@ void LineCourseMission::update(
 
     // A câmera inferior participa da centralização inicial e volta a ser
     // obrigatória para o segue-linha quando o módulo devolve o controle.
-    if (!cameraReady || !cameraLineSnapshot.sourceFresh)
+    if (!cameraReady)
     {
-        const std::string phase =
-            !cameraReady ? "camera_not_ready" : "line_ipc_stale";
-        const std::string action = !cameraReady
-                                       ? "Missão interrompida: câmera inferior indisponível"
-                                       : "Missão interrompida: IPC visual ausente ou antigo";
         reset();
         robotState.stop();
         robotState.updateAutonomousStatus(
-            makeMainMissionStatus(phase, action));
-        std::cout << "MainMission stopped: " << phase << std::endl;
+            makeMainMissionStatus(
+                "camera_not_ready",
+                "Missão interrompida: câmera inferior indisponível"));
+        std::cout << "MainMission stopped: camera_not_ready" << std::endl;
+        return;
+    }
+
+    if (!cameraLineSnapshot.sourceFresh)
+    {
+        // Uma escrita atrasada do IPC não deve apagar toda a missão. Os motores
+        // permanecem zerados até uma amostra nova devolver o controle à câmera.
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(
+            makeMainMissionStatus(
+                "line_ipc_waiting",
+                "Pausado: aguardando uma leitura visual nova"));
         return;
     }
 
