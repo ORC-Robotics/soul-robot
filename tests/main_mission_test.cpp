@@ -1,5 +1,15 @@
 #include "obr/config.h"
+#include "obr/line_course_mission.h"
+#include "obr/rescue_area_mission.h"
+#include "obr/rescue_zone_triangle_mission.h"
+#include "obr/rescue_exit_mission.h"
+#include "obr/servo_routine.h"
+#include "obr/silver_entry_maneuver.h"
+// Expõe apenas as fases destas duas missões no teste para preparar a transição
+// final sem executar uma coleta completa nem adicionar acesso no código do robô.
+#define private public
 #include "obr/main_mission.h"
+#undef private
 #include "obr/mission_controller.h"
 #include "obr/robot_state.h"
 
@@ -280,6 +290,145 @@ struct MissionFixture
         return robotState.snapshot();
     }
 };
+
+void testRescueExitWristTransitionPreservesOtherChannels()
+{
+    for (const bool armRequested : {false, true})
+    {
+        for (const bool gripperRequested : {false, true})
+        {
+            MissionFixture fixture;
+            ServoPose pose{config::kServoRoutineArmHomeDegrees + 10.0, 45.0, 73.0};
+            require(fixture.robotState.setAutonomousServoPose(pose),
+                    "A pose inicial deve ser aceita.");
+            fixture.robotState.setAutonomousServoOutputEnabled(ServoId::Arm, armRequested);
+            fixture.robotState.setAutonomousServoOutputEnabled(ServoId::Gripper, gripperRequested);
+            fixture.mission.phase_ = MainMission::Phase::RescueArea;
+
+            const auto before = fixture.robotState.snapshot();
+            auto after = fixture.update({});
+            require(after.servoPose.armDegrees == pose.armDegrees &&
+                        after.servoPose.wristDegrees == pose.wristDegrees &&
+                        after.servoPose.gripperDegrees == pose.gripperDegrees &&
+                        after.servoCommandSequence == before.servoCommandSequence &&
+                        !fixture.mission.requiresExitVision(),
+                    "Antes da conclusão, a espera do resgate deve preservar a pose.");
+
+            fixture.mission.rescueRoomMission_.phase_ = RescueRoomMission::Phase::Completed;
+            after = fixture.update({});
+            require(fixture.mission.requiresExitVision() &&
+                        after.autonomousStatus.phase == "rescue_exit_starting" &&
+                        after.servoPose.armDegrees == pose.armDegrees &&
+                        after.servoPose.gripperDegrees == pose.gripperDegrees &&
+                        after.servoPose.wristDegrees == config::kServoRoutineWristInternalDegrees &&
+                        after.armServoRequested == armRequested &&
+                        after.gripperServoRequested == gripperRequested &&
+                        after.wristServoRequested &&
+                        after.servoCommandSequence == before.servoCommandSequence + 1,
+                    "A transição deve alterar só o pulso, preservando alvos e canais não relacionados.");
+
+            const auto transitionSequence = after.servoCommandSequence;
+            after = fixture.update({});
+            require(after.servoCommandSequence == transitionSequence &&
+                        after.armServoRequested == armRequested &&
+                        after.gripperServoRequested == gripperRequested,
+                    "A busca da saída não deve repetir o comando de servo.");
+        }
+    }
+}
+
+void testRescueExitWristUsesLatestRescuePose()
+{
+    MissionFixture fixture;
+    fixture.mission.phase_ = MainMission::Phase::RescueArea;
+    auto& room = fixture.mission.rescueRoomMission_;
+    room.phase_ = RescueRoomMission::Phase::SearchVictim;
+    room.finalVerification_ = true;
+    room.finalSearchStarted_ = true;
+    room.finalSearchStartedAt_ = std::chrono::steady_clock::now();
+    room.finalSearchAccumulatedDegrees_ = config::kRescueFinalVictimSearchDegrees;
+    require(fixture.robotState.setAutonomousServoPose(
+                {config::kServoRoutineArmHomeDegrees + 5.0, 90.0, 73.0}),
+            "A pose anterior à varredura deve ser aceita.");
+    ForwardBallSnapshot ball;
+    ball.sourceFresh = true;
+    ball.targetSequence = fixture.mission.rescueBallTargetSequence(
+        fixture.robotState.snapshot().autonomousRunSequence);
+    fixture.mission.update(fixture.robotState, fixture.telemetry, true, {}, {}, ball,
+                           fixture.robotState.snapshot().autonomousRunSequence);
+    const auto after = fixture.robotState.snapshot();
+    require(fixture.mission.requiresExitVision() &&
+                after.servoPose.armDegrees == config::kServoRoutineArmStorageTransitionDegrees &&
+                after.servoPose.gripperDegrees == config::kServoRoutineGripperClosedDegrees &&
+                after.servoPose.wristDegrees == config::kServoRoutineWristInternalDegrees,
+            "A transição deve preservar a pose publicada pela última atualização do resgate.");
+}
+
+void testRescueExitWristPreservesMechanicalGuard()
+{
+    MissionFixture fixture;
+    ServoPose pose{config::kServoRoutineArmHomeDegrees, 45.0, 73.0};
+    require(fixture.robotState.setAutonomousServoPose(pose), "A pose elevada deve ser aceita.");
+    pose.armDegrees = config::kServoRoutineArmHomeDegrees - 1.0;
+    require(fixture.robotState.setAutonomousServoPose(pose), "Baixar o braço sem girar o pulso deve ser permitido.");
+    fixture.robotState.setAutonomousServoOutputEnabled(ServoId::Arm, false);
+    fixture.robotState.setAutonomousServoOutputEnabled(ServoId::Gripper, false);
+    const auto before = fixture.robotState.snapshot();
+    fixture.mission.phase_ = MainMission::Phase::RescueArea;
+    fixture.mission.rescueRoomMission_.phase_ = RescueRoomMission::Phase::Completed;
+    const auto after = fixture.update({});
+    require(fixture.mission.requiresExitVision() &&
+                after.servoPose.armDegrees == pose.armDegrees &&
+                after.servoPose.wristDegrees == pose.wristDegrees &&
+                after.servoPose.gripperDegrees == pose.gripperDegrees &&
+                !after.armServoRequested && !after.gripperServoRequested &&
+                after.servoCommandSequence == before.servoCommandSequence,
+            "A proteção mecânica deve rejeitar o pulso sem alterar pose ou solicitações.");
+}
+
+void testObstacleContinuationBandIpcFailsSafe()
+{
+    require(!CameraLineSnapshot{}.obstacleContinuationBand,
+            "Um snapshot vazio deve bloquear a recuperação antecipada.");
+    const auto path = std::filesystem::temp_directory_path() / "obr_obstacle_band_test.json";
+    CameraMonitor monitor({}, {}, {}, path.string());
+    std::uint64_t sequence = 0;
+    const auto publish = [&](const std::string& field, double ageSeconds = 0.0) {
+        std::ofstream file(path);
+        file << std::setprecision(17)
+             << "{\"lineFollowerLeftPower\":0.5,\"lineFollowerRightPower\":0.5,"
+                "\"lineNearDetected\":true,\"greenPathBlackValid\":false,"
+                "\"greenCandidateCount\":0,\"greenConfirmed\":false,"
+                "\"greenInterpretation\":\"SEM_DECISAO\",\"lineControlSource\":\"fusion\","
+                "\"finalSteering\":0,\"lineSequence\":" << ++sequence
+             << ",\"lineTimestamp\":" << std::chrono::duration<double>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() - ageSeconds
+             << field << '}';
+    };
+    for (const std::string field : {"", ",\"obstacleContinuationBand\":false",
+                                   ",\"obstacleContinuationBand\":null",
+                                   ",\"obstacleContinuationBand\":1",
+                                   ",\"obstacleContinuationBand\":\"true\"",
+                                   ",\"obstacleContinuationBand\":trueX"})
+    {
+        publish(",\"obstacleContinuationBand\":true");
+        require(monitor.lineSnapshot().obstacleContinuationBand,
+                "O booleano true deve ser aceito no IPC atual.");
+        publish(field);
+        const auto line = monitor.lineSnapshot();
+        require(line.sourceFresh && line.normalSteeringValid && !line.obstacleContinuationBand,
+                "Campo ausente ou inválido deve ser falso sem alterar Fusion válido.");
+    }
+    publish(",\"obstacleContinuationBand\":true",
+            config::kCameraLineStatusTimeoutMs / 1000.0 + 1.0);
+    require(!monitor.lineSnapshot().obstacleContinuationBand,
+            "Um frame vencido não deve manter a faixa completa.");
+    publish(",\"obstacleContinuationBand\":true");
+    require(monitor.lineSnapshot().obstacleContinuationBand, "O cache deve conter uma faixa válida.");
+    std::filesystem::remove(path);
+    require(!monitor.lineSnapshot().obstacleContinuationBand,
+            "IPC ausente não deve reutilizar a faixa do cache.");
+}
 
 void requireFollowingLine(
     const RobotSnapshot& snapshot,
@@ -1799,6 +1948,15 @@ int main(int argc, char** argv)
 {
     try
     {
+        testRescueExitWristTransitionPreservesOtherChannels();
+        testRescueExitWristUsesLatestRescuePose();
+        testRescueExitWristPreservesMechanicalGuard();
+        testObstacleContinuationBandIpcFailsSafe();
+        if (argc > 1 && std::string(argv[1]) == "--localized-fixes-only")
+        {
+            std::cout << "localized_fixes_test: OK\n";
+            return 0;
+        }
         testRedFinishStopsAndRearms();
         if (argc > 1 && std::string(argv[1]) == "--red-only")
         {

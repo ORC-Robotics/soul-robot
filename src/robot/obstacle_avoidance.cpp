@@ -808,7 +808,16 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
             "Curva interrompida pelo tempo limite de segurança");
     }
     observeParabolaFrame(forwardLine);
-    if (observeFreshFusion(line))
+    // Somente nesta transição, cada frame novo precisa da faixa completa.
+    // Consome o frame sem faixa e zera a sequência, sem afetar a busca posterior.
+    if (line.sourceFresh && line.lineSequence != 0 &&
+        line.lineSequence != lastFusionLineSequence_ &&
+        !line.obstacleContinuationBand)
+    {
+        lastFusionLineSequence_ = line.lineSequence;
+        fusionReacquireFrames_ = 0;
+    }
+    if (observeFreshFusion(line) && line.obstacleContinuationBand)
     {
         // O caso 2 tem prioridade total e descarta a memória lateral do caso 3.
         clearCase3Evidence();

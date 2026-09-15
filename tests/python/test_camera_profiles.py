@@ -1094,7 +1094,9 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(published["vstate"], "NORMAL")
         self.assertEqual(published["lineState"], "LINE")
         self.assertEqual(published["trustedDirection"], "NONE")
+        self.assertFalse(published["obstacleContinuationBand"])
         expected_keys = set(status) | {
+            "obstacleContinuationBand",
             "lineFollowerLeftPower",
             "lineFollowerRightPower",
             "lineNearDetected",

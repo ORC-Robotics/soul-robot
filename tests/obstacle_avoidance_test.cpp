@@ -227,12 +227,14 @@ ObstacleAvoidanceOutput startCurveWithSelectedSide(
     return output;
 }
 
-CameraLineSnapshot fusionLine(std::uint64_t sequence, bool valid = true)
+CameraLineSnapshot fusionLine(
+    std::uint64_t sequence, bool valid = true, bool continuationBand = false)
 {
     CameraLineSnapshot line = centeredLine();
     line.lineSequence = sequence;
     line.lineControlSource = valid ? "fusion" : "search";
     line.normalSteeringValid = valid;
+    line.obstacleContinuationBand = continuationBand;
     return line;
 }
 
@@ -543,11 +545,11 @@ void testEarlyFusionRecoveryCompletesToTheSelectedSide()
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, true);
 
-    avoidance.update(telemetry, fusionLine(1), true);
-    avoidance.update(telemetry, fusionLine(1), true);
-    avoidance.update(telemetry, fusionLine(2), true);
+    avoidance.update(telemetry, fusionLine(1, true, true), true);
+    avoidance.update(telemetry, fusionLine(1, true, true), true);
+    avoidance.update(telemetry, fusionLine(2, true, true), true);
     ObstacleAvoidanceOutput output =
-        avoidance.update(telemetry, fusionLine(3), true);
+        avoidance.update(telemetry, fusionLine(3, true, true), true);
     require(output.phase == "obstacle_reacquire_forward" &&
                 output.leftPower == 0.0 && output.rightPower == 0.0,
             "Três observações novas do Fusion devem cancelar a curva e o pivot final.");
@@ -580,9 +582,9 @@ void testEarlyFusionRecoveryStopsAtAngularLimit()
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, false);
 
-    avoidance.update(telemetry, fusionLine(20), true);
-    avoidance.update(telemetry, fusionLine(21), true);
-    avoidance.update(telemetry, fusionLine(22), true);
+    avoidance.update(telemetry, fusionLine(20, true, true), true);
+    avoidance.update(telemetry, fusionLine(21, true, true), true);
+    avoidance.update(telemetry, fusionLine(22, true, true), true);
     const long long recoveryCounts = static_cast<long long>(std::ceil(
         config::kObstacleReacquireForwardDistanceCm *
         config::kEncoderCountsPerCentimeter));
@@ -598,6 +600,47 @@ void testEarlyFusionRecoveryStopsAtAngularLimit()
     require(output.failed && output.phase == "obstacle_reacquire_timeout" &&
                 output.leftPower == 0.0 && output.rightPower == 0.0,
             "A busca LEFT deve falhar parada ao alcançar 100 graus.");
+}
+
+void testEarlyFusionRequiresConsecutiveContinuationBands()
+{
+    for (const bool selectRight : {false, true})
+    {
+        ObstacleAvoidance avoidance;
+        auto telemetry = readyTelemetry();
+        startCurveWithSelectedSide(avoidance, telemetry, centeredLine(), selectRight);
+        std::uint64_t sequence = 100;
+        const auto expectCurve = [&](const CameraLineSnapshot& line) {
+            const auto output = avoidance.update(telemetry, line, true);
+            require(!output.failed && !output.completed &&
+                        output.phase == "obstacle_curving",
+                    "Sem confirmações consecutivas de Fusion e faixa, a curva deve continuar.");
+        };
+        for (int frame = 0; frame < config::kObstacleFusionReacquireConfirmationFrames + 1; ++frame)
+        {
+            expectCurve(fusionLine(++sequence));
+        }
+        for (int frame = 0; frame < config::kObstacleFusionReacquireConfirmationFrames; ++frame)
+        {
+            expectCurve(fusionLine(++sequence, true, true));
+            expectCurve(fusionLine(++sequence, true, false));
+        }
+        for (int frame = 1; frame < config::kObstacleFusionReacquireConfirmationFrames; ++frame)
+        {
+            expectCurve(fusionLine(++sequence, true, true));
+        }
+        expectCurve(fusionLine(++sequence, false, true));
+        for (int frame = 1; frame < config::kObstacleFusionReacquireConfirmationFrames; ++frame)
+        {
+            const auto line = fusionLine(++sequence, true, true);
+            expectCurve(line);
+            expectCurve(line);
+        }
+        const auto output = avoidance.update(telemetry, fusionLine(++sequence, true, true), true);
+        require(output.phase == "obstacle_reacquire_forward" &&
+                    output.leftPower == 0.0 && output.rightPower == 0.0,
+                "Somente o número configurado de frames novos e consecutivos deve liberar o avanço.");
+    }
 }
 
 void testParabolaFalseGapUsesBestSideAndReacquires()
@@ -829,10 +872,18 @@ void testStartCanBeBlockedAndMissingLineStops()
 }
 }
 
-int main()
+int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--early-fusion-only")
+        {
+            testEarlyFusionRecoveryCompletesToTheSelectedSide();
+            testEarlyFusionRecoveryStopsAtAngularLimit();
+            testEarlyFusionRequiresConsecutiveContinuationBands();
+            std::cout << "early_fusion_test: OK\n";
+            return 0;
+        }
         testCenteringIsSharedAndPrecedesScan();
         testStableEndpointUsesMaximumAndSelectsRight();
         testLeftSelectionReturnsToLeftYaw();
@@ -840,6 +891,7 @@ int main()
         testCameraBlackSelectsOnlyConfirmedSide();
         testEarlyFusionRecoveryCompletesToTheSelectedSide();
         testEarlyFusionRecoveryStopsAtAngularLimit();
+        testEarlyFusionRequiresConsecutiveContinuationBands();
         testParabolaFalseGapUsesBestSideAndReacquires();
         testParabolaOppositeSearchStopsAtSameAngularLimit();
         testPostObstacleFusionCannotReturnToRearLine();

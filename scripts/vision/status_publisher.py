@@ -84,7 +84,22 @@ def save_line_status(
             line_follower_command,
             "mediumTrusted",
         )
+        # Aceita a faixa diagonal quando MEDIUM e FAR cobrem juntas as três colunas.
+        left_covered = (
+            virtual_sensor_is_active(line_follower_command.get("mediumLeft"))
+            or virtual_sensor_is_active(line_follower_command.get("farLeft"))
+        )
+        center_covered = (
+            virtual_sensor_is_active(line_follower_command.get("mediumCenter"))
+            or virtual_sensor_is_active(line_follower_command.get("farCenter"))
+        )
+        right_covered = (
+            virtual_sensor_is_active(line_follower_command.get("mediumRight"))
+            or virtual_sensor_is_active(line_follower_command.get("farRight"))
+        )
+        obstacle_continuation_band = left_covered and center_covered and right_covered
         line_status = {
+            "obstacleContinuationBand": obstacle_continuation_band,
             "lineFollowerLeftPower": normal_left,
             "lineFollowerRightPower": normal_right,
             "lineNearDetected": virtual_sensor_is_active(

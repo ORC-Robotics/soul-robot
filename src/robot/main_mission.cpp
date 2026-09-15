@@ -186,6 +186,11 @@ void MainMission::update(
         }
         if (output.completed)
         {
+            // Recolhe somente o pulso após o resgate, preservando a pose atual
+            // do braço e da garra e a proteção mecânica de RobotState.
+            ServoPose exitPose = robotState.snapshot().servoPose;
+            exitPose.wristDegrees = config::kServoRoutineWristInternalDegrees;
+            robotState.setAutonomousServoPose(exitPose, true);
             phase_ = Phase::ExitSearch;
             rescueExitMission_.reset();
             rescueExitMission_.setTriangleReferenceHeading(

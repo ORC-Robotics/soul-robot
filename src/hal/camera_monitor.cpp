@@ -400,6 +400,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.farTrusted = false;
     snapshot.mediumTrusted = false;
     snapshot.normalSteeringValid = false;
+    snapshot.obstacleContinuationBand = false;
     snapshot.trustedDirection = "NONE";
     snapshot.greenPathBlackValid = false;
     snapshot.greenCandidateCount = 0;
@@ -646,6 +647,9 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         // câmera antiga. Ausência mantém ambos falsos e bloqueia a assistência.
         tryGetJsonBool(json, "farTrusted", candidate.farTrusted);
         tryGetJsonBool(json, "mediumTrusted", candidate.mediumTrusted);
+        // IPC antigo ou campo inválido não confirma a faixa transversal.
+        tryGetJsonBool(
+            json, "obstacleContinuationBand", candidate.obstacleContinuationBand);
         std::string trustedDirection;
         if (tryGetJsonString(json, "trustedDirection", trustedDirection))
         {

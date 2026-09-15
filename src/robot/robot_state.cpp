@@ -470,7 +470,7 @@ bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
     return true;
 }
 
-bool RobotState::setAutonomousServoPose(const ServoPose& pose)
+bool RobotState::setAutonomousServoPose(const ServoPose& pose, bool wristOnly)
 {
     if (!validServoAngle(pose.armDegrees) ||
         !validServoAngle(pose.wristDegrees) ||
@@ -504,10 +504,19 @@ bool RobotState::setAutonomousServoPose(const ServoPose& pose)
 
     // Uma programação predefinida publica a pose inteira de uma vez. O módulo
     // de saída mantém essa atualização agrupada também no protocolo UART.
-    state_.servoPose = pose;
-    state_.armServoRequested = true;
+    // A transição para a saída altera só o pulso sob o mesmo mutex, sem
+    // reativar canais desligados nem publicar uma pose intermediária.
+    if (wristOnly)
+    {
+        state_.servoPose.wristDegrees = pose.wristDegrees;
+    }
+    else
+    {
+        state_.servoPose = pose;
+        state_.armServoRequested = true;
+        state_.gripperServoRequested = true;
+    }
     state_.wristServoRequested = true;
-    state_.gripperServoRequested = true;
     ++state_.servoCommandSequence;
     return true;
 }

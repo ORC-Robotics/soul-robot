@@ -188,7 +188,8 @@ public:
         double right,
         bool encoderSynchronizationAllowed = true);
     bool setManualServoAngle(ServoId servo, double angleDegrees);
-    bool setAutonomousServoPose(const ServoPose& pose);
+    // A opção wristOnly preserva os alvos e as solicitações de braço e garra.
+    bool setAutonomousServoPose(const ServoPose& pose, bool wristOnly = false);
     bool setAutonomousServoOutputEnabled(ServoId servo, bool enabled);
     bool confirmServoRoutineAction();
     void setServoRoutineInternalObjectStored(bool stored);
