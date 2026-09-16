@@ -1944,6 +1944,27 @@ void testRedFinishStopsAndRearms()
             "Physical START must not clear emergency stop");
 }
 
+void testRedFinishWaitsUntilRescueEnds()
+{
+    RobotState state;
+    CameraLineSnapshot camera;
+    camera.sourceFresh = camera.redValid = camera.redConfirmed = true;
+    camera.redRatio = 0.2;
+    camera.lineSequence = 1;
+    camera.lineTimestamp = 1.0;
+    state.startAutonomous();
+    state.updateAutonomousStatus({"rescue_exit_corner_backing", "Voltando ao corner"});
+
+    require(!state.observeRedFinish(camera) && !state.snapshot().missionFinished,
+            "Red must not finish while the rescue mission is active");
+
+    state.updateAutonomousStatus({"line_following", "Seguindo linha"});
+    ++camera.lineSequence;
+    camera.lineTimestamp += 0.02;
+    require(state.observeRedFinish(camera),
+            "Red must work again immediately after leaving the rescue phase");
+}
+
 int main(int argc, char** argv)
 {
     try
@@ -1958,6 +1979,7 @@ int main(int argc, char** argv)
             return 0;
         }
         testRedFinishStopsAndRearms();
+        testRedFinishWaitsUntilRescueEnds();
         if (argc > 1 && std::string(argv[1]) == "--red-only")
         {
             std::cout << "red_finish_test: OK\n";

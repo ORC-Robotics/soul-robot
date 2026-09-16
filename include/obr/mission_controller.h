@@ -1,5 +1,6 @@
 #pragma once
 
+#include "obr/encoder_distance_controller.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/main_mission.h"
@@ -58,12 +59,14 @@ private:
     RescueZoneTriangleMission rescueZoneTriangleMission_;
     ObstacleAvoidance obstacleAvoidanceTest_;
     ImuTurnController testTurnController_;
+    EncoderDistanceController cornerYawInitialReverse_;
     ServoRoutine servoRoutine_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
     CornerYawPhase cornerYawPhase_ = CornerYawPhase::Ready;
     double cornerYawReferenceDegrees_ = 0.0;
     bool cornerYawReferenceValid_ = false;
+    bool cornerYawInitialReverseCompleted_ = false;
     int cornerYawIndex_ = 0;
     std::chrono::steady_clock::time_point cornerYawHoldStartedAt_{};
     long long distanceStartLeftCount_ = 0;
@@ -82,6 +85,9 @@ private:
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);
     void updateCornerYawTest(
+        RobotState& robotState,
+        const Esp32TelemetrySnapshot& esp32Telemetry);
+    void updateCornerYawTestWithReverse(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry);
     void updateDriveDistance(

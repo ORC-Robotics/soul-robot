@@ -677,6 +677,52 @@ class BallObservationTest(unittest.TestCase):
 
 
 class PublicBallVisionPipelineTest(unittest.TestCase):
+    def test_yolo_uses_lower_confidence_only_for_black_ball(self):
+        config = YoloBallDetectorConfig()
+
+        self.assertEqual(config.black_ball_confidence_threshold, 0.40)
+        self.assertEqual(config.silver_ball_confidence_threshold, 0.55)
+        config.validate()
+
+    def test_yolo_rejects_invalid_class_confidence_threshold(self):
+        with self.assertRaises(ValueError):
+            YoloBallDetectorConfig(
+                black_ball_confidence_threshold=0.0,
+            ).validate()
+        with self.assertRaises(ValueError):
+            YoloBallDetectorConfig(
+                silver_ball_confidence_threshold=1.01,
+            ).validate()
+
+    def test_yolo_accepts_same_score_only_for_black_ball(self):
+        class FakeSession:
+            def run(self, output_names, inputs):
+                del output_names, inputs
+                # Cada coluna representa uma previsão no formato exportado:
+                # centro, tamanho e scores das classes preta e prata.
+                return [np.asarray([[
+                    [100.0, 300.0],
+                    [100.0, 100.0],
+                    [40.0, 40.0],
+                    [40.0, 40.0],
+                    [0.45, 0.10],
+                    [0.10, 0.45],
+                ]], dtype=np.float32)]
+
+        detector = object.__new__(YoloBallDetector)
+        detector.config = YoloBallDetectorConfig()
+        detector._session = FakeSession()
+        detector._input_name = "images"
+        detector._prepare_input = lambda frame: (frame, 1.0, 0, 0)
+
+        candidates = detector.detect(
+            np.zeros((400, 400, 3), dtype=np.uint8)
+        )
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].ball_type, "black_ball")
+        self.assertAlmostEqual(candidates[0].circle_fill_ratio, 0.45)
+
     def test_candidate_direction_precedes_lock_and_never_reuses_missing_frame(self):
         detector = mock.Mock()
         selected = BallTrackerTest.yolo_candidate(240, 50, "silver_ball", 0.9)

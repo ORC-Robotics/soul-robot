@@ -401,7 +401,7 @@ def update_green_maneuver_state(
     raw_line_visible,
     completed=False,
 ):
-    """Conclui o verde normalmente ou libera sua máscara após o timeout."""
+    """Libera o verde por conclusão, limite angular ou timeout de proteção."""
 
     if direction == "NENHUMA":
         return {
@@ -430,11 +430,7 @@ def update_green_maneuver_state(
         "direction": "NENHUMA",
         "activeFrames": 0,
         "timedOut": True,
-        "searchDirection": (
-            None
-            if raw_line_visible
-            else green_direction_to_search_direction(direction)
-        ),
+        "searchDirection": None,
     }
 
 
@@ -889,10 +885,12 @@ def calculate_line_follower_command(
             fusion_control_status["fusionControlActive"] = True
             control_source = "fusion-green"
         else:
-            # Sem target Fusion atual, o GREEN mantém sua decisão ativa, mas
-            # não cria um segundo controlador geométrico para mover o robô.
-            steering_error = None
-            control_source = "fusion-green-no-target"
+            # A entrada visual continua somente enquanto o limite angular
+            # permite; a aplicação libera o Fusion antes de ultrapassar o teto.
+            steering_error = (
+                -1.0 if direcao_verde_ativa == "ESQUERDA" else 1.0
+            )
+            control_source = "green-direction-hold"
 
     elif gap_fusion_reacquire_active:
         line_state = "GAP"

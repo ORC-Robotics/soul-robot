@@ -232,22 +232,21 @@ SilverEntryOutput SilverEntryManeuver::update(
         return output;
     }
 
-    if (!encodersReady(telemetry))
-    {
-        output.status = makeStatus(
-            "silver_entry_encoder_lost",
-            "Avanço cinza pausado: encoders sem dados recentes");
-        return output;
-    }
-
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                std::chrono::steady_clock::now() - startTime_)
                                .count();
-    if (elapsedMs > config::kSilverEntryAdvanceTimeoutMs)
+
+    if (!encodersReady(telemetry))
     {
+        if (elapsedMs >= config::kSilverEntryCandidateAdvanceTimeoutMs)
+        {
+            reset();
+            output.hasControl = false;
+            return output;
+        }
         output.status = makeStatus(
-            "silver_entry_timeout",
-            "Avanço cinza interrompido: distância não concluída");
+            "silver_entry_encoder_lost",
+            "Avanço cinza pausado: encoders sem dados recentes");
         return output;
     }
 
@@ -267,6 +266,13 @@ SilverEntryOutput SilverEntryManeuver::update(
     {
         // Sem quatro positivos dentro da janela, a leitura é descartada e o
         // segue-linha recupera autoridade neste mesmo ciclo de controle.
+        reset();
+        output.hasControl = false;
+        return output;
+    }
+
+    if (elapsedMs >= config::kSilverEntryCandidateAdvanceTimeoutMs)
+    {
         reset();
         output.hasControl = false;
         return output;

@@ -73,6 +73,12 @@ bool selectedMissionReady(
     {
         return driveDistanceEncodersReady(telemetry);
     }
+    if (mission == AutonomousMission::RescueExitWithReverse)
+    {
+        // A variante executa somente a ré medida e o teste dos três yaws.
+        return driveDistanceEncodersReady(telemetry) &&
+               turn90ImuReady(telemetry);
+    }
     if (mission == AutonomousMission::RescueExit ||
         mission == AutonomousMission::RescueArea ||
         mission == AutonomousMission::RescueZoneDetection ||
@@ -129,6 +135,14 @@ const char* autonomousCommandSourceName(AutonomousMission mission)
     if (mission == AutonomousMission::DriveDistance)
     {
         return "encoders";
+    }
+    if (mission == AutonomousMission::RescueExitWithReverse)
+    {
+        return "encoders_imu";
+    }
+    if (mission == AutonomousMission::RescueCornerYawTest)
+    {
+        return "imu";
     }
     if (mission == AutonomousMission::RescueArea)
     {
@@ -308,7 +322,9 @@ int RobotApplication::run(const std::atomic<bool>& running)
         {
             const bool published = cameraMonitor.publishExitControl(
                 missionController.requiresExitVision(stateAtLoopStart),
-                stateAtLoopStart.autonomousRunSequence, stateAtLoopStart.autonomousStatus);
+                stateAtLoopStart.autonomousRunSequence, stateAtLoopStart.autonomousStatus,
+                turn90ImuReady(esp32Telemetry), esp32Telemetry.yawZDeg,
+                esp32Telemetry.gyroZDegPerSec, esp32Telemetry.lastSensorAgeMs);
             if (!published && !exitGateFailureLogged)
                 std::cerr << "Falha ao publicar controle da busca da saída\n";
             exitGateFailureLogged = !published;

@@ -10,6 +10,7 @@ from .camera_config import (
     CAMERA_ARRAY_COLOR_ORDER,
     CAMERA_EXPOSURE_VALUE,
     DOWNWARD_REFERENCE_FRAME_HEIGHT,
+    GREEN_AMBIGUITY_HYSTERESIS_FRAMES,
     GREEN_ASPECT_RATIO_MAX,
     GREEN_ASPECT_RATIO_MIN,
     GREEN_CAPTURE_CANDIDATES_PATH,
@@ -1132,6 +1133,7 @@ class GreenObservationTracker:
         self.pending_interpretation = "SEM_DECISAO"
         self.consecutive_samples = 0
         self.missing_samples = 0
+        self.ambiguous_samples = 0
         self.confirmed_interpretation = "SEM_DECISAO"
         self.last_direction_seen_at = None
 
@@ -1148,6 +1150,45 @@ class GreenObservationTracker:
                 self.consecutive_samples,
             )
         self.last_sequence = line_sequence
+
+        has_valid_evidence = (
+            self.pending_interpretation in (
+                "ESQUERDA",
+                "DIREITA",
+                "RETORNO_180",
+            )
+            or self.confirmed_interpretation in (
+                "ESQUERDA",
+                "DIREITA",
+                "RETORNO_180",
+            )
+        )
+        if interpretation == "AMBIGUO" and has_valid_evidence:
+            self.ambiguous_samples += 1
+            if (
+                self.ambiguous_samples
+                <= GREEN_AMBIGUITY_HYSTERESIS_FRAMES
+            ):
+                # Um frame inconclusivo não contradiz a evidência válida já
+                # acumulada. A decisão confirmada continua disponível e uma
+                # confirmação em andamento retoma do mesmo ponto no próximo
+                # frame conclusivo.
+                if self.confirmed_interpretation != "SEM_DECISAO":
+                    return (
+                        self.confirmed_interpretation,
+                        True,
+                        self.consecutive_samples,
+                    )
+                return "AMBIGUO", False, self.consecutive_samples
+
+            # Ambiguidade persistente invalida a memória para não permitir que
+            # uma leitura antiga seja completada por outro marcador da pista.
+            self.pending_interpretation = "AMBIGUO"
+            self.confirmed_interpretation = "SEM_DECISAO"
+            self.consecutive_samples = 1
+            return "AMBIGUO", False, self.consecutive_samples
+
+        self.ambiguous_samples = 0
 
         if (
             self.confirmed_interpretation == "RETORNO_180"
@@ -1303,3 +1344,27 @@ def build_green_status(
         status["greenInterpretation"] = "SEM_DECISAO"
         status["greenConfirmed"] = False
     return status
+
+
+def confirmed_green_path_black_valid(
+    interpretation_result,
+    tracker_result,
+):
+    """Preserva o gate preto durante a curta retenção de ambiguidade."""
+
+    published_interpretation, confirmed, _consecutive_samples = tracker_result
+    if interpretation_result.get("path_black_valid", False):
+        return True
+
+    # A retenção só vale para AMBIGUO: uma ausência real de verde continua
+    # removendo o gate atual. Para o retorno, o C++ ainda exige exatamente dois
+    # candidatos, impedindo que esta memória isolada inicie a manobra.
+    return bool(
+        confirmed
+        and interpretation_result.get("interpretation") == "AMBIGUO"
+        and published_interpretation in (
+            "ESQUERDA",
+            "DIREITA",
+            "RETORNO_180",
+        )
+    )

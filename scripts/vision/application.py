@@ -50,11 +50,14 @@ from .fusion_guidance import (
     draw_fusion_style_line_overlay,
     extract_line_diagnostics,
     fusion_style_blind_search_direction,
+    green_control_yaw,
+    green_maneuver_angle_limit_reached,
     green_maneuver_entry_is_confirmed,
     green_maneuver_is_geometrically_complete,
     select_confirmed_green_direction,
     update_fusion_style_history,
     update_green_control_telemetry,
+    update_green_consumed_marker_state,
     update_green_fusion_target_hold,
     update_green_rearm_state,
 )
@@ -65,6 +68,7 @@ from .green_detection import (
     GreenObservationTracker,
     analyze_green_marker_contours,
     build_green_status,
+    confirmed_green_path_black_valid,
     create_green_mask_stages,
     find_green_candidates,
     save_green_capture,
@@ -234,7 +238,7 @@ class DownwardCameraApplication:
             maneuver_state.green_candidate_hold_blocked = False
 
             # Conserva apenas o último target do GREEN durante uma interrupção de
-            # até dois frames; uma perda maior libera a recuperação direcional.
+            # até dois frames; depois disso, o limite angular protege o pivô visual.
             maneuver_state.last_green_fusion_line = None
             maneuver_state.green_fusion_target_missing_frames = 0
 
@@ -396,13 +400,14 @@ class DownwardCameraApplication:
                 ) * 1000.0
 
                 exit_control = read_exit_control()
+                camera_control = read_camera_control() if line_ipc_enabled else {}
                 if exit_control["enabled"] and silver_shadow_monitor is None:
                     silver_shadow_monitor = SilverShadowMonitor.from_camera_model("down")
                 line_timestamp = time.time()
                 line_sequence += 1
                 red_status, red_mask = red_detector.process(
                     raw_frame, camera_format, line_timestamp,
-                    read_camera_control() if line_ipc_enabled else {},
+                    camera_control,
                 )
                 if (
                     (SILVER_DETECTION_ENABLED or exit_control["enabled"])
@@ -419,6 +424,19 @@ class DownwardCameraApplication:
                         ),
                     )
                 green_raw_interpretation = green_interpretation["interpretation"]
+                # O marcador usado e o rearme são estados separados. A ausência
+                # real conta desde o giro, sem esperar a retenção de confirmação.
+                was_consumed = maneuver_state.green_marker_consumed
+                (
+                    maneuver_state.green_marker_consumed,
+                    maneuver_state.green_marker_clear_frames,
+                ) = update_green_consumed_marker_state(
+                    was_consumed, maneuver_state.green_marker_clear_frames,
+                    len(green_candidates),
+                )
+                if was_consumed and not maneuver_state.green_marker_consumed:
+                    # Descarta somente a confirmação já executada, não um verde novo.
+                    green_tracker = GreenObservationTracker()
                 green_tracker_result = green_tracker.update(
                     line_sequence,
                     green_raw_interpretation,
@@ -432,8 +450,11 @@ class DownwardCameraApplication:
                     green_processing_ms,
                 )
                 green_status["greenRawInterpretation"] = green_raw_interpretation
-                green_status["greenPathBlackValid"] = bool(
-                    green_interpretation["path_black_valid"]
+                green_status["greenPathBlackValid"] = (
+                    confirmed_green_path_black_valid(
+                        green_interpretation,
+                        green_tracker_result,
+                    )
                 )
 
                 # Um verde confirmado é aceito apenas quando o sistema está armado
@@ -442,9 +463,13 @@ class DownwardCameraApplication:
                     maneuver_state.green_armed,
                     maneuver_state.green_direction,
                     green_status,
+                    marker_consumed=maneuver_state.green_marker_consumed,
                 )
                 green_accepted_this_frame = confirmed_green_direction is not None
                 if confirmed_green_direction is not None:
+                    maneuver_state.green_marker_consumed = True
+                    maneuver_state.green_marker_clear_frames = 0
+                    maneuver_state.green_start_yaw_degrees = green_control_yaw(camera_control)
                     if confirmed_green_direction == "ESQUERDA":
                         maneuver_state.green_direction = "ESQUERDA"
                         maneuver_state.green_curve_started = False
@@ -463,6 +488,34 @@ class DownwardCameraApplication:
                         maneuver_state.green_armed = False
                         maneuver_state.green_clear_frames = 0
 
+                # O yaw limita somente a prioridade: o giro continua visual.
+                # A liberação ocorre antes da extração para que o Fusion normal
+                # selecione um alvo novo sem a máscara ou o histórico do GREEN.
+                green_angle_limited = (
+                    maneuver_state.green_direction != "NENHUMA"
+                    and green_maneuver_angle_limit_reached(
+                        maneuver_state.green_start_yaw_degrees, camera_control,
+                    )
+                )
+                green_state = update_green_maneuver_state(
+                    maneuver_state.green_direction,
+                    maneuver_state.green_active_frames,
+                    raw_line_visible=False,
+                    completed=green_angle_limited,
+                )
+                if (maneuver_state.green_direction != "NENHUMA"
+                        and green_state["direction"] == "NENHUMA"):
+                    maneuver_state.green_curve_started = False
+                    maneuver_state.green_centered_frames = 0
+                    maneuver_state.green_start_yaw_degrees = None
+                    maneuver_state.last_green_fusion_line = None
+                    maneuver_state.green_fusion_target_missing_frames = 0
+                    maneuver_state.fusion_target_history = None
+                    line_controller.line_search_tracker.stop()
+                maneuver_state.green_direction = green_state["direction"]
+                maneuver_state.green_active_frames = green_state["activeFrames"]
+                green_status["greenAngleLimitReleased"] = green_angle_limited
+
                 virtual_sensors = read_virtual_line_sensors(
                     line_candidate_mask,
                     maneuver_state.green_direction,
@@ -474,31 +527,7 @@ class DownwardCameraApplication:
                 raw_line_visible = virtual_raw_line_is_visible(
                     virtual_sensors
                 )
-                green_timeout_state = update_green_maneuver_state(
-                    maneuver_state.green_direction,
-                    maneuver_state.green_active_frames,
-                    raw_line_visible,
-                )
                 sensor_recovery_requested = False
-                if green_timeout_state["timedOut"]:
-                    maneuver_state.green_direction = green_timeout_state["direction"]
-                    maneuver_state.green_active_frames = green_timeout_state["activeFrames"]
-                    maneuver_state.green_curve_started = False
-                    maneuver_state.green_centered_frames = 0
-                    search_direction = green_timeout_state["searchDirection"]
-                    if search_direction is not None:
-                        line_controller.line_search_tracker.start(search_direction)
-                    else:
-                        sensor_recovery_requested = True
-                    # Remove a máscara verde já no mesmo frame do timeout.
-                    virtual_sensors = read_virtual_line_sensors(
-                        line_candidate_mask,
-                        maneuver_state.green_direction,
-                        maneuver_state.green_curve_started,
-                    )
-                else:
-                    maneuver_state.green_direction = green_timeout_state["direction"]
-                    maneuver_state.green_active_frames = green_timeout_state["activeFrames"]
 
                 fusion_preferred_direction = {
                     "ESQUERDA": "LEFT",
@@ -704,12 +733,17 @@ class DownwardCameraApplication:
                         maneuver_state.green_centered_frames = 0
                         line_controller.line_search_tracker.stop()
 
-                # O rearme começa somente depois que a manobra deixa de estar ativa.
+                # Terminou o GREEN e voltou o Fusion normal válido: rearma já,
+                # mesmo com o próximo marcador visível. O marcador consumido
+                # continua protegido separadamente para impedir um segundo giro.
                 maneuver_state.green_armed, maneuver_state.green_clear_frames = update_green_rearm_state(
                     maneuver_state.green_armed,
                     maneuver_state.green_clear_frames,
                     maneuver_state.green_direction,
                     green_status["greenCandidateCount"],
+                    normal_fusion_valid=(
+                        capture_valid_fusion_command(line_follower_command) is not None
+                    ),
                 )
                 update_green_control_telemetry(
                     green_status,
@@ -717,6 +751,7 @@ class DownwardCameraApplication:
                     maneuver_state.green_armed,
                     maneuver_state.green_clear_frames,
                 )
+                green_status["greenMarkerConsumed"] = maneuver_state.green_marker_consumed
                 green_status["greenCandidateHoldActive"] = bool(
                     green_candidate_hold_active
                 )

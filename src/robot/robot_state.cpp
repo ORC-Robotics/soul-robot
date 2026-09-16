@@ -53,6 +53,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "rescue_zone_triangle";
     case AutonomousMission::RescueExit:
         return "rescue_exit";
+    case AutonomousMission::RescueExitWithReverse:
+        return "rescue_exit_with_reverse";
     case AutonomousMission::RescueCornerYawTest:
         return "rescue_corner_yaw_test";
     case AutonomousMission::RescueArea:
@@ -99,10 +101,12 @@ RobotSnapshot RobotState::snapshot() const
 bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    // O teste pode começar sobre o triângulo vermelho e só comanda pivôs.
+    // O teste pode começar sobre o triângulo vermelho e comanda apenas a ré
+    // calibrada e os pivôs dos yaws de referência.
     // A chegada vermelha do percurso não deve encerrar essa calibração.
     if (state_.mode == "autonomous" &&
-        state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
+        (state_.autonomousMission == AutonomousMission::RescueCornerYawTest ||
+         state_.autonomousMission == AutonomousMission::RescueExitWithReverse))
         return false;
     state_.redValid = camera.sourceFresh && camera.redValid &&
         std::isfinite(camera.redRatio) && camera.redRatio >= 0.0 && camera.redRatio <= 1.0;
@@ -125,6 +129,18 @@ bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
     }
     if (!camera.redConfirmed || camera.redClearConfirmed ||
         camera.redRatio < config::kRedFinishMinRatio || state_.missionFinished)
+        return false;
+
+    // Durante o desvio, o vermelho continua sendo processado, mas não pode
+    // encerrar a missão antes que a manobra devolva o controle.
+    const bool obstacleAvoidanceActive =
+        state_.autonomousStatus.phase.rfind("obstacle_", 0) == 0;
+    if (state_.mode == "autonomous" && obstacleAvoidanceActive)
+        return false;
+
+    // A área de resgate não possui chegada vermelha. Essa leitura continua
+    // atualizada, mas só pode encerrar a missão depois do retorno ao percurso.
+    if (state_.autonomousStatus.phase.rfind("rescue_", 0) == 0)
         return false;
 
     // A trava é independente do E-Stop e cancela a execução inteira sob o mutex.
@@ -177,6 +193,7 @@ void RobotState::startAutonomous()
         state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
         state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
         state_.autonomousMission == AutonomousMission::RescueZoneTriangle ||
+        state_.autonomousMission == AutonomousMission::RescueExitWithReverse ||
         state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
     {
         // Estes modos de teste não precisam mover os servos.
@@ -216,6 +233,7 @@ bool RobotState::tryStartAutonomous()
         state_.autonomousMission == AutonomousMission::RescueZoneAlign ||
         state_.autonomousMission == AutonomousMission::RescueZoneApproach ||
         state_.autonomousMission == AutonomousMission::RescueZoneTriangle ||
+        state_.autonomousMission == AutonomousMission::RescueExitWithReverse ||
         state_.autonomousMission == AutonomousMission::RescueCornerYawTest)
     {
         // A partida física aplica a mesma condição segura do dashboard:

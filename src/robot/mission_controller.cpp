@@ -205,7 +205,8 @@ void MissionController::update(
         // interna de uma execução anterior depois de Stop seguido de Auto.
         resetMissionState();
         activeAutonomousRunSequence_ = snapshot.autonomousRunSequence;
-        if (snapshot.autonomousMission == AutonomousMission::RescueExit) mainMission_.reset(true);
+        if (snapshot.autonomousMission == AutonomousMission::RescueExit)
+            mainMission_.reset(true);
     }
 
     switch (snapshot.autonomousMission)
@@ -217,6 +218,10 @@ void MissionController::update(
     case AutonomousMission::RescueCornerYawTest:
         distancePhase_ = DistancePhase::Idle;
         updateCornerYawTest(robotState, esp32Telemetry);
+        return;
+    case AutonomousMission::RescueExitWithReverse:
+        distancePhase_ = DistancePhase::Idle;
+        updateCornerYawTestWithReverse(robotState, esp32Telemetry);
         return;
     case AutonomousMission::DriveDistance:
         testTurnController_.reset();
@@ -758,6 +763,43 @@ void MissionController::updateCornerYawTest(
         "corner_yaw_turning", target + turn.action, turn.progressPercent));
 }
 
+void MissionController::updateCornerYawTestWithReverse(
+    RobotState& robotState,
+    const Esp32TelemetrySnapshot& telemetry)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (!cornerYawInitialReverseCompleted_)
+    {
+        if (cornerYawInitialReverse_.idle())
+        {
+            cornerYawInitialReverse_.start(
+                config::kRescueFinalDepositReverseDistanceCm,
+                config::kRescuePostDepositReversePower, -1, now);
+        }
+
+        const EncoderDistanceOutput reverse = cornerYawInitialReverse_.update(
+            telemetry, now, "corner_yaw_initial_reverse",
+            "Recuando 40 cm antes de testar os yaws das quinas");
+        robotState.driveAutonomous(reverse.leftPower, reverse.rightPower);
+        robotState.updateAutonomousStatus(reverse.status);
+        if (reverse.failed)
+        {
+            robotState.stop();
+            robotState.updateAutonomousStatus(reverse.status);
+            return;
+        }
+        if (reverse.completed)
+        {
+            cornerYawInitialReverseCompleted_ = true;
+            cornerYawReferenceValid_ = false;
+            robotState.driveAutonomous(0.0, 0.0);
+        }
+        return;
+    }
+
+    updateCornerYawTest(robotState, telemetry);
+}
+
 void MissionController::updateDriveDistance(
     RobotState& robotState,
     const Esp32TelemetrySnapshot& esp32Telemetry,
@@ -1025,9 +1067,11 @@ void MissionController::resetMissionState()
     rescueZoneTriangleMission_.reset();
     obstacleAvoidanceTest_.reset();
     testTurnController_.reset();
+    cornerYawInitialReverse_.reset();
     cornerYawPhase_ = CornerYawPhase::Ready;
     cornerYawReferenceDegrees_ = 0.0;
     cornerYawReferenceValid_ = false;
+    cornerYawInitialReverseCompleted_ = false;
     cornerYawIndex_ = 0;
     servoRoutine_.resetExecution();
     distancePhase_ = DistancePhase::Idle;

@@ -60,6 +60,7 @@ private:
     EncoderDistanceController cornerRecoveryDistance_;
     bool started_ = false;
     bool sensorsMissing_ = false;
+    bool forwardCameraMissing_ = false;
     bool movingForward_ = false;
     bool attempting_ = false;
     bool waitingFrame_ = true;
@@ -79,6 +80,7 @@ private:
     bool geometryActive_ = true;
     bool geometryReferenceSaved_ = false;
     bool triangleReferenceValid_ = false;
+    bool directExitActive_ = false;
     bool geometryCandidateActive_ = false;
     bool geometryReturnTurnStarted_ = false;
     bool geometryResumeProbesAfterReturn_ = false;
@@ -90,9 +92,9 @@ private:
     bool lineEntryAdvanceDone_ = false;
     Time lineSearchStartedAt_{};
     Time lineSearchStepStartedAt_{};
-    Time startedAt_{}, missingSince_{}, bottomMissingSince_{}, observedAt_{}, attemptAt_{},
-        lastSeenAt_{}, lastGuidanceAt_{}, progressAt_{}, explorationSettleAt_{},
-        geometryPhaseAt_{};
+    Time startedAt_{}, missingSince_{}, forwardCameraMissingSince_{},
+        bottomMissingSince_{}, observedAt_{}, attemptAt_{}, lastSeenAt_{},
+        lastGuidanceAt_{}, progressAt_{}, explorationSettleAt_{}, geometryPhaseAt_{};
     std::array<ExplorationBin, 12> explorationBins_{};
     double lastForwardTimestamp_ = 0.0;
     double lastBottomTimestamp_ = 0.0;

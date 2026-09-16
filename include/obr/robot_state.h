@@ -22,6 +22,7 @@ enum class AutonomousMission
     RescueZoneTriangle,
     RescueArea,
     RescueExit,
+    RescueExitWithReverse,
     RescueCornerYawTest,
     ObstacleAvoidance,
     ServoInitialize,

@@ -57,7 +57,7 @@ void completeInitialReverse(
     const ObstacleAvoidanceOutput completed =
         avoidance.update(telemetry, line, true);
     require(completed.phase == "obstacle_reverse_completed",
-            "A ré inicial deve liberar a centralização após 2 cm.");
+            "A ré inicial deve liberar a centralização na distância configurada.");
 }
 
 ObstacleAvoidanceOutput beginAndCenter(
@@ -309,9 +309,130 @@ ObstacleAvoidanceOutput completeNominalObstacleWithParabolaBest(
     return output;
 }
 
-void testCenteringIsSharedAndPrecedesScan()
+ObstacleAvoidanceOutput startForcedLeftExitForward(
+    ObstacleAvoidance& avoidance,
+    Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    ObstacleAvoidanceOutput output =
+        beginAndCenter(avoidance, telemetry, line);
+    require(output.selectedSide == "LEFT" &&
+                output.selectedSideSource == "CONFIG",
+            "O perfil padrão deve escolher LEFT sem depender da varredura.");
+
+    output = completeTurn(
+        avoidance,
+        telemetry,
+        line,
+        -config::kObstacleSideApproachDegrees);
+    require(output.phase == "obstacle_selected_forward_start",
+            "O perfil esquerdo deve iniciar a primeira reta após o giro.");
+    output = completeSelectedForward(avoidance, telemetry, line);
+    require(output.phase == "obstacle_curve_start",
+            "A primeira reta deve transferir o controle para a curva.");
+    output = advanceCurve(
+        avoidance,
+        telemetry,
+        line,
+        config::kObstacleCurveDistanceCm);
+    require(output.phase == "obstacle_exit_pivot_wait" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "A curva de 20 cm deve parar antes do giro de saída.");
+
+    const double pivotStartYaw = telemetry.yawZDeg;
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleExitPivotWaitMs + 20));
+    output = avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_exit_pivot_start" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Após a espera, o giro de 25 graus deve iniciar parado.");
+    output = completeTurn(
+        avoidance,
+        telemetry,
+        line,
+        pivotStartYaw + config::kObstacleExitPivotRightDegrees);
+    require(output.phase == "obstacle_exit_forward_start" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Após girar 25 graus, a reta de saída deve iniciar parada.");
+    return output;
+}
+
+void testForcedLeftProfileReacquiresDuringStraightExit()
 {
     ObstacleAvoidance avoidance;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+    startForcedLeftExitForward(avoidance, telemetry, line);
+
+    ObstacleAvoidanceOutput output =
+        avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_exit_forward" &&
+                output.leftPower == output.rightPower &&
+                output.leftPower == config::kObstacleSelectedForwardPower,
+            "Após a curva, a saída deve seguir estritamente reta.");
+
+    avoidance.update(telemetry, fusionLine(1), true);
+    avoidance.update(telemetry, fusionLine(2), true);
+    output = avoidance.update(telemetry, fusionLine(3), true);
+    require(output.completed &&
+                output.phase == "obstacle_exit_reacquired" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Três frames Fusion devem concluir a saída imediatamente e parada.");
+}
+
+void testForcedLeftProfileSearchesRightForTwoSeconds()
+{
+    ObstacleAvoidance avoidance;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+    startForcedLeftExitForward(avoidance, telemetry, line);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleExitStraightTimeoutMs + 20));
+    ObstacleAvoidanceOutput output =
+        avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_exit_search_right_start" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Após 1,3 segundo sem faixa, o robô deve parar antes da busca.");
+
+    output = avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_exit_search_right" &&
+                output.leftPower > 0.0 && output.rightPower < 0.0,
+            "A busca final deve girar explicitamente para a direita.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleExitSearchRightTimeoutMs + 20));
+    output = avoidance.update(telemetry, line, true);
+    require(output.failed &&
+                output.phase == "obstacle_exit_search_timeout" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Depois de dois segundos sem Fusion, a busca deve falhar parada.");
+}
+
+void testForcedLeftProfileReacquiresDuringRightSearch()
+{
+    ObstacleAvoidance avoidance;
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+    startForcedLeftExitForward(avoidance, telemetry, line);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleExitStraightTimeoutMs + 20));
+    avoidance.update(telemetry, line, true);
+    avoidance.update(telemetry, fusionLine(10), true);
+    avoidance.update(telemetry, fusionLine(11), true);
+    const ObstacleAvoidanceOutput output =
+        avoidance.update(telemetry, fusionLine(12), true);
+
+    require(output.completed &&
+                output.phase == "obstacle_exit_reacquired" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Três frames Fusion durante a busca à direita devem concluir parados.");
+}
+
+void testCenteringIsSharedAndPrecedesScan()
+{
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     CameraLineSnapshot line = centeredLine();
     line.curveDiagnostics.mediumPosition = 0.6;
@@ -340,7 +461,7 @@ void testCenteringIsSharedAndPrecedesScan()
 
 void testStableEndpointUsesMaximumAndSelectsRight()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -416,7 +537,7 @@ void testStableEndpointUsesMaximumAndSelectsRight()
 
 void testLeftSelectionReturnsToLeftYaw()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -461,7 +582,7 @@ void testLeftSelectionReturnsToLeftYaw()
 
 void testPracticalTieUsesFixedSide()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -484,7 +605,7 @@ void testPracticalTieUsesFixedSide()
 
 void testCameraBlackSelectsOnlyConfirmedSide()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -540,7 +661,7 @@ void testCameraBlackSelectsOnlyConfirmedSide()
 
 void testEarlyFusionRecoveryCompletesToTheSelectedSide()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, true);
@@ -577,7 +698,7 @@ void testEarlyFusionRecoveryCompletesToTheSelectedSide()
 
 void testEarlyFusionRecoveryStopsAtAngularLimit()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, false);
@@ -606,7 +727,7 @@ void testEarlyFusionRequiresConsecutiveContinuationBands()
 {
     for (const bool selectRight : {false, true})
     {
-        ObstacleAvoidance avoidance;
+        ObstacleAvoidance avoidance(false);
         auto telemetry = readyTelemetry();
         startCurveWithSelectedSide(avoidance, telemetry, centeredLine(), selectRight);
         std::uint64_t sequence = 100;
@@ -645,7 +766,7 @@ void testEarlyFusionRequiresConsecutiveContinuationBands()
 
 void testParabolaFalseGapUsesBestSideAndReacquires()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -727,7 +848,7 @@ void testParabolaFalseGapUsesBestSideAndReacquires()
 
 void testParabolaOppositeSearchStopsAtSameAngularLimit()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -774,7 +895,7 @@ void testParabolaOppositeSearchStopsAtSameAngularLimit()
 
 void testPostObstacleFusionCannotReturnToRearLine()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -828,7 +949,7 @@ void testPostObstacleFusionCannotReturnToRearLine()
 
 void testParabolaCase3WindowExpiresWithoutRecovery()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -854,7 +975,7 @@ void testParabolaCase3WindowExpiresWithoutRecovery()
 
 void testStartCanBeBlockedAndMissingLineStops()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(false);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     CameraLineSnapshot line = centeredLine();
     avoidance.update(telemetry, line, false);
@@ -896,6 +1017,9 @@ int main(int argc, char** argv)
         testParabolaOppositeSearchStopsAtSameAngularLimit();
         testPostObstacleFusionCannotReturnToRearLine();
         testParabolaCase3WindowExpiresWithoutRecovery();
+        testForcedLeftProfileReacquiresDuringStraightExit();
+        testForcedLeftProfileReacquiresDuringRightSearch();
+        testForcedLeftProfileSearchesRightForTwoSeconds();
         testStartCanBeBlockedAndMissingLineStops();
         std::cout << "obstacle_avoidance_test: OK\n";
         return 0;

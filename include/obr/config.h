@@ -305,6 +305,9 @@ constexpr double kMotorRunConfirmationMinimumRateCountsPerSecond = 20.0;
 // atravessar rapidamente o limite antes da confirmação visual.
 constexpr double kSilverEntryAdvanceDistanceCm = 5.0;
 constexpr double kSilverEntryAdvancePower = 0.67;
+// Tempo máximo, em milissegundos, para concluir o avanço inicial de 5 cm.
+// Ao expirar, o segue-linha recupera o controle sem aplicar nova potência.
+constexpr int kSilverEntryCandidateAdvanceTimeoutMs = 1500;
 // Ré única executada após confirmar o cinza. A distância curta leva a faixa
 // preta anterior ao sensor NEAR sem sair da região recém-identificada.
 constexpr double kSilverEntryReverseDistanceCm = 3.0;
@@ -507,6 +510,9 @@ constexpr double kRescueExitLineEntryAdvanceCm = 3.0;
 // antes do handoff. Nesse trecho, qualquer indício de prata para o robô.
 constexpr double kRescueExitBottomValidationAdvanceCm = 25.0;
 constexpr int kRescueExitSensorTimeoutMs = 2000;
+// Tempo máximo, em milissegundos, para o supervisor reiniciar a CAM1 enquanto
+// a saída permanece parada. IMU e encoders continuam usando o limite curto.
+constexpr int kRescueExitCameraRecoveryTimeoutMs = 15000;
 // A CAM1 opera perto de 8 FPS durante a análise completa. Esta janela exclusiva
 // evita invalidar a rota entre frames sem afrouxar o timeout global de GAP.
 constexpr int kRescueExitForwardStatusTimeoutMs = 400;
@@ -538,9 +544,11 @@ constexpr double kRescueExitExplorationOffsetDegrees = 30.0;
 constexpr int kRescueExitExplorationMaximumAttempts = 3;
 // Yaws de avanço reto medidos a partir do alinhamento do último triângulo.
 // O teste isolado usa os mesmos alvos para permitir a calibração na arena.
-constexpr double kRescueExitFirstStraightYawDegrees = 100.0;
-constexpr double kRescueExitSecondStraightYawDegrees = 170.0;
-constexpr double kRescueExitThirdStraightYawDegrees = -96.0;
+constexpr double kRescueExitFirstStraightYawDegrees = 58.0;
+constexpr double kRescueExitSecondStraightYawDegrees = -100.0;
+constexpr double kRescueExitThirdStraightYawDegrees = 58.0;
+// A saída fica neste yaw relativo ao último triângulo centralizado.
+constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
 // Tempo parado, em milissegundos, em cada direção do teste isolado de yaw.
 // A pausa permite conferir visualmente para qual quina o robô está apontando.
 constexpr int kRescueCornerYawHoldMs = 2000;
@@ -574,6 +582,7 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitLineSearchTimeoutMs > 0 &&
               kRescueExitLineEntryAdvanceCm > 0.0 &&
               kRescueExitLineEntryAdvanceCm < kRescueExitBottomValidationAdvanceCm &&
+              kRescueExitCameraRecoveryTimeoutMs > kRescueExitSensorTimeoutMs &&
               kRescueExitForwardStatusTimeoutMs > kForwardLineStatusTimeoutMs &&
               kRescueExitGuidanceHoldMs < kRescueExitReacquisitionWaitMs &&
               kRescueExitReacquisitionWaitMs < kRescueExitForwardStatusTimeoutMs +
@@ -597,16 +606,15 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitExplorationRecoveryCm < kRescueExitExplorationAttemptCm &&
               kRescueExitExplorationOffsetDegrees == kRescueExitScanDegrees &&
               kRescueExitExplorationMaximumAttempts == 3 &&
-              kRescueExitFirstStraightYawDegrees > 0.0 &&
-              kRescueExitFirstStraightYawDegrees <
-                  kRescueExitSecondStraightYawDegrees &&
-              kRescueExitSecondStraightYawDegrees <= 180.0 &&
-              kRescueExitThirdStraightYawDegrees < 0.0 &&
+              kRescueExitFirstStraightYawDegrees > -180.0 &&
+              kRescueExitFirstStraightYawDegrees <= 180.0 &&
+              kRescueExitSecondStraightYawDegrees < 0.0 &&
+              kRescueExitSecondStraightYawDegrees > -180.0 &&
               kRescueExitThirdStraightYawDegrees > -180.0 &&
+              kRescueExitThirdStraightYawDegrees <= 180.0 &&
               kRescueExitCornerGeometryToleranceDegrees > 0.0 &&
               kRescueExitCornerGeometryToleranceDegrees <
-                  (kRescueExitSecondStraightYawDegrees -
-                   kRescueExitFirstStraightYawDegrees) * 0.5 &&
+                  kRescueExitScanDegrees &&
               kRescueExitCornerAdvanceCm > 0.0 &&
               kRescueExitCornerCollisionReverseCm > 0.0 &&
               kRescueExitCornerCollisionReverseCm < kRescueExitCornerAdvanceCm &&
@@ -1025,10 +1033,14 @@ constexpr int kObstacleClearanceSettleMs = 200;
 constexpr int kObstacleClearanceRequiredSamples = 5;
 constexpr int kObstacleClearanceSamplingTimeoutMs = 1500;
 
-// Diferenças de até 2 cm são tratadas como empate prático. O lado direito
-// preserva uma decisão fixa e repetível quando as duas passagens estão livres.
+// No modo adaptativo, diferenças de até 2 cm são tratadas como empate prático.
+// O lado direito preserva uma decisão repetível quando ambas estão livres.
 constexpr double kObstacleClearanceTieCm = 2.0;
 constexpr bool kObstacleDefaultSideIsRight = true;
+// Este obstáculo da arena possui passagem confiável somente pela esquerda.
+// Quando ativo, o perfil pula a varredura lateral e inicia o contorno esquerdo
+// logo após centralizar, evitando que uma chegada diagonal troque o lado.
+constexpr bool kObstacleForceLeftSide = true;
 
 // Idade máxima, em milissegundos, aceita para cada eco da varredura lateral.
 // Uma leitura antiga nunca deve influenciar a escolha do lado do obstáculo.
@@ -1063,8 +1075,20 @@ constexpr double kObstacleCurveEndOffsetDegrees = 45.0;
 constexpr double kObstacleCurveBasePower = 0.75;
 constexpr double kObstacleCurveMaximumHeadingCorrection = 0.06;
 constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
-// Depois da curva validada, este pivot apenas aponta a câmera mais para dentro.
+// O modo adaptativo antigo usa este pivot após a curva. O perfil esquerdo fixo
+// ignora este valor e segue reto durante a procura temporizada definida abaixo.
 constexpr double kObstacleFinalInwardPivotDegrees = 40.0;
+
+// Após a curva, o robô para brevemente e gira 25 graus para a direita. A pausa
+// evita que a inércia da curva altere a referência inicial do giro pela IMU.
+constexpr int kObstacleExitPivotWaitMs = 250;
+constexpr double kObstacleExitPivotRightDegrees = 25.0;
+// Depois do giro, o robô segue reto por até 1,3 segundo procurando a faixa.
+// O limite impede avanço indefinido caso a visão não encontre a saída.
+constexpr int kObstacleExitStraightTimeoutMs = 1300;
+// Se a faixa não aparecer na reta, uma busca explícita para a direita também
+// possui limite de dois segundos. Ao expirar, os motores são zerados.
+constexpr int kObstacleExitSearchRightTimeoutMs = 2000;
 
 // Recuperação antecipada exclusiva da curva de obstáculo. Três amostras novas
 // do Fusion cancelam a curva nominal; os encoders medem o avanço curto e a IMU
@@ -1094,7 +1118,7 @@ constexpr double kObstaclePostObstacleFusionReturnLimitDegrees = 35.0;
 constexpr double kObstacleFirstForwardDistanceCm = 25.0;
 constexpr double kObstacleSecondForwardDistanceCm = 30.0;
 constexpr double kObstacleThirdForwardDistanceCm = 21.5;
-constexpr double kObstacleReverseDistanceCm = 2.0;
+constexpr double kObstacleReverseDistanceCm = 5.0;
 
 // Potências normalizadas dos deslocamentos para frente e em ré.
 constexpr double kObstacleForwardPower = 0.75;
@@ -1169,6 +1193,11 @@ static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                   kObstacleCurveFullHeadingErrorDegrees > 0.0 &&
                   kObstacleFinalInwardPivotDegrees > 0.0 &&
                   kObstacleFinalInwardPivotDegrees <= 45.0 &&
+                  kObstacleExitPivotWaitMs >= 0 &&
+                  kObstacleExitPivotRightDegrees > 0.0 &&
+                  kObstacleExitPivotRightDegrees <= 45.0 &&
+                  kObstacleExitStraightTimeoutMs > 0 &&
+                  kObstacleExitSearchRightTimeoutMs > 0 &&
                   kObstacleFusionReacquireConfirmationFrames > 0 &&
                   kObstacleReacquireForwardDistanceCm > 0.0 &&
                   kObstacleReacquireSearchMaximumDegrees > 0.0 &&
@@ -1277,6 +1306,15 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
 // Ao reconhecer o retorno, o robô permanece parado por 250 milissegundos antes
 // de alinhar. A pausa curta estabiliza a leitura sem atrasar a reação ao verde.
 // O atraso não bloqueia o loop, mantendo E-Stop e telemetria ativos.
+// Esta pista não possui retorno de 180°. O gate evita que uma leitura dupla
+// acidental inicie a sequência por IMU; os verdes laterais continuam visuais.
+constexpr bool kGreenTurnAroundEnabled = false;
+// Limite, em graus de yaw, da prioridade do verde lateral visual. Ao alcançar
+// este deslocamento, a câmera devolve o controle ao Fusion normal, sem novo giro.
+constexpr double kGreenVisualMaximumTurnDegrees = 45.0;
+// Antecipação, em segundos, do limite angular para compensar atraso e inércia.
+// Um valor maior devolve o controle antes; não comanda um giro pela IMU.
+constexpr double kGreenVisualAnglePredictionSeconds = 0.10;
 constexpr int kGreenTurnAroundRecognitionDelayMs = 250;
 // Deslocamento normalizado máximo aceito simultaneamente no NEAR e MEDIUM.
 // Reduzir este valor exige um alinhamento visual mais preciso antes do avanço.

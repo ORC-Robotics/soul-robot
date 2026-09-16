@@ -5,6 +5,7 @@ import time
 import cv2  # type: ignore
 import numpy as np
 from .camera_config import (
+    GREEN_CLEAR_HYSTERESIS_FRAMES,
     FUSION_EXTREME_PIVOT_GUARD_ENTER_ERROR_DEG,
     FUSION_EXTREME_PIVOT_GUARD_RELEASE_ERROR_DEG,
     FUSION_FULL_NORMAL_STEERING_DEG,
@@ -534,6 +535,20 @@ def select_fusion_style_reference_point(
         _, right_x = normal_trajectory_horizontal_bounds(envelope, right_y)
         return (right_x - 1, right_y), "rightEdge"
     if top_band_available:
+        near_position = geometry["near"]["position"]
+        near_x = max(
+            int(near_position["x0"]),
+            min(int(near_position["x1"]) - 1, width // 2),
+        )
+        top_point_is_opposite = (
+            preferred_direction == "LEFT" and top_point[0] > near_x
+        ) or (
+            preferred_direction == "RIGHT" and top_point[0] < near_x
+        )
+        if top_point_is_opposite:
+            # Durante um GREEN, a continuação frontal pode desaparecer por
+            # alguns frames, mas nunca deve inverter o lado definido pelo marcador.
+            return None, "none"
         return top_point, "topBand"
 
     # A preferência GREEN pode usar a continuação frontal como fallback, mas
@@ -1535,15 +1550,51 @@ def green_direction_to_search_direction(direction):
     }.get(direction)
 
 
+def green_control_yaw(control):
+    """Aceita somente o yaw válido publicado no heartbeat recente da câmera."""
+
+    if control.get("greenYawValid") is not True:
+        return None
+    return finite_virtual_position(control.get("greenYawDegrees"))
+
+
+def green_maneuver_angle_limit_reached(start_yaw_degrees, control, now=None):
+    """Libera o verde no teto angular; a IMU não calcula comandos de motor."""
+
+    yaw = green_control_yaw(control)
+    if yaw is None or start_yaw_degrees is None:
+        # Sem medida confiável, não prolonga a prioridade nem gira às cegas.
+        return True
+    try:
+        maximum = float(control["greenMaximumTurnDegrees"])
+        gyro = abs(float(control["greenGyroDegreesPerSecond"]))
+        age_seconds = float(control["greenYawAgeMs"]) / 1000.0
+        heartbeat_age = (time.time() if now is None else now) - float(control["timestamp"])
+        prediction = float(control["greenAnglePredictionSeconds"])
+        if (not all(math.isfinite(value) for value in (
+                maximum, gyro, age_seconds, heartbeat_age, prediction))
+                or not 0 < maximum <= 45.0 or age_seconds < 0
+                or heartbeat_age < 0 or prediction < 0
+                or age_seconds + heartbeat_age > 0.2):
+            return True
+        # Normaliza a passagem entre +180° e -180° e antecipa o atraso do IPC.
+        displacement = abs((yaw - start_yaw_degrees + 180.0) % 360.0 - 180.0)
+        return displacement + gyro * (age_seconds + heartbeat_age + prediction) >= maximum
+    except (KeyError, TypeError, ValueError):
+        return True
+
+
 def select_confirmed_green_direction(
     armed,
     active_direction,
     green_status,
+    marker_consumed=False,
 ):
     """Seleciona um GREEN confirmado somente quando o controle está armado."""
 
     if (
         not armed
+        or marker_consumed
         or active_direction != "NENHUMA"
         or not green_status.get("greenConfirmed", False)
     ):
@@ -1721,12 +1772,28 @@ def update_green_fusion_target_hold(
     return {
         "fusionLine": current_line,
         "previousValidFusionLine": None,
-        "missingFrames": 0,
-        "holdActive": False,
-        "recoveryDirection": green_direction_to_search_direction(
-            active_direction
+        "missingFrames": min(
+            next_missing_frames,
+            GREEN_FUSION_TARGET_HOLD_MAX_FRAMES + 1,
         ),
+        "holdActive": False,
+        # A perda do alvo não pode apagar um verde confirmado. O controle
+        # GREEN mantém o mesmo lado até concluir a manobra ou parar no timeout.
+        "recoveryDirection": None,
     }
+
+
+def update_green_consumed_marker_state(consumed, clear_frames, candidate_count):
+    """Esquece o marcador usado após ausência real, inclusive durante o giro."""
+
+    if not consumed:
+        return False, 0
+    if candidate_count > 0:
+        return True, 0
+    clear_frames += 1
+    if clear_frames >= GREEN_CLEAR_HYSTERESIS_FRAMES:
+        return False, 0
+    return True, clear_frames
 
 
 def update_green_rearm_state(
@@ -1734,13 +1801,16 @@ def update_green_rearm_state(
     clear_frames,
     active_direction,
     candidate_count,
+    normal_fusion_valid=False,
 ):
-    """Rearma o GREEN após cinco quadros limpos fora da manobra ativa."""
+    """Rearma no primeiro Fusion normal válido; mantém a janela limpa como fallback."""
 
     if armed:
         return True, 0
     if active_direction != "NENHUMA":
         return False, 0
+    if normal_fusion_valid:
+        return True, 0
     if candidate_count > 0:
         return False, 0
 

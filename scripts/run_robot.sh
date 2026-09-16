@@ -6,6 +6,11 @@ APP_DIR="${OBR_APP_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ROBOT_BIN="$APP_DIR/build/robot_test"
 FORWARD_CAMERA_SCRIPT="$APP_DIR/scripts/forward_camera_stream.py"
 FORWARD_CAMERA_PATTERN="$APP_DIR/scripts/[f]orward_camera_stream.py"
+FORWARD_CAMERA_LINE_STATUS_PATH="/dev/shm/obr_forward_line_status.json"
+# O watchdog reinicia somente a CAM1 quando o processo permanece vivo sem
+# publicar frames. O controle principal continua ativo com seus gates de segurança.
+FORWARD_CAMERA_STARTUP_GRACE_SECONDS=8
+FORWARD_CAMERA_STALE_SECONDS=3
 PYTHON_BIN="$APP_DIR/.venv/bin/python3"
 FORWARD_CAMERA_PID=""
 ROBOT_PID=""
@@ -25,15 +30,50 @@ run_forward_camera_supervisor() {
 
   trap stop_supervised_camera EXIT INT TERM
   while true; do
+    rm -f "$FORWARD_CAMERA_LINE_STATUS_PATH"
     OBR_FORWARD_CAMERA_ENABLED="${OBR_FORWARD_CAMERA_ENABLED:-1}" \
     OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS="${OBR_RESCUE_ZONE_COLOR_DIAGNOSTICS:-0}" \
       "$PYTHON_BIN" -u "$FORWARD_CAMERA_SCRIPT" &
     camera_pid="$!"
-    set +e
-    wait "$camera_pid"
-    camera_status="$?"
-    set -e
-    camera_pid=""
+    local camera_started_at
+    camera_started_at="$(date +%s)"
+    while kill -0 "$camera_pid" >/dev/null 2>&1; do
+      sleep 1
+      local current_time status_modified
+      current_time="$(date +%s)"
+      if (( current_time - camera_started_at < FORWARD_CAMERA_STARTUP_GRACE_SECONDS )); then
+        continue
+      fi
+      status_modified="$(stat -c %Y "$FORWARD_CAMERA_LINE_STATUS_PATH" 2>/dev/null || true)"
+      if [[ -n "$status_modified" ]] &&
+         (( current_time - status_modified <= FORWARD_CAMERA_STALE_SECONDS )); then
+        continue
+      fi
+      echo "Forward camera watchdog: status sem atualização; reiniciando somente a CAM1" >&2
+      kill "$camera_pid" >/dev/null 2>&1 || true
+      for _ in 1 2; do
+        if ! kill -0 "$camera_pid" >/dev/null 2>&1; then
+          break
+        fi
+        sleep 1
+      done
+      if kill -0 "$camera_pid" >/dev/null 2>&1; then
+        # Uma captura nativa pode ignorar o encerramento normal. O SIGKILL é
+        # limitado ao subprocesso da CAM1 e não reinicia o controle do robô.
+        kill -KILL "$camera_pid" >/dev/null 2>&1 || true
+      fi
+      wait "$camera_pid" >/dev/null 2>&1 || true
+      camera_pid=""
+      camera_status=70
+      break
+    done
+    if [[ -n "$camera_pid" ]]; then
+      set +e
+      wait "$camera_pid"
+      camera_status="$?"
+      set -e
+      camera_pid=""
+    fi
     if [[ "$camera_status" -eq 0 ]]; then
       return 0
     fi

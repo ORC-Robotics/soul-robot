@@ -231,20 +231,26 @@ GREEN_PARTIAL_ASPECT_RATIO_MIN = 0.20
 GREEN_PARTIAL_EXTENT_MIN = 0.20
 GREEN_FRAGMENT_MERGE_DISTANCE_PX = 12
 GREEN_CONFIRMATION_FRAMES = 2
-# Um verde lateral espera cinco frames para dar tempo de o segundo marcador de
-# um retorno de 180° entrar inteiro na imagem antes de iniciar a curva errada.
-GREEN_SINGLE_OBSERVATION_FRAMES = 5
+# Nesta pista não existe retorno de 180°. Duas leituras consecutivas mantêm a
+# proteção contra ruído sem atrasar a prioridade do verde lateral confirmado.
+GREEN_SINGLE_OBSERVATION_FRAMES = 2
 # O retorno exige uma amostra adicional porque combina dois marcadores e pode
 # surgir brevemente quando verdes de interseções diferentes entram no quadro.
 GREEN_TURNAROUND_CONFIRMATION_FRAMES = 3
 GREEN_CLEAR_HYSTERESIS_FRAMES = 2
+# Tolera até dois frames ambíguos entre leituras verdes válidas. Reflexos,
+# recortes na borda e o segundo marcador do retorno podem tornar uma imagem
+# inconclusiva por poucos milissegundos; isso não deve apagar uma confirmação
+# já obtida nem reiniciar o progresso válido. Ambiguidade persistente continua
+# removendo a decisão para impedir que evidência antiga arme uma manobra.
+GREEN_AMBIGUITY_HYSTERESIS_FRAMES = 2
 # Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
 # um candidato verde aguarda confirmação. O limite evita um hold indefinido.
 GREEN_CANDIDATE_HOLD_MAX_FRAMES = 2
-# Mantém por no máximo oito frames o último target Fusion GREEN válido. Em
-# 30 FPS, isso tolera cerca de 270 milissegundos de ocultação durante o giro.
-# Depois disso, a recuperação existente assume no lado indicado pelo marcador.
-GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 8
+# Mantém por no máximo dois frames o último target Fusion GREEN válido.
+# Em 30 FPS, são cerca de 67 milissegundos: evita prolongar um giro com alvo
+# antigo. Depois disso, o pivô visual depende do limite angular de 45°.
+GREEN_FUSION_TARGET_HOLD_MAX_FRAMES = 2
 # Esta medida-base equivale a 5% da largura do frame e dimensiona as duas ROIs
 # sem prender o detector a uma resolução específica.
 GREEN_ROI_HALF_SIZE_DIVISOR = 20
@@ -741,10 +747,10 @@ GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION = 24
 # escolhido pelo verde já migrou para a região central.
 GREEN_TRUSTED_POSITION_CENTER_LIMIT = 0.30
 
-# A manobra verde não pode manter a máscara de controle indefinidamente.
-# Em 30 FPS, 45 frames correspondem a aproximadamente 1,5 segundo. Este
-# timeout é apenas uma proteção; a conclusão normal depende da geometria.
-GREEN_MANEUVER_TIMEOUT_FRAMES = 45
+# A manobra verde não pode comandar os motores indefinidamente. Em 30 FPS,
+# 75 frames correspondem a aproximadamente 2,5 segundos. Este limite secundário
+# libera o Fusion normal; o teto angular de 45° normalmente encerra antes.
+GREEN_MANEUVER_TIMEOUT_FRAMES = 75
 
 # A busca cega começa no último lado confiável por uma janela curta e depois
 # varre o lado oposto por mais tempo. O ciclo se repete até a linha reaparecer.

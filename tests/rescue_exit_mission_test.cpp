@@ -220,6 +220,53 @@ void testObscuredReturnsFromCurrentCorner()
     }
 }
 
+void testCornerReturnDoesNotDependOnForwardCamera()
+{
+    Fixture f;
+    f.approach();
+    const long long counts = std::llround(
+        8.0 * config::kEncoderCountsPerCentimeter);
+    f.telemetry.leftEncoderCount += counts;
+    f.telemetry.rightEncoderCount += counts;
+    f.bottom.courseMarkerConfirmed = true;
+    f.bottom.courseMarker = CourseMarker::Gray;
+    require(f.tick().status.phase == "rescue_exit_corner_backing",
+            "Prata não iniciou o retorno do corner");
+
+    f.forward.sourceFresh = false;
+    f.forward.ageMs = config::kRescueExitForwardStatusTimeoutMs + 1.0;
+    f.forward.exitAnalysisActive = false;
+    const auto backing = f.tick(config::kRescueExitSensorTimeoutMs + 1, false);
+    require(!backing.failed &&
+                backing.status.phase == "rescue_exit_corner_backing" &&
+                backing.leftPower == -config::kRescueExitExplorationPower &&
+                backing.rightPower == -config::kRescueExitExplorationPower,
+            "Perda da CAM1 interrompeu a ré de retorno do corner");
+}
+
+void testForwardCameraRecoversWithoutEndingExit()
+{
+    Fixture f;
+    f.tick();
+    f.forward.sourceFresh = false;
+    f.forward.ageMs = config::kRescueExitForwardStatusTimeoutMs + 1.0;
+    f.forward.exitAnalysisActive = false;
+
+    const auto waiting = f.tick(config::kRescueExitSensorTimeoutMs + 1, false);
+    require(!waiting.failed &&
+                waiting.status.phase == "rescue_exit_waiting_camera" &&
+                waiting.leftPower == 0.0 && waiting.rightPower == 0.0,
+            "Espera pela recuperação da CAM1 encerrou a saída cedo demais");
+
+    f.forward.sourceFresh = true;
+    f.forward.ageMs = 0.0;
+    f.forward.exitAnalysisActive = true;
+    const auto recovered = f.tick();
+    require(!recovered.failed &&
+                recovered.status.phase != "rescue_exit_waiting_camera",
+            "Retorno da CAM1 não retomou a fase preservada da saída");
+}
+
 void testLostCandidateResumesGeometryExploration()
 {
     Fixture f;
@@ -523,7 +570,7 @@ void testNearBlackSearchesYawSideUntilCam0Fusion()
     require(turning.status.phase == "rescue_exit_line_seeking" &&
                 turning.leftPower == config::kRescueExitLineSearchTurnPower &&
                 turning.rightPower == -config::kRescueExitLineSearchTurnPower,
-            "Yaw +100° não iniciou o pivô pela direita com potência 0,75");
+            "Yaw +58° não iniciou o pivô pela direita com potência 0,75");
     const auto otherSide = f.tick(config::kRescueExitLineSearchSideMs);
     require(otherSide.leftPower < 0.0 && otherSide.rightPower > 0.0,
             "Segundo pivô não começou continuamente após 650 ms");
@@ -657,6 +704,8 @@ int main()
         testFreshAcquisitionAndSilverPriority();
         testBranchedFusionWaitsForSingleLineAndClassifierStop();
         testObscuredReturnsFromCurrentCorner();
+        testCornerReturnDoesNotDependOnForwardCamera();
+        testForwardCameraRecoversWithoutEndingExit();
         testLostCandidateResumesGeometryExploration();
         testSlowForwardCadenceAndScoreOscillation();
         testScanStartsBoundedActiveExploration();

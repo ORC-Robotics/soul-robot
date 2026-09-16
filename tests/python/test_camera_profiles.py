@@ -964,6 +964,70 @@ class CameraProfilesTest(unittest.TestCase):
         result = tracker.update(2, "AMBIGUO", 1.1)
         self.assertEqual(result, ("AMBIGUO", False, 2))
 
+    def test_short_ambiguity_does_not_erase_confirmed_side(self):
+        for direction in ("ESQUERDA", "DIREITA"):
+            with self.subTest(direction=direction):
+                tracker = camera_line_frame.GreenObservationTracker()
+                for sequence in range(1, 6):
+                    confirmed = tracker.update(
+                        sequence,
+                        direction,
+                        sequence / 10.0,
+                    )
+
+                first_ambiguous = tracker.update(6, "AMBIGUO", 0.6)
+                second_ambiguous = tracker.update(7, "AMBIGUO", 0.7)
+
+                expected = (direction, True, 5)
+                self.assertEqual(confirmed, expected)
+                self.assertEqual(first_ambiguous, expected)
+                self.assertEqual(second_ambiguous, expected)
+
+    def test_short_ambiguity_does_not_restart_turnaround_confirmation(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        first = tracker.update(1, "RETORNO_180", 0.1)
+        ambiguous = tracker.update(2, "AMBIGUO", 0.2)
+        second = tracker.update(3, "RETORNO_180", 0.3)
+        confirmed = tracker.update(4, "RETORNO_180", 0.4)
+
+        self.assertEqual(first, ("SEM_DECISAO", False, 1))
+        self.assertEqual(ambiguous, ("AMBIGUO", False, 1))
+        self.assertEqual(second, ("SEM_DECISAO", False, 2))
+        self.assertEqual(confirmed, ("RETORNO_180", True, 3))
+
+    def test_persistent_ambiguity_clears_confirmed_direction(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        for sequence in range(1, 6):
+            tracker.update(sequence, "ESQUERDA", sequence / 10.0)
+
+        tracker.update(6, "AMBIGUO", 0.6)
+        tracker.update(7, "AMBIGUO", 0.7)
+        cleared = tracker.update(8, "AMBIGUO", 0.8)
+
+        self.assertEqual(cleared, ("AMBIGUO", False, 1))
+
+    def test_retained_turnaround_keeps_black_path_gate(self):
+        interpretation = {
+            "interpretation": "AMBIGUO",
+            "path_black_valid": False,
+        }
+        tracker_result = ("RETORNO_180", True, 3)
+
+        self.assertTrue(
+            camera_line_frame.confirmed_green_path_black_valid(
+                interpretation,
+                tracker_result,
+            )
+        )
+
+        interpretation["interpretation"] = "SEM_DECISAO"
+        self.assertFalse(
+            camera_line_frame.confirmed_green_path_black_valid(
+                interpretation,
+                tracker_result,
+            )
+        )
+
     def test_confirmed_turnaround_cannot_change_to_lateral_before_clear(self):
         tracker = camera_line_frame.GreenObservationTracker()
         tracker.update(1, "RETORNO_180", 1.0)

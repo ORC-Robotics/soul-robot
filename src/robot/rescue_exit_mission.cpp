@@ -61,8 +61,8 @@ GuidancePowers mapGuidancePowers(double angleDegrees, bool steeringNear)
     return {config::kRescueExitApproachPower, config::kRescueExitApproachPower};
 }
 
-// O yaw de +170° aponta para a quina direita; o primeiro pivô deve ser para a
-// esquerda. Os yaws de +100° e -96° apontam para a esquerda e iniciam à direita.
+// O yaw de -100° usa o sentido oposto. No yaw direto de +58°, o primeiro
+// pivô procura a linha à esquerda e o segundo procura à direita.
 int initialLinePivotDirection(double cornerHeading, double referenceHeading)
 {
     const double rightCornerHeading = signedAngle(
@@ -70,7 +70,7 @@ int initialLinePivotDirection(double cornerHeading, double referenceHeading)
     const bool exitOnRight = ImuTurnController::angularDistanceDegrees(
         cornerHeading, rightCornerHeading) <=
         config::kRescueExitCornerGeometryToleranceDegrees;
-    return exitOnRight ? 1 : -1;
+    return exitOnRight ? -1 : 1;
 }
 
 }
@@ -557,8 +557,9 @@ RescueExitOutput RescueExitMission::updateExploration(
     bool newForward,
     bool newBottom)
 {
-    const bool bottomReady = bottom.sourceFresh && bottom.silverClassifierFresh;
-    if (bottomReady && bottom.courseMarkerConfirmed &&
+    const bool bottomReady = bottom.sourceFresh &&
+        (directExitActive_ || bottom.silverClassifierFresh);
+    if (!directExitActive_ && bottomReady && bottom.courseMarkerConfirmed &&
         bottom.courseMarker == CourseMarker::Gray)
     {
         if (geometryActive_ && geometryCandidateActive_)
@@ -570,7 +571,7 @@ RescueExitOutput RescueExitMission::updateExploration(
         startExplorationRecovery("Entrada prata encontrada durante a exploração", now, true);
         return output("rescue_exit_exploration_blocked", explorationBlockReason_.c_str());
     }
-    if (bottomReady && bottom.silverCandidateDetected)
+    if (!directExitActive_ && bottomReady && bottom.silverCandidateDetected)
     {
         progressAt_ = now;
         return output("rescue_exit_checking_silver",
@@ -628,6 +629,14 @@ RescueExitOutput RescueExitMission::updateExploration(
             ++acquisitionFrames_;
         if (acquisitionFrames_ >= config::kRescueExitAcquisitionFrames)
         {
+            if (directExitActive_)
+            {
+                phase_ = Phase::Completed;
+                return output("rescue_exit_acquired",
+                              "Linha encontrada na rota direta; retomando o percurso",
+                              bottom.lineFollowerLeftPower,
+                              bottom.lineFollowerRightPower);
+            }
             // O Fusion pode guiar, mas a missão continua dona do controle até
             // atravessar uma janela física na qual a prata tem prioridade.
             phase_ = Phase::BottomValidating;
@@ -703,8 +712,9 @@ RescueExitOutput RescueExitMission::updateExploration(
         }
     }
 
-    if (progress >= explorationAttemptTargetCm_ ||
-        explorationTotalCm_ >= config::kRescueExitExplorationTotalCm)
+    if (!directExitActive_ &&
+        (progress >= explorationAttemptTargetCm_ ||
+         explorationTotalCm_ >= config::kRescueExitExplorationTotalCm))
     {
         if (geometryActive_ && geometryCandidateActive_)
         {
@@ -758,11 +768,13 @@ RescueExitOutput RescueExitMission::updateLineSearch(
     if (now - lineSearchStartedAt_ >=
         std::chrono::milliseconds(config::kRescueExitLineSearchTimeoutMs))
         return fail("Pivôs de busca da linha excederam o tempo seguro");
-    if (!bottom.sourceFresh || !bottom.silverClassifierFresh)
+    if (!bottom.sourceFresh ||
+        (!directExitActive_ && !bottom.silverClassifierFresh))
         return output("rescue_exit_line_seeking",
                       "Parado: aguardando CAM0 e classificador de prata");
 
-    const bool validFusion = bottom.sourceFresh && bottom.silverClassifierFresh &&
+    const bool validFusion = bottom.sourceFresh &&
+        (directExitActive_ || bottom.silverClassifierFresh) &&
         bottom.lineControlSource == "fusion" && bottom.normalSteeringValid &&
         bottom.exitLineUnbranched;
     // Depois da reta de 3 cm, o primeiro pivô precisa realmente chegar aos motores.
@@ -802,6 +814,14 @@ RescueExitOutput RescueExitMission::updateLineSearch(
         movingExploration_ = true;
         if (acquisitionFrames_ >= config::kRescueExitAcquisitionFrames)
         {
+            if (directExitActive_)
+            {
+                phase_ = Phase::Completed;
+                return output("rescue_exit_acquired",
+                              "Linha encontrada após os pivôs; retomando o percurso",
+                              bottom.lineFollowerLeftPower,
+                              bottom.lineFollowerRightPower);
+            }
             phase_ = Phase::BottomValidating;
             bottomValidationStartLeft_ = telemetry.leftEncoderCount;
             bottomValidationStartRight_ = telemetry.rightEncoderCount;
@@ -862,11 +882,12 @@ void RescueExitMission::setTriangleReferenceHeading(double headingDegrees)
     triangleReferenceValid_ = std::isfinite(headingDegrees);
     if (triangleReferenceValid_)
         triangleReferenceHeading_ = signedAngle(headingDegrees);
+    directExitActive_ = triangleReferenceValid_;
 }
 
 bool RescueExitMission::requiresRescueZoneDetection() const
 {
-    if (!started_) return true;
+    if (!started_) return !directExitActive_;
     if (!geometryActive_ || geometryCandidateActive_) return false;
     return phase_ == Phase::GeometrySettling ||
            phase_ == Phase::GeometryTurning ||
@@ -1015,9 +1036,14 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     const bool forwardReady = (forwardAgeReady || phase_ == Phase::Approaching ||
                                phase_ == Phase::BottomValidating) &&
         forward.exitAnalysisActive && forward.exitRunSequence == runSequence;
-    const bool ready = telemetry.readyForOperation() && ImuTurnController::imuReady(telemetry) &&
-        EncoderDistanceController::encodersReady(telemetry) && forwardReady;
-    if (!ready)
+    // O retorno de uma entrada prata usa somente encoders e IMU. Uma oscilação
+    // da CAM1 não pode impedir a ré nem o giro de volta para o próximo corner.
+    const bool returningFromCorner = phase_ == Phase::GeometryBacking ||
+        phase_ == Phase::GeometryReturnTurning;
+    const bool motionSensorsReady = telemetry.readyForOperation() &&
+        ImuTurnController::imuReady(telemetry) &&
+        EncoderDistanceController::encodersReady(telemetry);
+    if (!motionSensorsReady)
     {
         movingForward_ = false;
         progressAt_ = now;
@@ -1027,12 +1053,36 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         movingExploration_ = false;
         lastLeft_ = telemetry.leftEncoderCount;
         lastRight_ = telemetry.rightEncoderCount;
+        forwardCameraMissing_ = false;
         if (!sensorsMissing_) { sensorsMissing_ = true; missingSince_ = now; }
         if (now - missingSince_ >= std::chrono::milliseconds(config::kRescueExitSensorTimeoutMs))
-            return fail("CAM1, IMU ou encoders indisponíveis");
-        return output("rescue_exit_waiting_sensors", "Parado: aguardando CAM1, IMU e encoders");
+            return fail("ESP32, IMU ou encoders indisponíveis");
+        return output("rescue_exit_waiting_sensors",
+                      "Parado: aguardando ESP32, IMU e encoders");
     }
     sensorsMissing_ = false;
+    if (!forwardReady && !returningFromCorner)
+    {
+        movingForward_ = false;
+        progressAt_ = now;
+        candidateFrames_ = acquisitionFrames_ = observedFrames_ = 0;
+        guidanceLatched_ = false;
+        steeringNearLatched_ = false;
+        movingExploration_ = false;
+        lastLeft_ = telemetry.leftEncoderCount;
+        lastRight_ = telemetry.rightEncoderCount;
+        if (!forwardCameraMissing_)
+        {
+            forwardCameraMissing_ = true;
+            forwardCameraMissingSince_ = now;
+        }
+        if (now - forwardCameraMissingSince_ >=
+            std::chrono::milliseconds(config::kRescueExitCameraRecoveryTimeoutMs))
+            return fail("CAM1 indisponível após tentativa de reinício");
+        return output("rescue_exit_waiting_camera",
+                      "Parado: aguardando reinício automático da CAM1");
+    }
+    forwardCameraMissing_ = false;
     if (geometryActive_ && !geometryReferenceSaved_)
     {
         geometryReferenceSaved_ = true;
@@ -1042,6 +1092,27 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
             triangleReferenceHeading_ : signedAngle(telemetry.yawZDeg);
         geometryPhaseAt_ = now;
         lastZoneSequence_ = zones.sequence;
+        // O heading do triângulo já define a saída. O robô gira para +58°
+        // e avança reto; a CAM0 continua responsável por encontrar a linha.
+        if (directExitActive_)
+        {
+            const double directHeading = signedAngle(
+                geometryReferenceHeading_ + config::kRescueExitDirectYawDegrees);
+            geometryCandidateHeadings_[0] = directHeading;
+            geometryCandidateHeadings_[1] = directHeading;
+            geometryCandidateIndex_ = 0;
+            geometryResumeProbesAfterReturn_ = false;
+            if (!startGeometryCandidate(telemetry, now))
+                return fail("Não foi possível iniciar a rota direta da saída");
+            return output(phase_ == Phase::Exploring ?
+                              "rescue_exit_corner_exploring" :
+                              "rescue_exit_corner_turning",
+                          "Indo direto para a saída a +58°",
+                          phase_ == Phase::Exploring ?
+                              config::kRescueExitExplorationPower : 0.0,
+                          phase_ == Phase::Exploring ?
+                              config::kRescueExitExplorationPower : 0.0);
+        }
         // A rotina começa após o depósito vermelho ou verde; o triângulo
         // usado como referência já é proibido para a busca da saída.
         rejected_.push_back({geometryReferenceHeading_,
@@ -1090,7 +1161,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
          phase_ == Phase::GeometryTurning ||
          phase_ == Phase::GeometrySettling ||
          phase_ == Phase::ExplorationTurning);
-    if (silverConfirmed && !returningFromRejectedSilver)
+    if (!directExitActive_ && silverConfirmed && !returningFromRejectedSilver)
     {
         acquisitionFrames_ = 0;
         if (!silverBlockLatched_)
@@ -1126,7 +1197,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         return output("rescue_exit_checking_silver",
                       "Parado: entrada prata confirmada pela CAM0");
     }
-    if (silverReady && bottom.silverCandidateDetected &&
+    if (!directExitActive_ && silverReady && bottom.silverCandidateDetected &&
         !returningFromRejectedSilver)
     {
         progressAt_ = now;
@@ -1135,7 +1206,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
                       "Parado: confirmando possível prata pela CAM0");
     }
 
-    if (geometryActive_ && geometryCandidateActive_ && newForward &&
+    if (!directExitActive_ && geometryActive_ && geometryCandidateActive_ && newForward &&
         (phase_ == Phase::Approaching || phase_ == Phase::Exploring ||
          (phase_ == Phase::LineSeeking && !lineEntryAdvanceDone_)) &&
         frontGrayOnHeading(forward, telemetry.yawZDeg, explorationHeading_))
@@ -1532,7 +1603,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
 
         // O robô mudou de posição; cores e cinza serão medidos novamente.
         explorationBins_ = {};
-        if (newForward && !forward.cameraObscured)
+        if (!directExitActive_ && newForward && !forward.cameraObscured)
         {
             recordExplorationEvidence(forward, telemetry);
             const bool candidateSeen = std::any_of(
@@ -1676,7 +1747,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
 
     if (phase_ == Phase::Turning || phase_ == Phase::ExplorationTurning)
     {
-        if (newForward && !forward.cameraObscured)
+        if (!directExitActive_ && newForward && !forward.cameraObscured)
         {
             const bool candidateSeen = std::any_of(
                 forward.exitCandidates.begin(), forward.exitCandidates.end(),

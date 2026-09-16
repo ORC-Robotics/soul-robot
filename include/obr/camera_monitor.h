@@ -233,7 +233,11 @@ public:
     ForwardLineSnapshot forwardLineSnapshot();
     // Publica o heartbeat e o diagnóstico da busca sem conceder autoridade de motor.
     bool publishExitControl(bool enabled, std::uint64_t runSequence,
-                            const AutonomousStatus& status) const;
+                            const AutonomousStatus& status,
+                            bool greenYawValid = false,
+                            double greenYawDegrees = 0.0,
+                            double greenGyroDegreesPerSecond = 0.0,
+                            double greenYawAgeMs = 0.0) const;
     ForwardBallSnapshot forwardBallSnapshot() const;
     RescueZoneSnapshot rescueZoneSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;

@@ -30,7 +30,11 @@ class YoloBallDetectorConfig:
     # A Raspberry Pi executa inferência no CPU. O perfil 384 preservou o mAP50
     # do conjunto de validação e reduziu o custo em relação ao perfil 416.
     input_size: int = 384
-    confidence_threshold: float = 0.55
+    # A bola preta da arena regional produziu scores abaixo do limite geral de
+    # 0,55. O rastreador ainda exige confirmação temporal, então este limite
+    # pode ser mais permissivo sem alterar a aceitação da bola prata.
+    black_ball_confidence_threshold: float = 0.40
+    silver_ball_confidence_threshold: float = 0.55
     nms_iou_threshold: float = 0.45
 
     def validate(self):
@@ -38,8 +42,17 @@ class YoloBallDetectorConfig:
 
         if self.input_size <= 0:
             raise ValueError("input_size deve ser positivo.")
-        if not 0.0 < self.confidence_threshold <= 1.0:
-            raise ValueError("confidence_threshold deve estar entre 0 e 1.")
+        confidence_thresholds = (
+            self.black_ball_confidence_threshold,
+            self.silver_ball_confidence_threshold,
+        )
+        if any(
+            not 0.0 < threshold <= 1.0
+            for threshold in confidence_thresholds
+        ):
+            raise ValueError(
+                "Os limites de confiança devem estar entre 0 e 1."
+            )
         if not 0.0 < self.nms_iou_threshold <= 1.0:
             raise ValueError("nms_iou_threshold deve estar entre 0 e 1.")
 
@@ -130,8 +143,16 @@ class YoloBallDetector:
         class_scores = predictions[:, 4:]
         class_ids = np.argmax(class_scores, axis=1)
         confidences = class_scores[np.arange(len(predictions)), class_ids]
-        accepted = confidences >= self.config.confidence_threshold
-        accepted &= class_ids < len(self._CLASS_NAMES)
+        class_thresholds = np.asarray((
+            self.config.black_ball_confidence_threshold,
+            self.config.silver_ball_confidence_threshold,
+        ))
+        valid_classes = class_ids < len(self._CLASS_NAMES)
+        accepted = valid_classes.copy()
+        accepted[valid_classes] &= (
+            confidences[valid_classes]
+            >= class_thresholds[class_ids[valid_classes]]
+        )
         predictions = predictions[accepted]
         class_ids = class_ids[accepted]
         confidences = confidences[accepted]
@@ -161,7 +182,10 @@ class YoloBallDetector:
         kept_indices = cv2.dnn.NMSBoxes(
             boxes,
             confidences.tolist(),
-            self.config.confidence_threshold,
+            min(
+                self.config.black_ball_confidence_threshold,
+                self.config.silver_ball_confidence_threshold,
+            ),
             self.config.nms_iou_threshold,
         )
         candidates = []

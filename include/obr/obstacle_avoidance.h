@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/camera_monitor.h"
+#include "obr/config.h"
 #include "obr/esp32_bridge.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/line_centering_controller.h"
@@ -47,11 +48,13 @@ struct ObstacleAvoidanceOutput
     std::string action;
 };
 
-// Centraliza, escolhe o lado livre e executa o contorno do obstáculo. Durante a
-// curva, o Fusion pode antecipar uma busca curta e limitada pela linha.
+// Centraliza e executa o perfil configurado para contornar o obstáculo. O modo
+// adaptativo anterior permanece disponível para testes e calibração comparativa.
 class ObstacleAvoidance
 {
 public:
+    explicit ObstacleAvoidance(
+        bool forceLeftSide = config::kObstacleForceLeftSide);
     ObstacleAvoidanceOutput update(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,
@@ -74,6 +77,10 @@ private:
         PositioningSelectedSide,
         DrivingSelectedHeading,
         CurvingAroundObstacle,
+        ExitPivotWait,
+        ExitPivotRight,
+        ExitForward,
+        ExitSearchRight,
         ReacquireForward,
         ReacquireSearch,
         ParabolaGapLostValidate,
@@ -86,6 +93,7 @@ private:
     ImuTurnController turnController_;
     LineCenteringController lineCenteringController_;
     bool armed_ = true;
+    bool forceLeftSide_ = true;
     int obstacleConfirmationSamples_ = 0;
     int rearmConfirmationSamples_ = 0;
     double yawBase_ = std::numeric_limits<double>::quiet_NaN();
@@ -115,6 +123,9 @@ private:
     double curveStartYaw_ = std::numeric_limits<double>::quiet_NaN();
     double curveEndYaw_ = std::numeric_limits<double>::quiet_NaN();
     std::chrono::steady_clock::time_point curveStartedAt_{};
+    std::chrono::steady_clock::time_point exitPivotWaitStartedAt_{};
+    std::chrono::steady_clock::time_point exitForwardStartedAt_{};
+    std::chrono::steady_clock::time_point exitSearchStartedAt_{};
     int fusionReacquireFrames_ = 0;
     std::uint64_t lastFusionLineSequence_ = 0;
     long long reacquireForwardStartLeftCount_ = 0;
@@ -177,6 +188,17 @@ private:
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,
         const ForwardLineSnapshot& forwardLine);
+    ObstacleAvoidanceOutput updateExitPivotWait(
+        const Esp32TelemetrySnapshot& telemetry);
+    ObstacleAvoidanceOutput updateExitForward(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput updateExitSearchRight(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput completeExit(
+        const std::string& phase,
+        const std::string& action);
     ObstacleAvoidanceOutput updateReacquireForward(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);

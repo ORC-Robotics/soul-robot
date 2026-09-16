@@ -1208,12 +1208,20 @@ bool CameraMonitor::publishRescueZoneDetectionInput(
 
 // O arquivo é substituído atomicamente; o Python rejeita heartbeat vencido.
 bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
-                                      const AutonomousStatus& status) const
+                                      const AutonomousStatus& status,
+                                      bool greenYawValid,
+                                      double greenYawDegrees,
+                                      double greenGyroDegreesPerSecond,
+                                      double greenYawAgeMs) const
 {
 #ifdef _WIN32
     (void)enabled;
     (void)runSequence;
     (void)status;
+    (void)greenYawValid;
+    (void)greenYawDegrees;
+    (void)greenGyroDegreesPerSecond;
+    (void)greenYawAgeMs;
     return true;
 #else
     // O protocolo visual exige um identificador positivo. Antes da primeira
@@ -1230,6 +1238,15 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
              << ",\"redMinRatio\":" << config::kRedFinishMinRatio
              << ",\"redConfirmFrames\":" << config::kRedFinishConfirmFrames
              << ",\"redMaxFrameGapMs\":" << config::kCameraLineStatusTimeoutMs
+             // A IMU fornece apenas um teto ao verde visual, nunca potência.
+             << ",\"greenYawValid\":" << (greenYawValid ? "true" : "false")
+             << ",\"greenYawDegrees\":" << (greenYawValid ? greenYawDegrees : 0.0)
+             << ",\"greenGyroDegreesPerSecond\":"
+             << (greenYawValid ? greenGyroDegreesPerSecond : 0.0)
+             << ",\"greenYawAgeMs\":" << (greenYawValid ? greenYawAgeMs : 0.0)
+             << ",\"greenMaximumTurnDegrees\":" << config::kGreenVisualMaximumTurnDegrees
+             << ",\"greenAnglePredictionSeconds\":"
+             << config::kGreenVisualAnglePredictionSeconds
              << ",\"runSequence\":" << visionRunSequence
              << ",\"timestamp\":" << currentUnixSeconds()
              << ",\"phase\":" << std::quoted(status.phase)

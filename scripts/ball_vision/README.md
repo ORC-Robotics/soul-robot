@@ -145,8 +145,10 @@ Os valores iniciais do YOLO precisam ser validados com a iluminação da arena:
 python3 scripts/ball_vision/main.py --horizontal-fov 62 --center-angle 5
 ```
 
-- Os limites do YOLO ficam em `YoloBallDetectorConfig`. Aumentar
-  `confidence_threshold` reduz falsos positivos, mas pode perder vítimas distantes.
+- Os limites do YOLO ficam em `YoloBallDetectorConfig`. A bola preta usa
+  `black_ball_confidence_threshold=0.40`; a bola prata preserva
+  `silver_ball_confidence_threshold=0.55`. Aumentar um limite reduz falsos
+  positivos daquela classe, mas pode perder vítimas distantes.
 - `--horizontal-fov` deve ser recalibrado com alvos em ângulos conhecidos.
 - `--center-angle` controla a zona classificada como `centro`.
 - Os detectores geométricos antigos permanecem apenas para diagnósticos e testes;

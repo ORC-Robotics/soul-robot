@@ -9,6 +9,7 @@ class LineManeuverState:
         self.green_curve_started = False
         self.green_centered_frames = 0
         self.green_active_frames = 0
+        self.green_start_yaw_degrees = None
         self.gap_forward_active = False
         self.gap_fusion_reacquire_active = False
         self.gap_forward_frames = 0
@@ -17,6 +18,8 @@ class LineManeuverState:
         self.gap_recent_near_frames = 0
         self.green_armed = True
         self.green_clear_frames = 0
+        self.green_marker_consumed = False
+        self.green_marker_clear_frames = 0
         self.last_applied_fusion_command = None
         self.green_candidate_hold_frames = 0
         self.green_candidate_hold_blocked = False

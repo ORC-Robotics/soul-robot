@@ -77,6 +77,7 @@ def calculate_command(
     fusion_style_line=None,
     blind_search_preferred_direction=None,
     gap_fusion_reacquire_active=False,
+    green_active_frames=0,
 ):
     """Executa somente o controle virtual com leituras determinísticas."""
 
@@ -103,6 +104,7 @@ def calculate_command(
                 blind_search_preferred_direction
             ),
             gap_fusion_reacquire_active=gap_fusion_reacquire_active,
+            green_active_frames=green_active_frames,
         )
 
 
@@ -409,6 +411,30 @@ class FusionStyleLineExtractionTests(unittest.TestCase):
         self.assertEqual(preferred["referenceSource"], normal["referenceSource"])
         self.assertEqual(preferred["farPoint"], normal["farPoint"])
         self.assertEqual(preferred["angleDeg"], normal["angleDeg"])
+
+    def test_green_right_rejects_opposite_top_band_fallback(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (140, 47), 255, 22)
+
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="RIGHT",
+        )
+
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
+
+    def test_green_left_rejects_opposite_top_band_fallback(self):
+        mask = np.zeros((360, 480), dtype=np.uint8)
+        camera_line_frame.cv2.line(mask, (240, 359), (340, 47), 255, 22)
+
+        preferred = camera_line_frame.extract_fusion_style_line(
+            mask,
+            preferred_direction="LEFT",
+        )
+
+        self.assertFalse(preferred["valid"])
+        self.assertEqual(preferred["referenceSource"], "none")
 
     def test_green_right_never_falls_back_to_left_edge(self):
         mask = self.lateral_only_mask("LEFT")
@@ -2193,7 +2219,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             near_fine_position=1.0,
         )
         for green_direction, gap_active, expected_source in (
-            ("DIREITA", False, "fusion-green-no-target"),
+            ("DIREITA", False, "green-entry-pivot"),
             ("NENHUMA", True, "virtual-gap-far"),
         ):
             with self.subTest(expected_source=expected_source):
@@ -2926,14 +2952,21 @@ class VirtualSensorRegressionTests(unittest.TestCase):
                 self.assertLess(abs(sensors["mediumPosition"]), 1.0)
                 self.assertIsNone(sensors["farPosition"])
                 self.assertIsNone(sensors["headingAngle"])
-                self.assertIsNone(result["finalSteering"])
+                self.assertEqual(result["finalSteering"], expected_sign)
                 self.assertEqual(
                     result["controlSource"],
-                    "fusion-green-no-target",
+                    "green-entry-pivot",
                 )
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    (0.0, 0.0),
+                    (
+                        camera_line_frame.PIVOT_INNER_POWER
+                        if expected_sign < 0.0
+                        else camera_line_frame.PIVOT_OUTER_POWER,
+                        camera_line_frame.PIVOT_OUTER_POWER
+                        if expected_sign < 0.0
+                        else camera_line_frame.PIVOT_INNER_POWER,
+                    ),
                 )
 
     def test_green_trust_is_measured_only_on_selected_right_branch(self):
@@ -3247,7 +3280,7 @@ class VirtualSensorRegressionTests(unittest.TestCase):
             math.degrees(math.atan2(160.0 - 200.0, 220.0 - 100.0)),
         ))
 
-    def test_green_heading_has_no_motor_authority_without_fusion(self):
+    def test_green_direction_has_priority_without_fusion(self):
         for green_direction, steering_error in (
             ("ESQUERDA", -0.55),
             ("DIREITA", 0.55),
@@ -3270,16 +3303,26 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
                 self.assertEqual(
                     result["controlSource"],
-                    "fusion-green-no-target",
+                    "green-entry-pivot",
                 )
-                self.assertIsNone(result["finalSteering"])
+                expected_steering = (
+                    -1.0 if green_direction == "ESQUERDA" else 1.0
+                )
+                self.assertEqual(result["finalSteering"], expected_steering)
                 self.assertFalse(result["fusionControlActive"])
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    (0.0, 0.0),
+                    (
+                        camera_line_frame.PIVOT_INNER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_OUTER_POWER,
+                        camera_line_frame.PIVOT_OUTER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_INNER_POWER,
+                    ),
                 )
 
-    def test_green_without_trusted_branch_waits_for_fusion(self):
+    def test_green_without_trusted_branch_starts_confirmed_turn(self):
         for green_direction in ("ESQUERDA", "DIREITA"):
             with self.subTest(green_direction=green_direction):
                 sensors = sensor_values(None, None, None)
@@ -3292,16 +3335,26 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
                 self.assertEqual(
                     result["controlSource"],
-                    "fusion-green-no-target",
+                    "green-entry-pivot",
                 )
                 self.assertEqual(result["lineState"], "GREEN")
-                self.assertIsNone(result["finalSteering"])
+                expected_steering = (
+                    -1.0 if green_direction == "ESQUERDA" else 1.0
+                )
+                self.assertEqual(result["finalSteering"], expected_steering)
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    (0.0, 0.0),
+                    (
+                        camera_line_frame.PIVOT_INNER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_OUTER_POWER,
+                        camera_line_frame.PIVOT_OUTER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_INNER_POWER,
+                    ),
                 )
 
-    def test_green_with_only_far_branch_waits_for_fusion(self):
+    def test_green_with_only_far_branch_starts_confirmed_turn(self):
         for green_direction, far_position in (
             ("ESQUERDA", -0.70),
             ("DIREITA", 0.70),
@@ -3317,12 +3370,22 @@ class VirtualSensorRegressionTests(unittest.TestCase):
 
                 self.assertEqual(
                     result["controlSource"],
-                    "fusion-green-no-target",
+                    "green-entry-pivot",
                 )
-                self.assertIsNone(result["finalSteering"])
+                expected_steering = (
+                    -1.0 if green_direction == "ESQUERDA" else 1.0
+                )
+                self.assertEqual(result["finalSteering"], expected_steering)
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    (0.0, 0.0),
+                    (
+                        camera_line_frame.PIVOT_INNER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_OUTER_POWER,
+                        camera_line_frame.PIVOT_OUTER_POWER
+                        if green_direction == "ESQUERDA"
+                        else camera_line_frame.PIVOT_INNER_POWER,
+                    ),
                 )
 
 
@@ -3620,11 +3683,14 @@ class VirtualRecoveryTests(unittest.TestCase):
         self.assertEqual(result["lineState"], "GREEN")
         self.assertEqual(
             result["controlSource"],
-            "fusion-green-no-target",
+            "green-entry-pivot",
         )
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (0.0, 0.0),
+            (
+                camera_line_frame.PIVOT_OUTER_POWER,
+                camera_line_frame.PIVOT_INNER_POWER,
+            ),
         )
 
     def enter_reorient(self, direction):
@@ -3747,15 +3813,18 @@ class VirtualRecoveryTests(unittest.TestCase):
             green_direction="DIREITA",
         )
         self.assertEqual(tracker.state, camera_line_frame.VIRTUAL_STATE_NORMAL)
-        self.assertIsNone(result["finalSteering"])
+        self.assertEqual(result["finalSteering"], 1.0)
         self.assertEqual(
             result["controlSource"],
-            "fusion-green-no-target",
+            "green-entry-pivot",
         )
         self.assertEqual(result["greenDirection"], "DIREITA")
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (0.0, 0.0),
+            (
+                camera_line_frame.PIVOT_OUTER_POWER,
+                camera_line_frame.PIVOT_INNER_POWER,
+            ),
         )
 
     def test_gap_ignores_medium_alone_and_uses_far_with_both_wheels_forward(self):
@@ -4110,17 +4179,20 @@ class VirtualRecoveryTests(unittest.TestCase):
             (0.82, 0.66),
         )
 
-    def test_green_does_not_use_virtual_mapper_without_fusion_target(self):
+    def test_green_keeps_direction_without_fusion_target(self):
         result = calculate_command(
             sensor_values(0.30, None, None),
             green_direction="DIREITA",
         )
 
-        self.assertEqual(result["controlSource"], "fusion-green-no-target")
-        self.assertIsNone(result["finalSteering"])
+        self.assertEqual(result["controlSource"], "green-entry-pivot")
+        self.assertEqual(result["finalSteering"], 1.0)
         self.assertEqual(
             (result["left_power"], result["right_power"]),
-            (0.0, 0.0),
+            (
+                camera_line_frame.PIVOT_OUTER_POWER,
+                camera_line_frame.PIVOT_INNER_POWER,
+            ),
         )
 
 
@@ -4736,6 +4808,47 @@ class VirtualMediumUrgencyTests(unittest.TestCase):
 
 
 class GreenRearmTests(unittest.TestCase):
+    def test_normal_fusion_rearms_immediately_with_next_candidate_visible(self):
+        armed, frames = camera_line_frame.update_green_rearm_state(
+            False, 0, "NENHUMA", candidate_count=1,
+            normal_fusion_valid=True,
+        )
+        self.assertTrue(armed)
+        self.assertEqual(frames, 0)
+        for direction in ("ESQUERDA", "DIREITA"):
+            self.assertEqual(camera_line_frame.select_confirmed_green_direction(
+                armed, "NENHUMA",
+                {"greenConfirmed": True, "greenInterpretation": direction},
+                marker_consumed=False,
+            ), direction)
+
+    def test_fusion_cannot_rearm_before_active_green_finishes(self):
+        self.assertEqual(camera_line_frame.update_green_rearm_state(
+            False, 0, "DIREITA", candidate_count=1,
+            normal_fusion_valid=True,
+        ), (False, 0))
+
+    def test_consumed_confirmation_does_not_repeat_after_fusion_rearms(self):
+        self.assertIsNone(camera_line_frame.select_confirmed_green_direction(
+            True, "NENHUMA",
+            {"greenConfirmed": True, "greenInterpretation": "DIREITA"},
+            marker_consumed=True,
+        ))
+        consumed, frames = camera_line_frame.update_green_consumed_marker_state(
+            True, 0, candidate_count=0,
+        )
+        self.assertTrue(consumed)
+        consumed, frames = camera_line_frame.update_green_consumed_marker_state(
+            consumed, frames, candidate_count=0,
+        )
+        self.assertFalse(consumed)
+        self.assertEqual(frames, 0)
+        self.assertEqual(camera_line_frame.select_confirmed_green_direction(
+            True, "NENHUMA",
+            {"greenConfirmed": True, "greenInterpretation": "DIREITA"},
+            marker_consumed=consumed,
+        ), "DIREITA")
+
     def test_green_absence_during_active_maneuver_does_not_rearm(self):
         armed = False
         clear_frames = 0
@@ -5160,9 +5273,72 @@ class GreenFusionTargetHoldTests(unittest.TestCase):
             state["missingFrames"],
         )
         self.assertFalse(state["holdActive"])
-        self.assertEqual(state["recoveryDirection"], "RIGHT")
+        self.assertIsNone(state["recoveryDirection"])
         self.assertIsNone(state["previousValidFusionLine"])
-        self.assertEqual(state["missingFrames"], 0)
+        self.assertEqual(
+            state["missingFrames"],
+            camera_line_frame.GREEN_FUSION_TARGET_HOLD_MAX_FRAMES + 1,
+        )
+
+        directional_hold = calculate_command(
+            sensor_values(None, None, None),
+            green_direction="DIREITA",
+            fusion_style_line=state["fusionLine"],
+            green_active_frames=24,
+        )
+        self.assertEqual(
+            directional_hold["controlSource"],
+            "green-direction-hold",
+        )
+        self.assertEqual(
+            (
+                directional_hold["left_power"],
+                directional_hold["right_power"],
+            ),
+            (
+                camera_line_frame.PIVOT_OUTER_POWER,
+                camera_line_frame.PIVOT_INNER_POWER,
+            ),
+        )
+
+    def test_missing_green_target_keeps_visual_turn_until_angle_release(self):
+        for direction in ("ESQUERDA", "DIREITA"):
+            with self.subTest(direction=direction):
+                tracker = camera_line_frame.VirtualLineSearchTracker()
+                tracker.start("LEFT" if direction == "DIREITA" else "RIGHT")
+                result = calculate_command(
+                    sensor_values(None, -0.90, -0.90),
+                    green_direction=direction,
+                    green_active_frames=24,
+                    gap_active=True,
+                    line_search_tracker=tracker,
+                )
+                self.assertEqual(result["controlSource"], "green-direction-hold")
+                self.assertEqual(result["lineState"], "GREEN")
+                self.assertEqual(result["greenDirection"], direction)
+                self.assertFalse(tracker.active)
+                self.assertEqual(
+                    (result["left_power"], result["right_power"]),
+                    (
+                        camera_line_frame.PIVOT_OUTER_POWER
+                        if direction == "DIREITA" else camera_line_frame.PIVOT_INNER_POWER,
+                        camera_line_frame.PIVOT_INNER_POWER
+                        if direction == "DIREITA" else camera_line_frame.PIVOT_OUTER_POWER,
+                    ),
+                )
+
+                resumed = calculate_command(
+                    sensor_values(),
+                    green_direction=direction,
+                    green_active_frames=25,
+                    fusion_style_line=self.valid_fusion_line(direction),
+                )
+                self.assertEqual(resumed["controlSource"], "fusion-green")
+                self.assertEqual(resumed["greenDirection"], direction)
+                self.assertNotEqual(
+                    (resumed["left_power"], resumed["right_power"]),
+                    (0.0, 0.0),
+                )
 
     def test_target_recovery_resets_short_loss_window(self):
         previous = self.valid_fusion_line("ESQUERDA")
@@ -5194,6 +5370,61 @@ class GreenFusionTargetHoldTests(unittest.TestCase):
         self.assertIsNone(result["previousValidFusionLine"])
         self.assertEqual(result["missingFrames"], 0)
         self.assertIsNone(result["recoveryDirection"])
+
+
+class GreenAngleLimitTests(unittest.TestCase):
+    @staticmethod
+    def control(yaw, gyro=0.0):
+        return {
+            "greenYawValid": True,
+            "greenYawDegrees": yaw,
+            "greenGyroDegreesPerSecond": gyro,
+            "greenYawAgeMs": 0.0,
+            "greenMaximumTurnDegrees": 45.0,
+            "greenAnglePredictionSeconds": 0.10,
+            "timestamp": 100.0,
+        }
+
+    def test_both_sides_release_at_45_degrees_including_yaw_wrap(self):
+        for start, yaw in ((0, 45), (0, -45), (170, -145), (-170, 145)):
+            with self.subTest(start=start, yaw=yaw):
+                self.assertTrue(camera_line_frame.green_maneuver_angle_limit_reached(
+                    start, self.control(yaw), now=100.0,
+                ))
+        self.assertFalse(camera_line_frame.green_maneuver_angle_limit_reached(
+            170, self.control(-146), now=100.0,
+        ))
+
+    def test_angular_rate_anticipates_release_instead_of_overshooting(self):
+        self.assertTrue(camera_line_frame.green_maneuver_angle_limit_reached(
+            0, self.control(35, gyro=100.0), now=100.0,
+        ))
+
+    def test_invalid_or_stale_yaw_releases_instead_of_latching_stop(self):
+        for control in ({}, self.control(float("nan")), self.control(10)):
+            with self.subTest(control=control):
+                self.assertTrue(camera_line_frame.green_maneuver_angle_limit_reached(
+                    0, control, now=100.3,
+                ))
+
+    def test_angle_release_resumes_normal_fusion_without_repeating_marker(self):
+        released = camera_line_frame.update_green_maneuver_state(
+            "DIREITA", 12, raw_line_visible=True,
+            completed=camera_line_frame.green_maneuver_angle_limit_reached(
+                0, self.control(45), now=100.0,
+            ),
+        )
+        result = calculate_command(
+            sensor_values(), green_direction=released["direction"],
+            fusion_style_line=GreenFusionTargetHoldTests.valid_fusion_line("DIREITA"),
+        )
+        self.assertEqual(result["controlSource"], "fusion")
+        self.assertEqual(result["lineState"], "LINE")
+        self.assertNotEqual((result["left_power"], result["right_power"]), (0.0, 0.0))
+        self.assertIsNone(camera_line_frame.select_confirmed_green_direction(
+            False, released["direction"],
+            {"greenConfirmed": True, "greenInterpretation": "DIREITA"},
+        ))
 
 
 class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
@@ -5292,18 +5523,18 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
         self.assertFalse(result["timedOut"])
         self.assertIsNone(result["searchDirection"])
 
-    def test_green_timeout_is_only_applied_at_45_frame_safety_limit(self):
+    def test_green_timeout_releases_direction_at_75_frame_safety_limit(self):
         self.assertEqual(
             camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES,
-            45,
+            75,
         )
         active = camera_line_frame.update_green_maneuver_state(
             "DIREITA",
-            active_frames=43,
+            active_frames=73,
             raw_line_visible=False,
         )
         self.assertEqual(active["direction"], "DIREITA")
-        self.assertEqual(active["activeFrames"], 44)
+        self.assertEqual(active["activeFrames"], 74)
         self.assertFalse(active["timedOut"])
 
         timed_out = camera_line_frame.update_green_maneuver_state(
@@ -5314,9 +5545,9 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
         self.assertEqual(timed_out["direction"], "NENHUMA")
         self.assertEqual(timed_out["activeFrames"], 0)
         self.assertTrue(timed_out["timedOut"])
-        self.assertEqual(timed_out["searchDirection"], "RIGHT")
+        self.assertIsNone(timed_out["searchDirection"])
 
-    def test_green_timeout_with_raw_line_releases_to_recovery(self):
+    def test_green_timeout_returns_control_to_normal_fusion(self):
         timeout = camera_line_frame.update_green_maneuver_state(
             "DIREITA",
             camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES - 1,
@@ -5327,70 +5558,36 @@ class GreenTimeoutAndBlindSearchTests(unittest.TestCase):
         self.assertIsNone(timeout["searchDirection"])
 
         result = calculate_command(
-            sensor_values(None, -0.80, None),
-            line_search_tracker=camera_line_frame.VirtualLineSearchTracker(),
-            sensor_recovery_requested=True,
+            sensor_values(),
+            green_direction=timeout["direction"],
+            green_active_frames=timeout["activeFrames"],
+            fusion_style_line=GreenFusionTargetHoldTests.valid_fusion_line("DIREITA"),
         )
-        self.assertEqual(result["controlSource"], "virtual-sensor-recovery")
-        self.assertEqual(
+        self.assertEqual(result["controlSource"], "fusion")
+        self.assertNotEqual(
             (result["left_power"], result["right_power"]),
-            (0.0, camera_line_frame.NORMAL_BASE_POWER),
+            (0.0, 0.0),
         )
 
-    def test_green_timeout_without_line_starts_in_green_direction(self):
-        cases = (
-            (
-                "ESQUERDA",
-                "LEFT",
-                -1.0,
-                (
-                    camera_line_frame.PIVOT_INNER_POWER,
-                    camera_line_frame.PIVOT_OUTER_POWER,
-                ),
-            ),
-            (
-                "DIREITA",
-                "RIGHT",
-                1.0,
-                (
-                    camera_line_frame.PIVOT_OUTER_POWER,
-                    camera_line_frame.PIVOT_INNER_POWER,
-                ),
-            ),
-        )
-        for (
-            green_direction,
-            search_direction,
-            expected_steering,
-            expected_powers,
-        ) in cases:
+    def test_green_timeout_without_line_releases_both_directions(self):
+        for green_direction in ("ESQUERDA", "DIREITA"):
             with self.subTest(green_direction=green_direction):
                 timeout = camera_line_frame.update_green_maneuver_state(
                     green_direction,
                     camera_line_frame.GREEN_MANEUVER_TIMEOUT_FRAMES - 1,
                     raw_line_visible=False,
                 )
-                self.assertEqual(
-                    timeout["searchDirection"],
-                    search_direction,
-                )
-                search_tracker = camera_line_frame.VirtualLineSearchTracker()
-                search_tracker.start(timeout["searchDirection"])
+                self.assertEqual(timeout["direction"], "NENHUMA")
+                self.assertIsNone(timeout["searchDirection"])
                 result = calculate_command(
                     sensor_values(None, None, None),
-                    line_search_tracker=search_tracker,
+                    green_direction=timeout["direction"],
+                    green_active_frames=timeout["activeFrames"],
                 )
-                self.assertEqual(
-                    result["controlSource"],
-                    "virtual-blind-search",
-                )
-                self.assertEqual(
-                    result["finalSteering"],
-                    expected_steering,
-                )
+                self.assertEqual(result["lineState"], "LINE")
                 self.assertEqual(
                     (result["left_power"], result["right_power"]),
-                    expected_powers,
+                    (0.0, 0.0),
                 )
 
     def test_blind_search_reverses_after_short_initial_window(self):

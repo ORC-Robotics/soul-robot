@@ -9,8 +9,8 @@ controle da missão de resgate, com as distâncias já configuradas.
 O heading travado na centralização do último triângulo, vermelho ou verde,
 define o yaw relativo 0°. Na missão principal, ele permanece salvo mesmo se a
 verificação final de vítimas girar o robô após a ré. No modo isolado, o yaw no
-instante da partida assume essa referência. A busca aponta para +100°, +170°
-e −96° relativos a ela. Se confirmar um triângulo vermelho ou verde em qualquer
+instante da partida assume essa referência. A busca aponta para +58°, −100°
+e −158° relativos a ela. Se confirmar um triângulo vermelho ou verde em qualquer
 alvo, descarta aquela direção e passa à próxima. Após três imagens novas sem
 triângulo confirmado, gira para o mesmo yaw e inicia a reta, sem acréscimo
 angular. Headings já rejeitados são pulados; o retorno restaura o yaw 0° relativo.
@@ -21,8 +21,8 @@ sem triângulo confirmado, o robô avança reto naquele corner mesmo que ainda n
 exista Fusion. A CAM1 pode confirmar visualmente a faixa antes desse avanço, mas
 não corrige os motores durante o trajeto. Quando a CAM0 vê preto próximo sem
 `Fusion`, o robô pausa a reta e executa dois pivôs contínuos com potência 0,75.
-O yaw do corner escolhe o primeiro sentido: em +170° (quina direita), começa
-girando à esquerda; em +100° ou -96° (lado esquerdo), começa à direita. Após
+O yaw do corner escolhe o primeiro sentido: em −100° (quina direita), começa
+girando à esquerda; em +58° ou −158° (lado esquerdo), começa à direita. Após
 650 ms, inverte imediatamente por mais 650 ms. A CAM0 procura `Fusion` novo durante
 todo o giro; se não houver, recua e tenta outro yaw.
 O `Fusion` só conta quando a CAM0 também confirma uma faixa única, sem T, X ou Y.
@@ -42,7 +42,7 @@ continuam proibidos. Após confirmar prata, a missão permite concluir somente
 o recuo e os giros de reposicionamento; um novo avanço continua bloqueado se
 a prata permanecer sob a CAM0.
 
-Na missão completa, os alvos são testados na ordem +100°, +170° e −96° desde
+Na missão completa, os alvos são testados na ordem +58°, −100° e −158° desde
 o último triângulo centralizado. A entrada prata não muda essa ordem.
 
 A CAM1 procura preto por contraste local no frame inteiro e organiza as
@@ -93,7 +93,7 @@ da fita impede que o Fusion de um T, X ou Y inicie a aquisição da saída.
 Para conferir somente a geometria, selecione **SAÍDA · TESTAR YAW DAS QUINAS**
 no painel. Coloque o robô parado no ponto de referência do triângulo vermelho
 ou verde e aponte-o para esse triângulo. Ao iniciar o modo Autônomo, o yaw atual
-vira a referência: o robô gira para +100°, +170° e −96° relativos a ela, nessa
+vira a referência: o robô gira para +58°, −100° e −158° relativos a ela, nessa
 ordem, e fica parado por 2 segundos em cada direção. Depois da última pausa,
 encerra parado. Usa exatamente os headings do avanço reto da saída.
 O teste não avança, não procura fita ou triângulos e não move
@@ -191,7 +191,7 @@ Os parâmetros de movimento ficam em `include/obr/config.h`, no bloco
 | Tolerância de acompanhamento | ±30° durante a tentativa |
 | Tolerância da confirmação inicial | ±15° entre frames novos |
 | Reobservação de candidata | Até 800 ms parada antes de voltar a girar |
-| Yaws de busca desde o triângulo | +100°, +170° e −96°, sem acréscimo antes da reta |
+| Yaws de busca desde o triângulo | +58°, −100° e −158°, sem acréscimo antes da reta |
 | Pivôs de busca após preto próximo | 650 ms no sentido oposto ao lado definido pelo yaw e 650 ms contínuos no outro sentido, com potência 0,75 |
 | Reta antes do controle pelo Fusion | 3 cm por encoders após a primeira faixa única válida |
 | Tentativa por corner | 60 cm sem visão; com Fusion frontal recente, continua a 0,75 até a CAM0 |
