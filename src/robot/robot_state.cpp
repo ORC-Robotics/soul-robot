@@ -63,6 +63,8 @@ const char* autonomousMissionName(AutonomousMission mission)
         return "obstacle_avoidance";
     case AutonomousMission::ServoInitialize:
         return "servo_initialize";
+    case AutonomousMission::ServoWave:
+        return "servo_wave";
     case AutonomousMission::ServoCapture:
         return "servo_capture";
     case AutonomousMission::ServoInternalStorage:
@@ -101,12 +103,19 @@ RobotSnapshot RobotState::snapshot() const
 bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Durante o bônus os motores já estão zerados. Adia a chegada para não
+    // reiniciar a rotina no meio de um aceno se os dois eventos coincidirem.
+    if (state_.waveBonusRequested) return false;
     // O teste pode começar sobre o triângulo vermelho e comanda apenas a ré
     // calibrada e os pivôs dos yaws de referência.
     // A chegada vermelha do percurso não deve encerrar essa calibração.
     if (state_.mode == "autonomous" &&
         (state_.autonomousMission == AutonomousMission::RescueCornerYawTest ||
          state_.autonomousMission == AutonomousMission::RescueExitWithReverse))
+        return false;
+    // O teste isolado do tchauzinho não percorre a pista e pode começar sobre o vermelho.
+    if (state_.mode == "autonomous" &&
+        state_.autonomousMission == AutonomousMission::ServoWave)
         return false;
     state_.redValid = camera.sourceFresh && camera.redValid &&
         std::isfinite(camera.redRatio) && camera.redRatio >= 0.0 && camera.redRatio <= 1.0;
@@ -146,6 +155,9 @@ bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
     // A trava é independente do E-Stop e cancela a execução inteira sob o mutex.
     // O STOP físico é enviado pelo runtime antes de qualquer alerta ou missão.
     redFinishArmed_ = false;
+    const bool waveAfterFinish = config::kWaveBonusAfterFinishEnabled &&
+        state_.mode == "autonomous" && !state_.emergencyStop &&
+        state_.autonomousMission == AutonomousMission::MainMission;
     state_.missionFinished = true;
     state_.mode = state_.emergencyStop ? "emergency" : "stopped";
     state_.left = state_.right = 0.0;
@@ -154,6 +166,7 @@ bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
     state_.servoCalibrationActive = false;
     disableServosLocked();
     state_.autonomousStatus = {"mission_finished", "Chegada confirmada: Vermelho", 100.0};
+    state_.waveBonusRequested = waveAfterFinish;
     lastCommand_ = std::chrono::steady_clock::now();
     std::cout << "Mission finished: red marker confirmed; motors stopped\n";
     return true;
@@ -162,6 +175,9 @@ bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
 void RobotState::start()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    // Não libera movimento enquanto o braço ainda executa o bônus.
+    if (state_.waveBonusRequested) return;
+    state_.waveBonusRequested = false;
     state_.missionFinished = false;
     state_.emergencyStop = false;
     state_.mode = "manual";
@@ -180,6 +196,7 @@ void RobotState::start()
 void RobotState::startAutonomous()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (state_.waveBonusRequested) return;
     state_.missionFinished = false;
     state_.emergencyStop = false;
     state_.mode = "autonomous";
@@ -215,7 +232,8 @@ bool RobotState::tryStartAutonomous()
 
     // O botão físico não libera E-Stop. A condição é revalidada dentro
     // do mutex para que uma emergência concorrente nunca seja apagada pela partida.
-    if (state_.emergencyStop || state_.mode != "stopped" ||
+    if (state_.emergencyStop || state_.waveBonusRequested ||
+        state_.mode != "stopped" ||
         state_.servoCalibrationActive)
     {
         return false;
@@ -363,7 +381,12 @@ bool RobotState::setRescueZoneLockedHeading(double headingDegrees)
 void RobotState::stop()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (state_.missionFinished) return;
+    if (state_.missionFinished)
+    {
+        // Parar também cancela um bônus da chegada sem liberar sua trava de tração.
+        disableServosLocked();
+        return;
+    }
     state_.mode = "stopped";
     state_.left = 0.0;
     state_.right = 0.0;
@@ -449,8 +472,8 @@ void RobotState::driveAutonomous(
         return;
     }
 
-    state_.left = clampMotorCommand(left);
-    state_.right = clampMotorCommand(right);
+    state_.left = state_.waveBonusRequested ? 0.0 : clampMotorCommand(left);
+    state_.right = state_.waveBonusRequested ? 0.0 : clampMotorCommand(right);
     state_.rawMotorCommand = false;
     state_.encoderSynchronizationAllowed = encoderSynchronizationAllowed;
 }
@@ -520,18 +543,53 @@ bool RobotState::setManualServoAngle(ServoId servo, double angleDegrees)
 
 bool RobotState::setAutonomousServoPose(const ServoPose& pose, bool wristOnly)
 {
-    if (!validServoAngle(pose.armDegrees) ||
-        !validServoAngle(pose.wristDegrees) ||
-        !validServoAngle(pose.gripperDegrees))
-    {
-        return false;
-    }
-
     std::lock_guard<std::mutex> lock(mutex_);
     if (state_.missionFinished || state_.emergencyStop || state_.mode != "autonomous")
     {
         return false;
     }
+    return applyServoPoseLocked(pose, wristOnly);
+}
+
+bool RobotState::requestWaveBonus()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool allowedMode = state_.mode == "autonomous" ||
+        (state_.missionFinished && state_.mode == "stopped");
+    if (!allowedMode || state_.emergencyStop || state_.servoCalibrationActive ||
+        state_.waveBonusRequested)
+        return false;
+    // A solicitação para os motores imediatamente e não reinicia a missão.
+    state_.left = state_.right = 0.0;
+    state_.rawMotorCommand = false;
+    state_.waveBonusRequested = true;
+    lastCommand_ = std::chrono::steady_clock::now();
+    return true;
+}
+
+bool RobotState::setWaveBonusServoPose(const ServoPose& pose)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool allowedMode = state_.mode == "autonomous" ||
+        (state_.missionFinished && state_.mode == "stopped");
+    if (!state_.waveBonusRequested || !allowedMode || state_.emergencyStop ||
+        state_.servoCalibrationActive)
+        return false;
+    return applyServoPoseLocked(pose);
+}
+
+void RobotState::completeWaveBonus()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_.waveBonusRequested = false;
+    if (state_.missionFinished) disableServosLocked();
+}
+
+bool RobotState::applyServoPoseLocked(const ServoPose& pose, bool wristOnly)
+{
+    if (!validServoAngle(pose.armDegrees) || !validServoAngle(pose.wristDegrees) ||
+        !validServoAngle(pose.gripperDegrees))
+        return false;
 
     if (!sameServoAngle(state_.servoPose.wristDegrees, pose.wristDegrees) &&
         state_.servoPose.armDegrees < config::kServoRoutineArmHomeDegrees)
@@ -820,11 +878,13 @@ void RobotState::enforceCommandTimeout(std::chrono::milliseconds timeout)
     std::lock_guard<std::mutex> lock(mutex_);
     const auto age = std::chrono::steady_clock::now() - lastCommand_;
 
-    if ((state_.mode == "manual" || state_.mode == "autonomous") && age > timeout)
+    if ((state_.mode == "manual" || state_.mode == "autonomous" ||
+         state_.waveBonusRequested) && age > timeout)
     {
         state_.left = 0.0;
         state_.right = 0.0;
         state_.rawMotorCommand = false;
+        if (state_.waveBonusRequested) disableServosLocked();
     }
 }
 
@@ -846,6 +906,7 @@ void RobotState::enforceManualServoTimeout(std::chrono::milliseconds timeout)
 
 void RobotState::requestInitialServoPoseLocked()
 {
+    state_.waveBonusRequested = false;
     // O Autônomo parte com o braço em 15° e os demais servos em 0°.
     // Enquanto o robô estiver parado, disableServosLocked() remove os pulsos.
     state_.servoPose = {
@@ -861,6 +922,7 @@ void RobotState::requestInitialServoPoseLocked()
 
 void RobotState::disableServosLocked()
 {
+    state_.waveBonusRequested = false;
     if (!state_.armServoRequested && !state_.wristServoRequested &&
         !state_.gripperServoRequested)
     {

@@ -10,6 +10,7 @@
 enum class ServoRoutineKind
 {
     Initialize,
+    Wave,
     PrepareCapture,
     SecureCapture,
     SecureCaptureForDirectDeposit,

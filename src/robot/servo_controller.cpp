@@ -24,11 +24,17 @@ bool ServoController::apply(const RobotSnapshot& state)
         return true;
     }
 
-    const bool operatingMode = state.mode == "manual" || state.mode == "autonomous";
+    // O bônus da chegada é a única exceção do modo parado: autoriza somente
+    // os servos solicitados e conserva a prioridade da parada de emergência.
+    const bool finishWaveActive = state.missionFinished && state.mode == "stopped" &&
+                                  state.waveBonusRequested;
+    const bool operatingMode = state.mode == "manual" || state.mode == "autonomous" ||
+                               finishWaveActive;
     const bool anyServoRequested = state.armServoRequested ||
                                    state.wristServoRequested ||
                                    state.gripperServoRequested;
-    if (state.missionFinished || !operatingMode || state.emergencyStop || !anyServoRequested)
+    if ((state.missionFinished && !finishWaveActive) || !operatingMode ||
+        state.emergencyStop || !anyServoRequested)
     {
         return disableAll();
     }

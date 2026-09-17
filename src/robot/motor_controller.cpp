@@ -46,6 +46,15 @@ void MotorController::apply(const RobotSnapshot& state)
     // Nenhuma compensação de potência pode reativar uma execução concluída.
     if (state.missionFinished)
     {
+        if (state.waveBonusRequested && state.mode == "stopped")
+        {
+            // STOP também remove o PWM dos servos na ESP32. Durante o bônus
+            // da chegada, renova somente MOTOR zero, sem liberar a tração.
+            resetMotorMotion();
+            suspendEncoderSynchronization(0.0, 0.0);
+            esp32_.sendMotorCommand(0.0, 0.0, false);
+            return;
+        }
         stop();
         return;
     }

@@ -55,6 +55,7 @@ bool selectedMissionReady(
     const CameraLineSnapshot& cameraLineSnapshot)
 {
     if (mission == AutonomousMission::ServoInitialize ||
+        mission == AutonomousMission::ServoWave ||
         mission == AutonomousMission::ServoCapture ||
         mission == AutonomousMission::ServoInternalStorage ||
         mission == AutonomousMission::ServoDeposit ||
@@ -120,6 +121,7 @@ const char* motorDirectionName(double power)
 const char* autonomousCommandSourceName(AutonomousMission mission)
 {
     if (mission == AutonomousMission::ServoInitialize ||
+        mission == AutonomousMission::ServoWave ||
         mission == AutonomousMission::ServoCapture ||
         mission == AutonomousMission::ServoInternalStorage ||
         mission == AutonomousMission::ServoDeposit ||
@@ -445,7 +447,8 @@ int RobotApplication::run(const std::atomic<bool>& running)
                 std::cout << "Physical Start button stopped servo calibration\n";
             }
             else if ((stateAtButtonPress.mode == "manual" ||
-                 stateAtButtonPress.mode == "autonomous") &&
+                 stateAtButtonPress.mode == "autonomous" ||
+                 stateAtButtonPress.waveBonusRequested) &&
                 !stateAtButtonPress.emergencyStop)
             {
                 // A borda de pressão para o robô sem esperar o botão ser solto.

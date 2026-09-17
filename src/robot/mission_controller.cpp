@@ -191,6 +191,16 @@ void MissionController::update(
     const RescueZoneSnapshot& rescueZoneSnapshot)
 {
     const RobotSnapshot snapshot = robotState.snapshot();
+    if (snapshot.waveBonusRequested && !snapshot.emergencyStop &&
+        (snapshot.mode == "autonomous" ||
+         (snapshot.missionFinished && snapshot.mode == "stopped")))
+    {
+        // A chegada continua travada. Executa somente os servos antes de
+        // permitir qualquer atualização da missão que estava em andamento.
+        updateWaveBonus(robotState, snapshot, esp32Telemetry);
+        return;
+    }
+    waveBonusRoutine_.resetExecution();
     if (snapshot.missionFinished || snapshot.mode != "autonomous")
     {
         resetMissionState();
@@ -294,6 +304,10 @@ void MissionController::update(
     case AutonomousMission::ServoInitialize:
         updateServoRoutine(
             robotState, ServoRoutineKind::Initialize, snapshot, esp32Telemetry);
+        return;
+    case AutonomousMission::ServoWave:
+        updateServoRoutine(
+            robotState, ServoRoutineKind::Wave, snapshot, esp32Telemetry);
         return;
     case AutonomousMission::ServoCapture:
         updateServoRoutine(
@@ -636,6 +650,40 @@ void MissionController::updateTurnRight90(
         return;
     }
     robotState.updateAutonomousStatus(status);
+}
+
+void MissionController::updateWaveBonus(
+    RobotState& robotState, const RobotSnapshot& snapshot,
+    const Esp32TelemetrySnapshot& esp32Telemetry)
+{
+    robotState.driveAutonomous(0.0, 0.0);
+    if (!esp32Telemetry.readyForOperation() || !esp32Telemetry.pca9685Ok)
+    {
+        // Sem o driver atual, cancela o gesto; a missão não pode retomar a tração.
+        robotState.stop();
+        waveBonusRoutine_.resetExecution();
+        std::cerr << "Wave bonus cancelled: PCA9685 or communication unavailable\n";
+        return;
+    }
+    const ServoRoutineOutput output = waveBonusRoutine_.update(
+        ServoRoutineKind::Wave, snapshot.autonomousRunSequence,
+        snapshot.servoRoutineConfirmationSequence, snapshot.servoPose,
+        std::chrono::steady_clock::now());
+    if (output.poseRequested && !robotState.setWaveBonusServoPose(output.pose))
+    {
+        robotState.stop();
+        waveBonusRoutine_.resetExecution();
+        std::cerr << "Wave bonus cancelled: servo pose rejected\n";
+        return;
+    }
+    robotState.updateAutonomousStatus(makeAutonomousStatus(
+        output.phase, output.action, output.progressPercent));
+    if (output.completed)
+    {
+        robotState.completeWaveBonus();
+        waveBonusRoutine_.resetExecution();
+        std::cout << "Wave bonus completed; previous mission state preserved\n";
+    }
 }
 
 void MissionController::updateCornerYawTest(
@@ -1073,6 +1121,7 @@ void MissionController::resetMissionState()
     cornerYawInitialReverseCompleted_ = false;
     cornerYawIndex_ = 0;
     servoRoutine_.resetExecution();
+    waveBonusRoutine_.resetExecution();
     distancePhase_ = DistancePhase::Idle;
     activeDistanceTargetCm_ = 0.0;
     lastDistanceProgressCounts_ = 0.0;

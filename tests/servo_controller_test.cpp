@@ -1,4 +1,5 @@
 #include "obr/servo_controller.h"
+#include "obr/camera_monitor.h"
 
 #include <cmath>
 #include <iostream>
@@ -190,5 +191,64 @@ int main()
             std::abs(snapshot.servoPose.wristDegrees) < 0.001 &&
             std::abs(snapshot.servoPose.gripperDegrees) < 0.001,
         "Starting a servo routine should first request the autonomous initial pose");
+    RobotState waveState;
+    waveState.setAutonomousMission(AutonomousMission::ServoWave);
+    waveState.startAutonomous();
+    waveState.driveAutonomous(0.7, 0.7);
+    ok &= require(waveState.requestWaveBonus(),
+                  "A missão autônoma deve aceitar um bônus solicitado uma vez.");
+    waveState.driveAutonomous(0.7, 0.7);
+    snapshot = waveState.snapshot();
+    ok &= require(snapshot.waveBonusRequested && snapshot.left == 0.0 &&
+                      snapshot.right == 0.0,
+                  "O bônus deve bloquear qualquer novo comando de tração.");
+    ok &= require(waveState.setWaveBonusServoPose({105.0, 30.0, 0.0}),
+                  "O bônus deve permitir a pose dos servos no modo autônomo.");
+    waveState.emergencyStop();
+    snapshot = waveState.snapshot();
+    ok &= require(!snapshot.waveBonusRequested && snapshot.left == 0.0 &&
+                      snapshot.right == 0.0 && !snapshot.armServoRequested &&
+                      !waveState.setWaveBonusServoPose({15.0, 0.0, 0.0}),
+                  "A emergência deve cancelar o gesto e desligar os servos.");
+
+    RobotState finishWaveState;
+    finishWaveState.setAutonomousMission(AutonomousMission::MainMission);
+    finishWaveState.startAutonomous();
+    CameraLineSnapshot red;
+    red.sourceFresh = true;
+    red.redValid = true;
+    red.redConfirmed = true;
+    red.redRatio = 0.2;
+    red.lineSequence = 1;
+    red.lineTimestamp = 1.0;
+    RobotState overlappingWaveState;
+    overlappingWaveState.setAutonomousMission(AutonomousMission::MainMission);
+    overlappingWaveState.startAutonomous();
+    ok &= require(overlappingWaveState.requestWaveBonus() &&
+                      !overlappingWaveState.observeRedFinish(red) &&
+                      !overlappingWaveState.snapshot().missionFinished,
+                  "A chegada deve aguardar o fim de um tchauzinho já iniciado.");
+    overlappingWaveState.completeWaveBonus();
+    ok &= require(overlappingWaveState.observeRedFinish(red),
+                  "A mesma faixa vermelha deve ser aceita ao concluir o bônus.");
+    ok &= require(finishWaveState.observeRedFinish(red),
+                  "O marcador vermelho deve encerrar a missão e bloquear a tração.");
+    ok &= require(finishWaveState.requestWaveBonus(),
+                  "Um bônus solicitado após a chegada deve ativar somente os servos.");
+    finishWaveState.driveAutonomous(0.8, 0.8);
+    ok &= require(finishWaveState.setWaveBonusServoPose({105.0, 30.0, 0.0}) &&
+                      !finishWaveState.setAutonomousServoPose({105.0, 30.0, 0.0}),
+                  "A chegada deve aceitar apenas a pose do bônus, nunca a autoridade comum.");
+    snapshot = finishWaveState.snapshot();
+    ok &= require(snapshot.missionFinished && snapshot.mode == "stopped" &&
+                      snapshot.left == 0.0 && snapshot.right == 0.0 &&
+                      !finishWaveState.tryStartAutonomous(),
+                  "O bônus da chegada não pode reativar motores ou nova missão.");
+    finishWaveState.stop();
+    snapshot = finishWaveState.snapshot();
+    ok &= require(snapshot.missionFinished && !snapshot.waveBonusRequested &&
+                      !snapshot.armServoRequested,
+                  "Parar deve cancelar o bônus sem destravar a chegada.");
+
     return ok ? 0 : 1;
 }

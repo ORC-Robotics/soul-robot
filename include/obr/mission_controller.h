@@ -61,6 +61,8 @@ private:
     ImuTurnController testTurnController_;
     EncoderDistanceController cornerYawInitialReverse_;
     ServoRoutine servoRoutine_;
+    // O bônus pausa a missão sem apagar suas fases ou a memória de armazenamento.
+    ServoRoutine waveBonusRoutine_;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
     CornerYawPhase cornerYawPhase_ = CornerYawPhase::Ready;
@@ -131,5 +133,8 @@ private:
         const RobotSnapshot& snapshot,
         const Esp32TelemetrySnapshot& esp32Telemetry);
     void resetMissionState();
+    // Executa o bônus com tração zerada e preserva as fases da missão pausada.
+    void updateWaveBonus(RobotState& robotState, const RobotSnapshot& snapshot,
+                         const Esp32TelemetrySnapshot& esp32Telemetry);
 
 };

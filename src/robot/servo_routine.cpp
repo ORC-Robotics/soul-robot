@@ -240,7 +240,29 @@ void ServoRoutine::start(
         StepAction::HoldCurrentPose, 0.0, config::kServoRoutineResumePoseMs,
         "servo_resume_pose", "Estabilizando a pose antes da sequência"});
 
-    if (kind == ServoRoutineKind::PrepareCapture)
+    if (kind == ServoRoutineKind::Wave)
+    {
+        // Normaliza uma pose anterior antes do gesto. O braço em 15° libera
+        // o pulso; a garra conserva seu ângulo e não solta uma vítima carregada.
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_wave_clearance", "Liberando o pulso com braço em home");
+        appendWrist(config::kServoRoutineWristInternalDegrees,
+                    "servo_wave_wrist_home", "Preparando o pulso em 0°");
+        appendArm(config::kServoWaveArmDegrees,
+                  "servo_wave_arm", "Posicionando o braço para o tchauzinho");
+        for (int repetition = 0; repetition < config::kServoWaveRepetitions; ++repetition)
+        {
+            appendMove(StepAction::MoveWrist, config::kServoWaveWristDegrees,
+                       config::kServoWaveWristStepMs,
+                       "servo_wave_out", "Tchauzinho: movendo o pulso para 30°");
+            appendMove(StepAction::MoveWrist, config::kServoRoutineWristInternalDegrees,
+                       config::kServoWaveWristStepMs,
+                       "servo_wave_back", "Tchauzinho: retornando o pulso para 0°");
+        }
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_wave_home", "Tchauzinho concluído: retornando o braço para home");
+    }
+    else if (kind == ServoRoutineKind::PrepareCapture)
     {
         // Esta etapa é o prefixo já validado da coleta. O orquestrador pausa
         // aqui para o YOLO aproximar o robô antes de a garra ser fechada.

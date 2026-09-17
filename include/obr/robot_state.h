@@ -26,6 +26,7 @@ enum class AutonomousMission
     RescueCornerYawTest,
     ObstacleAvoidance,
     ServoInitialize,
+    ServoWave,
     ServoCapture,
     ServoInternalStorage,
     ServoDeposit,
@@ -164,6 +165,8 @@ struct RobotSnapshot
     unsigned long long servoCommandSequence = 0;
     unsigned long long servoRoutineConfirmationSequence = 0;
     bool servoRoutineInternalObjectStored = false;
+    // Solicitação pontual do bônus; não muda a missão selecionada nem libera a tração.
+    bool waveBonusRequested = false;
     bool servoCalibrationActive = false;
     // Entregas confirmadas permanecem na RAM após STOP, mas não após reinício.
     int rescueDeliveredAliveVictims = 0;
@@ -201,6 +204,11 @@ public:
     bool setManualServoAngle(ServoId servo, double angleDegrees);
     // A opção wristOnly preserva os alvos e as solicitações de braço e garra.
     bool setAutonomousServoPose(const ServoPose& pose, bool wristOnly = false);
+    // Insere o tchauzinho antes de continuar a missão, ou após uma chegada já travada.
+    bool requestWaveBonus();
+    // A exceção da chegada permite somente a pose do bônus com motores bloqueados.
+    bool setWaveBonusServoPose(const ServoPose& pose);
+    void completeWaveBonus();
     bool setAutonomousServoOutputEnabled(ServoId servo, bool enabled);
     bool confirmServoRoutineAction();
     void setServoRoutineInternalObjectStored(bool stored);
@@ -224,4 +232,5 @@ private:
 
     void requestInitialServoPoseLocked();
     void disableServosLocked();
+    bool applyServoPoseLocked(const ServoPose& pose, bool wristOnly = false);
 };

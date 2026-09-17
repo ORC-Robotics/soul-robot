@@ -346,6 +346,15 @@ void LineCourseMission::update(
                   << obstacleOutput.phase << std::endl;
         return;
     }
+    if (config::kWaveBonusAfterObstacleEnabled && obstacleOutput.completed &&
+        obstacleOutput.phase == "obstacle_exit_reacquired")
+    {
+        // A saída confirmada ocorre uma vez por desvio. Pausa a tração antes
+        // de voltar ao seguidor, sem apagar a fase da missão principal.
+        forwardLineAssist_.reset();
+        robotState.requestWaveBonus();
+        return;
+    }
     if (obstacleOutput.hasControl)
     {
         // O desvio substitui temporariamente tanto a câmera inferior quanto o

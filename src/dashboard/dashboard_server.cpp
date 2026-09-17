@@ -468,6 +468,11 @@ void DashboardServer::handleCommand(const std::string& message)
     else if (message.find("\"command\":\"auto\"") != std::string::npos)
     {
         endServoCalibrationIfActive();
+        if (robotState_.snapshot().waveBonusRequested)
+        {
+            std::cout << "Autonomous start ignored: wave bonus is active\n";
+            return;
+        }
         if (!readyLed_.isReady())
         {
             std::cout << "Autonomous start ignored: system readiness is not stable\n";
@@ -609,6 +614,11 @@ void DashboardServer::handleCommand(const std::string& message)
         {
             robotState_.setAutonomousMission(AutonomousMission::ServoInitialize);
             std::cout << "Autonomous mission selected: servo_initialize\n";
+        }
+        else if (message.find("\"mission\":\"servo_wave\"") != std::string::npos)
+        {
+            robotState_.setAutonomousMission(AutonomousMission::ServoWave);
+            std::cout << "Autonomous mission selected: servo_wave\n";
         }
         else if (message.find("\"mission\":\"servo_capture\"") != std::string::npos)
         {
@@ -1036,6 +1046,7 @@ std::string DashboardServer::buildTelemetryJson(
          << (state.autonomousStatus.servoRoutineWaitingForConfirmation ? "true" : "false")
          << ",\"servoRoutineInternalObjectStored\":"
          << (state.servoRoutineInternalObjectStored ? "true" : "false")
+         << ",\"waveBonusRequested\":" << (state.waveBonusRequested ? "true" : "false")
          << ",\"forwardAssistState\":\"" << state.autonomousStatus.forwardAssistState << "\""
          << ",\"forwardAssistDirection\":\"" << state.autonomousStatus.forwardAssistDirection << "\""
          << ",\"forwardAssistLatchedDirection\":\"" << state.autonomousStatus.forwardAssistLatchedDirection << "\""
@@ -1885,6 +1896,7 @@ std::string DashboardServer::dashboardHtml()
                 <option value="rescue_area">RESGATE · DETECTAR + ALINHAR/IR ATRÁS</option>
                 <option value="obstacle_avoidance">DESVIO DE OBSTÁCULO</option>
                 <option value="servo_initialize">SERVOS · POSE HOME 15/0/0</option>
+                <option value="servo_wave">SERVOS · TCHAUZINHO (BÔNUS)</option>
                 <option value="servo_capture">SERVOS · CAPTURA</option>
                 <option value="servo_internal_storage">SERVOS · ARMAZENAMENTO INTERNO</option>
                 <option value="servo_deposit">SERVOS · DEPÓSITO</option>
@@ -2501,7 +2513,8 @@ std::string DashboardServer::dashboardHtml()
       if (document.activeElement !== rescueZoneTargetColor) {
         rescueZoneTargetColor.value = String(data.rescueZoneTargetColor || "green");
       }
-      element("servoRoutineSettings").hidden = !mission.startsWith("servo_");
+      element("servoRoutineSettings").hidden = mission === "servo_wave" || !mission.startsWith("servo_");
+      element("rescueMemorySettings").hidden = mission === "servo_wave";
       element("rescueMemoryStatus").textContent =
         `Prata ${Number(data.rescueDeliveredAliveVictims) || 0}/2 · ` +
         `Preta ${Number(data.rescueDeliveredDeadVictims) || 0}/1` +
@@ -2551,6 +2564,8 @@ std::string DashboardServer::dashboardHtml()
             ? "Executa isoladamente a mesma manobra ultrassônica usada no percurso de linha."
           : mission === "servo_initialize"
             ? "Aplica e estabiliza a pose Home: braço 15°, pulso 0° e garra 0°."
+          : mission === "servo_wave"
+            ? "Braço 105°; pulso 30° → 0° três vezes; home braço 15° e pulso 0°. Motores parados."
           : mission === "servo_capture"
             ? "Executa a coleta e mantém a garra energizada no ângulo de retenção de 5°."
           : mission === "servo_internal_storage"
@@ -2780,6 +2795,7 @@ std::string DashboardServer::dashboardHtml()
           : mission === "rescue_area" ? "Resgate · Detectar e seguir"
           : mission === "obstacle_avoidance" ? "Desvio de obstáculo"
           : mission === "servo_initialize" ? "Servos · Inicialização"
+          : mission === "servo_wave" ? "Servos · Tchauzinho"
           : mission === "servo_capture" ? "Servos · Captura"
           : mission === "servo_internal_storage" ? "Servos · Armazenamento"
           : mission === "servo_deposit" ? "Servos · Depósito"
@@ -3556,7 +3572,9 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       element("rescueZoneAlignSettings").hidden =
         !["rescue_zone_search", "rescue_zone_align", "rescue_zone_triangle"]
           .includes(autonomousMission.value);
-      element("servoRoutineSettings").hidden = !autonomousMission.value.startsWith("servo_");
+      element("servoRoutineSettings").hidden = autonomousMission.value === "servo_wave" ||
+        !autonomousMission.value.startsWith("servo_");
+      element("rescueMemorySettings").hidden = autonomousMission.value === "servo_wave";
       send({
         command: "set_autonomous_mission",
         mission: autonomousMission.value,

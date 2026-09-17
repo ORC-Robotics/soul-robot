@@ -1662,6 +1662,26 @@ constexpr double kServoRoutineArmStoredPickupDegrees = 65.0;
 constexpr double kServoRoutineArmStoredCarryDegrees = 25.0;
 constexpr double kServoRoutineWristForwardDegrees = 180.0;
 constexpr double kServoRoutineWristInternalDegrees = 0.0;
+// Bônus opcional do desafio surpresa. Ative somente o evento solicitado na prova.
+// Cada saída de obstáculo confirmada executa uma vez; a chegada mantém a tração bloqueada.
+constexpr bool kWaveBonusAfterObstacleEnabled = false;
+constexpr bool kWaveBonusAfterFinishEnabled = false;
+// Posições do tchauzinho, em graus, e quantidade de ciclos 30° → 0°.
+// Alterar os ângulos exige conferir a folga mecânica do braço e do pulso.
+constexpr double kServoWaveArmDegrees = 105.0;
+constexpr double kServoWaveWristDegrees = 30.0;
+constexpr int kServoWaveRepetitions = 3;
+// Pausa de cada posição do pulso, em milissegundos. Inclui a estabilização
+// da saída e a rampa existente; um tempo menor pode cortar o movimento físico.
+constexpr int kServoWaveWristStepMs = 500;
+static_assert(kServoWaveArmDegrees >= kServoRoutineArmHomeDegrees &&
+                  kServoWaveArmDegrees <= kServoMaximumAngleDegrees &&
+                  kServoWaveWristDegrees >= kServoMinimumAngleDegrees &&
+                  kServoWaveWristDegrees <= kServoMaximumAngleDegrees &&
+                  kServoWaveRepetitions > 0 && kServoWaveRepetitions <= 10 &&
+                  kServoWaveWristStepMs >= kServoPoseHoldBeforeWristMotionMs +
+                      kServoWaveWristDegrees / kWristServoMaximumSpeedDegreesPerSecond * 1000.0,
+              "O tchauzinho deve respeitar os limites e o tempo de movimento dos servos.");
 constexpr double kServoRoutineWristStorageClearanceDegrees = 45.0;
 constexpr double kServoRoutineWristStoredApproachDegrees = 65.0;
 constexpr double kServoRoutineGripperFullyOpenDegrees = 180.0;

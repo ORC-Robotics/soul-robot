@@ -124,6 +124,38 @@ int main()
                     closeTo(steps.front().pose.gripperDegrees, 0.0),
                 "Initialize should apply the 15/0/0 home pose");
 
+        const ServoPose poseBeforeWave{20.0, 0.0, 47.0};
+        steps = runRoutine(ServoRoutineKind::Wave, 30, poseBeforeWave, output);
+        requirePhaseOrder(steps, {
+            "servo_wave_clearance", "servo_wave_wrist_home", "servo_wave_arm",
+            "servo_wave_out", "servo_wave_back", "servo_wave_out", "servo_wave_back",
+            "servo_wave_out", "servo_wave_back", "servo_wave_home"});
+        int outwardMovements = 0;
+        int returnMovements = 0;
+        for (const ObservedStep& step : steps)
+        {
+            require(closeTo(step.pose.gripperDegrees, poseBeforeWave.gripperDegrees),
+                    "O tchauzinho deve preservar a posição da garra.");
+            if (step.phase == "servo_wave_out")
+            {
+                ++outwardMovements;
+                require(closeTo(step.pose.armDegrees, config::kServoWaveArmDegrees) &&
+                            closeTo(step.pose.wristDegrees, config::kServoWaveWristDegrees),
+                        "Cada aceno deve manter o braço em 105° e o pulso em 30°.");
+            }
+            if (step.phase == "servo_wave_back")
+            {
+                ++returnMovements;
+                require(closeTo(step.pose.wristDegrees, 0.0),
+                        "Cada aceno deve retornar o pulso para 0°.");
+            }
+        }
+        require(outwardMovements == config::kServoWaveRepetitions &&
+                    returnMovements == config::kServoWaveRepetitions &&
+                    closeTo(steps.back().pose.armDegrees, 15.0) &&
+                    closeTo(steps.back().pose.wristDegrees, 0.0),
+                "O tchauzinho deve fazer três ciclos e terminar em home.");
+
         steps = runRoutine(ServoRoutineKind::Capture, 2, home, output);
         require(closeTo(poseAt(steps, "servo_capture_gripper_open").gripperDegrees, 180.0) &&
                     closeTo(poseAt(steps, "servo_capture_arm_pickup").armDegrees, 103.0) &&

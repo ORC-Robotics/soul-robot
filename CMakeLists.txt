@@ -96,6 +96,7 @@ if(BUILD_TESTING)
         target_link_libraries(main_mission_test pthread)
     endif()
     add_test(NAME main_mission_test COMMAND main_mission_test)
+    add_test(NAME wave_bonus_test COMMAND main_mission_test --wave-only)
     add_test(NAME rescue_exit_integration_test COMMAND main_mission_test --exit-only)
 
     add_executable(ball_alignment_mission_test

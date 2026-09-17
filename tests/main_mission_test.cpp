@@ -3753,10 +3753,59 @@ void testRedFinishWaitsUntilRescueEnds()
             "Red must work again immediately after leaving the rescue phase");
 }
 
+void testWaveBonusDispatch()
+{
+    MissionController controller;
+    RobotState state;
+    auto telemetry = readyTelemetry();
+    telemetry.pca9685Ok = true;
+    const CameraLineSnapshot camera = freshVision(GreenInterpretation::None);
+    const ForwardLineSnapshot forward;
+    const ForwardBallSnapshot ball;
+    const RescueZoneSnapshot zones;
+
+    state.setAutonomousMission(AutonomousMission::ServoWave);
+    state.startAutonomous();
+    controller.update(state, telemetry, true, camera, forward, ball, zones);
+    auto snapshot = state.snapshot();
+    require(snapshot.autonomousStatus.phase == "servo_resume_pose" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "O modo isolado deve iniciar o gesto sem comandar tração.");
+
+    state.setAutonomousMission(AutonomousMission::MainMission);
+    state.startAutonomous();
+    CameraLineSnapshot red = camera;
+    red.redValid = true;
+    red.redConfirmed = true;
+    red.redRatio = 0.2;
+    red.lineTimestamp = 1.0;
+    require(state.observeRedFinish(red),
+            "O teste deve confirmar a chegada antes de solicitar o bônus.");
+    require(state.requestWaveBonus(),
+            "A chegada travada deve aceitar uma solicitação explícita do bônus.");
+    controller.update(state, telemetry, true, camera, forward, ball, zones);
+    snapshot = state.snapshot();
+    require(snapshot.missionFinished && snapshot.waveBonusRequested &&
+                snapshot.mode == "stopped" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0 && snapshot.armServoRequested,
+            "O bônus da chegada deve acionar apenas os servos, sem reabrir a missão.");
+    state.stop();
+    controller.update(state, telemetry, true, camera, forward, ball, zones);
+    require(!state.snapshot().waveBonusRequested &&
+                !state.snapshot().armServoRequested,
+            "Parar deve cancelar o bônus da chegada no orquestrador.");
+}
+
 int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--wave-only")
+        {
+            testWaveBonusDispatch();
+            std::cout << "wave_bonus_test: OK\n";
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--camera-recovery-only")
         {
             testBottomCameraDelayDiagnosticExcludesDeclaredFailures();
