@@ -64,4 +64,5 @@ private:
     std::uint64_t lastSilverClearSequence_ = 0;
     RescueRoomMission rescueRoomMission_;
     RescueExitMission rescueExitMission_;
+    bool exitReferenceInitialized_ = false;
 };

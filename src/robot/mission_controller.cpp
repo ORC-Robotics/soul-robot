@@ -148,9 +148,8 @@ bool MissionController::requiresRescueZoneDetection(
         (snapshot.autonomousMission == AutonomousMission::MainMission ||
          snapshot.autonomousMission == AutonomousMission::RescueExit))
     {
-        // O modo isolado de saída reutiliza a mesma RescueExitMission da missão
-        // principal. Sem este gate, a geometria aguarda os triângulos por dois
-        // segundos e cai na varredura antiga em setores intermediários.
+        // O modo isolado reutiliza a saída fixa da missão principal.
+        // Nessa etapa, a rota já está definida e não exige detector de triângulos.
         return mainMission_.requiresRescueZoneDetection();
     }
     return snapshot.autonomousMission ==

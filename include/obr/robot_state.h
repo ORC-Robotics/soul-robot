@@ -123,6 +123,10 @@ struct AutonomousStatus
     std::string exitRejections;
     std::string exitLastFailure;
     double exitAdvanceCm = 0.0;
+    std::string exitGuidanceState;
+    std::string exitBottomBlocker;
+    int exitBottomFrames = 0;
+    double exitFallbackAdvanceCm = 0.0;
     double exitReverseCm = 0.0;
     double exitExplorationHeadingDegrees = 0.0;
     int exitExplorationAttempt = 0;

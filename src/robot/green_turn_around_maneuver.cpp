@@ -125,6 +125,19 @@ bool GreenTurnAroundManeuver::update(
         phaseStartedAt_ = now;
         return true;
     };
+    // A ré começa com PWM zero para não carregar o giro para o recuo.
+    const auto startTurnAroundReverse = [&]()
+    {
+        turnController_.reset();
+        phase_ = Phase::DrivingReverse;
+        forwardStartLeftCount_ = esp32Telemetry.leftEncoderCount;
+        forwardStartRightCount_ = esp32Telemetry.rightEncoderCount;
+        phaseStartedAt_ = now;
+        robotState.driveAutonomous(0.0, 0.0);
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "turnaround_reverse_starting",
+            "Linha recuperada: iniciando a ré de 5 cm"));
+    };
     const bool detected180 = turnAroundDetected(cameraLineSnapshot);
     if (phase_ == Phase::Idle && !detected180)
     {
@@ -350,24 +363,8 @@ bool GreenTurnAroundManeuver::update(
 
         if (output.phase == "turn_settling" && lineRecovered)
         {
-            // A faixa visível tem prioridade sobre a espera de estabilização do
-            // giroscópio. O robô já alcançou o objetivo real do retorno e deve
-            // devolver imediatamente o controle ao segue-faixa.
-            phase_ = Phase::Idle;
-            turnController_.reset();
-            robotState.driveAutonomous(
-                cameraLineSnapshot.lineFollowerLeftPower,
-                cameraLineSnapshot.lineFollowerRightPower,
-                !(
-                    cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
-                    cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL" &&
-                    cameraLineSnapshot.normalSteeringValid));
-            robotState.updateAutonomousStatus(makeMainMissionStatus(
-                "line_following",
-                fusionLineRecovered
-                    ? "Retorno 180° concluído: Fusion recuperado durante a parada"
-                    : "Retorno 180° concluído: linha próxima recuperada durante a parada",
-                100.0));
+            // A faixa recuperada encerra o giro e libera somente a ré curta.
+            startTurnAroundReverse();
             return true;
         }
         if (output.result == ImuTurnResult::Failed)
@@ -423,22 +420,7 @@ bool GreenTurnAroundManeuver::update(
         if (lineReacquireFrames_ >=
             config::kGreenTurnAroundLineReacquireFrames)
         {
-            phase_ = Phase::Idle;
-            turnController_.reset();
-            robotState.driveAutonomous(
-                cameraLineSnapshot.lineFollowerLeftPower,
-                cameraLineSnapshot.lineFollowerRightPower,
-                !(
-                    cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
-                    cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL" &&
-                    cameraLineSnapshot.normalSteeringValid));
-            robotState.updateAutonomousStatus(makeMainMissionStatus(
-                "line_following",
-                fusionLineRecovered &&
-                        !cameraLineSnapshot.lineNearDetected
-                    ? "Retorno 180° concluído: linha recuperada pelo Fusion"
-                    : "Retorno 180° concluído: linha próxima recuperada",
-                100.0));
+            startTurnAroundReverse();
             return true;
         }
 
@@ -469,6 +451,48 @@ bool GreenTurnAroundManeuver::update(
         robotState.updateAutonomousStatus(makeMainMissionStatus(
             "turnaround_searching_line",
             "Continuando o giro até a linha próxima reaparecer"));
+    }
+
+    if (phase_ == Phase::DrivingReverse)
+    {
+        const double leftDistanceCm = std::abs(static_cast<double>(
+            esp32Telemetry.leftEncoderCount - forwardStartLeftCount_)) /
+            config::kEncoderCountsPerCentimeter;
+        const double rightDistanceCm = std::abs(static_cast<double>(
+            esp32Telemetry.rightEncoderCount - forwardStartRightCount_)) /
+            config::kEncoderCountsPerCentimeter;
+        const bool reverseCompleted =
+            std::min(leftDistanceCm, rightDistanceCm) >=
+                config::kGreenTurnAroundReverseDistanceCm;
+        const bool reverseTimedOut = now - phaseStartedAt_ >=
+            std::chrono::milliseconds(config::kGreenTurnAroundReverseTimeoutMs);
+        // Sem encoders atuais ou após o limite, cancela apenas a ré opcional.
+        // Não mantém um comando de recuo antigo nem encerra a missão inteira.
+        if (reverseCompleted || reverseTimedOut ||
+            !turnAroundEncodersReady(esp32Telemetry))
+        {
+            phase_ = Phase::Idle;
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "turnaround_reverse_complete",
+                reverseCompleted ? "Ré concluída: retomando o segue-linha"
+                                 : "Ré encerrada: retomando o segue-linha",
+                100.0));
+            return true;
+        }
+        robotState.driveAutonomous(
+            -config::kGreenTurnAroundReversePower,
+            -config::kGreenTurnAroundReversePower);
+        AutonomousStatus status = makeMainMissionStatus(
+            "turnaround_reverse", "Retorno 180°: recuando após recuperar a faixa",
+            std::clamp(std::min(leftDistanceCm, rightDistanceCm) /
+                           config::kGreenTurnAroundReverseDistanceCm * 100.0,
+                       0.0, 100.0));
+        status.targetDistanceCm = config::kGreenTurnAroundReverseDistanceCm;
+        status.leftDistanceCm = leftDistanceCm;
+        status.rightDistanceCm = rightDistanceCm;
+        status.averageDistanceCm = (leftDistanceCm + rightDistanceCm) * 0.5;
+        robotState.updateAutonomousStatus(status);
     }
 
     return true;

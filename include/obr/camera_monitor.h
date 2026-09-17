@@ -44,7 +44,7 @@ struct CameraCurveDiagnostics
 // verde antes de usá-la em alertas ou em uma decisão segura de movimento.
 struct CameraLineSnapshot
 {
-    // A aquisição da saída exige classificador operacional e geometria sem ramificações.
+    // Topologia da fita, mantida para diagnóstico; a saída fixa também aceita cruzamentos.
     bool silverClassifierFresh = false;
     std::uint64_t silverSequence = 0;
     bool exitLineUnbranched = false;
@@ -246,7 +246,8 @@ public:
                             bool greenYawValid = false,
                             double greenYawDegrees = 0.0,
                             double greenGyroDegreesPerSecond = 0.0,
-                            double greenYawAgeMs = 0.0) const;
+                            double greenYawAgeMs = 0.0,
+                            bool exitOverlayEnabled = false) const;
     ForwardBallSnapshot forwardBallSnapshot() const;
     RescueZoneSnapshot rescueZoneSnapshot() const;
     bool setForwardBallDetectionEnabled(bool enabled) const;

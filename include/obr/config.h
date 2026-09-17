@@ -444,9 +444,10 @@ static_assert(kRescueZoneApproachFarDistanceCm >
               "Os limites do APPROACH_ZONE devem permanecer seguros.");
 
 // Avanço inicial, em centímetros, executado ao entrar na sala de resgate.
-// O detector de vítimas permanece ligado durante todo o deslocamento.
-constexpr double kRescueEntryAdvanceDistanceCm = 10.0;
-constexpr double kRescueEntryAdvancePower = 0.70;
+// Durante esse mínimo, o detector apenas memoriza o lado de uma possível vítima.
+// Alinhamento e coleta só são liberados depois que o avanço termina.
+constexpr double kRescueEntryAdvanceDistanceCm = 25.0;
+constexpr double kRescueEntryAdvancePower = 0.75;
 
 // Limites angulares, em graus, da busca de vítimas em relação ao heading de
 // entrada. A segunda varredura amplia a área observada somente quando ±45°
@@ -531,19 +532,18 @@ constexpr int kRescueExitGuidanceHoldMs = 300;
 constexpr int kRescueExitReacquisitionWaitMs = 500;
 constexpr int kRescueExitApproachTimeoutMs = 20000;
 constexpr int kRescueExitTotalTimeoutMs = 120000;
-// Potência exclusiva dos giros da busca da saída, na faixa normalizada dos motores.
+// Potência dos giros da saída fixa e dos testes de yaw, na faixa normalizada dos motores.
 constexpr double kRescueExitTurnPower = 0.75;
-// A aproximação distante é reta; a curva só começa quando a fita chega ao
-// limite inferior da CAM1. O valor é uma fração da altura do frame.
+// Potência base da correção frontal, na faixa normalizada dos motores.
+// A autoridade da CAM1 começa após a distância inicial configurada abaixo.
 constexpr double kRescueExitApproachPower = 0.75;
-constexpr double kRescueExitSteeringStartDepth = 0.85;
 constexpr double kRescueExitSteeringDeadbandDegrees = 3.5;
 // Perto da fita, a autoridade cresce suavemente sem arco fechado nem roda em ré.
 constexpr double kRescueExitSteeringFullDegrees = 24.0;
 constexpr double kRescueExitSteeringOuterPower = 0.78;
 constexpr double kRescueExitSteeringInnerPower = 0.70;
-// Exploração ativa usada somente após uma volta completa sem confirmação.
-// Cada avanço é limitado por encoder e continua observando as duas câmeras.
+// Potência normalizada do avanço reto na saída fixa, antes e após os 30 cm.
+// Reduza durante os primeiros testes para diminuir a velocidade do robô.
 constexpr double kRescueExitExplorationPower = 0.75;
 constexpr double kRescueExitExplorationAttemptCm = 30.0;
 constexpr double kRescueExitExplorationTotalCm = 60.0;
@@ -557,6 +557,13 @@ constexpr double kRescueExitSecondStraightYawDegrees = -100.0;
 constexpr double kRescueExitThirdStraightYawDegrees = 100.0;
 // A saída fica neste yaw relativo ao último triângulo centralizado.
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
+// Distância inicial reta, em centímetros, medida pelo menor avanço das rodas.
+// Um valor baixo libera a correção frontal ainda dentro da área de resgate;
+// um valor alto atrasa a retomada da linha pelas câmeras.
+constexpr double kRescueExitFrontGuidanceStartCm = 30.0;
+// Avanço máximo sem Fusion de nenhuma câmera, em centímetros, após a reta inicial.
+// O robô para ao atingir o limite, evitando atravessar a arena com visão sem alvo.
+constexpr double kRescueExitFallbackMaximumAdvanceCm = 60.0;
 // Tempo parado, em milissegundos, em cada direção do teste isolado de yaw.
 // A pausa permite conferir visualmente para qual quina o robô está apontando.
 constexpr int kRescueCornerYawHoldMs = 2000;
@@ -577,6 +584,9 @@ constexpr const char* kRescueExitControlPath = "/dev/shm/obr_rescue_exit_control
 constexpr int kRescueExitControlIntervalMs = 100;
 constexpr int kRescueExitControlTimeoutMs = 500;
 static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
+              kRescueExitFrontGuidanceStartCm > 0.0 &&
+              kRescueExitFallbackMaximumAdvanceCm > 0.0 &&
+              kRescueExitDirectYawDegrees > -180.0 && kRescueExitDirectYawDegrees <= 180.0 &&
               kRescueExitRejectedToleranceDegrees < kRescueExitTrackingToleranceDegrees &&
               kRescueExitSilverRejectedToleranceDegrees > kRescueExitRejectedToleranceDegrees &&
               kRescueExitCandidateHeadingToleranceDegrees > 0.0 &&
@@ -599,8 +609,6 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitApproachTimeoutMs < kRescueExitTotalTimeoutMs &&
               kRescueExitTurnPower >= kMotorRunMinimumPower &&
               kRescueExitTurnPower <= kMaxMotorOutput &&
-              kRescueExitSteeringStartDepth > 0.0 &&
-              kRescueExitSteeringStartDepth < 1.0 &&
               kRescueExitSteeringDeadbandDegrees < kRescueExitSteeringFullDegrees &&
               kRescueExitSteeringInnerPower >= kMotorRunMinimumPower &&
               kRescueExitSteeringInnerPower <= kRescueExitApproachPower &&
@@ -1067,7 +1075,7 @@ constexpr int kObstacleUltrasonicFreshnessMs = 300;
 constexpr double kObstacleTurnToleranceDegrees = 5.0;
 // Potência normalizada dos giros de varredura, posicionamento e saída pela IMU.
 // O valor 0,73 vence o atrito estático e reduz a inércia observada com 0,75.
-constexpr double kObstacleTurnCommandPower = 0.73;
+constexpr double kObstacleTurnCommandPower = 0.8;
 // Duração, em milissegundos, de cada pulso de correção após estabilizar o giro.
 // Pulsos maiores corrigem mais rápido, mas podem ultrapassar novamente o alvo.
 constexpr int kObstacleTurnCorrectionPulseMs = 30;
@@ -1367,7 +1375,7 @@ constexpr double kGreenLateralForwardDistanceCm = 10.0;
 // Potência do avanço medido. Ela permanece abaixo do limite da confirmação.
 constexpr double kGreenLateralForwardPower = 0.70;
 // Ré curta, em centímetros, após reencontrar a faixa do ramo verde.
-constexpr double kGreenLateralReverseDistanceCm = 5.0;
+constexpr double kGreenLateralReverseDistanceCm = 6.0;
 // Margem, em centímetros, para encerrar a ré do verde se os encoders
 // pararem perto da meta. Fora dessa margem, a manobra aguarda uma faixa Fusion.
 constexpr double kGreenLateralReverseStallToleranceCm = 1.5;
@@ -1375,7 +1383,7 @@ constexpr double kGreenLateralReverseStallToleranceCm = 1.5;
 // travada antes da meta e devolver o controle ao segue-linha.
 constexpr int kGreenStallRecoveryRequiredFusionFrames = 3;
 // Potência da ré medida; o piso permite partir sem acelerar desnecessariamente.
-constexpr double kGreenLateralReversePower = kMotorStartMinimumPower;
+constexpr double kGreenLateralReversePower = 0.8;
 // Correção diferencial por grau de desvio do yaw nas retas do verde.
 // O limite evita que a IMU transforme um avanço ou uma ré em pivot.
 constexpr double kGreenStraightYawGainPerDegree = 0.012;
@@ -1417,11 +1425,17 @@ constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
 // Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
 constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
-constexpr double kGreenTurnAroundForwardDistanceCm = 14.0;
+constexpr double kGreenTurnAroundForwardDistanceCm = 10.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
 // retorno de 180°.
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
 constexpr double kGreenTurnAroundForwardPower = 0.73;
+// Ré após reencontrar a faixa, em centímetros, antes de retomar o segue-linha.
+constexpr double kGreenTurnAroundReverseDistanceCm = 5.0;
+// Potência normalizada da ré; aumentar este valor aumenta a velocidade do recuo.
+constexpr double kGreenTurnAroundReversePower = kMotorStartMinimumPower;
+// Limite da ré, em milissegundos. Ao expirar, encerra o recuo e retoma a missão.
+constexpr int kGreenTurnAroundReverseTimeoutMs = 3000;
 // Tempo parado, em milissegundos, entre o avanço e o início do giro.
 constexpr int kGreenTurnAroundForwardSettleMs = 250;
 // Idade máxima, em milissegundos, aceita para os dados dos encoders.
@@ -1462,6 +1476,10 @@ static_assert(kGreenTurnAroundRecognitionDelayMs > 0 &&
                   kGreenTurnAroundForwardPower >= kMotorStartMinimumPower &&
                   kGreenTurnAroundForwardPower <= kMaxMotorOutput &&
                   kGreenTurnAroundForwardSettleMs >= 0 &&
+                  kGreenTurnAroundReverseDistanceCm > 0.0 &&
+                  kGreenTurnAroundReversePower >= kMotorStartMinimumPower &&
+                  kGreenTurnAroundReversePower <= kMaxMotorOutput &&
+                  kGreenTurnAroundReverseTimeoutMs > 0 &&
                   kGreenTurnAroundEncoderDataTimeoutMs > 0 &&
                   kGreenTurnAroundForwardSafetyTimeoutMs >
                       kGreenTurnAroundEncoderDataTimeoutMs,

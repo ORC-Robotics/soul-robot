@@ -43,6 +43,7 @@ from vision.rescue_exit import (
     draw_exit_overlay,
     empty_exit_candidates,
     read_exit_control,
+    select_exit_guidance,
     remove_rescue_zones_from_black,
 )
 from vision.gap_validation import read_json_snapshot
@@ -696,10 +697,7 @@ def reset_exit_color_lock(lock, run_sequence=0):
 def best_exit_guidance(candidates):
     """Seleciona somente uma geometria preta liberada para controle."""
 
-    valid = [candidate for candidate in candidates.values()
-             if candidate.get("guidanceValid")]
-    return max(valid, key=lambda candidate: candidate.get("score", 0.0),
-               default=None)
+    return select_exit_guidance(candidates)
 
 
 def process_forward_frame(
@@ -715,6 +713,7 @@ def process_forward_frame(
     """Aplica somente a segmentação preta configurada para o perfil frontal."""
 
     exit_active = bool(exit_control and exit_control.get("enabled"))
+    exit_overlay = exit_active or bool(exit_control and exit_control.get("exitOverlayEnabled"))
     frame_time = time.time() if now is None else float(now)
     if not exit_active:
         reset_exit_color_lock(exit_color_lock)
@@ -782,14 +781,15 @@ def process_forward_frame(
 
         blocked_sectors = set((exit_color_lock or {}).get("blockedSectors", ()))
         corner_lightweight = (
+            phase == "rescue_exit_initial_straight" or
             phase.startswith("rescue_exit_corner_recovery_") or
             (phase == "rescue_exit_corner_exploring" and
              phase == previous_phase)
         )
         if corner_lightweight:
-            # A geometria já escolheu o corner. Nesse trecho, a CAM1 conserva
-            # somente a proteção visual e deixa a CAM0 assumir a linha. O
-            # primeiro frame ainda mede o lado usado numa possível recuperação.
+            # Na reta inicial da saída fixa, a CAM1 conserva a proteção visual.
+            # A fase posterior aos 30 cm volta a calcular Fusion em cada frame.
+            # As fases antigas de corner continuam disponíveis para diagnóstico.
             reading["exitCandidates"] = empty_exit_candidates(
                 full_filtered_mask.shape[1]
             )
@@ -884,7 +884,17 @@ def process_forward_frame(
         reading["exitCameraObscured"] = measure_rescue_zone_frame_obstruction(
             frame, exit_mode=True
         )["obscured"]
-    if diagnostics is not None:
+    if exit_overlay:
+        reading["exitOverlayActive"] = True
+    if exit_overlay and not exit_active and diagnostics is not None:
+        # Após o handoff, o tracker normal continua fornecendo evidência de GAP.
+        # A máscara exclusiva abaixo serve apenas ao overlay, sem autoridade de motor.
+        overlay_mask = create_exit_black_mask(frame)
+        overlay_mask, _, blocked = remove_rescue_zones_from_black(frame, overlay_mask)
+        reading["exitCandidates"] = analyze_exit_candidates(
+            overlay_mask, FORWARD_ASSIST_MIN_COMPONENT_AREA_PX, blocked)
+        diagnostics["mask"] = overlay_mask
+    elif diagnostics is not None:
         # No modo de saída, LINHA mostra exatamente a máscara final após retirar
         # os hulls coloridos; nenhuma imagem intermediária é apresentada.
         diagnostics["mask"] = full_filtered_mask
@@ -1491,7 +1501,8 @@ def main():
                     )
                 diagnostic_recording_active = False
                 diagnostic_capture_due = False
-                forward_diagnostics = None
+                # A máscara do overlay independe da instalação do gravador opcional.
+                forward_diagnostics = {} if enabled and stream_has_clients() else None
                 if forward_reacquisition_recorder is not None:
                     try:
                         diagnostic_recording_active = (
@@ -1748,7 +1759,7 @@ def main():
                 black_mask = (forward_diagnostics or {}).get("mask")
                 display_frame = (
                     create_exit_display_frame(frame, black_mask, get_display_mode())
-                    if reading.get("exitAnalysisActive")
+                    if reading.get("exitOverlayActive")
                     else frame.copy()
                 )
                 if ball_detection_active:
@@ -1762,7 +1773,7 @@ def main():
                         rescue_zone_results,
                         rescue_zone_input,
                     )
-                elif reading.get("exitAnalysisActive"):
+                elif reading.get("exitOverlayActive"):
                     draw_exit_overlay(
                         display_frame,
                         reading,

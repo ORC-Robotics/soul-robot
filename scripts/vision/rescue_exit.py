@@ -87,7 +87,7 @@ def read_camera_control(now=None, path=CONTROL_PATH):
 
 
 def read_exit_control(now=None, path=CONTROL_PATH):
-    """Aceita apenas o heartbeat recente da busca da saída atual."""
+    """Aceita heartbeat recente de controle ou overlay, mantendo enabled separado."""
     try:
         with open(path, encoding="utf-8") as source:
             data = json.load(source)
@@ -96,7 +96,9 @@ def read_exit_control(now=None, path=CONTROL_PATH):
         sequence = data["runSequence"]
         if (not math.isfinite(age) or not 0 <= age <= 0.5
                 or type(sequence) is not int or sequence <= 0
-                or data.get("enabled") is not True):
+                or type(data.get("enabled")) is not bool
+                or (data.get("enabled") is not True and
+                    data.get("exitOverlayEnabled") is not True)):
             return {"enabled": False}
         return data
     except (OSError, ValueError, KeyError, TypeError):
@@ -568,10 +570,31 @@ def create_exit_display_frame(raw_frame, black_mask, display_mode):
     return display
 
 
+def select_exit_guidance(candidates):
+    """Escolhe o mesmo alvo válido aceito pela missão C++, sem promover preto isolado."""
+    valid = []
+    for candidate in candidates.values():
+        try:
+            angle = float(candidate.get("guidanceAngleDegrees", float("nan")))
+            depth = float(candidate.get("entryDepthNormalized", float("nan")))
+            score = float(candidate.get("score", float("nan")))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (candidate.get("visible") is True and candidate.get("guidanceValid") is True and
+                not candidate.get("blockedByColor") and not candidate.get("grayNoiseLikely") and
+                math.isfinite(score) and math.isfinite(angle) and 0 <= angle <= 180 and
+                math.isfinite(depth) and 0 <= depth <= 1):
+            valid.append(candidate)
+    return max(valid, key=lambda candidate: float(candidate["score"]), default=None)
+
+
 def draw_exit_overlay(frame, reading, control, black_mask=None):
-    """Mostra setores, máscara preta e geometria usada pela busca da saída."""
+    """Mostra Fusion, fase e bloqueios da retomada sem alterar o controle."""
     height, width = frame.shape[:2]
-    selected = control.get("sector", -1)
+    candidates = reading.get("exitCandidates", {})
+    guidance = select_exit_guidance(candidates)
+    selected = next((sector for sector in range(SECTOR_COUNT)
+                     if candidates.get(f"sector{sector}") is guidance), -1)
     for sector in range(SECTOR_COUNT):
         x = sector * width // SECTOR_COUNT
         candidate = reading.get("exitCandidates", {}).get(f"sector{sector}", {})
@@ -586,10 +609,7 @@ def draw_exit_overlay(frame, reading, control, black_mask=None):
         cv2.line(frame, (0, height * depth // DEPTH_COUNT), (width - 1, height * depth // DEPTH_COUNT), (0, 255, 255), 1)
     far_limit_y = int(round((height - 1) * GUIDANCE_FAR_MAX_Y_RATIO))
     cv2.line(frame, (0, far_limit_y), (width - 1, far_limit_y), (255, 180, 0), 1)
-    candidates = reading.get("exitCandidates", {})
-    guidance = candidates.get(f"sector{selected}", {})
-    if not guidance.get("guidanceValid"):
-        guidance = max(candidates.values(), key=lambda item: item.get("score", 0.0), default={})
+    guidance = guidance or {}
     near_point = guidance.get("nearPoint")
     far_point = guidance.get("farPoint")
     entry_point = guidance.get("entryPoint")
@@ -612,7 +632,7 @@ def draw_exit_overlay(frame, reading, control, black_mask=None):
         f"entry depth {guidance.get('entryDepthNormalized', 0.0):.2f}"
         if guidance.get("guidanceValid") else "guide --"
     )
-    surface_text = (
+    surface_text = "NO VALID FUSION" if not guidance else (
         "REFLECTIVE GRAY NOISE"
         if guidance.get("grayNoiseLikely") else "SOLID BLACK"
     )
@@ -649,14 +669,33 @@ def draw_exit_overlay(frame, reading, control, black_mask=None):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.43, (0, 0, 0), 3, cv2.LINE_AA)
             cv2.putText(frame, diagnostic_text, (text_x, text_y),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.43, diagnostic_color, 1, cv2.LINE_AA)
+    # O diagnóstico permanece visível no modo isolado após a entrega à CAM0.
+    active_control = control.get("enabled") is True
+    failed = control.get("phase") == "rescue_exit_failed"
+    if active_control or failed:
+        guidance_state = "STOPPED" if failed else control.get("guidanceState") or "WAITING"
+        bottom_text = (f"CAM0 {control.get('bottomBlocker', 'WAITING')}  "
+                       f"frames {control.get('bottomFrames', 0)}/{control.get('bottomFramesRequired', 4)}")
+    else:
+        guidance_state = "CAM0 / COURSE"
+        bottom_text = "CAM0 HANDED_OFF"
     lines = [str(control.get("phase", "rescue_exit")),
+             f"CONTROL {guidance_state}  CAM0 {reading.get('source', 'UNAVAILABLE')}",
+             bottom_text,
+             f"NO FUSION {control.get('fallbackAdvanceCm', 0):.1f}/{control.get('fallbackMaximumAdvanceCm', 60):.0f} cm",
              guidance_text,
              f"yaw {control.get('heading', 0):.1f} round {control.get('round', 1)} score {control.get('confidence', 0):.3f}",
              f"advance {control.get('advanceCm', 0):.1f} reverse {control.get('reverseCm', 0):.1f} cm",
              str(control.get("rejections", "")), str(control.get("lastFailure", ""))]
-    first_line_y = max(12, height - len(lines) * 13)
+    lines = [text for text in lines if text]
+    spacing = max(13, min(22, height // 25))
+    font_scale = max(0.35, min(0.55, width / 1920.0))
+    first_line_y = max(12, height - len(lines) * spacing)
     for index, text in enumerate(lines):
         # A fonte simples do OpenCV não possui glifos acentuados.
         text = text.encode("ascii", "replace").decode("ascii")
-        cv2.putText(frame, text, (4, first_line_y + index * 13),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+        position = (4, first_line_y + index * spacing)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale, (0, 255, 255), 1, cv2.LINE_AA)

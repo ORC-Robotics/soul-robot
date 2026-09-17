@@ -15,6 +15,7 @@ from vision.rescue_exit import (
     draw_exit_overlay,
     exit_line_is_unbranched,
     read_exit_control,
+    select_exit_guidance,
     remove_rescue_zones_from_black,
     rescue_zone_blocked_sectors,
     unbranched_black_path,
@@ -22,6 +23,48 @@ from vision.rescue_exit import (
 
 
 class RescueExitVisionTest(unittest.TestCase):
+
+    def test_projected_intersection_keeps_distant_fusion_and_overlay(self):
+        # Reconstrói a geometria da foto: transversal larga e continuação diagonal distante.
+        frame = np.full((540, 960, 3), 170, np.uint8)
+        cv2.line(frame, (0, 135), (959, 205), (45, 45, 45), 20)
+        cv2.fillPoly(frame, [np.array([
+            (568, 176), (618, 187), (800, 104), (959, 111), (959, 93), (780, 86),
+        ])], (45, 45, 45))
+        mask = create_exit_black_mask(frame)
+        candidates = analyze_exit_candidates(mask, 120)
+        guidance = select_exit_guidance(candidates)
+        self.assertIsNotNone(guidance)
+        self.assertGreater(guidance["guidanceAngleDegrees"], 90)
+        self.assertLess(guidance["entryDepthNormalized"], 0.85)
+        self.assertFalse(unbranched_black_path(mask))
+        display = frame.copy()
+        control = {"enabled": True, "phase": "rescue_exit_front_guidance",
+                   "guidanceState": "CAM1", "bottomBlocker": "CONFIRMING", "bottomFrames": 2}
+        with mock.patch("vision.rescue_exit.cv2.putText", wraps=cv2.putText) as text:
+            draw_exit_overlay(display, {"exitCandidates": candidates, "source": "fusion"}, control, mask)
+            labels = [call.args[1] for call in text.call_args_list]
+            self.assertTrue(any("CONTROL CAM1" in label for label in labels))
+            self.assertTrue(any("CONFIRMING" in label and "2/4" in label for label in labels))
+        self.assertTrue(np.any(np.all(display == (255, 80, 255), axis=2)))
+
+    def test_overlay_uses_valid_fusion_instead_of_invalid_high_score(self):
+        valid = {"visible": True, "guidanceValid": True, "guidanceAngleDegrees": 100,
+                 "entryDepthNormalized": 0.3, "score": 0.4}
+        for override in ({"grayNoiseLikely": True}, {"blockedByColor": True},
+                         {"guidanceAngleDegrees": float("nan")}, {"visible": False}):
+            invalid = dict(valid, score=0.9, **override)
+            self.assertIs(select_exit_guidance({"sector0": invalid, "sector2": valid}), valid)
+
+    def test_overlay_only_heartbeat_never_enables_exit_control(self):
+        data = {"enabled": False, "exitOverlayEnabled": True, "runSequence": 7, "timestamp": 100.0}
+        with mock.patch("builtins.open", mock.mock_open(read_data=json.dumps(data))):
+            control = read_exit_control(now=100.1)
+            self.assertFalse(control["enabled"])
+            self.assertTrue(control["exitOverlayEnabled"])
+            self.assertEqual(read_exit_control(now=100.6), {"enabled": False})
+
+
     def test_distant_deformed_mass_is_accepted_without_near_tape(self):
         mask = np.zeros((240, 320), np.uint8)
         cv2.fillPoly(mask, [np.array([(150, 10), (205, 15), (180, 40), (148, 25)])], 255)

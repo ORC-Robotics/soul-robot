@@ -472,6 +472,34 @@ void requireFollowingLine(
         context + ": a fase deve continuar no segue-linha.");
 }
 
+RobotSnapshot completeReturnReverse(
+    MissionFixture& fixture,
+    const CameraLineSnapshot& recoveredVision,
+    const RobotSnapshot& startingSnapshot)
+{
+    require(startingSnapshot.autonomousStatus.phase == "turnaround_reverse_starting" &&
+                startingSnapshot.left == 0.0 && startingSnapshot.right == 0.0,
+            "Recuperar a linha deve zerar o giro antes da ré.");
+    RobotSnapshot snapshot = fixture.update(recoveredVision);
+    require(snapshot.autonomousStatus.phase == "turnaround_reverse" &&
+                closeTo(snapshot.left, -config::kGreenTurnAroundReversePower) &&
+                closeTo(snapshot.right, -config::kGreenTurnAroundReversePower),
+            "A linha recuperada deve liberar a ré antes do segue-linha.");
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kGreenTurnAroundReverseDistanceCm * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount -= reverseCounts;
+    snapshot = fixture.update(recoveredVision);
+    require(snapshot.autonomousStatus.phase == "turnaround_reverse" && snapshot.left < 0.0,
+            "Uma roda sozinha não deve concluir a ré de 5 cm.");
+    fixture.telemetry.rightEncoderCount -= reverseCounts;
+    snapshot = fixture.update(recoveredVision);
+    require(snapshot.mode == "autonomous" &&
+                snapshot.autonomousStatus.phase == "turnaround_reverse_complete" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Concluir a ré deve zerar o PWM e preservar a missão autônoma.");
+    return fixture.update(recoveredVision);
+}
+
 RobotSnapshot startReturnImu(
     MissionFixture& fixture,
     const CameraLineSnapshot& returnVision)
@@ -1803,6 +1831,7 @@ void testReturnRunsConfiguredSequenceAndRestoresFollower()
             "Uma leitura isolada do NEAR não deve encerrar o pivot.");
     }
     snapshot = fixture.update(recoveredVision);
+    snapshot = completeReturnReverse(fixture, recoveredVision, snapshot);
     requireFollowingLine(snapshot, "Linha próxima recuperada");
 }
 
@@ -2016,12 +2045,61 @@ void testVisualSearchAcceptsValidatedFusionWithoutNear()
         "Uma confirmação Fusion isolada não deve encerrar o pivot.");
 
     snapshot = fixture.update(fusionVision);
+    snapshot = completeReturnReverse(fixture, fusionVision, snapshot);
     require(
         snapshot.mode == "autonomous" &&
             snapshot.autonomousStatus.phase == "line_following" &&
             closeTo(snapshot.left, fusionVision.lineFollowerLeftPower) &&
             closeTo(snapshot.right, fusionVision.lineFollowerRightPower),
-        "Duas confirmações Fusion válidas devem devolver o controle ao seguidor.");
+        "Duas confirmações Fusion válidas devem liberar a ré e depois o seguidor.");
+}
+
+void testReturnSettlingReversesWithoutAddingMissionFailures()
+{
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        MissionFixture fixture;
+        const auto returnVision = freshVision(GreenInterpretation::TurnAround180, false);
+        startReturnImu(fixture, returnVision);
+        fixture.telemetry.yawZDeg = (config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0) *
+                                   config::kGreenTurnAroundImuDegrees;
+        const auto recoveredVision = freshVision(GreenInterpretation::None, true);
+        auto snapshot = fixture.update(recoveredVision);
+        require(snapshot.autonomousStatus.phase == "turnaround_reverse_starting",
+                "A linha vista durante a parada da IMU também deve liberar a ré.");
+        snapshot = fixture.update(recoveredVision);
+        require(snapshot.left < 0.0 && snapshot.right < 0.0,
+                "A ré deve começar após recuperar a linha durante a parada.");
+        if (scenario == 0)
+        {
+            fixture.telemetry.lastSensorAgeMs = config::kGreenTurnAroundEncoderDataTimeoutMs + 1;
+        }
+        else if (scenario == 1)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                config::kGreenTurnAroundReverseTimeoutMs + 20));
+        }
+        else
+        {
+            fixture.robotState.emergencyStop();
+        }
+        snapshot = fixture.update(recoveredVision);
+        require(snapshot.left == 0.0 && snapshot.right == 0.0,
+                "Encoders antigos, limite da ré ou emergência devem zerar o recuo.");
+        if (scenario != 2)
+        {
+            require(snapshot.mode == "autonomous" &&
+                        snapshot.autonomousStatus.phase == "turnaround_reverse_complete",
+                    "Cancelar a ré opcional não deve encerrar a missão.");
+            fixture.telemetry.lastSensorAgeMs = 0;
+            requireFollowingLine(fixture.update(recoveredVision), "Retomada após cancelar a ré");
+        }
+        else
+        {
+            require(snapshot.emergencyStop && snapshot.mode == "emergency",
+                    "A emergência deve manter prioridade sobre a ré.");
+        }
+    }
 }
 
 void testVisualSearchRejectsUnvalidatedFusionWithoutNear()
@@ -2387,10 +2465,10 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
 
     snapshot = fixture.update(gray);
     require(
-        snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
-            snapshot.right == 0.0 &&
-            snapshot.autonomousStatus.phase == "rescue_entry_waiting_yolo",
-        "Depois da faixa cinza, o robô deve aguardar o primeiro frame do YOLO.");
+        snapshot.mode == "autonomous" && snapshot.left > 0.0 &&
+            snapshot.right > 0.0 &&
+            snapshot.autonomousStatus.phase == "rescue_entry_advancing",
+        "Depois da faixa cinza, o avanço mínimo deve começar sem esperar o YOLO.");
 
     fixture.mission.reset();
     require(
@@ -2881,6 +2959,10 @@ void testExitAcquisitionRestoresFollower()
     for (const auto selected : {AutonomousMission::MainMission, AutonomousMission::RescueExit})
     {
         RobotState state;
+        state.setAutonomousMission(AutonomousMission::RescueZoneAlign);
+        state.startAutonomous();
+        require(state.setRescueZoneLockedHeading(-config::kRescueExitDirectYawDegrees),
+                "O teste precisa de um heading salvo por ALIGN_ZONE");
         state.setAutonomousMission(selected);
         state.startAutonomous();
         auto telemetry = readyTelemetry();
@@ -2889,7 +2971,8 @@ void testExitAcquisitionRestoresFollower()
         main.reset(true);
         MissionController controller;
         auto bottom = freshVision(GreenInterpretation::None);
-        bottom.silverClassifierFresh = bottom.exitLineUnbranched = bottom.normalSteeringValid = true;
+        bottom.silverClassifierFresh = bottom.normalSteeringValid = true;
+        bottom.exitLineUnbranched = false;
         bottom.lineControlSource = "fusion";
         ForwardLineSnapshot forward;
         forward.sourceFresh = forward.exitAnalysisActive = true;
@@ -2900,11 +2983,23 @@ void testExitAcquisitionRestoresFollower()
         {
             bottom.lineTimestamp = forward.timestamp = frame;
             bottom.lineSequence = bottom.silverSequence = forward.sequence = frame;
+            if (frame == 5)
+            {
+                const auto counts = std::llround((config::kRescueExitFrontGuidanceStartCm + 0.1) *
+                                                 config::kEncoderCountsPerCentimeter);
+                telemetry.leftEncoderCount += counts;
+                telemetry.rightEncoderCount += counts;
+            }
             if (selected == AutonomousMission::MainMission)
                 main.update(state, telemetry, true, bottom, forward);
             else
                 controller.update(state, telemetry, true, bottom, forward, {});
             const auto snapshot = state.snapshot();
+            if (frame < 5)
+                require(snapshot.autonomousStatus.phase == "rescue_exit_initial_straight" &&
+                            closeTo(snapshot.left, config::kRescueExitExplorationPower) &&
+                            closeTo(snapshot.right, config::kRescueExitExplorationPower),
+                        "A integração não pode entregar o controle à CAM0 antes dos 30 cm");
             acquired = acquired || snapshot.autonomousStatus.phase == "rescue_exit_acquired";
             if (snapshot.autonomousStatus.phase == "rescue_exit_acquired")
                 require(closeTo(snapshot.left, bottom.lineFollowerLeftPower) &&
@@ -2929,6 +3024,51 @@ void testExitAcquisitionRestoresFollower()
         requireFollowingLine(state.snapshot(), "Prata no percurso final");
         require(!controller.requiresExitVision(state.snapshot()), "Gate da saída continuou aberto após aquisição");
     }
+}
+
+// Valida Stop, nova execução e E-Stop durante o avanço da saída fixa.
+void testFixedExitRestartAndEmergencyStop()
+{
+    RobotState state;
+    state.setAutonomousMission(AutonomousMission::RescueZoneAlign);
+    state.startAutonomous();
+    require(state.setRescueZoneLockedHeading(-config::kRescueExitDirectYawDegrees),
+            "Heading de referência do teste não foi salvo");
+    state.setAutonomousMission(AutonomousMission::RescueExit);
+    state.startAutonomous();
+    MissionController controller;
+    auto telemetry = readyTelemetry();
+    auto bottom = freshVision(GreenInterpretation::None);
+    bottom.normalSteeringValid = false;
+    ForwardLineSnapshot forward;
+    forward.exitAnalysisActive = true;
+    forward.exitRunSequence = state.snapshot().autonomousRunSequence;
+    controller.update(state, telemetry, true, bottom, forward, {});
+    telemetry.leftEncoderCount += std::llround((config::kRescueExitFrontGuidanceStartCm + 1.0) * config::kEncoderCountsPerCentimeter);
+    telemetry.rightEncoderCount += std::llround((config::kRescueExitFrontGuidanceStartCm + 1.0) * config::kEncoderCountsPerCentimeter);
+    forward.exitCandidates[2].visible = forward.exitCandidates[2].guidanceValid = true;
+    forward.exitCandidates[2].score = 0.5;
+    forward.exitCandidates[2].guidanceAngleDegrees = 120.0;
+    forward.exitCandidates[2].entryDepthNormalized = 0.95;
+    controller.update(state, telemetry, true, bottom, forward, {});
+    require(state.snapshot().left > state.snapshot().right,
+            "Fusion frontal não corrigiu após os 30 cm na integração");
+    state.stop();
+    controller.update(state, telemetry, true, bottom, forward, {});
+    require(closeTo(state.snapshot().left, 0.0), "Stop deve zerar motores imediatamente");
+    state.startAutonomous();
+    controller.update(state, telemetry, true, bottom, forward, {});
+    require(closeTo(state.snapshot().left, 0.0), "Imagem da execução anterior não pode guiar a nova saída");
+    forward.exitRunSequence = state.snapshot().autonomousRunSequence;
+    controller.update(state, telemetry, true, bottom, forward, {});
+    require(state.snapshot().autonomousStatus.phase == "rescue_exit_initial_straight" &&
+            closeTo(state.snapshot().autonomousStatus.exitAdvanceCm, 0.0) &&
+            closeTo(state.snapshot().left, state.snapshot().right),
+            "Nova execução deve reiniciar os 30 cm sem reutilizar a correção frontal");
+    state.emergencyStop();
+    controller.update(state, telemetry, true, bottom, forward, {});
+    require(closeTo(state.snapshot().left, 0.0) && closeTo(state.snapshot().right, 0.0),
+            "E-Stop deve prevalecer sobre a saída fixa");
 }
 
 void testExitFailureDiagnosticSurvivesStop()
@@ -3171,6 +3311,14 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--return-only")
+        {
+            testReturnRunsConfiguredSequenceAndRestoresFollower();
+            testVisualSearchAcceptsValidatedFusionWithoutNear();
+            testReturnSettlingReversesWithoutAddingMissionFailures();
+            std::cout << "return_maneuver_test: OK\n";
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--silver-only")
         {
             testConfirmedCourseMarkersControlOnlyExpectedPhase();
@@ -3229,6 +3377,7 @@ int main(int argc, char** argv)
             return 0;
         }
         testExitAcquisitionRestoresFollower();
+        testFixedExitRestartAndEmergencyStop();
         testCornerYawModeOnlyTurnsAndStopsOnImuLoss();
         testExitFailureDiagnosticSurvivesStop();
         testRescueExitKeepsVisionGateActiveInManualMode();
@@ -3272,6 +3421,7 @@ int main(int argc, char** argv)
         testReturnCenteringTimeoutReleasesConfiguredSequence();
         testVisualSearchStopsAtAngularLimit();
         testVisualSearchAcceptsValidatedFusionWithoutNear();
+        testReturnSettlingReversesWithoutAddingMissionFailures();
         testVisualSearchRejectsUnvalidatedFusionWithoutNear();
         testForwardValidatorNeverOverridesBottomCommands();
         testStaleForwardDoesNotBlockNativeRecoveryOrNormalLine();

@@ -44,6 +44,63 @@ with mock.patch("ball_vision.pipeline.YoloBallDetector"):
 
 
 class ForwardCameraStreamTest(unittest.TestCase):
+
+    def test_exit_overlay_after_handoff_preserves_normal_forward_tracker(self):
+        frame = np.full((240, 320, 3), 180, np.uint8)
+        mask = np.zeros((240, 320), np.uint8)
+        cv2.line(mask, (160, 210), (180, 40), 255, 8)
+        diagnostics = {}
+        control = {"enabled": False, "exitOverlayEnabled": True,
+                   "runSequence": 7, "phase": "line_following"}
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask),
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black",
+                              return_value=(mask, False, set())),
+            mock.patch.object(forward_camera_stream, "calculate_forward_line_assist",
+                              return_value={"forwardPathState": "VALID"}) as tracker,
+        ):
+            reading = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", diagnostics=diagnostics, exit_control=control)
+        tracker.assert_called_once()
+        self.assertEqual(reading["forwardPathState"], "VALID")
+        self.assertTrue(reading["exitOverlayActive"])
+        self.assertFalse(reading.get("exitAnalysisActive", False))
+        self.assertIs(diagnostics["mask"], mask)
+        self.assertIsNotNone(forward_camera_stream.best_exit_guidance(reading["exitCandidates"]))
+
+
+    def test_fixed_exit_restores_continuous_front_guidance_after_straight(self):
+        frame = np.full((120, 160, 3), 150, np.uint8)
+        mask = np.zeros((120, 160), np.uint8)
+        mask[10:100, 75:85] = 255
+        color_lock = forward_camera_stream.new_exit_color_lock()
+        control = {"enabled": True, "runSequence": 8,
+                   "phase": "rescue_exit_initial_straight"}
+        with (
+            mock.patch.object(forward_camera_stream, "create_exit_black_mask", return_value=mask),
+            mock.patch.object(forward_camera_stream, "analyze_exit_candidates",
+                              wraps=forward_camera_stream.analyze_exit_candidates) as analyze,
+            mock.patch.object(forward_camera_stream, "remove_rescue_zones_from_black",
+                              return_value=(mask, False, set())),
+        ):
+            straight = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.0, exit_control=control, exit_color_lock=color_lock)
+            analyze.assert_not_called()
+            self.assertFalse(any(item["guidanceValid"] for item in straight["exitCandidates"].values()))
+            self.assertIn("exitCameraObscured", straight)
+            control["phase"] = "rescue_exit_front_guidance"
+            for frame_time in (100.1, 100.2, 100.3):
+                before = analyze.call_count
+                reading = forward_camera_stream.process_forward_frame(
+                    frame, "RGB888", now=frame_time, exit_control=control, exit_color_lock=color_lock)
+                self.assertGreater(analyze.call_count, before)
+                self.assertTrue(any(item["guidanceValid"] for item in reading["exitCandidates"].values()))
+                self.assertEqual(reading["exitRunSequence"], 8)
+            mask[:] = 0
+            lost = forward_camera_stream.process_forward_frame(
+                frame, "RGB888", now=100.4, exit_control=control, exit_color_lock=color_lock)
+            self.assertFalse(any(item["guidanceValid"] for item in lost["exitCandidates"].values()))
+
     def test_exit_evidence_is_serialized_before_atomic_replace(self):
         frame = np.full((120, 160, 3), 150, np.uint8)
         mask = np.zeros((120, 160), np.uint8)
@@ -98,7 +155,8 @@ class ForwardCameraStreamTest(unittest.TestCase):
                 frame, "RGB888", exit_control={"enabled": True, "runSequence": 8,
                                                  "phase": "rescue_exit_approaching"})
             self.assertEqual(color_zones.call_count, 2)
-            self.assertTrue(approaching["exitCameraObscured"])
+            # Piso claro uniforme não indica obstrução, mesmo sem fita na máscara final.
+            self.assertFalse(approaching["exitCameraObscured"])
         normal = forward_camera_stream.process_forward_frame(frame, "RGB888")
         self.assertNotIn("exitCandidates", normal)
         self.assertEqual(color_zones.call_count, 2)

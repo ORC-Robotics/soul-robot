@@ -1231,7 +1231,8 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
                                       bool greenYawValid,
                                       double greenYawDegrees,
                                       double greenGyroDegreesPerSecond,
-                                      double greenYawAgeMs) const
+                                      double greenYawAgeMs,
+                                      bool exitOverlayEnabled) const
 {
 #ifdef _WIN32
     (void)enabled;
@@ -1241,6 +1242,7 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
     (void)greenYawDegrees;
     (void)greenGyroDegreesPerSecond;
     (void)greenYawAgeMs;
+    (void)exitOverlayEnabled;
     return true;
 #else
     std::string greenManeuverDirection = "NONE";
@@ -1265,13 +1267,15 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
     // execução autônoma, o modo Manual usa 1 somente para manter o overlay;
     // esse valor não concede autoridade de movimento nem altera o RobotState.
     const std::uint64_t visionRunSequence =
-        enabled && runSequence == 0 ? 1 : runSequence;
+        (enabled || exitOverlayEnabled) && runSequence == 0 ? 1 : runSequence;
     const std::string temporary = std::string(config::kRescueExitControlPath) + ".tmp";
     {
         std::ofstream file(temporary, std::ios::trunc);
         if (!file) return false;
         file << std::setprecision(17)
              << "{\"enabled\":" << (enabled ? "true" : "false")
+             // O overlay isolado pode continuar após a CAM0 assumir, sem dar autoridade à CAM1.
+             << ",\"exitOverlayEnabled\":" << (exitOverlayEnabled || enabled ? "true" : "false")
              << ",\"redMinRatio\":" << config::kRedFinishMinRatio
              << ",\"redConfirmFrames\":" << config::kRedFinishConfirmFrames
              << ",\"redMaxFrameGapMs\":" << config::kCameraLineStatusTimeoutMs
@@ -1299,6 +1303,13 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
              << ",\"heading\":" << status.exitHeadingDegrees
              << ",\"round\":" << status.exitRound
              << ",\"advanceCm\":" << status.exitAdvanceCm
+             << ",\"guidanceState\":" << std::quoted(status.exitGuidanceState)
+             << ",\"bottomBlocker\":" << std::quoted(status.exitBottomBlocker)
+             << ",\"bottomFrames\":" << status.exitBottomFrames
+             << ",\"bottomFramesRequired\":" << config::kRescueExitAcquisitionFrames
+             << ",\"frontGuidanceStartCm\":" << config::kRescueExitFrontGuidanceStartCm
+             << ",\"fallbackAdvanceCm\":" << status.exitFallbackAdvanceCm
+             << ",\"fallbackMaximumAdvanceCm\":" << config::kRescueExitFallbackMaximumAdvanceCm
              << ",\"reverseCm\":" << status.exitReverseCm
              << ",\"explorationHeading\":" << status.exitExplorationHeadingDegrees
              << ",\"explorationAttempt\":" << status.exitExplorationAttempt

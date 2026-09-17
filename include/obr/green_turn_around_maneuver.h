@@ -9,7 +9,7 @@
 #include <chrono>
 
 // Mantém o lifecycle completo do retorno de 180 graus disparado pelo verde.
-// A manobra conserva autoridade até recuperar a linha ou parar com segurança.
+// A manobra conserva autoridade até recuperar a linha e concluir a ré curta.
 class GreenTurnAroundManeuver
 {
 public:
@@ -32,7 +32,8 @@ private:
         DrivingForward,
         ForwardSettling,
         TurningByImu,
-        SearchingLine
+        SearchingLine,
+        DrivingReverse
     };
 
     Phase phase_ = Phase::Idle;

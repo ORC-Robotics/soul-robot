@@ -8,7 +8,9 @@ da saída pelos corners.
 ## Ordem da missão
 
 1. Liga o YOLO solicitando exclusivamente `silver_ball`.
-2. Aguarda o primeiro resultado atual do detector e avança 10 cm por encoders.
+2. Avança os 10 cm mínimos por encoders sem aguardar o YOLO. Uma candidata ou
+   vítima confirmada apenas memoriza o lado; não interrompe o avanço nem libera
+   alinhamento ou coleta. Após concluir a distância, libera a busca.
 3. Se não houver vítima viva confirmada, começa pelo lado da última candidata
    vista na entrada; sem indicação, começa à esquerda. Varre os dois lados em
    `45°` com até 3 segundos por tentativa e depois em `75°` com até 8 segundos
@@ -93,8 +95,10 @@ a garra receber `90°`. Até esse ponto, a retenção permanece em `5°`.
 
 ## Segurança
 
-- YOLO ou IPC desatualizado ou pertencente a outra geração: motores em zero.
-- Candidata ainda não travada: motores em zero.
+- Na busca e no alinhamento, YOLO ou IPC desatualizado ou pertencente a outra
+  geração: motores em zero. O avanço mínimo de entrada independe do YOLO.
+- Na busca, candidata ainda não travada: motores em zero. Durante a entrada,
+  apenas memoriza o lado e continua o avanço.
 - `candidateTxDegrees` é opcional no IPC e orienta somente a busca. Não libera
   alinhamento ou coleta, e frames antigos ou de outra geração não atualizam a pista.
 - Troca entre vítimas: uma nova geração limpa o tracker e impede reutilizar o

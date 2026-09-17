@@ -620,9 +620,13 @@ O contrato `/dev/shm/obr_forward_ball_status.json`, a geração do alvo e o requ
 de target lock impedem reutilizar uma vítima de uma busca anterior.
 `ForwardBallSnapshot`, `BallAlignmentMission`, `RescueAreaMission` e
 `RescueRoomMission` validam idade, identidade e geometria antes de permitir
-movimento. Sem um produtor válido, a missão mantém os motores zerados.
+movimento guiado por vítimas. Sem um produtor válido, a busca e o alinhamento
+mantêm os motores zerados; o avanço mínimo de entrada independe do YOLO.
 
 Na Missão Principal, a faixa cinza liga o YOLO antes do avanço inicial de 10 cm.
+Durante esse avanço, o detector apenas memoriza o lado de uma possível vítima.
+O robô conclui a distância mesmo sem resultados do YOLO ou com uma bola visível,
+e só depois libera a busca e o alinhamento.
 A rotina prioriza duas vítimas pratas no triângulo verde, entrega a vítima preta
 no triângulo vermelho e faz uma varredura final por vítimas extras. A sequência,
 as etapas reaproveitadas dos servos e o checklist físico estão em

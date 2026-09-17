@@ -30,6 +30,7 @@ void MainMission::reset(bool startAtExit)
     lastSilverClearSequence_ = 0;
     rescueRoomMission_.reset();
     rescueExitMission_.reset();
+    exitReferenceInitialized_ = false;
 }
 
 bool MainMission::requiresExitVision() const
@@ -254,10 +255,11 @@ void MainMission::update(
             rescueExitMission_.reset();
             rescueExitMission_.setTriangleReferenceHeading(
                 rescueRoomMission_.lastTriangleHeadingDegrees());
+            exitReferenceInitialized_ = true;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
                 "rescue_exit_starting",
-                "Varredura final concluída; iniciando busca da saída",
+                "Varredura final concluída; iniciando a rota fixa da saída",
                 0.0));
         }
         return;
@@ -265,6 +267,12 @@ void MainMission::update(
 
     if (phase_ == Phase::ExitSearch)
     {
+        // O teste isolado reutiliza o heading salvo; sem ele, a saída captura o yaw inicial.
+        if (!exitReferenceInitialized_)
+        {
+            rescueExitMission_.setTriangleReferenceHeading(snapshot.rescueZoneLockedHeading);
+            exitReferenceInitialized_ = true;
+        }
         const auto exit = rescueExitMission_.update(
             cameraLineSnapshot, forwardLineSnapshot, rescueZoneSnapshot,
             esp32Telemetry, autonomousRunSequence);

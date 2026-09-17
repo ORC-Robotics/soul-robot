@@ -324,7 +324,11 @@ int RobotApplication::run(const std::atomic<bool>& running)
                 missionController.requiresExitVision(stateAtLoopStart),
                 stateAtLoopStart.autonomousRunSequence, stateAtLoopStart.autonomousStatus,
                 turn90ImuReady(esp32Telemetry), esp32Telemetry.yawZDeg,
-                esp32Telemetry.gyroZDegPerSec, esp32Telemetry.lastSensorAgeMs);
+                esp32Telemetry.gyroZDegPerSec, esp32Telemetry.lastSensorAgeMs,
+                stateAtLoopStart.autonomousMission == AutonomousMission::RescueExit &&
+                    !stateAtLoopStart.emergencyStop &&
+                    (stateAtLoopStart.mode == "manual" || stateAtLoopStart.mode == "autonomous" ||
+                     stateAtLoopStart.autonomousStatus.phase == "rescue_exit_failed"));
             if (!published && !exitGateFailureLogged)
                 std::cerr << "Falha ao publicar controle da busca da saída\n";
             exitGateFailureLogged = !published;

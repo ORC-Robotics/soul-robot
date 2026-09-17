@@ -597,16 +597,16 @@ void testReverseFailureNeverLiftsVictim()
             "A falha não pode liberar uma elevação tardia.");
 }
 
-void testWaitsForYoloBeforeEntryAdvance()
+void testEntryAdvanceDoesNotWaitForOrStopOnYolo()
 {
     RescueRoomMission mission;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     RescueRoomOutput output = mission.update(
         {}, {}, telemetry, kRunSequence, 0, {}, Clock::time_point{});
-    require(output.status.phase == "rescue_entry_waiting_yolo",
-            "O avanço não pode começar antes do primeiro frame do YOLO.");
-    require(output.leftPower == 0.0 && output.rightPower == 0.0,
-            "Sem YOLO atual, a entrada deve manter os motores parados.");
+    require(output.status.phase == "rescue_entry_advancing" && !output.failed,
+            "O avanço mínimo deve começar mesmo sem resultado do YOLO.");
+    require(output.leftPower > 0.0 && output.rightPower > 0.0,
+            "Sem YOLO atual, a entrada deve concluir o avanço mínimo.");
     require(mission.requiresBallDetection() &&
                 std::string(mission.ballTargetType()) == "silver_ball",
             "A entrada deve solicitar somente vítimas vivas.");
@@ -622,9 +622,37 @@ void testWaitsForYoloBeforeEntryAdvance()
         0,
         {},
         Clock::time_point{});
-    require(output.status.phase == "rescue_entry_waiting_yolo" &&
-                output.leftPower == 0.0 && output.rightPower == 0.0,
-            "A entrada não pode reutilizar um frame de outra geração do YOLO.");
+    require(output.status.phase == "rescue_entry_advancing" &&
+                output.leftPower > 0.0 && output.rightPower > 0.0,
+            "Um frame de outra geração não deve bloquear o avanço mínimo.");
+
+    auto victim = lockedSilver(mission.ballTargetSequence(kRunSequence), 2.0);
+    victim.txDegrees = 20.0;
+    telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
+        config::kRescueEntryAdvanceDistanceCm *
+        config::kEncoderCountsPerCentimeter * 0.5));
+    telemetry.rightEncoderCount = telemetry.leftEncoderCount;
+    output = mission.update(victim, {}, telemetry, kRunSequence, 0, {},
+                            Clock::time_point{} + std::chrono::milliseconds(20));
+    require(output.status.phase == "rescue_entry_advancing" &&
+                output.leftPower > 0.0 && output.rightPower > 0.0 &&
+                !output.servoPoseRequested && !output.failed,
+            "Uma vítima travada no meio da entrada não deve interromper o avanço.");
+
+    telemetry.leftEncoderCount = static_cast<long long>(std::ceil(
+        config::kRescueEntryAdvanceDistanceCm * config::kEncoderCountsPerCentimeter));
+    telemetry.rightEncoderCount = telemetry.leftEncoderCount;
+    mission.update({}, {}, telemetry, kRunSequence, 0, {},
+                   Clock::time_point{} + std::chrono::milliseconds(40));
+    output = mission.update({}, {}, telemetry, kRunSequence, 0, {},
+        Clock::time_point{} + std::chrono::milliseconds(40 + config::kRescueDistanceSettleMs));
+    require(output.status.phase == "rescue_search_starting" && !output.failed,
+            "A entrada deve liberar a busca somente depois de concluir a distância.");
+    output = mission.update(emptyFrame(mission.ballTargetSequence(kRunSequence), 3.0),
+                            {}, telemetry, kRunSequence, 0, {},
+        Clock::time_point{} + std::chrono::milliseconds(41 + config::kRescueDistanceSettleMs));
+    require(output.status.phase == "rescue_search_sweep" && output.leftPower > 0.0,
+            "Mesmo se a vítima sumir, a busca deve começar pelo lado direito memorizado.");
 }
 
 void testTransientEsp32LossPausesWithoutKillingMission()
@@ -936,7 +964,7 @@ int main()
 {
     try
     {
-        testWaitsForYoloBeforeEntryAdvance();
+        testEntryAdvanceDoesNotWaitForOrStopOnYolo();
         testSweepRemembersEntryCandidateAndDefaultsLeft();
         testDelicateMotionUsesOneShortKick();
         testSweepTimeoutsReverseExpandAndStop();

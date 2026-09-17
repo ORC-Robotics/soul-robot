@@ -148,17 +148,8 @@ RescueRoomOutput RescueRoomMission::updateStep(
 
     if (phase_ == Phase::EntryAdvance)
     {
-        // O deslocamento só começa depois que o primeiro resultado do YOLO
-        // confirma que o gate realmente abriu. Durante a espera, o PWM é zero.
-        if (distanceController_.idle() &&
-            (!ball.sourceFresh ||
-             ball.targetSequence != expectedTargetSequence))
-        {
-            output.status = makeStatus(
-                "rescue_entry_waiting_yolo",
-                "Parado: aguardando o YOLO da busca atual antes do avanço de 10 cm");
-            return output;
-        }
+        // O avanço mínimo independe do YOLO. Durante a entrada, a detecção
+        // apenas guarda o lado da busca e nunca inicia alinhamento ou coleta.
         if (distanceController_.idle())
         {
             startDistance(
@@ -171,7 +162,7 @@ RescueRoomOutput RescueRoomMission::updateStep(
             telemetry,
             now,
             "rescue_entry_advancing",
-            "Avançando 10 cm com o detector de vítimas ativo");
+            "Concluindo o avanço mínimo antes de procurar vítimas");
         output.internalObjectStored = storedAliveVictim_;
         if (output.failed)
         {
@@ -184,18 +175,8 @@ RescueRoomOutput RescueRoomMission::updateStep(
         }
 
         distanceController_.reset();
-        if (matchesVictim(ball, desiredVictimType_, expectedTargetSequence))
-        {
-            initialAlternatingSweepAllowed_ = false;
-            carriedVictimType_ = desiredVictimType_;
-            initialVictimAlignmentMission_.reset();
-            phase_ = Phase::AlignVictim;
-            output.completed = false;
-            output.status = makeStatus(
-                "rescue_victim_acquired",
-                "Vítima viva encontrada durante a entrada; iniciando alinhamento");
-            return output;
-        }
+        // O ponto angular visto durante o avanço mudou; aproveita apenas o lado.
+        candidateHeadingValid_ = false;
         phase_ = Phase::SearchVictim;
         sweepStep_ = SweepStep::First45;
         sweepTurnStarted_ = false;
