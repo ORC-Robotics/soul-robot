@@ -1384,6 +1384,39 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         "A linha recuperada e centralizada deve confirmar a área de resgate.");
 }
 
+void testRememberedVictimsSkipRescueCollection()
+{
+    MissionFixture fixture;
+    fixture.robotState.stop();
+    require(fixture.robotState.setRescueTestDeliveries(2, 1),
+            "A memória de teste deve ser ajustada somente após STOP.");
+    fixture.robotState.startAutonomous();
+
+    CameraLineSnapshot gray = freshVision(GreenInterpretation::None);
+    gray.silverCandidateDetected = true;
+    fixture.update(gray);
+    gray.courseMarkerConfirmed = true;
+    gray.courseMarker = CourseMarker::Gray;
+    fixture.update(gray);
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = reverseCounts;
+    fixture.telemetry.rightEncoderCount = reverseCounts;
+    fixture.update(gray);
+    const RobotSnapshot entered = fixture.update(gray);
+    require(entered.autonomousStatus.phase == "rescue_exit_starting" &&
+                entered.left == 0.0 && entered.right == 0.0 &&
+                fixture.mission.requiresExitVision() &&
+                !fixture.mission.requiresRescueVision(),
+            "Três entregas lembradas devem iniciar a saída com motores parados.");
+    fixture.robotState.stop();
+    const RobotSnapshot stopped = fixture.robotState.snapshot();
+    require(stopped.rescueDeliveredAliveVictims == 2 &&
+                stopped.rescueDeliveredDeadVictims == 1,
+            "STOP não pode apagar a memória das vítimas entregues.");
+}
+
 void testRescueAlignmentModeKeepsExistingMotorAuthority()
 {
     RobotState robotState;
@@ -1963,6 +1996,12 @@ int main(int argc, char** argv)
             std::cout << "red_finish_test: OK\n";
             return 0;
         }
+        if (argc > 1 && std::string(argv[1]) == "--rescue-memory-only")
+        {
+            testRememberedVictimsSkipRescueCollection();
+            std::cout << "rescue_memory_integration_test: OK\n";
+            return 0;
+        }
         testExitAcquisitionRestoresFollower();
         testCornerYawModeOnlyTurnsAndStopsOnImuLoss();
         testExitFailureDiagnosticSurvivesStop();
@@ -2001,6 +2040,7 @@ int main(int argc, char** argv)
         testTransientLineIpcLossPausesAndResumesMission();
         testObstaclePausesIfBottomCameraBecomesUnavailable();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
+        testRememberedVictimsSkipRescueCollection();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();
         testRescueZoneAlignKeepsDetectionGateActive();

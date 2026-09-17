@@ -455,6 +455,9 @@ constexpr int kRescueVictimSecondSweepTimeoutMs = 8000;
 // preso em uma parede e inverte o giro para tentar se liberar.
 constexpr double kRescueContinuousSearchMinimumProgressDegrees = 15.0;
 constexpr int kRescueContinuousSearchStallTimeoutMs = 2000;
+// Duas voltas completas, em graus, sem nova prata liberam a busca da preta.
+// A IMU precisa confirmar o giro; uma colisão não pode contar como varredura.
+constexpr double kRescueSilverSearchDegrees = 720.0;
 
 // A verificação das vítimas extras cobre no máximo uma volta completa.
 // O tempo limite encerra a busca mesmo se o robô ficar preso e libera a rotina
