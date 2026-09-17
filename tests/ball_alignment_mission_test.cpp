@@ -100,9 +100,14 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
 {
     BallAlignmentMission mission;
     const Clock::time_point start{};
+    const double coarseError =
+        config::kBallAlignmentFineCorrectionThresholdDegrees + 3.0;
+    const double fineError =
+        (config::kVictimApproachStartToleranceDegrees +
+         config::kBallAlignmentFineCorrectionThresholdDegrees) / 2.0;
 
     BallAlignmentOutput output = mission.update(
-        ball(12.0),
+        ball(coarseError),
         stoppedTelemetry(0.0),
         kTargetSequence,
         start);
@@ -119,7 +124,7 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
     applied.appliedLeftPower = config::kBallAlignmentStartPower;
     applied.appliedRightPower = -config::kBallAlignmentStartPower;
     output = mission.update(
-        ball(12.0, 40.0, 1.1),
+        ball(coarseError, 40.0, 1.1),
         applied,
         kTargetSequence,
         start + std::chrono::milliseconds(20));
@@ -129,7 +134,7 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
         "Confirmar somente o PWM não deve iniciar o tempo útil do pulso.");
 
     output = mission.update(
-        ball(12.0, 40.0, 1.2),
+        ball(coarseError, 40.0, 1.2),
         movingPivotTelemetry(0.0, 1.0),
         kTargetSequence,
         start + std::chrono::milliseconds(200));
@@ -141,7 +146,7 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
         "Os encoders devem iniciar o tempo útil na potência de pulso.");
 
     output = mission.update(
-        ball(11.0, 40.0, 1.3),
+        ball(coarseError - 1.0, 40.0, 1.3),
         movingPivotTelemetry(2.0, 1.0),
         kTargetSequence,
         start + std::chrono::milliseconds(201));
@@ -151,7 +156,7 @@ void testCoarsePulseStopsAtImuLimitAndUsesFineCorrection()
             "O corte por yaw deve iniciar a estabilização.");
 
     output = mission.update(
-        ball(9.0, 40.0, 2.0),
+        ball(fineError, 40.0, 2.0),
         stoppedTelemetry(2.0),
         kTargetSequence,
         start + std::chrono::milliseconds(
@@ -168,14 +173,16 @@ void testMotionConfirmationTimeoutFailsSafe()
 {
     BallAlignmentMission mission;
     const Clock::time_point start{};
+    const double coarseError =
+        config::kBallAlignmentFineCorrectionThresholdDegrees + 3.0;
 
     mission.update(
-        ball(15.0),
+        ball(coarseError),
         stoppedTelemetry(),
         kTargetSequence,
         start);
     const BallAlignmentOutput output = mission.update(
-        ball(15.0, 40.0, 1.1),
+        ball(coarseError, 40.0, 1.1),
         stoppedTelemetry(),
         kTargetSequence,
         start + std::chrono::milliseconds(

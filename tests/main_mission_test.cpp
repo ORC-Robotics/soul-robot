@@ -1566,7 +1566,10 @@ void testGreenReverseStallNearTargetReleasesFollower()
         return std::make_pair(snapshot, next);
     };
 
-    const auto nearTarget = runUntilStall(3.75);
+    // Mantém o caso perto da meta mesmo quando a distância de ré é recalibrada.
+    const auto nearTarget = runUntilStall(
+        config::kGreenLateralReverseDistanceCm -
+        config::kGreenLateralReverseStallToleranceCm * 0.5);
     require(nearTarget.first.autonomousStatus.phase == "green_reverse_short" &&
                 nearTarget.first.left == 0.0 && nearTarget.first.right == 0.0 &&
                 nearTarget.second.autonomousStatus.phase == "line_following" &&
@@ -2291,6 +2294,273 @@ void testTransientLineIpcLossPausesAndResumesMission()
 
     snapshot = fixture.update(freshVision(GreenInterpretation::None), true);
     requireFollowingLine(snapshot, "Retorno do IPC visual");
+}
+
+CameraLineSnapshot cameraRecoveryVision(std::uint64_t sequence)
+{
+    CameraLineSnapshot line = freshVision(GreenInterpretation::None);
+    line.lineSequence = sequence;
+    line.lineControlSource = "fusion";
+    line.normalSteeringValid = true;
+    line.curveDiagnostics.lineState = "LINE";
+    line.curveDiagnostics.virtualState = "NORMAL";
+    return line;
+}
+
+void beginCameraRecovery(MissionFixture& fixture, bool ipcLossFirst = false)
+{
+    fixture.update(cameraRecoveryVision(10));
+    fixture.update(cameraRecoveryVision(11));
+    CameraLineSnapshot staleLine = cameraRecoveryVision(11);
+    staleLine.sourceFresh = false;
+    staleLine.activeStreamDelayed = true;
+    if (ipcLossFirst)
+    {
+        const auto paused = fixture.update(staleLine);
+        require(paused.autonomousStatus.phase == "line_ipc_waiting",
+                "A perda breve do IPC deve manter a pausa existente.");
+    }
+    const auto paused = fixture.update(staleLine, false);
+    require(paused.mode == "autonomous" && paused.left == 0.0 && paused.right == 0.0 &&
+                paused.autonomousStatus.phase == "camera_recovery_waiting",
+            "A perda conjunta da CAM0 deve aguardar parada após visão válida.");
+}
+
+void testBottomCameraRecoveryRequiresNewReliableFrames()
+{
+    for (const bool ipcLossFirst : {false, true})
+    {
+        MissionFixture fixture;
+        beginCameraRecovery(fixture, ipcLossFirst);
+        for (int repetition = 0; repetition < 5; ++repetition)
+        {
+            const auto paused = fixture.update(cameraRecoveryVision(11));
+            require(paused.autonomousStatus.phase == "camera_recovery_waiting" &&
+                        paused.left == 0.0 && paused.right == 0.0,
+                    "O último frame anterior à perda não pode votar pela retomada.");
+        }
+        fixture.update(cameraRecoveryVision(12));
+        for (int repetition = 0; repetition < 5; ++repetition)
+        {
+            require(fixture.update(cameraRecoveryVision(12)).autonomousStatus.phase ==
+                        "camera_recovery_waiting",
+                    "Repetir um frame novo não pode multiplicar os votos.");
+        }
+        fixture.update(cameraRecoveryVision(13));
+        auto invalid = cameraRecoveryVision(14);
+        invalid.normalSteeringValid = false;
+        fixture.update(invalid);
+        require(fixture.update(cameraRecoveryVision(14)).autonomousStatus.phase ==
+                    "camera_recovery_waiting",
+                "Um frame rejeitado não pode ser reapresentado como voto novo.");
+        for (std::uint64_t sequence = 15; sequence <= 17; ++sequence)
+        {
+            const auto paused = fixture.update(cameraRecoveryVision(sequence));
+            require(paused.left == 0.0 && paused.right == 0.0 &&
+                        paused.autonomousStatus.phase ==
+                            (sequence == 17 ? "camera_recovery_ready" : "camera_recovery_waiting"),
+                    "Uma rejeição deve reiniciar os três votos, sempre com saída zero.");
+        }
+        requireFollowingLine(fixture.update(cameraRecoveryVision(18)),
+                             "Retomada após recuperação da CAM0");
+    }
+}
+
+void testBottomCameraRecoveryRejectsInvalidVision()
+{
+    for (const int invalidCase : {0, 1, 2, 3, 4, 5, 6})
+    {
+        MissionFixture fixture;
+        beginCameraRecovery(fixture);
+        fixture.update(cameraRecoveryVision(12));
+        fixture.update(cameraRecoveryVision(13));
+        auto invalid = cameraRecoveryVision(14);
+        if (invalidCase == 0) invalid.sourceFresh = false;
+        if (invalidCase == 1) invalid.lineControlSource = "virtual";
+        if (invalidCase == 2) invalid.curveDiagnostics.lineState = "GAP";
+        if (invalidCase == 3) invalid.curveDiagnostics.virtualState = "SEARCHING";
+        if (invalidCase == 4) invalid.lineFollowerLeftPower =
+            std::numeric_limits<double>::quiet_NaN();
+        if (invalidCase == 5) invalid.lineFollowerRightPower = 1.1;
+        invalid.activeStreamDelayed = invalidCase == 6;
+        const auto paused = fixture.update(invalid, invalidCase != 6);
+        require(paused.mode == "autonomous" && paused.left == 0.0 && paused.right == 0.0 &&
+                    paused.autonomousStatus.phase == "camera_recovery_waiting",
+                "Status ausente, comandos inválidos e visão sem Fusion não liberam a retomada.");
+        require(fixture.update(cameraRecoveryVision(15)).autonomousStatus.phase ==
+                    "camera_recovery_waiting",
+                "A leitura rejeitada deve apagar as confirmações anteriores.");
+    }
+}
+
+void testBottomCameraRecoveryPreservesImmediateStopsOutsideScope()
+{
+    // Estas fases representam curvas, ré, busca e outras autoridades já existentes.
+    for (const std::string phase : {"green_forward_left", "green_reverse_right",
+                                   "turnaround_imu", "obstacle_turning", "forward_assist"})
+    {
+        MissionFixture fixture;
+        fixture.update(cameraRecoveryVision(10));
+        fixture.update(cameraRecoveryVision(11));
+        AutonomousStatus status;
+        status.phase = phase;
+        fixture.robotState.updateAutonomousStatus(status);
+        auto stale = cameraRecoveryVision(11);
+        stale.sourceFresh = false;
+        const auto stopped = fixture.update(stale, false);
+        require(stopped.mode == "stopped" && stopped.left == 0.0 && stopped.right == 0.0 &&
+                    stopped.autonomousStatus.phase == "camera_not_ready",
+                "A recuperação não deve substituir a parada fora das fases permitidas.");
+    }
+    MissionFixture fixture;
+    fixture.update(cameraRecoveryVision(10));
+    fixture.update(cameraRecoveryVision(11));
+    require(fixture.update(cameraRecoveryVision(12), false).mode == "stopped",
+            "Uma falha apenas no status geral não é a perda conjunta observada da CAM0.");
+
+    for (const bool gap : {false, true})
+    {
+        MissionFixture noFusion;
+        noFusion.update(cameraRecoveryVision(10));
+        noFusion.update(cameraRecoveryVision(11));
+        auto specialLine = cameraRecoveryVision(12);
+        specialLine.lineControlSource = gap ? "gap-forward" : "virtual";
+        specialLine.curveDiagnostics.lineState = gap ? "GAP" : "LINE";
+        noFusion.update(specialLine);
+        specialLine.sourceFresh = false;
+        require(noFusion.update(specialLine, false).mode == "stopped",
+                "Gap e controle virtual não podem herdar a elegibilidade do Fusion anterior.");
+    }
+
+    MissionFixture declaredFailure;
+    beginCameraRecovery(declaredFailure);
+    auto failure = cameraRecoveryVision(12);
+    failure.sourceFresh = false;
+    failure.activeStreamDelayed = false;
+    require(declaredFailure.update(failure, false).mode == "stopped",
+            "Uma falha declarada durante a espera deve encerrar sem aguardar o prazo.");
+}
+
+void testBottomCameraDelayDiagnosticExcludesDeclaredFailures()
+{
+    const auto linePath = std::filesystem::temp_directory_path() / "obr_delay_line_test.json";
+    const auto statusPath = std::filesystem::temp_directory_path() / "obr_delay_status_test.json";
+    const double now = std::chrono::duration<double>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    CameraMonitor monitor({}, {}, {}, linePath.string(), statusPath.string());
+    {
+        std::ofstream line(linePath);
+        line << std::setprecision(17)
+             << "{\"lineFollowerLeftPower\":0.7,\"lineFollowerRightPower\":0.7,"
+                "\"lineNearDetected\":true,\"greenPathBlackValid\":false,"
+                "\"greenCandidateCount\":0,\"greenConfirmed\":false,"
+                "\"greenInterpretation\":\"SEM_DECISAO\",\"lineSequence\":11,\"lineTimestamp\":"
+             << now - 1.0 << '}';
+    }
+    const auto writeStatus = [&](bool active, bool enabled, double fps,
+                                 double timestamp, const std::string& error) {
+        std::ofstream status(statusPath);
+        status << std::setprecision(17)
+               << "{\"active\":" << (active ? "true" : "false")
+               << ",\"enabled\":" << (enabled ? "true" : "false")
+               << ",\"fps\":" << fps << ",\"timestamp\":" << timestamp
+               << ",\"error\":\"" << error << "\"}";
+    };
+    writeStatus(true, true, 30.0, now - 1.0, "");
+    const auto delayed = monitor.lineSnapshot();
+    require(!monitor.ready() && !delayed.sourceFresh && delayed.activeStreamDelayed &&
+                delayed.lineFollowerLeftPower == 0.0 && delayed.lineFollowerRightPower == 0.0,
+            "Apenas o status ativo atrasado deve identificar captura possivelmente bloqueada, sem saída de motor.");
+    for (const int invalidCase : {0, 1, 2, 3, 4, 5})
+    {
+        writeStatus(invalidCase != 0, invalidCase != 1,
+                    invalidCase == 2 ? 0.0 : 30.0,
+                    invalidCase == 3 ? now + 1.0 : invalidCase == 4 ? now : now - 1.0,
+                    invalidCase == 5 ? "Camera script failed" : "");
+        require(!monitor.lineSnapshot().activeStreamDelayed,
+                "Desligamento, falha, FPS zero e timestamps recentes ou futuros não autorizam recuperação.");
+    }
+    std::filesystem::remove(statusPath);
+    require(!monitor.lineSnapshot().activeStreamDelayed,
+            "Status ausente não pode ser interpretado como atraso recuperável.");
+    writeStatus(true, true, 30.0, now - 1.0, "");
+    {
+        std::ofstream line(linePath);
+        line << "{\"lineTimestamp\":0}";
+    }
+    require(!monitor.lineSnapshot().activeStreamDelayed,
+            "IPC inválido não pode reutilizar o diagnóstico de uma leitura anterior.");
+    std::filesystem::remove(linePath);
+    std::filesystem::remove(statusPath);
+}
+
+void testBottomCameraRecoveryDiscardsPreviousGreenConfirmation()
+{
+    MissionFixture fixture;
+    auto green = cameraRecoveryVision(10);
+    green.greenCandidateCount = 1;
+    green.greenRawInterpretation = GreenInterpretation::Right;
+    green.greenInterpretation = GreenInterpretation::Right;
+    green.greenConfirmed = true;
+    green.greenPathBlackValid = true;
+    fixture.update(green);
+    green.lineSequence = 11;
+    require(fixture.update(green).autonomousStatus.phase == "green_confirming",
+            "O teste deve interromper uma confirmação verde real.");
+    green.sourceFresh = false;
+    green.activeStreamDelayed = true;
+    require(fixture.update(green, false).autonomousStatus.phase == "camera_recovery_waiting",
+            "A perda da CAM0 durante a confirmação verde deve entrar na espera.");
+    for (std::uint64_t sequence = 12; sequence <= 14; ++sequence)
+        fixture.update(cameraRecoveryVision(sequence));
+    requireFollowingLine(fixture.update(cameraRecoveryVision(15)),
+                         "A cena sem verde após a recuperação não pode herdar o lado anterior");
+}
+
+void testBottomCameraRecoveryTimesOutAndCannotRestart()
+{
+    MissionFixture fixture;
+    beginCameraRecovery(fixture);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kBottomCameraRecoveryTimeoutMs + 20));
+    const auto stopped = fixture.update(cameraRecoveryVision(12));
+    require(stopped.mode == "stopped" && stopped.left == 0.0 && stopped.right == 0.0 &&
+                stopped.autonomousStatus.phase == "camera_not_ready",
+            "O prazo deve encerrar a missão mesmo se a visão voltar depois dele.");
+    for (std::uint64_t sequence = 13; sequence <= 17; ++sequence)
+        require(fixture.update(cameraRecoveryVision(sequence)).mode == "stopped",
+                "Frames posteriores ao prazo não podem iniciar outra missão.");
+}
+
+void testBottomCameraRecoveryHonorsStopEmergencyAndEsp32Failure()
+{
+    for (const int interruption : {0, 1, 2, 3, 4})
+    {
+        MissionFixture fixture;
+        beginCameraRecovery(fixture);
+        fixture.update(cameraRecoveryVision(12));
+        fixture.update(cameraRecoveryVision(13));
+        if (interruption == 0) fixture.robotState.stop();
+        if (interruption == 1) fixture.robotState.emergencyStop();
+        if (interruption == 2) fixture.telemetry.sensorFresh = false;
+        if (interruption == 3) fixture.telemetry.emergencyStopActive = true;
+        if (interruption == 4) fixture.telemetry.calibrationActive = true;
+        for (std::uint64_t sequence = 14; sequence <= 18; ++sequence)
+        {
+            const auto stopped = fixture.update(cameraRecoveryVision(sequence));
+            require(stopped.mode != "autonomous" && stopped.left == 0.0 && stopped.right == 0.0,
+                    "Parar, E-Stop, calibração e falha da ESP32 devem impedir a recuperação.");
+        }
+    }
+
+    MissionFixture fixture;
+    beginCameraRecovery(fixture);
+    fixture.robotState.stop();
+    fixture.robotState.startAutonomous();
+    auto stale = cameraRecoveryVision(11);
+    stale.sourceFresh = false;
+    require(fixture.update(stale, false).mode == "stopped",
+            "Uma partida nova sem visão válida não pode herdar a recuperação anterior.");
 }
 
 void testObstacleFailureWaitsAndResumesWithClearLine()
@@ -3344,6 +3614,20 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--camera-recovery-only")
+        {
+            testBottomCameraDelayDiagnosticExcludesDeclaredFailures();
+            testUnavailableCameraStopsMission();
+            testTransientLineIpcLossPausesAndResumesMission();
+            testBottomCameraRecoveryRequiresNewReliableFrames();
+            testBottomCameraRecoveryRejectsInvalidVision();
+            testBottomCameraRecoveryPreservesImmediateStopsOutsideScope();
+            testBottomCameraRecoveryDiscardsPreviousGreenConfirmation();
+            testBottomCameraRecoveryTimesOutAndCannotRestart();
+            testBottomCameraRecoveryHonorsStopEmergencyAndEsp32Failure();
+            std::cout << "bottom_camera_recovery_test: OK\n";
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--return-only")
         {
             testReturnRunsConfiguredSequenceAndRestoresFollower();
@@ -3470,6 +3754,13 @@ int main(int argc, char** argv)
         testForwardIpcAcceptsGeometryWithoutPowersAndRejectsInvalidSources();
         testUnavailableCameraStopsMission();
         testTransientLineIpcLossPausesAndResumesMission();
+        testBottomCameraDelayDiagnosticExcludesDeclaredFailures();
+        testBottomCameraRecoveryRequiresNewReliableFrames();
+        testBottomCameraRecoveryRejectsInvalidVision();
+        testBottomCameraRecoveryPreservesImmediateStopsOutsideScope();
+        testBottomCameraRecoveryDiscardsPreviousGreenConfirmation();
+        testBottomCameraRecoveryTimesOutAndCannotRestart();
+        testBottomCameraRecoveryHonorsStopEmergencyAndEsp32Failure();
         testObstacleFailureWaitsAndResumesWithClearLine();
         testObstaclePausesIfBottomCameraBecomesUnavailable();
         testObstacleRespectsStopAndSafetyPriority();

@@ -7,6 +7,7 @@
 #include "obr/robot_state.h"
 #include "obr/obstacle_avoidance.h"
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -19,7 +20,8 @@ public:
     bool maneuverActive() const
     {
         return obstacleAvoidance_.active() || greenManeuver_.active() ||
-               forwardLineAssist_.active() || obstacleRecoveryWaiting_;
+               forwardLineAssist_.active() || obstacleRecoveryWaiting_ ||
+               cameraRecoveryWaiting_;
     }
     void update(
         RobotState& robotState,
@@ -37,4 +39,17 @@ private:
     int obstacleRecoveryFusionFrames_ = 0;
     std::uint64_t obstacleRecoveryLastLineSequence_ = 0;
     std::string obstacleRecoveryCause_;
+    bool cameraRecoveryEligible_ = false;
+    bool cameraRecoveryWaiting_ = false;
+    int cameraRecoveryFrames_ = 0;
+    std::uint64_t cameraRecoveryLastLineSequence_ = 0;
+    std::uint64_t cameraRecoveryRunSequence_ = 0;
+    std::chrono::steady_clock::time_point cameraRecoveryStartedAt_{};
+
+    // Mantém saída zero até confirmar dados novos da CAM0 ou encerrar pelo prazo.
+    bool updateCameraRecovery(
+        RobotState& robotState,
+        const RobotSnapshot& robotSnapshot,
+        bool cameraReady,
+        const CameraLineSnapshot& cameraLineSnapshot);
 };

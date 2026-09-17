@@ -44,7 +44,7 @@ CameraLineSnapshot centeredLine()
     return line;
 }
 
-void completeInitialReverse(
+ObstacleAvoidanceOutput completeInitialReverse(
     ObstacleAvoidance& avoidance,
     Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line)
@@ -56,8 +56,10 @@ void completeInitialReverse(
     telemetry.rightEncoderCount -= targetCounts;
     const ObstacleAvoidanceOutput completed =
         avoidance.update(telemetry, line, true);
-    require(completed.phase == "obstacle_reverse_completed",
-            "A ré inicial deve liberar a centralização na distância configurada.");
+    require(completed.phase == "obstacle_reverse_completed" ||
+                completed.phase == "obstacle_side_selected",
+            "A ré inicial deve liberar a próxima fase do desvio.");
+    return completed;
 }
 
 ObstacleAvoidanceOutput beginAndCenter(
@@ -75,7 +77,12 @@ ObstacleAvoidanceOutput beginAndCenter(
     require(reversing.leftPower == -config::kObstacleReversePower &&
                 reversing.rightPower == -config::kObstacleReversePower,
             "O desvio deve recuar antes da centralização.");
-    completeInitialReverse(avoidance, telemetry, line);
+    const ObstacleAvoidanceOutput reverseCompleted =
+        completeInitialReverse(avoidance, telemetry, line);
+    if (reverseCompleted.phase == "obstacle_side_selected")
+    {
+        return reverseCompleted;
+    }
     return avoidance.update(telemetry, line, true);
 }
 
@@ -424,7 +431,7 @@ ObstacleAvoidanceOutput startForcedLeftExitForward(
 
 void testForcedLeftProfileReacquiresDuringStraightExit()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance;
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startForcedLeftExitForward(avoidance, telemetry, line);
@@ -446,9 +453,60 @@ void testForcedLeftProfileReacquiresDuringStraightExit()
             "Três frames Fusion devem concluir a saída imediatamente e parada.");
 }
 
+void testForcedRightSkipsSideMeasurement()
+{
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Right);
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+
+    ObstacleAvoidanceOutput output =
+        beginAndCenter(avoidance, telemetry, line);
+    require(output.selectedSide == "RIGHT" &&
+                output.selectedSideSource == "CONFIG" &&
+                output.phase == "obstacle_side_selected",
+            "O perfil fixo direito deve pular a comparação lateral.");
+
+    output = completeTurn(
+        avoidance,
+        telemetry,
+        line,
+        config::kObstacleSideApproachDegrees);
+    require(output.phase == "obstacle_selected_forward_start",
+            "O perfil fixo direito deve avançar após o giro configurado.");
+}
+
+void testObstacleTurnAcceptsEncoderStopWithGyroBias()
+{
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
+    Esp32TelemetrySnapshot telemetry = readyTelemetry();
+    const CameraLineSnapshot line = centeredLine();
+
+    beginAndCenter(avoidance, telemetry, line);
+    telemetry.yawZDeg = -config::kObstacleSideApproachDegrees;
+    telemetry.gyroZDegPerSec = -7.0;
+    telemetry.leftEncoderRate = 100.0;
+    telemetry.rightEncoderRate = -100.0;
+    ObstacleAvoidanceOutput output =
+        avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_turn_settling",
+            "O giro deve aguardar enquanto os encoders ainda indicam movimento.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kTurn90SettleMs + 20));
+    output = avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_turn_settling",
+            "O viés do IMU não pode liberar um robô com rodas em movimento.");
+
+    telemetry.leftEncoderRate = 0.0;
+    telemetry.rightEncoderRate = 0.0;
+    output = avoidance.update(telemetry, line, true);
+    require(output.phase == "obstacle_selected_forward_start",
+            "Os encoders parados devem liberar apenas o giro do obstáculo.");
+}
+
 void testExitDistanceRequiresBothEncoders()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
     auto telemetry = readyTelemetry();
     const auto line = centeredLine();
     startForcedLeftExitForward(avoidance, telemetry, line);
@@ -469,7 +527,7 @@ void testExitDistanceRequiresBothEncoders()
 
 void testFusionVotesCarryFromTurnToTimedForward()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
     auto telemetry = readyTelemetry();
     const auto line = centeredLine();
     startForcedLeftExitForward(avoidance, telemetry, line);
@@ -491,7 +549,7 @@ void testFusionVotesCarryFromTurnToTimedForward()
 
 void testForcedLeftProfileSearchTimeoutStops()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startForcedLeftExitForward(avoidance, telemetry, line);
@@ -520,7 +578,7 @@ void testForcedLeftProfileSearchTimeoutStops()
 
 void testForcedLeftProfileReacquiresDuringRightSearch()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startForcedLeftExitForward(avoidance, telemetry, line);
@@ -543,7 +601,7 @@ void testAutomaticNominalExitMirrorsBothSides()
 {
     for (const bool selectRight : {false, true})
     {
-        ObstacleAvoidance avoidance;
+        ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
         auto telemetry = readyTelemetry();
         const auto line = centeredLine();
         startCurveWithSelectedSide(avoidance, telemetry, line, selectRight);
@@ -602,7 +660,7 @@ void testAutomaticNominalExitMirrorsBothSides()
 
 void testForcedSideStillAllowsEarlyRecovery()
 {
-    ObstacleAvoidance avoidance(true);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
     auto telemetry = readyTelemetry();
     const auto line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -633,7 +691,7 @@ void testExitStopsWithStaleSensors()
 {
     for (const bool staleVision : {false, true})
     {
-        ObstacleAvoidance avoidance(true);
+        ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
         auto telemetry = readyTelemetry();
         auto line = centeredLine();
         startForcedLeftExitForward(avoidance, telemetry, line);
@@ -653,7 +711,7 @@ void testExitStopsWithStaleSensors()
 
 void testCenteringIsSharedAndPrecedesScan()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     CameraLineSnapshot line = centeredLine();
     line.curveDiagnostics.mediumPosition = 0.6;
@@ -682,7 +740,7 @@ void testCenteringIsSharedAndPrecedesScan()
 
 void testStableEndpointUsesMaximumAndSelectsRight()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -756,7 +814,7 @@ void testStableEndpointUsesMaximumAndSelectsRight()
 
 void testLeftSelectionReturnsToLeftYaw()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -800,7 +858,7 @@ void testLeftSelectionReturnsToLeftYaw()
 
 void testPracticalTieUsesFixedSide()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -823,7 +881,7 @@ void testPracticalTieUsesFixedSide()
 
 void testCameraBlackSelectsOnlyConfirmedSide()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     beginAndCenter(avoidance, telemetry, line);
@@ -879,7 +937,7 @@ void testCameraBlackSelectsOnlyConfirmedSide()
 
 void testEarlyFusionRecoveryCompletesToTheSelectedSide()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, true);
@@ -916,7 +974,7 @@ void testEarlyFusionRecoveryCompletesToTheSelectedSide()
 
 void testEarlyFusionRecoveryStopsAtAngularLimit()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     startCurveWithSelectedSide(avoidance, telemetry, line, false);
@@ -945,7 +1003,7 @@ void testEarlyFusionRequiresConsecutiveContinuationBands()
 {
     for (const bool selectRight : {false, true})
     {
-        ObstacleAvoidance avoidance(false);
+        ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
         auto telemetry = readyTelemetry();
         startCurveWithSelectedSide(avoidance, telemetry, centeredLine(), selectRight);
         std::uint64_t sequence = 100;
@@ -984,7 +1042,7 @@ void testEarlyFusionRequiresConsecutiveContinuationBands()
 
 void testParabolaFalseGapUsesBestSideAndReacquires()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -1068,7 +1126,7 @@ void testParabolaFalseGapUsesBestSideAndReacquires()
 
 void testParabolaForwardContinuationKeepsNormalGapHandling()
 {
-    ObstacleAvoidance avoidance;
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     auto telemetry = readyTelemetry();
     const auto line = centeredLine();
     completeNominalObstacleWithParabolaBest(avoidance, telemetry, line, false);
@@ -1095,7 +1153,7 @@ void testParabolaForwardContinuationKeepsNormalGapHandling()
 
 void testParabolaOppositeSearchStopsAtSameAngularLimit()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -1142,7 +1200,7 @@ void testParabolaOppositeSearchStopsAtSameAngularLimit()
 
 void testPostObstacleFusionCannotReturnToRearLine()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -1196,7 +1254,7 @@ void testPostObstacleFusionCannotReturnToRearLine()
 
 void testParabolaCase3WindowExpiresWithoutRecovery()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     const CameraLineSnapshot line = centeredLine();
     completeNominalObstacleWithParabolaBest(
@@ -1222,7 +1280,7 @@ void testParabolaCase3WindowExpiresWithoutRecovery()
 
 void testStartCanBeBlockedAndMissingLineStops()
 {
-    ObstacleAvoidance avoidance(false);
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Automatic);
     Esp32TelemetrySnapshot telemetry = readyTelemetry();
     CameraLineSnapshot line = centeredLine();
     avoidance.update(telemetry, line, false);
@@ -1266,6 +1324,8 @@ int main(int argc, char** argv)
         testPostObstacleFusionCannotReturnToRearLine();
         testParabolaCase3WindowExpiresWithoutRecovery();
         testForcedLeftProfileReacquiresDuringStraightExit();
+        testForcedRightSkipsSideMeasurement();
+        testObstacleTurnAcceptsEncoderStopWithGyroBias();
         testExitDistanceRequiresBothEncoders();
         testFusionVotesCarryFromTurnToTimedForward();
         testForcedLeftProfileReacquiresDuringRightSearch();

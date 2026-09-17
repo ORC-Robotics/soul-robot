@@ -49,6 +49,9 @@ struct CameraLineSnapshot
     std::uint64_t silverSequence = 0;
     bool exitLineUnbranched = false;
     bool sourceFresh = false;
+    // Verdadeiro apenas para IPC antigo com último status ativo, habilitado e
+    // sem erro. Câmera desligada, falha explícita e IPC inválido não são atrasos.
+    bool activeStreamDelayed = false;
     double lineFollowerLeftPower = 0.0;
     double lineFollowerRightPower = 0.0;
     std::string lineControlSource = "unknown";
@@ -227,16 +230,18 @@ struct RescueZoneSnapshot
 class CameraMonitor
 {
 public:
-    // Um caminho alternativo permite testar o contrato IPC sem câmera nem motores.
+    // Caminhos alternativos permitem testar os contratos IPC sem câmera nem motores.
     explicit CameraMonitor(
         std::string forwardLineStatusPath = {},
         std::string rescueZoneStatusPath = {},
         std::string forwardBallStatusPath = {},
-        std::string lineStatusPath = {})
+        std::string lineStatusPath = {},
+        std::string cameraStatusPath = {})
         : forwardLineStatusPath_(std::move(forwardLineStatusPath)),
           rescueZoneStatusPath_(std::move(rescueZoneStatusPath)),
           forwardBallStatusPath_(std::move(forwardBallStatusPath)),
-          lineStatusPath_(std::move(lineStatusPath)) {}
+          lineStatusPath_(std::move(lineStatusPath)),
+          cameraStatusPath_(std::move(cameraStatusPath)) {}
     bool ready() const;
     CameraLineSnapshot lineSnapshot();
     ForwardLineSnapshot forwardLineSnapshot();
@@ -265,6 +270,9 @@ private:
     std::string rescueZoneStatusPath_;
     std::string forwardBallStatusPath_;
     std::string lineStatusPath_;
+    std::string cameraStatusPath_;
+    // Distingue um status ativo atrasado de desligamento ou falha declarada.
+    bool activeStreamDelayed() const;
     CameraLineSnapshot cachedLineSnapshot_;
     bool hasCachedLineSnapshot_ = false;
     ForwardLineSnapshot cachedForwardLineSnapshot_;

@@ -66,6 +66,132 @@ void LineCourseMission::reset()
     obstacleRecoveryFusionFrames_ = 0;
     obstacleRecoveryLastLineSequence_ = 0;
     obstacleRecoveryCause_.clear();
+    cameraRecoveryEligible_ = false;
+    cameraRecoveryWaiting_ = false;
+    cameraRecoveryFrames_ = 0;
+    cameraRecoveryLastLineSequence_ = 0;
+    cameraRecoveryRunSequence_ = 0;
+    cameraRecoveryStartedAt_ = {};
+}
+
+bool LineCourseMission::updateCameraRecovery(
+    RobotState& robotState,
+    const RobotSnapshot& robotSnapshot,
+    bool cameraReady,
+    const CameraLineSnapshot& cameraLineSnapshot)
+{
+    if (cameraRecoveryRunSequence_ != robotSnapshot.autonomousRunSequence)
+    {
+        // Uma partida nova não herda a espera nem os votos da execução anterior.
+        cameraRecoveryWaiting_ = false;
+        cameraRecoveryEligible_ = false;
+        cameraRecoveryFrames_ = 0;
+        cameraRecoveryRunSequence_ = robotSnapshot.autonomousRunSequence;
+    }
+
+    if (!cameraRecoveryWaiting_)
+    {
+        const std::string& phase = robotSnapshot.autonomousStatus.phase;
+        // O atraso breve do IPC pode preceder a perda do status geral. Nesse
+        // intervalo, preserva somente a elegibilidade já adquirida em movimento.
+        const bool eligiblePhase =
+            phase == "line_following" || phase == "green_confirming";
+        if (!eligiblePhase && phase != "line_ipc_waiting")
+        {
+            cameraRecoveryEligible_ = false;
+        }
+        else if (eligiblePhase && cameraReady && cameraLineSnapshot.sourceFresh)
+        {
+            cameraRecoveryEligible_ = cameraLineSnapshot.lineSequence > 0 &&
+                cameraLineSnapshot.normalSteeringValid &&
+                cameraLineSnapshot.lineControlSource == "fusion" &&
+                cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+                cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL";
+        }
+        if (cameraReady || cameraLineSnapshot.sourceFresh ||
+            !cameraLineSnapshot.activeStreamDelayed || !cameraRecoveryEligible_ ||
+            obstacleAvoidance_.active() ||
+            obstacleRecoveryWaiting_ || forwardLineAssist_.active())
+        {
+            return false;
+        }
+
+        cameraRecoveryWaiting_ = true;
+        cameraRecoveryFrames_ = 0;
+        cameraRecoveryLastLineSequence_ = cameraLineSnapshot.lineSequence;
+        cameraRecoveryRunSequence_ = robotSnapshot.autonomousRunSequence;
+        cameraRecoveryStartedAt_ = std::chrono::steady_clock::now();
+        robotState.driveAutonomous(0.0, 0.0);
+        // A confirmação verde anterior perdeu validade. A cena será reavaliada
+        // após a recuperação, sem continuar uma manobra com comandos antigos.
+        greenManeuver_.reset();
+        forwardLineAssist_.reset();
+        std::cout << "Bottom camera recovery waiting: motors stopped" << std::endl;
+    }
+
+    if (!cameraReady && !cameraLineSnapshot.activeStreamDelayed)
+    {
+        // Desligamento, falha declarada ou IPC inválido mantêm a parada original.
+        // Não aguardamos a câmera voltar quando o motivo já não é um atraso.
+        cameraRecoveryWaiting_ = false;
+        cameraRecoveryEligible_ = false;
+        cameraRecoveryFrames_ = 0;
+        return false;
+    }
+
+    robotState.driveAutonomous(0.0, 0.0);
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - cameraRecoveryStartedAt_).count();
+    if (elapsedMs >= config::kBottomCameraRecoveryTimeoutMs)
+    {
+        reset();
+        robotState.stop();
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "camera_not_ready",
+            "Missão interrompida: câmera inferior não recuperou dentro do prazo"));
+        std::cout << "MainMission stopped: bottom_camera_recovery_timeout" << std::endl;
+        return true;
+    }
+
+    const bool reliableLine = cameraReady && cameraLineSnapshot.sourceFresh &&
+        cameraLineSnapshot.lineControlSource == "fusion" &&
+        cameraLineSnapshot.normalSteeringValid &&
+        cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+        cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL" &&
+        std::isfinite(cameraLineSnapshot.lineFollowerLeftPower) &&
+        std::isfinite(cameraLineSnapshot.lineFollowerRightPower) &&
+        std::abs(cameraLineSnapshot.lineFollowerLeftPower) <= 1.0 &&
+        std::abs(cameraLineSnapshot.lineFollowerRightPower) <= 1.0;
+    if (!reliableLine)
+    {
+        cameraRecoveryFrames_ = 0;
+        // Uma leitura rejeitada não pode ser reapresentada como um voto novo.
+        cameraRecoveryLastLineSequence_ = std::max(
+            cameraRecoveryLastLineSequence_, cameraLineSnapshot.lineSequence);
+    }
+    else if (cameraLineSnapshot.lineSequence > cameraRecoveryLastLineSequence_)
+    {
+        cameraRecoveryLastLineSequence_ = cameraLineSnapshot.lineSequence;
+        ++cameraRecoveryFrames_;
+    }
+
+    if (cameraRecoveryFrames_ >= config::kBottomCameraRecoveryRequiredFrames)
+    {
+        cameraRecoveryWaiting_ = false;
+        cameraRecoveryEligible_ = false;
+        cameraRecoveryFrames_ = 0;
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "camera_recovery_ready",
+            "Câmera inferior recuperada: reavaliando a faixa antes de retomar"));
+        std::cout << "Bottom camera recovery ready: new Fusion frames confirmed" << std::endl;
+    }
+    else
+    {
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            "camera_recovery_waiting",
+            "Pausado: aguardando a recuperação da câmera inferior"));
+    }
+    return true;
 }
 
 void LineCourseMission::update(
@@ -79,6 +205,9 @@ void LineCourseMission::update(
     const RobotSnapshot robotSnapshot = robotState.snapshot();
     if (robotSnapshot.mode != "autonomous")
     {
+        cameraRecoveryWaiting_ = false;
+        cameraRecoveryEligible_ = false;
+        cameraRecoveryFrames_ = 0;
         return;
     }
 
@@ -92,6 +221,14 @@ void LineCourseMission::update(
             "esp32_not_ready",
             "Missão interrompida: ESP32 sem telemetria pronta"));
         std::cout << "MainMission stopped: esp32_not_ready" << std::endl;
+        return;
+    }
+
+    // Esta recuperação só trata a perda temporária da CAM0 nas fases permitidas.
+    // ESP32, E-Stop e calibração continuam sendo validados antes da espera.
+    if (updateCameraRecovery(
+            robotState, robotSnapshot, cameraReady, cameraLineSnapshot))
+    {
         return;
     }
 

@@ -54,7 +54,7 @@ class ObstacleAvoidance
 {
 public:
     explicit ObstacleAvoidance(
-        bool forceLeftSide = config::kObstacleForceLeftSide);
+        config::ObstacleSideMode sideMode = config::kObstacleSideMode);
     ObstacleAvoidanceOutput update(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,
@@ -94,7 +94,7 @@ private:
     ImuTurnController turnController_;
     LineCenteringController lineCenteringController_;
     bool armed_ = true;
-    bool forceLeftSide_ = false;
+    config::ObstacleSideMode sideMode_ = config::ObstacleSideMode::Automatic;
     int obstacleConfirmationSamples_ = 0;
     int rearmConfirmationSamples_ = 0;
     double yawBase_ = std::numeric_limits<double>::quiet_NaN();
@@ -174,7 +174,8 @@ private:
         const CameraLineSnapshot& line);
     ObstacleAvoidanceOutput updateInitialReverse(
         const Esp32TelemetrySnapshot& telemetry);
-    ObstacleAvoidanceOutput startCentering(
+    ObstacleAvoidanceOutput continueAfterInitialReverse(
+        const Esp32TelemetrySnapshot& telemetry,
         const std::string& action);
     ObstacleAvoidanceOutput updateTurn(
         const Esp32TelemetrySnapshot& telemetry,

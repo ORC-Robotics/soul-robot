@@ -391,6 +391,7 @@ CameraLineSnapshot unavailableLineSnapshot(
     CameraLineSnapshot snapshot =
         hasCachedSnapshot ? cachedSnapshot : CameraLineSnapshot{};
     snapshot.sourceFresh = false;
+    snapshot.activeStreamDelayed = false;
     snapshot.lineFollowerLeftPower = 0.0;
     snapshot.lineFollowerRightPower = 0.0;
     snapshot.lineControlSource = "unavailable";
@@ -470,7 +471,7 @@ bool ForwardLineSnapshot::normalCommandValid() const
 
 bool CameraMonitor::ready() const
 {
-    std::ifstream file(config::kCameraStatusPath);
+    std::ifstream file(cameraStatusPath_.empty() ? config::kCameraStatusPath : cameraStatusPath_);
     if (!file)
     {
         return false;
@@ -484,6 +485,31 @@ bool CameraMonitor::ready() const
     const double ageMs = (currentUnixSeconds() - timestamp) * 1000.0;
     return active && fps > 0.0 && std::isfinite(ageMs) && ageMs >= 0.0 &&
            ageMs <= config::kCameraStatusTimeoutMs;
+}
+
+bool CameraMonitor::activeStreamDelayed() const
+{
+    std::ifstream file(cameraStatusPath_.empty() ? config::kCameraStatusPath : cameraStatusPath_);
+    if (!file)
+    {
+        return false;
+    }
+    std::ostringstream content;
+    content << file.rdbuf();
+    const std::string json = content.str();
+    std::string error;
+    double timestamp = 0.0;
+    double fps = 0.0;
+    if (file.bad() || !getJsonBool(json, "active", false) ||
+        !getJsonBool(json, "enabled", false) ||
+        !tryGetJsonString(json, "error", error) || !error.empty() ||
+        !tryGetJsonNumber(json, "fps", fps) || !std::isfinite(fps) || fps <= 0.0 ||
+        !tryGetJsonNumber(json, "timestamp", timestamp) || timestamp <= 0.0)
+    {
+        return false;
+    }
+    const double ageMs = (currentUnixSeconds() - timestamp) * 1000.0;
+    return std::isfinite(ageMs) && ageMs > config::kCameraStatusTimeoutMs;
 }
 
 CameraLineSnapshot CameraMonitor::lineSnapshot()
@@ -727,8 +753,11 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
             candidate.ageMs <= config::kCameraLineStatusTimeoutMs;
         if (!candidate.sourceFresh)
         {
-            return unavailableLineSnapshot(
-                candidate, true);
+            CameraLineSnapshot snapshot = unavailableLineSnapshot(candidate, true);
+            snapshot.activeStreamDelayed = candidate.ageMs > config::kCameraLineStatusTimeoutMs &&
+                candidate.lineSequence > 0 && candidate.lineTimestamp > 0.0 &&
+                activeStreamDelayed();
+            return snapshot;
         }
 
         cachedLineSnapshot_ = candidate;

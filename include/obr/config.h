@@ -666,7 +666,7 @@ constexpr double kBallApproachStartToleranceDegrees = 5.0;
 
 // Margem exclusiva da vítima que libera o avanço com correção contínua.
 // O limite maior reduz o tempo parado no alinhamento inicial sem afetar a saída.
-constexpr double kVictimApproachStartToleranceDegrees = 8.0;
+constexpr double kVictimApproachStartToleranceDegrees = 13.0;
 
 // Metade do campo de visão horizontal de 62° usado para calcular o tx.
 // Este limite normaliza o tempo dos pulsos sem alterar o cálculo da câmera.
@@ -678,7 +678,8 @@ constexpr int kBallAlignmentCrossingBrakeMs = 100;
 
 // Erros até este valor usam pulsos finos. Esta faixa é maior que a tolerância
 // de aproximação para evitar voltar ao pulso grosso perto da transição.
-constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 12.0;
+// Mantenha este limite acima da tolerância de coleta próxima.
+constexpr double kBallAlignmentFineCorrectionThresholdDegrees = 15.0;
 
 // Faixa de tempo útil, em milissegundos, do alinhamento grosso. O período do
 // controle é de 20 ms; manter pulsos curtos reduz a ultrapassagem sem diminuir
@@ -739,7 +740,8 @@ constexpr double kBallApproachStopDistanceCm = 5.0;
 // Margem angular aceita quando a vítima já atingiu a distância de coleta.
 // Muito perto, a caixa ocupa grande parte do frame e pequenos pivôs deixam de
 // ser úteis; esta tolerância libera o avanço final sem aceitar um grande desvio.
-constexpr double kBallCollectionNearAlignmentToleranceDegrees = 10.0;
+// Deve superar a tolerância inicial da vítima e ficar abaixo da correção fina.
+constexpr double kBallCollectionNearAlignmentToleranceDegrees = 14.0;
 
 // Distância adicional, em centímetros, percorrida depois que a câmera confirma
 // a vítima próxima. O avanço por encoder garante contato com o coletor sem
@@ -964,6 +966,17 @@ static_assert(kEncoderSyncMaximumScaleStepPerSample > 0.0 &&
 // Um status mais antigo apaga o indicador de prontidão do sistema.
 constexpr int kCameraStatusTimeoutMs = 400;
 
+// Prazo máximo, em milissegundos, para recuperar a CAM0 durante o segue-linha
+// ou a confirmação inicial de verde. Os motores ficam zerados durante a espera;
+// um prazo maior tolera mais atrasos, mas também prolonga a parada na pista.
+constexpr int kBottomCameraRecoveryTimeoutMs = 6000;
+// Frames Fusion novos e consecutivos exigidos após essa perda da CAM0.
+// Reduzir este número facilita uma retomada com uma leitura visual instável.
+constexpr int kBottomCameraRecoveryRequiredFrames = 3;
+static_assert(kBottomCameraRecoveryTimeoutMs > kCameraStatusTimeoutMs &&
+                  kBottomCameraRecoveryRequiredFrames > 0,
+              "A recuperação precisa exceder o timeout normal e exigir frames novos.");
+
 // Ângulo-alvo, em graus, da missão de teste que gira o robô para a direita.
 constexpr double kTurn90TargetDegrees = 90.0;
 
@@ -1000,6 +1013,12 @@ constexpr int kTurn90MaximumCorrectionPulses = 3;
 
 // Velocidade angular máxima, em graus por segundo, para considerar o robô estabilizado.
 constexpr double kTurn90StationaryRateDegPerSec = 3.0;
+
+// Taxa máxima dos encoders, em contagens por segundo, para confirmar que as
+// rodas estão paradas quando uma manobra habilita essa confirmação auxiliar.
+constexpr double kTurnEncoderStationaryRateCountsPerSecond = 20.0;
+static_assert(kTurnEncoderStationaryRateCountsPerSecond >= 0.0,
+              "A confirmação de parada pelos encoders deve ser não negativa.");
 
 // Idade máxima, em milissegundos, da amostra do MPU6050 usada para controlar o giro.
 // O painel aceita telemetria mais antiga, mas movimento autônomo exige dado recente.
@@ -1056,9 +1075,15 @@ constexpr int kObstacleClearanceSamplingTimeoutMs = 1500;
 // O lado direito preserva uma decisão repetível quando ambas estão livres.
 constexpr double kObstacleClearanceTieCm = 2.0;
 constexpr bool kObstacleDefaultSideIsRight = true;
-// Por padrão, mede os dois lados antes de escolher a passagem. Ative apenas
-// para calibrar o contorno esquerdo sem executar a varredura lateral.
-constexpr bool kObstacleForceLeftSide = false;
+enum class ObstacleSideMode
+{
+    Automatic,
+    Left,
+    Right
+};
+// Define se o robô compara os dois lados ou segue diretamente por um deles.
+// Troque apenas Left por Right para forçar o contorno direito.
+constexpr ObstacleSideMode kObstacleSideMode = ObstacleSideMode::Left;
 // Habilita a sequência de avanço curto e giro quando a faixa inferior aparece
 // durante a curva. Desativar mantém somente a saída nominal temporizada.
 constexpr bool kObstacleEarlyFusionRecoveryEnabled = true;
@@ -1073,9 +1098,12 @@ constexpr int kObstacleUltrasonicFreshnessMs = 300;
 // Erro máximo aceito, em graus, nos giros do desvio. Uma tolerância maior
 // reduz correções, mas permite posicionar o robô mais longe do alvo.
 constexpr double kObstacleTurnToleranceDegrees = 5.0;
+// Limite exclusivo do obstáculo para tolerar o viés observado no MPU6050.
+// Os demais giros continuam usando o limite global de 3 graus por segundo.
+constexpr double kObstacleTurnStationaryRateDegPerSec = 8.0;
 // Potência normalizada dos giros de varredura, posicionamento e saída pela IMU.
 // O valor 0,73 vence o atrito estático e reduz a inércia observada com 0,75.
-constexpr double kObstacleTurnCommandPower = 0.8;
+constexpr double kObstacleTurnCommandPower = 0.73;
 // Duração, em milissegundos, de cada pulso de correção após estabilizar o giro.
 // Pulsos maiores corrigem mais rápido, mas podem ultrapassar novamente o alvo.
 constexpr int kObstacleTurnCorrectionPulseMs = 30;

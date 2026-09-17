@@ -40,7 +40,9 @@ bool ImuTurnController::start(
     int maximumCorrectionPulses,
     double commandPower,
     int timeoutMs,
-    std::chrono::steady_clock::time_point now)
+    std::chrono::steady_clock::time_point now,
+    bool allowEncoderStopConfirmation,
+    double stationaryRateDegPerSec)
 {
     if (completionToleranceDegrees <= 0.0)
     {
@@ -74,6 +76,10 @@ bool ImuTurnController::start(
                      : (targetDegrees > config::kTurn90TargetDegrees
                             ? config::kTurn180TimeoutMs
                             : config::kTurn90TimeoutMs);
+    allowEncoderStopConfirmation_ = allowEncoderStopConfirmation;
+    stationaryRateDegPerSec_ = stationaryRateDegPerSec > 0.0
+                                   ? stationaryRateDegPerSec
+                                   : config::kTurn90StationaryRateDegPerSec;
     startYawDegrees_ = telemetry.yawZDeg;
     directionSign_ = direction == ImuTurnDirection::Right ? 1.0 : -1.0;
     correctionDirection_ = 1.0;
@@ -183,10 +189,27 @@ ImuTurnOutput ImuTurnController::update(
         phaseStartedAt_ = now;
     }
 
+    const bool gyroConfirmsStop =
+        std::abs(telemetry.gyroZDegPerSec) <=
+        stationaryRateDegPerSec_;
+    const bool encoderRatesValid =
+        std::isfinite(telemetry.leftEncoderRate) &&
+        std::isfinite(telemetry.rightEncoderRate);
+    const bool encodersConfirmStop =
+        encoderRatesValid &&
+        std::abs(telemetry.leftEncoderRate) <=
+            config::kTurnEncoderStationaryRateCountsPerSecond &&
+        std::abs(telemetry.rightEncoderRate) <=
+            config::kTurnEncoderStationaryRateCountsPerSecond;
+    // No obstáculo, os encoders válidos têm prioridade: a tolerância maior do
+    // giroscópio não pode liberar a manobra enquanto as rodas ainda se movem.
+    const bool motionStopped =
+        allowEncoderStopConfirmation_ && encoderRatesValid
+            ? encodersConfirmStop
+            : gyroConfirmsStop;
     if (now - phaseStartedAt_ <
             std::chrono::milliseconds(config::kTurn90SettleMs) ||
-        std::abs(telemetry.gyroZDegPerSec) >
-            config::kTurn90StationaryRateDegPerSec)
+        !motionStopped)
     {
         return stoppedOutput(
             ImuTurnResult::Running,
@@ -231,6 +254,8 @@ void ImuTurnController::reset()
     maximumCorrectionPulses_ = 0;
     commandPower_ = 0.0;
     timeoutMs_ = 0;
+    allowEncoderStopConfirmation_ = false;
+    stationaryRateDegPerSec_ = 0.0;
 }
 
 bool ImuTurnController::active() const

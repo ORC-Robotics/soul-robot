@@ -19,8 +19,8 @@ bool ultrasonicReadingIsValid(const Esp32TelemetrySnapshot& telemetry)
 }
 }
 
-ObstacleAvoidance::ObstacleAvoidance(bool forceLeftSide)
-    : forceLeftSide_(forceLeftSide)
+ObstacleAvoidance::ObstacleAvoidance(config::ObstacleSideMode sideMode)
+    : sideMode_(sideMode)
 {
 }
 
@@ -193,9 +193,40 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
         "Obstáculo confirmado: parando antes da centralização");
 }
 
-ObstacleAvoidanceOutput ObstacleAvoidance::startCentering(
+ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterInitialReverse(
+    const Esp32TelemetrySnapshot& telemetry,
     const std::string& action)
 {
+    // O perfil fixo usa o heading após a ré e não exige reencontrar a faixa
+    // para iniciar o contorno. A IMU válida e os timeouts continuam obrigatórios.
+    if (sideMode_ != config::ObstacleSideMode::Automatic)
+    {
+        if (!ImuTurnController::imuReady(telemetry))
+        {
+            return fail(
+                "obstacle_imu_lost",
+                "Desvio interrompido: IMU inválida ao salvar yawBase");
+        }
+        yawBase_ = telemetry.yawZDeg;
+        selectedSide_ =
+            sideMode_ == config::ObstacleSideMode::Left ? "LEFT" : "RIGHT";
+        selectedSideSource_ = "CONFIG";
+        const double targetYaw = normalizedYaw(
+            yawBase_ + (selectedSide_ == "RIGHT" ? 1.0 : -1.0) *
+                           config::kObstacleSideApproachDegrees);
+        if (!startTurnToYaw(
+                Phase::PositioningSelectedSide, targetYaw, telemetry))
+        {
+            return fail(
+                "obstacle_turn_start_failed",
+                "Desvio interrompido: não foi possível iniciar o perfil fixo");
+        }
+        return output(
+            "obstacle_side_selected",
+            action + "; perfil fixo " + selectedSide_ +
+                " sem centralização obrigatória");
+    }
+
     phase_ = Phase::Centering;
     lineCenteringController_.start();
     ObstacleAvoidanceOutput result = output(
@@ -227,8 +258,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialReverse(
     if (encoderDataFresh &&
         usedDistanceCm >= config::kObstacleReverseDistanceCm)
     {
-        ObstacleAvoidanceOutput result = startCentering(
-            "Ré inicial concluída: iniciando centralização");
+        ObstacleAvoidanceOutput result = continueAfterInitialReverse(
+            telemetry,
+            "Ré inicial concluída");
         result.leftDistanceCm = leftDistanceCm;
         result.rightDistanceCm = rightDistanceCm;
         return result;
@@ -239,8 +271,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialReverse(
             std::chrono::milliseconds(
                 config::kObstacleInitialReverseMaximumMs))
     {
-        ObstacleAvoidanceOutput result = startCentering(
-            "Ré inicial encerrada sem bloquear o desvio; iniciando centralização");
+        ObstacleAvoidanceOutput result = continueAfterInitialReverse(
+            telemetry,
+            "Ré inicial encerrada sem bloquear o desvio");
         result.leftDistanceCm = leftDistanceCm;
         result.rightDistanceCm = rightDistanceCm;
         return result;
@@ -297,23 +330,6 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCentering(
     }
 
     yawBase_ = telemetry.yawZDeg;
-    if (forceLeftSide_)
-    {
-        selectedSide_ = "LEFT";
-        selectedSideSource_ = "CONFIG";
-        const double targetYaw = normalizedYaw(
-            yawBase_ - config::kObstacleSideApproachDegrees);
-        if (!startTurnToYaw(
-                Phase::PositioningSelectedSide, targetYaw, telemetry))
-        {
-            return fail(
-                "obstacle_turn_start_failed",
-                "Desvio interrompido: não foi possível iniciar o perfil esquerdo");
-        }
-        return output(
-            "obstacle_side_selected",
-            "Perfil fixo: LEFT; posicionando yaw inicial");
-    }
     if (!startTurnToYaw(
             Phase::TurningLeftForMeasurement,
             normalizedYaw(yawBase_ - config::kObstacleClearanceScanDegrees),
@@ -684,7 +700,10 @@ bool ObstacleAvoidance::startTurnToYaw(
             config::kObstacleTurnCorrectionPulseMs,
             config::kObstacleTurnMaximumCorrectionPulses,
             config::kObstacleTurnCommandPower,
-            config::kObstacleTurnTimeoutMs))
+            config::kObstacleTurnTimeoutMs,
+            std::chrono::steady_clock::now(),
+            true,
+            config::kObstacleTurnStationaryRateDegPerSec))
     {
         return false;
     }
