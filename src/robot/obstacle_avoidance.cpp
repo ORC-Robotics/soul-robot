@@ -42,8 +42,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     case Phase::ReturningToBaseBeforeRight:
     case Phase::TurningRightForMeasurement:
     case Phase::PositioningSelectedSide:
-    case Phase::ExitPivotRight:
-    case Phase::FinalInwardPivot:
+    case Phase::ExitPivot:
         return updateTurn(telemetry, line, forwardLine);
     case Phase::SamplingLeftClearance:
         return updateClearanceSampling(telemetry, true);
@@ -55,10 +54,14 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
         return updateCurve(telemetry, line, forwardLine);
     case Phase::ExitPivotWait:
         return updateExitPivotWait(telemetry);
-    case Phase::ExitForward:
-        return updateExitForward(telemetry, line);
-    case Phase::ExitSearchRight:
-        return updateExitSearchRight(telemetry, line);
+    case Phase::ExitDistanceForward:
+        return updateExitDistanceForward(telemetry, line);
+    case Phase::ExitFusionTurn:
+        return updateExitFusionTurn(telemetry, line);
+    case Phase::ExitTimedForward:
+        return updateExitTimedForward(telemetry, line);
+    case Phase::ExitSearch:
+        return updateExitSearch(telemetry, line);
     case Phase::ReacquireForward:
         return updateReacquireForward(telemetry, line);
     case Phase::ReacquireSearch:
@@ -101,7 +104,12 @@ void ObstacleAvoidance::reset()
     curveStartYaw_ = std::numeric_limits<double>::quiet_NaN();
     curveEndYaw_ = std::numeric_limits<double>::quiet_NaN();
     exitPivotWaitStartedAt_ = {};
+    exitForwardStartLeftCount_ = 0;
+    exitForwardStartRightCount_ = 0;
     exitForwardStartedAt_ = {};
+    exitFusionTurnStartYaw_ = std::numeric_limits<double>::quiet_NaN();
+    exitFusionTurnStartedAt_ = {};
+    exitTimedForwardStartedAt_ = {};
     exitSearchStartedAt_ = {};
     fusionReacquireFrames_ = 0;
     lastFusionLineSequence_ = 0;
@@ -240,7 +248,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialReverse(
 
     ObstacleAvoidanceOutput result = output(
         "obstacle_initial_reverse",
-        "Recuando 2 cm antes de iniciar o desvio",
+        "Recuando " + std::to_string(config::kObstacleReverseDistanceCm) +
+            " cm antes de iniciar o desvio",
         -config::kObstacleReversePower,
         -config::kObstacleReversePower);
     result.progressPercent = progressPercent;
@@ -330,12 +339,6 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
         collectingLeft || collectingRight
             ? observeCameraBlack(telemetry, forwardLine, collectingLeft)
             : "";
-    if (phase_ == Phase::FinalInwardPivot &&
-        case3AwaitingFusionAcquire_ &&
-        observeCase3FusionAcquire(line))
-    {
-        armCase3FusionWindow();
-    }
     const ImuTurnOutput turn = turnController_.update(telemetry);
     if (turn.result == ImuTurnResult::Failed)
     {
@@ -389,26 +392,18 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateTurn(
     {
         return startClearanceSampling(false);
     }
-    if (phase_ == Phase::ExitPivotRight)
+    if (phase_ == Phase::ExitPivot)
     {
-        phase_ = Phase::ExitForward;
+        phase_ = Phase::ExitDistanceForward;
+        exitForwardStartLeftCount_ = telemetry.leftEncoderCount;
+        exitForwardStartRightCount_ = telemetry.rightEncoderCount;
         exitForwardStartedAt_ = std::chrono::steady_clock::now();
         fusionReacquireFrames_ = 0;
         lastFusionLineSequence_ = line.lineSequence;
         return output(
-            "obstacle_exit_forward_start",
-            "Giro de saída concluído: seguindo reto para procurar a faixa");
-    }
-    if (phase_ == Phase::FinalInwardPivot)
-    {
-        phase_ = Phase::Idle;
-        case3PostObstacleYaw_ = telemetry.yawZDeg;
-        ObstacleAvoidanceOutput result = output(
-            "obstacle_completed",
-            "Desvio nominal concluído: pivot final para dentro finalizado");
-        result.completed = true;
-        result.progressPercent = 100.0;
-        return result;
+            "obstacle_exit_distance_forward_start",
+            "Giro de saída concluído: iniciando avanço de " +
+                std::to_string(config::kObstacleExitForwardDistanceCm) + " cm");
     }
     return startSelectedForward(telemetry);
 }
@@ -624,6 +619,14 @@ std::string ObstacleAvoidance::observeCameraBlack(
                                 : cameraBlackRightFrames_;
     bool& confirmed = measuringLeft ? cameraBlackLeft_
                                     : cameraBlackRight_;
+    const std::string side = measuringLeft ? "LEFT" : "RIGHT";
+    std::cout << "Obstacle camera scan side=" << side
+              << " sequence=" << forwardLine.obstacleBlackSequence
+              << " angleDeg=" << sideAngle
+              << " visible=" << (forwardLine.obstacleBlackVisible ? 1 : 0)
+              << " ratio=" << forwardLine.obstacleBlackRatio
+              << " largest=" << forwardLine.obstacleBlackLargestComponent
+              << " consecutiveBefore=" << frames << '\n';
     if (!forwardLine.obstacleBlackVisible)
     {
         if (!confirmed)
@@ -645,7 +648,6 @@ std::string ObstacleAvoidance::observeCameraBlack(
         return {};
     }
     confirmed = true;
-    const std::string side = measuringLeft ? "LEFT" : "RIGHT";
     std::cout << "CAM1 confirmou faixa " << side << '\n';
     return "CAM1 confirmou faixa " + side;
 }
@@ -849,11 +851,14 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
             "obstacle_curve_timeout",
             "Curva interrompida pelo tempo limite de segurança");
     }
-    if (!forceLeftSide_)
+    if (config::kObstacleCase3RecoveryEnabled)
     {
         observeParabolaFrame(forwardLine);
-        // O perfil calibrado completa os 20 cm antes de procurar a saída. No
-        // modo adaptativo antigo, o Fusion ainda pode antecipar a recuperação.
+    }
+    if (config::kObstacleEarlyFusionRecoveryEnabled)
+    {
+        // Só interrompe o contorno após três frames novos de Fusion e da faixa
+        // transversal. O lado forçado não desativa os cenários de recuperação.
         if (line.sourceFresh && line.lineSequence != 0 &&
             line.lineSequence != lastFusionLineSequence_ &&
             !line.obstacleContinuationBand)
@@ -883,38 +888,6 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
     const double headingError = signedYawError(targetYaw, telemetry.yawZDeg);
     if (progress >= 1.0)
     {
-        if (!forceLeftSide_)
-        {
-            const ImuTurnDirection direction =
-                selectedSide_ == "LEFT" ? ImuTurnDirection::Right
-                                        : ImuTurnDirection::Left;
-            if (!turnController_.start(
-                    config::kObstacleFinalInwardPivotDegrees,
-                    direction,
-                    telemetry,
-                    config::kObstacleTurnToleranceDegrees,
-                    config::kObstacleTurnCorrectionPulseMs,
-                    config::kObstacleTurnMaximumCorrectionPulses,
-                    config::kObstacleTurnCommandPower,
-                    config::kObstacleTurnTimeoutMs))
-            {
-                return fail(
-                    "obstacle_final_pivot_start_failed",
-                    "Desvio interrompido: não foi possível iniciar o pivot final");
-            }
-            phase_ = Phase::FinalInwardPivot;
-            case3AwaitingFusionAcquire_ = bestParabolaSideValid_;
-            case3FusionAcquireFrames_ = 0;
-            lastCase3LineSequence_ = line.lineSequence;
-            ObstacleAvoidanceOutput result = output(
-                "obstacle_final_pivot_start",
-                "Curva concluída: iniciando pivot final para dentro");
-            result.targetDistanceCm = config::kObstacleCurveDistanceCm;
-            result.leftDistanceCm = leftDistanceCm;
-            result.rightDistanceCm = rightDistanceCm;
-            return result;
-        }
-
         phase_ = Phase::ExitPivotWait;
         exitPivotWaitStartedAt_ = std::chrono::steady_clock::now();
         ObstacleAvoidanceOutput result = output(
@@ -964,27 +937,32 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitPivotWait(
             "Aguardando a inércia da curva terminar");
     }
 
+    // O giro aponta para dentro do contorno. Espelhar o sinal preserva a mesma
+    // geometria: direita depois de LEFT e esquerda depois de RIGHT.
+    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const std::string turnSide = selectedSide_ == "LEFT" ? "RIGHT" : "LEFT";
     const double targetYaw = normalizedYaw(
-        telemetry.yawZDeg + config::kObstacleExitPivotRightDegrees);
-    if (!startTurnToYaw(Phase::ExitPivotRight, targetYaw, telemetry))
+        telemetry.yawZDeg + direction * config::kObstacleExitPivotDegrees);
+    if (!startTurnToYaw(Phase::ExitPivot, targetYaw, telemetry))
     {
         return fail(
             "obstacle_exit_pivot_start_failed",
-            "Não foi possível iniciar o giro de 25 graus para a direita");
+            "Não foi possível iniciar o giro de saída " + turnSide);
     }
     return output(
         "obstacle_exit_pivot_start",
-        "Iniciando giro de 25 graus para a direita");
+        "Iniciando giro de " + std::to_string(config::kObstacleExitPivotDegrees) +
+            " graus para " + turnSide);
 }
 
-ObstacleAvoidanceOutput ObstacleAvoidance::updateExitForward(
+ObstacleAvoidanceOutput ObstacleAvoidance::updateExitDistanceForward(
     const Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line)
 {
     if (!line.sourceFresh)
     {
         return fail(
-            "obstacle_exit_forward_vision_lost",
+            "obstacle_exit_distance_forward_vision_lost",
             "Saída interrompida: visão inferior sem dados recentes");
     }
     if (!telemetry.sensorFresh || telemetry.lastSensorAgeMs < 0 ||
@@ -994,36 +972,171 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitForward(
         !ImuTurnController::imuReady(telemetry))
     {
         return fail(
-            "obstacle_exit_forward_sensors_lost",
+            "obstacle_exit_distance_forward_sensors_lost",
             "Saída interrompida: encoders ou IMU sem dados recentes");
+    }
+
+    const double leftCounts = std::abs(static_cast<double>(
+        telemetry.leftEncoderCount - exitForwardStartLeftCount_));
+    const double rightCounts = std::abs(static_cast<double>(
+        telemetry.rightEncoderCount - exitForwardStartRightCount_));
+    const double leftDistanceCm =
+        leftCounts / config::kEncoderCountsPerCentimeter;
+    const double rightDistanceCm =
+        rightCounts / config::kEncoderCountsPerCentimeter;
+    const double usedDistanceCm = std::min(leftDistanceCm, rightDistanceCm);
+    if (std::chrono::steady_clock::now() - exitForwardStartedAt_ >
+        std::chrono::milliseconds(config::kObstacleDistanceSafetyTimeoutMs))
+    {
+        return fail(
+            "obstacle_exit_distance_forward_timeout",
+            "Saída interrompida pelo tempo limite do avanço por distância");
+    }
+    const double predictionSeconds =
+        config::kObstacleBrakePredictionSeconds + telemetry.lastSensorAgeMs / 1000.0;
+    const double projectedLeftCounts =
+        leftCounts + std::abs(telemetry.leftEncoderRate) * predictionSeconds;
+    const double projectedRightCounts =
+        rightCounts + std::abs(telemetry.rightEncoderRate) * predictionSeconds;
+    const double targetCounts = config::kObstacleExitForwardDistanceCm *
+                                config::kEncoderCountsPerCentimeter;
+    if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
+    {
+        phase_ = Phase::ExitFusionTurn;
+        exitFusionTurnStartYaw_ = telemetry.yawZDeg;
+        exitFusionTurnStartedAt_ = std::chrono::steady_clock::now();
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+        ObstacleAvoidanceOutput result = output(
+            "obstacle_exit_fusion_turn_start",
+            "Avanço concluído: preparando giro de " +
+                std::to_string(config::kObstacleExitFusionTurnDegrees) + " graus");
+        result.progressPercent = 100.0;
+        result.targetDistanceCm = config::kObstacleExitForwardDistanceCm;
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_exit_distance_forward",
+        "Avançando " + std::to_string(config::kObstacleExitForwardDistanceCm) +
+            " cm antes de procurar o Fusion",
+        config::kObstacleExitForwardPower,
+        config::kObstacleExitForwardPower);
+    result.progressPercent = std::clamp(
+        usedDistanceCm / config::kObstacleExitForwardDistanceCm * 100.0,
+        0.0,
+        100.0);
+    result.targetDistanceCm = config::kObstacleExitForwardDistanceCm;
+    result.leftDistanceCm = leftDistanceCm;
+    result.rightDistanceCm = rightDistanceCm;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateExitFusionTurn(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    if (!line.sourceFresh)
+    {
+        return fail(
+            "obstacle_exit_fusion_turn_vision_lost",
+            "Giro de procura interrompido: visão inferior sem dados recentes");
+    }
+    if (!ImuTurnController::imuReady(telemetry))
+    {
+        return fail(
+            "obstacle_exit_fusion_turn_sensors_lost",
+            "Giro de procura interrompido: IMU sem dados recentes");
     }
     if (observeFreshFusion(line))
     {
         return completeExit(
+            telemetry, line,
             "obstacle_exit_reacquired",
-            "Faixa confirmada durante o avanço de saída");
+            "Faixa confirmada durante o giro adicional de saída");
+    }
+    if (std::chrono::steady_clock::now() - exitFusionTurnStartedAt_ >
+        std::chrono::milliseconds(config::kObstacleTurnTimeoutMs))
+    {
+        return fail(
+            "obstacle_exit_fusion_turn_timeout",
+            "Giro adicional interrompido pelo tempo limite de segurança");
     }
 
-    if (std::chrono::steady_clock::now() - exitForwardStartedAt_ >=
-        std::chrono::milliseconds(config::kObstacleExitStraightTimeoutMs))
+    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const double yawChange = signedYawError(
+        telemetry.yawZDeg, exitFusionTurnStartYaw_) * direction;
+    if (yawChange >= config::kObstacleExitFusionTurnDegrees)
     {
-        phase_ = Phase::ExitSearchRight;
-        exitSearchStartedAt_ = std::chrono::steady_clock::now();
-        fusionReacquireFrames_ = 0;
-        lastFusionLineSequence_ = line.lineSequence;
+        phase_ = Phase::ExitTimedForward;
+        exitTimedForwardStartedAt_ = std::chrono::steady_clock::now();
         return output(
-            "obstacle_exit_search_right_start",
-            "Faixa ausente após 1,3 segundo: preparando busca à direita");
+            "obstacle_exit_timed_forward_start",
+            "Giro adicional concluído: iniciando procura reta por " +
+                std::to_string(config::kObstacleExitFusionForwardTimeoutMs) + " ms");
     }
 
     return output(
-        "obstacle_exit_forward",
-        "Seguindo reto por até 1,3 segundo para encontrar a faixa",
-        config::kObstacleSelectedForwardPower,
-        config::kObstacleSelectedForwardPower);
+        selectedSide_ == "LEFT" ? "obstacle_exit_fusion_turn_right"
+                                : "obstacle_exit_fusion_turn_left",
+        "Girando " + std::to_string(config::kObstacleExitFusionTurnDegrees) +
+            " graus para dentro enquanto procura o Fusion",
+        direction * config::kObstacleExitFusionTurnPower,
+        -direction * config::kObstacleExitFusionTurnPower);
 }
 
-ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearchRight(
+ObstacleAvoidanceOutput ObstacleAvoidance::updateExitTimedForward(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    if (!line.sourceFresh)
+    {
+        return fail(
+            "obstacle_exit_timed_forward_vision_lost",
+            "Procura reta interrompida: visão inferior sem dados recentes");
+    }
+    if (!telemetry.sensorFresh || telemetry.lastSensorAgeMs < 0 ||
+        telemetry.lastSensorAgeMs > config::kObstacleEncoderFreshnessMs ||
+        !std::isfinite(telemetry.leftEncoderRate) ||
+        !std::isfinite(telemetry.rightEncoderRate) ||
+        !ImuTurnController::imuReady(telemetry))
+    {
+        return fail(
+            "obstacle_exit_timed_forward_sensors_lost",
+            "Procura reta interrompida: encoders ou IMU sem dados recentes");
+    }
+    if (observeFreshFusion(line))
+    {
+        return completeExit(
+            telemetry, line,
+            "obstacle_exit_reacquired",
+            "Faixa confirmada durante a procura reta de saída");
+    }
+    if (std::chrono::steady_clock::now() - exitTimedForwardStartedAt_ >=
+        std::chrono::milliseconds(config::kObstacleExitFusionForwardTimeoutMs))
+    {
+        phase_ = Phase::ExitSearch;
+        exitSearchStartedAt_ = std::chrono::steady_clock::now();
+        return output(
+            selectedSide_ == "LEFT" ? "obstacle_exit_search_right_start"
+                                    : "obstacle_exit_search_left_start",
+            "Fusion ausente após " +
+                std::to_string(config::kObstacleExitFusionForwardTimeoutMs) +
+                " ms: preparando busca final");
+    }
+
+    return output(
+        "obstacle_exit_timed_forward",
+        "Avançando por até " +
+            std::to_string(config::kObstacleExitFusionForwardTimeoutMs) +
+            " ms enquanto procura o Fusion",
+        config::kObstacleExitForwardPower,
+        config::kObstacleExitForwardPower);
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
     const Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line)
 {
@@ -1042,32 +1155,43 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearchRight(
     if (observeFreshFusion(line))
     {
         return completeExit(
+            telemetry, line,
             "obstacle_exit_reacquired",
-            "Faixa confirmada durante a busca à direita");
+            "Faixa confirmada durante a busca para dentro");
     }
     if (std::chrono::steady_clock::now() - exitSearchStartedAt_ >=
         std::chrono::milliseconds(
-            config::kObstacleExitSearchRightTimeoutMs))
+            config::kObstacleExitSearchTimeoutMs))
     {
         return fail(
             "obstacle_exit_search_timeout",
-            "Faixa não encontrada após dois segundos de busca à direita");
+            "Faixa não encontrada após " +
+                std::to_string(config::kObstacleExitSearchTimeoutMs) +
+                " ms de busca para dentro");
     }
 
+    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
     return output(
-        "obstacle_exit_search_right",
-        "Girando explicitamente à direita para procurar a faixa",
-        config::kObstacleTurnCommandPower,
-        -config::kObstacleTurnCommandPower);
+        selectedSide_ == "LEFT" ? "obstacle_exit_search_right"
+                                : "obstacle_exit_search_left",
+        "Girando para dentro do contorno para procurar a faixa",
+        direction * config::kObstacleExitSearchPower,
+        -direction * config::kObstacleExitSearchPower);
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::completeExit(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line,
     const std::string& phase,
     const std::string& action)
 {
     turnController_.reset();
     lineCenteringController_.reset();
-    clearCase3Evidence();
+    // A saída já confirmou três frames novos de Fusion. Preserva a memória
+    // lateral e inicia aqui a janela que impede um retorno indevido após o desvio.
+    case3PostObstacleYaw_ = telemetry.yawZDeg;
+    lastCase3LineSequence_ = line.lineSequence;
+    armCase3FusionWindow();
     phase_ = Phase::Idle;
     ObstacleAvoidanceOutput result = output(phase, action);
     result.completed = true;
@@ -1131,7 +1255,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateReacquireForward(
         lastFusionLineSequence_ = line.lineSequence;
         ObstacleAvoidanceOutput result = output(
             "obstacle_reacquire_search",
-            "Recovery +5cm; buscando linha " + selectedSide_);
+            "Avanço de recuperação concluído; buscando linha " + selectedSide_);
         result.progressPercent = 100.0;
         result.targetDistanceCm =
             config::kObstacleReacquireForwardDistanceCm;
@@ -1142,9 +1266,10 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateReacquireForward(
 
     ObstacleAvoidanceOutput result = output(
         "obstacle_reacquire_forward",
-        "Recovery +5cm",
-        config::kObstacleSelectedForwardPower,
-        config::kObstacleSelectedForwardPower);
+        "Avançando " + std::to_string(config::kObstacleReacquireForwardDistanceCm) +
+            " cm antes de buscar a linha",
+        config::kObstacleReacquireForwardPower,
+        config::kObstacleReacquireForwardPower);
     result.progressPercent = std::clamp(
         usedDistanceCm / config::kObstacleReacquireForwardDistanceCm * 100.0,
         0.0,
@@ -1192,8 +1317,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateReacquireSearch(
     return output(
         "obstacle_reacquire_search",
         "Buscando linha " + selectedSide_,
-        direction * config::kObstacleTurnCommandPower,
-        -direction * config::kObstacleTurnCommandPower);
+        direction * config::kObstacleReacquireSearchPower,
+        -direction * config::kObstacleReacquireSearchPower);
 }
 
 bool ObstacleAvoidance::observeFreshFusion(
@@ -1257,36 +1382,12 @@ void ObstacleAvoidance::observeParabolaFrame(
               << " score=" << bestParabolaScore_ << '\n';
 }
 
-bool ObstacleAvoidance::observeCase3FusionAcquire(
-    const CameraLineSnapshot& line)
-{
-    if (!line.sourceFresh || line.lineSequence == 0 ||
-        line.lineSequence == lastCase3LineSequence_)
-    {
-        return false;
-    }
-    lastCase3LineSequence_ = line.lineSequence;
-    const bool fusionValid =
-        line.lineControlSource == "fusion" && line.normalSteeringValid;
-    if (!fusionValid)
-    {
-        case3FusionAcquireFrames_ = 0;
-        return false;
-    }
-    case3FusionAcquireFrames_ = std::min(
-        case3FusionAcquireFrames_ + 1,
-        config::kObstacleFusionReacquireConfirmationFrames);
-    return case3FusionAcquireFrames_ >=
-           config::kObstacleFusionReacquireConfirmationFrames;
-}
-
 void ObstacleAvoidance::armCase3FusionWindow()
 {
     if (case3Armed_ || !bestParabolaSideValid_)
     {
         return;
     }
-    case3AwaitingFusionAcquire_ = false;
     case3Armed_ = true;
     case3FusionAcquireTime_ = std::chrono::steady_clock::now();
     case3GapLostFrames_ = 0;
@@ -1297,7 +1398,6 @@ ObstacleAvoidanceOutput ObstacleAvoidance::startParabolaRearFusionRecovery(
     const CameraLineSnapshot& line)
 {
     phase_ = Phase::ParabolaReacquireSearch;
-    case3AwaitingFusionAcquire_ = false;
     case3Armed_ = false;
     case3GapLostFrames_ = 0;
     parabolaSearchStartYaw_ = telemetry.yawZDeg;
@@ -1316,19 +1416,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCase3Idle(
     const CameraLineSnapshot& line,
     const ForwardLineSnapshot& forwardLine)
 {
-    if (case3AwaitingFusionAcquire_ && observeCase3FusionAcquire(line))
-    {
-        armCase3FusionWindow();
-    }
     if (!case3Armed_)
     {
-        if (!case3AwaitingFusionAcquire_)
-        {
-            return {};
-        }
-        ObstacleAvoidanceOutput result = output("", "");
-        result.hasControl = false;
-        return result;
+        return {};
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -1524,7 +1614,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireForward(
             return result;
         }
         phase_ = Phase::ParabolaReacquireSearch;
-        // O limite angular começa somente após os 2 cm, imediatamente antes
+        // O limite angular começa somente após a distância de folga, antes
         // do primeiro comando de pivot para o lado salvo pela CAM1.
         parabolaSearchStartYaw_ = telemetry.yawZDeg;
         parabolaSearchStartedAt_ = std::chrono::steady_clock::now();
@@ -1544,9 +1634,11 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireForward(
 
     ObstacleAvoidanceOutput result = output(
         "obstacle_parabola_reacquire_forward",
-        "Recovery clearance +2cm",
-        config::kObstacleSelectedForwardPower,
-        config::kObstacleSelectedForwardPower);
+        "Avançando " +
+            std::to_string(config::kObstacleParabolaReacquireForwardDistanceCm) +
+            " cm de folga para recuperar a saída",
+        config::kObstacleReacquireForwardPower,
+        config::kObstacleReacquireForwardPower);
     result.progressPercent = std::clamp(
         usedDistanceCm /
             config::kObstacleParabolaReacquireForwardDistanceCm * 100.0,
@@ -1628,8 +1720,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireSearch(
         return output(
             "obstacle_parabola_reacquire_search",
             "Rear Fusion blocked; searching " + bestParabolaSide_,
-            initialDirection * config::kObstacleTurnCommandPower,
-            -initialDirection * config::kObstacleTurnCommandPower);
+            initialDirection * config::kObstacleReacquireSearchPower,
+            -initialDirection * config::kObstacleReacquireSearchPower);
     }
 
     if (!parabolaSearchOppositeSide_ &&
@@ -1690,8 +1782,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateParabolaReacquireSearch(
             ? "obstacle_parabola_reacquire_opposite_search"
             : "obstacle_parabola_reacquire_search",
         "Searching parabola exit " + searchSide,
-        direction * config::kObstacleTurnCommandPower,
-        -direction * config::kObstacleTurnCommandPower);
+        direction * config::kObstacleReacquireSearchPower,
+        -direction * config::kObstacleReacquireSearchPower);
 }
 
 void ObstacleAvoidance::clearCase3Evidence()
@@ -1704,9 +1796,7 @@ void ObstacleAvoidance::clearCase3Evidence()
     bestParabolaSequence_ = 0;
     bestParabolaSideValid_ = false;
     lastParabolaSequence_ = 0;
-    case3AwaitingFusionAcquire_ = false;
     case3Armed_ = false;
-    case3FusionAcquireFrames_ = 0;
     case3GapLostFrames_ = 0;
     lastCase3LineSequence_ = 0;
     nearForwardLineVisible_ = false;

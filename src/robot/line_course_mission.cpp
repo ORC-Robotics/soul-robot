@@ -130,8 +130,8 @@ void LineCourseMission::update(
         return;
     }
 
-    // O desvio só pode iniciar fora de uma sequência verde. Depois de iniciado,
-    // ele mantém autoridade até escolher o lado e parar no yaw correspondente.
+    // O desvio só inicia fora de uma sequência verde e mantém autoridade
+    // durante o contorno, a saída e as recuperações que ainda estejam ativas.
     const ObstacleAvoidanceOutput obstacleOutput = obstacleAvoidance_.update(
         esp32Telemetry,
         cameraLineSnapshot,

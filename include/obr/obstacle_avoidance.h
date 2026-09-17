@@ -48,8 +48,8 @@ struct ObstacleAvoidanceOutput
     std::string action;
 };
 
-// Centraliza e executa o perfil configurado para contornar o obstáculo. O modo
-// adaptativo anterior permanece disponível para testes e calibração comparativa.
+// Mede a passagem, executa o contorno espelhado e recupera a faixa inferior.
+// O lado forçado altera somente a escolha; as manobras são compartilhadas.
 class ObstacleAvoidance
 {
 public:
@@ -78,22 +78,23 @@ private:
         DrivingSelectedHeading,
         CurvingAroundObstacle,
         ExitPivotWait,
-        ExitPivotRight,
-        ExitForward,
-        ExitSearchRight,
+        ExitPivot,
+        ExitDistanceForward,
+        ExitFusionTurn,
+        ExitTimedForward,
+        ExitSearch,
         ReacquireForward,
         ReacquireSearch,
         ParabolaGapLostValidate,
         ParabolaReacquireForward,
-        ParabolaReacquireSearch,
-        FinalInwardPivot
+        ParabolaReacquireSearch
     };
 
     Phase phase_ = Phase::Idle;
     ImuTurnController turnController_;
     LineCenteringController lineCenteringController_;
     bool armed_ = true;
-    bool forceLeftSide_ = true;
+    bool forceLeftSide_ = false;
     int obstacleConfirmationSamples_ = 0;
     int rearmConfirmationSamples_ = 0;
     double yawBase_ = std::numeric_limits<double>::quiet_NaN();
@@ -124,7 +125,12 @@ private:
     double curveEndYaw_ = std::numeric_limits<double>::quiet_NaN();
     std::chrono::steady_clock::time_point curveStartedAt_{};
     std::chrono::steady_clock::time_point exitPivotWaitStartedAt_{};
+    long long exitForwardStartLeftCount_ = 0;
+    long long exitForwardStartRightCount_ = 0;
     std::chrono::steady_clock::time_point exitForwardStartedAt_{};
+    double exitFusionTurnStartYaw_ = std::numeric_limits<double>::quiet_NaN();
+    std::chrono::steady_clock::time_point exitFusionTurnStartedAt_{};
+    std::chrono::steady_clock::time_point exitTimedForwardStartedAt_{};
     std::chrono::steady_clock::time_point exitSearchStartedAt_{};
     int fusionReacquireFrames_ = 0;
     std::uint64_t lastFusionLineSequence_ = 0;
@@ -141,10 +147,8 @@ private:
     std::uint64_t bestParabolaSequence_ = 0;
     bool bestParabolaSideValid_ = false;
     std::uint64_t lastParabolaSequence_ = 0;
-    bool case3AwaitingFusionAcquire_ = false;
     bool case3Armed_ = false;
     std::chrono::steady_clock::time_point case3FusionAcquireTime_{};
-    int case3FusionAcquireFrames_ = 0;
     int case3GapLostFrames_ = 0;
     std::uint64_t lastCase3LineSequence_ = 0;
     bool nearForwardLineVisible_ = false;
@@ -190,13 +194,21 @@ private:
         const ForwardLineSnapshot& forwardLine);
     ObstacleAvoidanceOutput updateExitPivotWait(
         const Esp32TelemetrySnapshot& telemetry);
-    ObstacleAvoidanceOutput updateExitForward(
+    ObstacleAvoidanceOutput updateExitDistanceForward(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);
-    ObstacleAvoidanceOutput updateExitSearchRight(
+    ObstacleAvoidanceOutput updateExitFusionTurn(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput updateExitTimedForward(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput updateExitSearch(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);
     ObstacleAvoidanceOutput completeExit(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line,
         const std::string& phase,
         const std::string& action);
     ObstacleAvoidanceOutput updateReacquireForward(
@@ -241,7 +253,6 @@ private:
         bool measuringLeft);
     bool observeFreshFusion(const CameraLineSnapshot& line);
     void observeParabolaFrame(const ForwardLineSnapshot& forwardLine);
-    bool observeCase3FusionAcquire(const CameraLineSnapshot& line);
     ObstacleAvoidanceOutput updateCase3Idle(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,

@@ -1037,32 +1037,35 @@ constexpr int kObstacleClearanceSamplingTimeoutMs = 1500;
 // O lado direito preserva uma decisão repetível quando ambas estão livres.
 constexpr double kObstacleClearanceTieCm = 2.0;
 constexpr bool kObstacleDefaultSideIsRight = true;
-// Este obstáculo da arena possui passagem confiável somente pela esquerda.
-// Quando ativo, o perfil pula a varredura lateral e inicia o contorno esquerdo
-// logo após centralizar, evitando que uma chegada diagonal troque o lado.
-constexpr bool kObstacleForceLeftSide = true;
+// Por padrão, mede os dois lados antes de escolher a passagem. Ative apenas
+// para calibrar o contorno esquerdo sem executar a varredura lateral.
+constexpr bool kObstacleForceLeftSide = false;
+// Habilita a sequência de avanço curto e giro quando a faixa inferior aparece
+// durante a curva. Desativar mantém somente a saída nominal temporizada.
+constexpr bool kObstacleEarlyFusionRecoveryEnabled = true;
+// Mantém a memória lateral da CAM1 para tratar GAP/LOST e retorno indevido
+// após reencontrar a faixa. Desativar remove essa proteção pós-desvio.
+constexpr bool kObstacleCase3RecoveryEnabled = true;
 
 // Idade máxima, em milissegundos, aceita para cada eco da varredura lateral.
 // Uma leitura antiga nunca deve influenciar a escolha do lado do obstáculo.
 constexpr int kObstacleUltrasonicFreshnessMs = 300;
 
-// Ângulos, em graus, executados na ordem da máquina de desvio.
-constexpr double kObstacleFirstRightTurnDegrees = 45.0;
-constexpr double kObstacleFirstLeftTurnDegrees = 45.0;
-constexpr double kObstacleSecondLeftTurnDegrees = 90.0;
-constexpr double kObstacleFinalRightTurnDegrees = 90.0;
-// A faixa de ±5 graus aceita um giro real entre 40 e 50 graus no alvo de 45.
+// Erro máximo aceito, em graus, nos giros do desvio. Uma tolerância maior
+// reduz correções, mas permite posicionar o robô mais longe do alvo.
 constexpr double kObstacleTurnToleranceDegrees = 5.0;
-// Potência e micropulsos exclusivos da varredura lateral. O valor 0,73 ainda
-// vence o atrito estático, mas reduz a inércia observada com 0,75.
+// Potência normalizada dos giros de varredura, posicionamento e saída pela IMU.
+// O valor 0,73 vence o atrito estático e reduz a inércia observada com 0,75.
 constexpr double kObstacleTurnCommandPower = 0.73;
+// Duração, em milissegundos, de cada pulso de correção após estabilizar o giro.
+// Pulsos maiores corrigem mais rápido, mas podem ultrapassar novamente o alvo.
 constexpr int kObstacleTurnCorrectionPulseMs = 30;
 // Valor -1 permite quantas correções forem necessárias no desvio. A proteção
 // contra giro eterno continua sendo feita pelo timeout total e pela validade da IMU.
 constexpr int kObstacleTurnMaximumCorrectionPulses = -1;
 constexpr int kObstacleTurnTimeoutMs = 12000;
 
-// Primeira reta experimental após a escolha do lado. O alvo de heading é o
+// Primeira reta após a escolha do lado. O alvo de heading é o
 // yaw realmente alcançado no posicionamento lateral, não o yaw base.
 constexpr double kObstacleSelectedForwardDistanceCm = 12.0;
 constexpr double kObstacleSelectedForwardPower = 0.75;
@@ -1075,20 +1078,29 @@ constexpr double kObstacleCurveEndOffsetDegrees = 45.0;
 constexpr double kObstacleCurveBasePower = 0.75;
 constexpr double kObstacleCurveMaximumHeadingCorrection = 0.06;
 constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
-// O modo adaptativo antigo usa este pivot após a curva. O perfil esquerdo fixo
-// ignora este valor e segue reto durante a procura temporizada definida abaixo.
-constexpr double kObstacleFinalInwardPivotDegrees = 40.0;
-
-// Após a curva, o robô para brevemente e gira 25 graus para a direita. A pausa
-// evita que a inércia da curva altere a referência inicial do giro pela IMU.
+// Após a curva, pausa em milissegundos antes do giro para dentro: direita no
+// contorno LEFT e esquerda no RIGHT. A pausa reduz o efeito da inércia na IMU.
 constexpr int kObstacleExitPivotWaitMs = 250;
-constexpr double kObstacleExitPivotRightDegrees = 25.0;
-// Depois do giro, o robô segue reto por até 1,3 segundo procurando a faixa.
-// O limite impede avanço indefinido caso a visão não encontre a saída.
-constexpr int kObstacleExitStraightTimeoutMs = 1300;
-// Se a faixa não aparecer na reta, uma busca explícita para a direita também
-// possui limite de dois segundos. Ao expirar, os motores são zerados.
-constexpr int kObstacleExitSearchRightTimeoutMs = 2000;
+// Módulo do giro relativo de saída, em graus; o lado escolhido define o sinal.
+constexpr double kObstacleExitPivotDegrees = 25.0;
+// Primeiro avanço da saída, em centímetros. Os dois encoders devem alcançar
+// essa distância antes de liberar o giro que começa a procurar o Fusion.
+constexpr double kObstacleExitForwardDistanceCm = 6.0;
+// Potência normalizada dos dois avanços de saída; pode ser calibrada sem alterar
+// a aproximação de 12 cm nem os avanços curtos de recuperação.
+constexpr double kObstacleExitForwardPower = 0.75;
+// Giro adicional para dentro, em graus, que procura o Fusion antes da segunda
+// reta. LEFT gira à direita e RIGHT gira à esquerda com o mesmo módulo.
+constexpr double kObstacleExitFusionTurnDegrees = 10.0;
+constexpr double kObstacleExitFusionTurnPower = 0.73;
+// Tempo máximo, em milissegundos, da segunda reta procurando o Fusion.
+// Se três frames não confirmarem a faixa, começa a busca final por giro.
+constexpr int kObstacleExitFusionForwardTimeoutMs = 1500;
+// Busca final para dentro: direita no LEFT e esquerda no RIGHT. O limite em
+// milissegundos impede giro indefinido; ao expirar, os motores são zerados.
+constexpr int kObstacleExitSearchTimeoutMs = 1500;
+// Potência normalizada do pivot final; valores maiores aumentam a inércia.
+constexpr double kObstacleExitSearchPower = 0.73;
 
 // Recuperação antecipada exclusiva da curva de obstáculo. Três amostras novas
 // do Fusion cancelam a curva nominal; os encoders medem o avanço curto e a IMU
@@ -1096,6 +1108,10 @@ constexpr int kObstacleExitSearchRightTimeoutMs = 2000;
 constexpr int kObstacleFusionReacquireConfirmationFrames = 3;
 constexpr double kObstacleReacquireForwardDistanceCm = 5.0;
 constexpr double kObstacleReacquireSearchMaximumDegrees = 100.0;
+// Potências normalizadas da reta curta e do pivot dos casos de recuperação.
+// Também são usadas no caso 3, sem alterar as potências do contorno nominal.
+constexpr double kObstacleReacquireForwardPower = 0.75;
+constexpr double kObstacleReacquireSearchPower = 0.73;
 
 // O caso 3 conserva somente o frame lateral mais dominante da parábola. A
 // memória passa a ter validade temporal apenas após o primeiro Fusion estável.
@@ -1114,21 +1130,18 @@ constexpr double kObstacleParabolaRearBlockDegrees = 65.0;
 // o lado oposto ao melhor lado salvo após o desvio nominal do obstáculo.
 constexpr double kObstaclePostObstacleFusionReturnLimitDegrees = 35.0;
 
-// Distâncias, em centímetros, calibradas para contornar o obstáculo atual.
-constexpr double kObstacleFirstForwardDistanceCm = 25.0;
-constexpr double kObstacleSecondForwardDistanceCm = 30.0;
-constexpr double kObstacleThirdForwardDistanceCm = 21.5;
-constexpr double kObstacleReverseDistanceCm = 5.0;
+// Distância da ré inicial, em centímetros, antes da centralização da linha.
+// Aumentar afasta o robô do obstáculo e muda o ponto inicial do contorno.
+constexpr double kObstacleReverseDistanceCm = 3.0;
 
-// Potências normalizadas dos deslocamentos para frente e em ré.
-constexpr double kObstacleForwardPower = 0.75;
+// Potência normalizada da ré inicial, limitada à faixa segura dos motores.
 constexpr double kObstacleReversePower = 0.75;
 // Limite apenas de transição da ré inicial. Se os encoders não responderem, o
 // desvio continua pela centralização em vez de encerrar a missão autônoma.
 constexpr int kObstacleInitialReverseMaximumMs = 1500;
 
-// Pausa entre etapas e limites de segurança da odometria do desvio.
-constexpr int kObstacleStageSettleMs = 250;
+// Idade máxima dos encoders e duração máxima dos deslocamentos, em milissegundos.
+// Limites maiores prolongam o movimento sem progresso ou com leituras antigas.
 constexpr int kObstacleEncoderFreshnessMs = 300;
 constexpr int kObstacleDistanceSafetyTimeoutMs = 12000;
 
@@ -1162,13 +1175,7 @@ static_assert(kObstacleClearanceScanDegrees > 0.0 &&
                   kObstacleClearanceTieCm >= 0.0 &&
                   kObstacleUltrasonicFreshnessMs > 0,
               "A varredura lateral do obstáculo deve permanecer válida.");
-static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
-                  kObstacleFirstLeftTurnDegrees > 0.0 &&
-                  kObstacleSecondLeftTurnDegrees > 0.0 &&
-                  kObstacleSecondLeftTurnDegrees <= 180.0 &&
-                  kObstacleFinalRightTurnDegrees > 0.0 &&
-                  kObstacleFinalRightTurnDegrees <= 180.0 &&
-                  kObstacleTurnToleranceDegrees > 0.0 &&
+static_assert(kObstacleTurnToleranceDegrees > 0.0 &&
                   kObstacleTurnCommandPower > 0.0 &&
                   kObstacleTurnCommandPower <= kMaxMotorOutput &&
                   kObstacleTurnCorrectionPulseMs > 0 &&
@@ -1191,15 +1198,26 @@ static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                       kMaxMotorOutput &&
                   kObstacleCurveMaximumHeadingCorrection > 0.0 &&
                   kObstacleCurveFullHeadingErrorDegrees > 0.0 &&
-                  kObstacleFinalInwardPivotDegrees > 0.0 &&
-                  kObstacleFinalInwardPivotDegrees <= 45.0 &&
                   kObstacleExitPivotWaitMs >= 0 &&
-                  kObstacleExitPivotRightDegrees > 0.0 &&
-                  kObstacleExitPivotRightDegrees <= 45.0 &&
-                  kObstacleExitStraightTimeoutMs > 0 &&
-                  kObstacleExitSearchRightTimeoutMs > 0 &&
+                  kObstacleExitPivotDegrees > 0.0 &&
+                  kObstacleExitPivotDegrees <= 45.0 &&
+                  kObstacleExitForwardDistanceCm > 0.0 &&
+                  kObstacleExitFusionTurnDegrees > 0.0 &&
+                  kObstacleExitFusionTurnDegrees <= 45.0 &&
+                  kObstacleExitFusionTurnPower > 0.0 &&
+                  kObstacleExitFusionTurnPower <= kMaxMotorOutput &&
+                  kObstacleExitFusionForwardTimeoutMs > 0 &&
+                  kObstacleExitSearchTimeoutMs > 0 &&
+                  kObstacleExitForwardPower > 0.0 &&
+                  kObstacleExitForwardPower <= kMaxMotorOutput &&
+                  kObstacleExitSearchPower > 0.0 &&
+                  kObstacleExitSearchPower <= kMaxMotorOutput &&
                   kObstacleFusionReacquireConfirmationFrames > 0 &&
                   kObstacleReacquireForwardDistanceCm > 0.0 &&
+                  kObstacleReacquireForwardPower > 0.0 &&
+                  kObstacleReacquireForwardPower <= kMaxMotorOutput &&
+                  kObstacleReacquireSearchPower > 0.0 &&
+                  kObstacleReacquireSearchPower <= kMaxMotorOutput &&
                   kObstacleReacquireSearchMaximumDegrees > 0.0 &&
                   kObstacleReacquireSearchMaximumDegrees < 180.0 &&
                   kObstacleParabolaMinimumBlackPixels > 0 &&
@@ -1218,16 +1236,10 @@ static_assert(kObstacleFirstRightTurnDegrees > 0.0 &&
                   kObstaclePostObstacleFusionReturnLimitDegrees <
                       kObstacleParabolaRearBlockDegrees,
               "Os ângulos do desvio devem permanecer válidos.");
-static_assert(kObstacleFirstForwardDistanceCm > 0.0 &&
-                  kObstacleSecondForwardDistanceCm > 0.0 &&
-                  kObstacleThirdForwardDistanceCm > 0.0 &&
-                  kObstacleReverseDistanceCm > 0.0 &&
-                  kObstacleForwardPower > 0.0 &&
-                  kObstacleForwardPower <= kMaxMotorOutput &&
+static_assert(kObstacleReverseDistanceCm > 0.0 &&
                   kObstacleReversePower > 0.0 &&
                   kObstacleReversePower <= kMaxMotorOutput &&
                   kObstacleInitialReverseMaximumMs > 0 &&
-                  kObstacleStageSettleMs >= 0 &&
                   kObstacleEncoderFreshnessMs > 0 &&
                   kObstacleDistanceSafetyTimeoutMs > 0 &&
                   kObstacleBrakePredictionSeconds >= 0.0,

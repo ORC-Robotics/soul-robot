@@ -2093,6 +2093,14 @@ void testObstaclePausesIfBottomCameraBecomesUnavailable()
             snapshot.autonomousStatus.phase == "obstacle_detected",
         "Duas leituras ultrassônicas devem parar antes de iniciar o desvio.");
 
+    // Conclui a ré pelos encoders antes de avaliar a falta de visão na
+    // centralização; sem isso, o teste ainda estaria na etapa anterior.
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kObstacleReverseDistanceCm * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount -= reverseCounts;
+    fixture.telemetry.rightEncoderCount -= reverseCounts;
+    fixture.update(freshVision(GreenInterpretation::None));
+
     CameraLineSnapshot staleLine = freshVision(GreenInterpretation::None);
     staleLine.sourceFresh = false;
     snapshot = fixture.update(staleLine, false);
@@ -2102,6 +2110,36 @@ void testObstaclePausesIfBottomCameraBecomesUnavailable()
             snapshot.autonomousStatus.phase ==
                 "obstacle_centering_waiting_line",
         "A centralização do desvio deve pausar com PWM zero sem perder a manobra.");
+}
+
+void testObstacleRespectsStopAndSafetyPriority()
+{
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        MissionFixture fixture;
+        fixture.telemetry.ultrasonicDistanceCm = 5.0;
+        const auto line = freshVision(GreenInterpretation::None);
+        fixture.update(line);
+        fixture.update(line);
+        const auto reversing = fixture.update(line);
+        require(reversing.left < 0.0 && reversing.right < 0.0,
+                "O teste deve interromper um desvio que já está movimentando os motores.");
+        if (scenario == 0)
+        {
+            fixture.robotState.emergencyStop();
+        }
+        else if (scenario == 1)
+        {
+            fixture.robotState.stop();
+        }
+        else
+        {
+            fixture.telemetry.sensorFresh = false;
+        }
+        const auto stopped = fixture.update(line);
+        require(stopped.mode != "autonomous" && stopped.left == 0.0 && stopped.right == 0.0,
+                "E-Stop, Parar e perda da ESP32 devem interromper o desvio com motores zerados.");
+    }
 }
 
 void testConfirmedCourseMarkersControlOnlyExpectedPhase()
@@ -2819,6 +2857,14 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--obstacle-only")
+        {
+            testObstacleContinuationBandIpcFailsSafe();
+            testObstaclePausesIfBottomCameraBecomesUnavailable();
+            testObstacleRespectsStopAndSafetyPriority();
+            std::cout << "obstacle_integration_test: OK\n";
+            return 0;
+        }
         testRescueExitWristTransitionPreservesOtherChannels();
         testRescueExitWristUsesLatestRescuePose();
         testRescueExitWristPreservesMechanicalGuard();
@@ -2907,6 +2953,7 @@ int main(int argc, char** argv)
         testUnavailableCameraStopsMission();
         testTransientLineIpcLossPausesAndResumesMission();
         testObstaclePausesIfBottomCameraBecomesUnavailable();
+        testObstacleRespectsStopAndSafetyPriority();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();
