@@ -45,6 +45,13 @@ from .camera_config import (
     GREEN_ROI_MIN_BLACK_RATIO,
     GREEN_ROI_MIN_VISIBLE_RATIO,
     GREEN_SIDE_ROI_MIN_BLACK_RATIO,
+    GREEN_SIDE_REFERENCE_MIN_OFFSET_WIDTHS,
+    GREEN_LOCAL_L_CONFIRMATION_ENABLED,
+    GREEN_LOCAL_L_SIDE_DEPTH_SCALE,
+    GREEN_LOCAL_TRACK_MIN_COVERAGE,
+    GREEN_LOCAL_TRACK_MIN_WIDTH_SCALE,
+    GREEN_LOCAL_TRACK_MAX_WIDTH_SCALE,
+    GREEN_LOCAL_TRACK_MAX_RESIDUAL_SCALE,
     GREEN_SATURATION_MIN,
     GREEN_SINGLE_OBSERVATION_FRAMES,
     GREEN_TURNAROUND_CONFIRMATION_FRAMES,
@@ -842,7 +849,7 @@ def empty_green_status():
     }
 
 
-def green_marker_roi_geometry(contour, frame_width):
+def green_marker_roi_geometry(contour, frame_width, local_l=False):
     """Calcula as ROIs horizontal e superior ao redor do marcador verde."""
 
     box = cv2.boxPoints(cv2.minAreaRect(contour))
@@ -858,12 +865,14 @@ def green_marker_roi_geometry(contour, frame_width):
         int(round(half_size * GREEN_UPPER_ROI_HALF_WIDTH_SCALE)),
     )
 
-    # A ROI horizontal cruza o marcador e mede separadamente somente as partes
-    # externas à esquerda e à direita. Assim existe uma única ROI lateral.
+    # No experimento, cada hipótese em L usa apenas o preto adjacente ao verde.
+    # A geometria extensa original continua sendo usada para pares de 180°.
+    side_depth = (max(1, int(round(half_size * GREEN_LOCAL_L_SIDE_DEPTH_SCALE)))
+                  if local_l else 2 * half_size)
     horizontal_roi = (
-        int(round(minimum_x)) - 2 * half_size,
+        int(round(minimum_x)) - side_depth,
         center_y - half_size,
-        int(round(maximum_x)) + 2 * half_size,
+        int(round(maximum_x)) + side_depth,
         center_y + half_size,
     )
     # A ROI superior é perpendicular à horizontal. Ela deve ter amostra
@@ -883,6 +892,7 @@ def green_marker_roi_geometry(contour, frame_width):
         ),
         "horizontal_roi": horizontal_roi,
         "upper_roi": upper_roi,
+        "local_l": local_l,
     }
 
 
@@ -958,9 +968,25 @@ def measure_horizontal_black_roi(black_mask, geometry):
     }
 
 
-def black_roi_orientation_degrees(black_mask, roi):
+def create_green_association_mask(structural_mask, green_mask, dead_zone_end_y):
+    """Preserva o preto visível ao redor do verde sem alterar a máscara do seguidor."""
+
+    association_mask = structural_mask.copy()
+    association_mask[:dead_zone_end_y, :] = 0
+    useful_height = min(association_mask.shape[0], green_mask.shape[0])
+    useful_width = min(association_mask.shape[1], green_mask.shape[1])
+    region = association_mask[:useful_height, :useful_width]
+    region[green_mask[:useful_height, :useful_width] > 0] = 0
+    # O limite inferior segmenta candidatos verdes, não delimita o preto.
+    # Zerar o preto abaixo dele faz uma ROI visível parecer branca.
+    return association_mask
+
+
+def black_roi_orientation_degrees(black_mask, roi, diagnostics=None):
     """Estima a orientação axial do preto dentro de uma ROI."""
 
+    if diagnostics is not None:
+        diagnostics.update(confidence=0.0, black_pixels=0, fully_black=False)
     x1, y1, x2, y2 = (int(value) for value in roi)
     x1 = max(0, min(black_mask.shape[1], x1))
     y1 = max(0, min(black_mask.shape[0], y1))
@@ -970,6 +996,11 @@ def black_roi_orientation_degrees(black_mask, roi):
         return None
 
     points_y, points_x = np.nonzero(black_mask[y1:y2, x1:x2] > 0)
+    if diagnostics is not None:
+        diagnostics["black_pixels"] = int(points_x.size)
+        # Uma amostra totalmente preta não contém bordas internas que revelem
+        # a direção da faixa. O eixo calculado pode ser apenas o formato da ROI.
+        diagnostics["fully_black"] = points_x.size == (x2 - x1) * (y2 - y1)
     if points_x.size < 8:
         return None
     points = np.column_stack((points_x, points_y)).astype(np.float64)
@@ -977,6 +1008,13 @@ def black_roi_orientation_degrees(black_mask, roi):
     eigenvalues, eigenvectors = np.linalg.eigh(covariance)
     if not np.all(np.isfinite(eigenvalues)) or eigenvalues[-1] <= 0.0:
         return None
+    if diagnostics is not None:
+        # A confiança mede somente o alongamento da amostra, entre 0 e 1.
+        # Zero indica distribuição sem eixo dominante; não é probabilidade de
+        # acerto. Este diagnóstico não altera o ângulo nem a decisão do par.
+        diagnostics["confidence"] = float(np.clip(
+            (eigenvalues[-1] - eigenvalues[0]) / eigenvalues[-1], 0.0, 1.0,
+        ))
     direction = eigenvectors[:, -1]
     return float(
         math.degrees(math.atan2(direction[1], direction[0])) % 180.0
@@ -988,6 +1026,137 @@ def axial_angle_difference_degrees(first, second):
 
     difference = abs(float(first) - float(second)) % 180.0
     return min(difference, 180.0 - difference)
+
+
+def green_local_track_reference(geometry, black_mask):
+    """Ajusta a continuação local abaixo do verde e projeta seu centro até ele."""
+
+    marker_left, marker_right = geometry["marker_horizontal_bounds"]
+    marker_width = max(1, marker_right - marker_left)
+    marker_height = max(1, int(round(np.ptp(geometry["box"][:, 1]))))
+    center_x, center_y = geometry["center"]
+    half_size = max(1, black_mask.shape[1] // GREEN_ROI_HALF_SIZE_DIVISOR)
+    band_height = max(marker_height, 2 * half_size)
+    start_y = int(np.ceil(np.max(geometry["box"][:, 1]))) + 1
+    end_y = min(black_mask.shape[0], start_y + band_height)
+    # A banda acompanha uma faixa inclinada até sua parte inferior. A busca
+    # mais larga evita recortar a faixa real e trocar por um fragmento externo;
+    # a projeção abaixo ainda exige que ela esteja adjacente ao verde.
+    search_width = max(3 * marker_width, 4 * half_size)
+    x1, x2 = max(0, center_x - search_width), min(black_mask.shape[1], center_x + search_width)
+    reference = {"valid": False, "samples": 0, "track_x": 0.0, "slope": 0.0,
+                 "reason": "insufficient_local_track", "roi": (x1, start_y, x2, end_y)}
+    if end_y - start_y < band_height * GREEN_LOCAL_TRACK_MIN_COVERAGE:
+        return reference
+
+    minimum_width = max(3, marker_width * GREEN_LOCAL_TRACK_MIN_WIDTH_SCALE)
+    maximum_width = marker_width * GREEN_LOCAL_TRACK_MAX_WIDTH_SCALE
+    separation = max(1.0, marker_width * GREEN_SIDE_REFERENCE_MIN_OFFSET_WIDTHS)
+    rows, centers = [], []
+    for y in range(start_y, end_y):
+        active = black_mask[y, x1:x2] > 0
+        changes = np.diff(np.concatenate(([False], active, [False])).astype(np.int8))
+        starts, ends = np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)
+        runs = [(abs((left + right - 1) / 2.0 + x1 - center_x),
+                 (left + right - 1) / 2.0 + x1)
+                for left, right in zip(starts, ends)
+                if minimum_width <= right - left <= maximum_width
+                and left > 0 and right < active.size]
+        runs.sort()
+        # Dois segmentos igualmente próximos não oferecem uma referência única.
+        if not runs or (len(runs) > 1 and runs[1][0] - runs[0][0] < separation):
+            continue
+        rows.append(y)
+        centers.append(runs[0][1])
+
+    reference["samples"] = len(rows)
+    if (len(rows) < band_height * GREEN_LOCAL_TRACK_MIN_COVERAGE
+            or rows[-1] - rows[0] < band_height * GREEN_LOCAL_TRACK_MIN_COVERAGE):
+        return reference
+    rows, centers = np.asarray(rows, dtype=float), np.asarray(centers, dtype=float)
+    # Centrar o ajuste em y evita instabilidade numérica. A projeção compensa
+    # a inclinação do robô; não usa o centro da câmera nem o alvo do Fusion.
+    slope, intercept = np.polyfit(rows - center_y, centers, 1)
+    residual = np.abs(centers - (slope * (rows - center_y) + intercept))
+    if np.max(residual) > max(2.0, marker_width * GREEN_LOCAL_TRACK_MAX_RESIDUAL_SCALE):
+        reference["reason"] = "conflicting_local_track"
+        return reference
+    offset = center_x - intercept
+    # A faixa precisa permanecer adjacente ao marcador ao ser projetada, não
+    # ser um preto distante ou atravessar o centro do próprio verde.
+    if (not np.isfinite(intercept) or not np.isfinite(slope)
+            or abs(offset) < marker_width / 2.0
+            or abs(offset) > marker_width + 2 * half_size):
+        reference["reason"] = "local_track_not_adjacent"
+        return reference
+    reference.update(valid=True, track_x=float(intercept), slope=float(slope),
+                     reason="local_track_reference")
+    return reference
+
+
+def classify_green_marker_side(marker, black_mask):
+    """Escolhe o lado sem exigir piso branco na metade lateral oposta."""
+
+    horizontal = marker["horizontal"]
+    left_valid = horizontal["left_valid"]
+    right_valid = horizontal["right_valid"]
+    if marker["geometry"].get("local_l", False):
+        reference = green_local_track_reference(marker["geometry"], black_mask)
+        marker["local_track_reference"] = reference
+        if reference["valid"]:
+            # O preto superior já foi validado pelo chamador. O centro da faixa
+            # longitudinal local prevalece sobre ambas as amostras da interseção.
+            marker["side_decision_source"] = "local_track_reference"
+            return ("DIREITA" if marker["geometry"]["center"][0] > reference["track_x"]
+                    else "ESQUERDA")
+        if reference["reason"] in ("conflicting_local_track", "local_track_not_adjacent"):
+            # Uma referência presente, mas contraditória, não pode ser substituída
+            # por uma lateral isolada e fixar o lado errado no coordenador.
+            return "AMBIGUO"
+        # Cada L exige preto superior e apenas sua própria lateral visível.
+        # A lateral oposta fora da imagem não veta uma hipótese válida.
+        # Duas hipóteses válidas não escolhem um lado nem representam um 180°.
+        if left_valid and right_valid:
+            return "AMBIGUO"
+        if left_valid:
+            marker["side_decision_source"] = "experimental_local_l"
+            return "DIREITA"
+        if right_valid:
+            marker["side_decision_source"] = "experimental_local_l"
+            return "ESQUERDA"
+        return "AMBIGUO"
+    if not horizontal["measured"]:
+        return "AMBIGUO"
+    if not left_valid and not right_valid:
+        return "AMBIGUO"
+    if left_valid and not right_valid:
+        return "DIREITA"
+    if right_valid and not left_valid:
+        return "ESQUERDA"
+
+    # Uma interseção pode preencher ambas as metades laterais. Nesse caso,
+    # o marcador é verdadeiro; o lado vem da posição relativa ao preto acima,
+    # nunca do centro da câmera nem de escolher a maior razão lateral.
+    geometry = marker["geometry"]
+    x1, y1, x2, y2 = geometry["upper_roi"]
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(black_mask.shape[1], x2), min(black_mask.shape[0], y2)
+    _black_y, black_x = np.nonzero(black_mask[y1:y2, x1:x2] > 0)
+    if black_x.size == 0:
+        return "AMBIGUO"
+    black_center_x = x1 + float(np.mean(black_x))
+    marker["associated_black_x"] = black_center_x
+    marker_left, marker_right = geometry["marker_horizontal_bounds"]
+    marker_center_x = (marker_left + marker_right) / 2.0
+    minimum_offset = max(1.0, (marker_right - marker_left)
+                         * GREEN_SIDE_REFERENCE_MIN_OFFSET_WIDTHS)
+    offset = marker_center_x - black_center_x
+    if offset >= minimum_offset:
+        return "DIREITA"
+    if offset <= -minimum_offset:
+        return "ESQUERDA"
+    # Preto simétrico confirma a associação, mas não inventa um lado.
+    return "AMBIGUO"
 
 
 def analyze_green_marker_contours(green_contours, selected_black_mask):
@@ -1011,6 +1180,7 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         geometry = green_marker_roi_geometry(
             contour,
             selected_black_mask.shape[1],
+            local_l=GREEN_LOCAL_L_CONFIRMATION_ENABLED and len(green_contours) == 1,
         )
         upper_measurement = measure_black_roi(
             selected_black_mask,
@@ -1043,14 +1213,8 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         return result
 
     for marker in upper_valid_markers:
-        horizontal = marker["horizontal"]
-        left_valid = horizontal["left_valid"]
-        right_valid = horizontal["right_valid"]
-        marker["interpretation"] = (
-            "AMBIGUO" if not horizontal["measured"] else
-            "DIREITA" if left_valid and not right_valid else
-            "ESQUERDA" if right_valid and not left_valid else
-            "AMBIGUO"
+        marker["interpretation"] = classify_green_marker_side(
+            marker, selected_black_mask,
         )
 
     if len(upper_valid_markers) > 2:
@@ -1067,21 +1231,31 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
             GREEN_PAIR_MAX_VERTICAL_DISTANCE_HEIGHTS
             * max(1.0, first_height, second_height)
         )
+        first_orientation_diagnostics, second_orientation_diagnostics = {}, {}
         first_orientation = black_roi_orientation_degrees(
             selected_black_mask,
             first["geometry"]["upper_roi"],
+            first_orientation_diagnostics,
         )
         second_orientation = black_roi_orientation_degrees(
             selected_black_mask,
             second["geometry"]["upper_roi"],
+            second_orientation_diagnostics,
         )
+        first_orientation_defined = not first_orientation_diagnostics.get("fully_black", False)
+        second_orientation_defined = not second_orientation_diagnostics.get("fully_black", False)
+        orientation_comparison_available = first_orientation_defined and second_orientation_defined
+        # Somente o preenchimento completo torna o eixo inconclusivo; confiança
+        # baixa, por si só, não muda o critério. Sem um dos eixos, não há conflito
+        # angular comprovado. Ambos os pretos superiores e a altura do par ainda
+        # devem ser válidos no mesmo frame, com a confirmação temporal original.
         orientation_compatible = (
             first_orientation is not None
             and second_orientation is not None
-            and axial_angle_difference_degrees(
+            and (not orientation_comparison_available or axial_angle_difference_degrees(
                 first_orientation,
                 second_orientation,
-            ) <= GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES
+            ) <= GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES)
         )
         # Uma chegada diagonal gira as duas faixas locais juntas. Orientações
         # divergentes indicam verdes pertencentes a ramos diferentes.
@@ -1091,6 +1265,27 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         )
         pair_compatible = vertical_compatible and orientation_compatible
         result["pair_compatible"] = pair_compatible
+        # Registra os gates e distingue um eixo indefinido de uma comparação
+        # angular aprovada. O ângulo bruto continua disponível para diagnóstico.
+        result["pair_diagnostics"] = {
+            "vertical_delta_px": abs(float(first_center[1] - second_center[1])),
+            "vertical_tolerance_px": vertical_tolerance,
+            "vertical_compatible": vertical_compatible,
+            "first_angle_degrees": first_orientation,
+            "second_angle_degrees": second_orientation,
+            "angle_delta_degrees": (axial_angle_difference_degrees(first_orientation, second_orientation)
+                                    if first_orientation is not None and second_orientation is not None else None),
+            "orientation_compatible": orientation_compatible,
+            "first_orientation_defined": first_orientation_defined,
+            "second_orientation_defined": second_orientation_defined,
+            "orientation_comparison_available": orientation_comparison_available,
+            "first_confidence": first_orientation_diagnostics.get("confidence", 0.0),
+            "second_confidence": second_orientation_diagnostics.get("confidence", 0.0),
+            "first_black_pixels": first_orientation_diagnostics.get("black_pixels", 0),
+            "second_black_pixels": second_orientation_diagnostics.get("black_pixels", 0),
+            "first_upper_ratio": first["upper"]["black_ratio"],
+            "second_upper_ratio": second["upper"]["black_ratio"],
+        }
         if not pair_compatible:
             # Dois verdes nunca podem virar uma curva lateral por desempate.
             # Se o par ainda não estiver coerente, aguarda outro frame para não
@@ -1123,6 +1318,44 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
         "DIREITA",
     )
     return result
+
+
+def green_geometry_reason(result):
+    """Explica a classificação atual pelas mesmas condições geométricas do detector."""
+
+    markers = result.get("markers", [])
+    if not markers:
+        return "no_candidate"
+    if any(not marker["upper"]["measured"] for marker in markers):
+        return "upper_roi_not_visible"
+    valid = [marker for marker in markers if marker["upper"]["valid"]]
+    if not valid:
+        return "upper_black_missing"
+    if len(valid) > 2:
+        return "multiple_valid_markers"
+    if len(valid) == 2:
+        return "compatible_pair" if result["pair_compatible"] else "pair_geometry_incompatible"
+    if len(markers) != 1:
+        return "additional_unvalidated_marker"
+    horizontal = valid[0]["horizontal"]
+    if result["interpretation"] in ("ESQUERDA", "DIREITA"):
+        if valid[0].get("side_decision_source") == "local_track_reference":
+            return "local_track_reference"
+        if valid[0].get("side_decision_source") == "experimental_local_l":
+            return "experimental_local_l"
+        return "lateral_geometry_valid"
+    local_reason = valid[0].get("local_track_reference", {}).get("reason")
+    if local_reason in ("conflicting_local_track", "local_track_not_adjacent"):
+        return local_reason
+    if not horizontal["measured"]:
+        return "side_roi_not_visible"
+    if horizontal["left_valid"] and horizontal["right_valid"]:
+        if valid[0]["geometry"].get("local_l", False):
+            return "both_local_l_hypotheses_valid"
+        return "upper_side_reference_inconclusive"
+    if not horizontal["left_valid"] and not horizontal["right_valid"]:
+        return "side_black_missing"
+    return "lateral_geometry_valid"
 
 
 class GreenObservationTracker:
@@ -1199,6 +1432,21 @@ class GreenObservationTracker:
             self.pending_interpretation = "RETORNO_180"
             self.missing_samples = 0
             return "RETORNO_180", True, self.consecutive_samples
+
+        if (
+            self.confirmed_interpretation in ("ESQUERDA", "DIREITA")
+            and interpretation == "VERDE_FALSO"
+        ):
+            # Depois que a geometria lateral foi confirmada, uma oscilação
+            # curta do preto local não pode rebaixar o mesmo evento para falso.
+            # A decisão ainda pode ser promovida para RETORNO_180 em outro frame.
+            self.pending_interpretation = self.confirmed_interpretation
+            self.missing_samples = 0
+            return (
+                self.confirmed_interpretation,
+                True,
+                self.consecutive_samples,
+            )
 
         if interpretation in ("ESQUERDA", "DIREITA"):
             # O instante é renovado em todo frame detectado, inclusive durante
@@ -1286,6 +1534,7 @@ def build_green_status(
     published_interpretation, confirmed, consecutive_samples = tracker_result
     status.update({
         "greenObservationState": interpretation_result["observation_state"],
+        "greenGeometryReason": green_geometry_reason(interpretation_result),
         "greenInterpretation": published_interpretation,
         "greenConfirmed": confirmed,
         "greenCandidateCount": len(candidates),
@@ -1311,6 +1560,12 @@ def build_green_status(
         (markers[0] if markers else None)
     )
     if diagnostic_marker is not None:
+        local_reference = diagnostic_marker.get("local_track_reference", {})
+        status["greenLocalReferenceValid"] = bool(local_reference.get("valid", False))
+        status["greenLocalTrackX"] = float(local_reference.get("track_x", 0.0))
+        status["greenLocalTrackSlope"] = float(local_reference.get("slope", 0.0))
+        status["greenLocalReferenceSamples"] = int(local_reference.get("samples", 0))
+        status["greenLocalReferenceReason"] = local_reference.get("reason", "not_evaluated")
         upper = diagnostic_marker.get("upper", {})
         status["greenFrontRoiMeasured"] = bool(
             upper.get("measured", False)
@@ -1350,18 +1605,21 @@ def confirmed_green_path_black_valid(
     interpretation_result,
     tracker_result,
 ):
-    """Preserva o gate preto durante a curta retenção de ambiguidade."""
+    """Preserva o gate preto durante oscilações após uma confirmação lateral."""
 
     published_interpretation, confirmed, _consecutive_samples = tracker_result
     if interpretation_result.get("path_black_valid", False):
         return True
 
-    # A retenção só vale para AMBIGUO: uma ausência real de verde continua
-    # removendo o gate atual. Para o retorno, o C++ ainda exige exatamente dois
-    # candidatos, impedindo que esta memória isolada inicie a manobra.
+    # A retenção vale durante uma oscilação inconclusiva ou falsa posterior à
+    # confirmação. Uma ausência real continua removendo o gate atual. Para o
+    # retorno, o C++ ainda exige exatamente dois candidatos no mesmo frame.
     return bool(
         confirmed
-        and interpretation_result.get("interpretation") == "AMBIGUO"
+        and interpretation_result.get("interpretation") in (
+            "AMBIGUO",
+            "VERDE_FALSO",
+        )
         and published_interpretation in (
             "ESQUERDA",
             "DIREITA",

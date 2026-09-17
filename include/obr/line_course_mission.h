@@ -3,7 +3,7 @@
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
 #include "obr/forward_line_assist.h"
-#include "obr/green_turn_around_maneuver.h"
+#include "obr/green_maneuver.h"
 #include "obr/robot_state.h"
 #include "obr/obstacle_avoidance.h"
 
@@ -23,6 +23,6 @@ public:
 
 private:
     ObstacleAvoidance obstacleAvoidance_;
-    GreenTurnAroundManeuver greenTurnAroundManeuver_;
+    GreenManeuver greenManeuver_;
     ForwardLineAssist forwardLineAssist_;
 };

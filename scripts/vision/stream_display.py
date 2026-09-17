@@ -432,6 +432,17 @@ def draw_green_roi_overlays(display_frame, roi_interpretation):
             (geometry.get("upper_roi"), upper),
             (geometry.get("horizontal_roi"), horizontal),
         )
+        if geometry.get("local_l", False):
+            # Mostra as duas hipóteses locais separadamente, sem desenhar uma
+            # faixa de amostragem atravessando todo o marcador verde.
+            x1, y1, x2, y2 = geometry["horizontal_roi"]
+            mx1, mx2 = geometry["marker_horizontal_bounds"]
+            roi_entries = ((geometry["upper_roi"], upper),) + tuple(
+                (roi, {"measured": horizontal[f"{side}_measured"],
+                       "valid": horizontal[f"{side}_valid"]})
+                for side, roi in (("left", (x1, y1, mx1, y2)),
+                                  ("right", (mx2, y1, x2, y2)))
+            )
 
         for roi, measurement in roi_entries:
             if roi is None:
@@ -444,6 +455,20 @@ def draw_green_roi_overlays(display_frame, roi_interpretation):
             else:
                 color = (0, 220, 255)
             cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 1)
+
+        reference = marker.get("local_track_reference", {})
+        if reference.get("valid", False):
+            # Exibe a faixa ajustada e sua projeção na altura do verde. Isso
+            # permite conferir o lado sem confundir esta referência com Fusion.
+            center_y = geometry["center"][1]
+            start_y, end_y = reference["roi"][1], reference["roi"][3] - 1
+            track_x, slope = reference["track_x"], reference["slope"]
+            start = (int(round(track_x + slope * (start_y - center_y))), start_y)
+            end = (int(round(track_x + slope * (end_y - center_y))), end_y)
+            cv2.line(display_frame, start, end, (255, 210, 0), 2)
+            projected = (int(round(track_x)), center_y)
+            cv2.line(display_frame, projected, start, (255, 210, 0), 1)
+            cv2.circle(display_frame, projected, 3, (255, 210, 0), -1)
 
 
 def draw_green_rejection_details(display_frame, rejected_candidates):

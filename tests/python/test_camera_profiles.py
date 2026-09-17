@@ -983,6 +983,30 @@ class CameraProfilesTest(unittest.TestCase):
                 self.assertEqual(first_ambiguous, expected)
                 self.assertEqual(second_ambiguous, expected)
 
+    def test_false_oscillation_does_not_erase_confirmed_side(self):
+        tracker = camera_line_frame.GreenObservationTracker()
+        confirmed = None
+        for sequence in range(1, 6):
+            confirmed = tracker.update(
+                sequence,
+                "DIREITA",
+                sequence / 10.0,
+            )
+
+        false_oscillation = tracker.update(6, "VERDE_FALSO", 0.6)
+
+        self.assertEqual(confirmed[0:2], ("DIREITA", True))
+        self.assertEqual(false_oscillation, confirmed)
+        self.assertTrue(
+            camera_line_frame.confirmed_green_path_black_valid(
+                {
+                    "interpretation": "VERDE_FALSO",
+                    "path_black_valid": False,
+                },
+                false_oscillation,
+            )
+        )
+
     def test_short_ambiguity_does_not_restart_turnaround_confirmation(self):
         tracker = camera_line_frame.GreenObservationTracker()
         first = tracker.update(1, "RETORNO_180", 0.1)

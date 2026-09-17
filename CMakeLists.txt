@@ -21,6 +21,7 @@ add_executable(robot_test
     src/robot/curve_diagnostics_logger.cpp
     src/robot/forward_line_assist.cpp
     src/robot/forward_reacquisition_control_recorder.cpp
+    src/robot/green_maneuver.cpp
     src/robot/green_turn_around_maneuver.cpp
     src/robot/imu_turn_controller.cpp
     src/robot/line_course_mission.cpp
@@ -67,6 +68,7 @@ if(BUILD_TESTING)
         tests/main_mission_test.cpp
         src/hal/camera_monitor.cpp
         src/robot/forward_line_assist.cpp
+        src/robot/green_maneuver.cpp
         src/robot/green_turn_around_maneuver.cpp
         src/robot/imu_turn_controller.cpp
         src/robot/line_course_mission.cpp

@@ -27,6 +27,9 @@ from .camera_config import (
     DISPLAY_MODE_LINE,
     GPIO,
     GREEN_CAPTURE_REQUEST_PATH,
+    GREEN_GEOMETRY_LOG_INTERVAL_SECONDS,
+    GREEN_PAIR_LOG_INTERVAL_SECONDS,
+    GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES,
     GREEN_MIN_ACTIVE_FRAMES_BEFORE_COMPLETION,
     GREEN_PROCESSING_ENABLED,
     LEGACY_LINE_DEBUG_ENABLED,
@@ -54,6 +57,7 @@ from .fusion_guidance import (
     green_maneuver_angle_limit_reached,
     green_maneuver_entry_is_confirmed,
     green_maneuver_is_geometrically_complete,
+    managed_green_curve_started,
     select_confirmed_green_direction,
     update_fusion_style_history,
     update_green_control_telemetry,
@@ -69,6 +73,7 @@ from .green_detection import (
     analyze_green_marker_contours,
     build_green_status,
     confirmed_green_path_black_valid,
+    create_green_association_mask,
     create_green_mask_stages,
     find_green_candidates,
     save_green_capture,
@@ -132,6 +137,8 @@ class DownwardCameraApplication:
         camera_details = {}
         status_publisher = LineStatusPublisher()
         red_detector = RedFinishDetector()
+        last_green_geometry_log_at = float("-inf")
+        last_green_pair_log_at = float("-inf")
         self.dataset_recorder = None
         silver_shadow_monitor = None
         silver_shadow_status = empty_silver_shadow_status(
@@ -363,27 +370,9 @@ class DownwardCameraApplication:
                         )
                     # A classificação usa o preto estrutural local, não uma
                     # referência de direção ou posição destinada ao controle.
-                    green_association_mask = structural_mask.copy()
-                    green_association_mask[:dead_zone_end_y, :] = 0
-                    green_association_mask[
-                        vision_geometry["green_end_y"]:,
-                        :,
-                    ] = 0
-                    useful_height = min(
-                        green_association_mask.shape[0],
-                        green_mask.shape[0],
+                    green_association_mask = create_green_association_mask(
+                        structural_mask, green_mask, dead_zone_end_y,
                     )
-                    useful_width = min(
-                        green_association_mask.shape[1],
-                        green_mask.shape[1],
-                    )
-                    association_region = green_association_mask[
-                        :useful_height,
-                        :useful_width,
-                    ]
-                    association_region[
-                        green_mask[:useful_height, :useful_width] > 0
-                    ] = 0
                     green_interpretation = analyze_green_marker_contours(
                         [candidate["contour"] for candidate in green_candidates],
                         green_association_mask,
@@ -450,6 +439,69 @@ class DownwardCameraApplication:
                     green_processing_ms,
                 )
                 green_status["greenRawInterpretation"] = green_raw_interpretation
+                geometry_log_at = time.perf_counter()
+                if (
+                    green_candidates
+                    and geometry_log_at - last_green_geometry_log_at
+                    >= GREEN_GEOMETRY_LOG_INTERVAL_SECONDS
+                ):
+                    last_green_geometry_log_at = geometry_log_at
+                    # Registra a causa e as medições, não apenas AMBIGUO/FALSE.
+                    print(
+                        f"GREEN_GEOMETRY snapshot={line_sequence} "
+                        f"raw={green_raw_interpretation} "
+                        f"interpretation={green_status['greenInterpretation']} "
+                        f"confirmed={int(green_status['greenConfirmed'])} "
+                        f"candidates={len(green_candidates)} "
+                        f"validatedMarkers={green_status['greenValidatedMarkerCount']} "
+                        f"reason={green_status['greenGeometryReason']} "
+                        f"upperMeasured={int(green_status['greenFrontRoiMeasured'])} "
+                        f"upperRatio={green_status['greenFrontBlackRatio']:.3f} "
+                        f"leftMeasured={int(green_status['greenLeftRoiMeasured'])} "
+                        f"leftRatio={green_status['greenLeftBlackRatio']:.3f} "
+                        f"rightMeasured={int(green_status['greenRightRoiMeasured'])} "
+                        f"rightRatio={green_status['greenRightBlackRatio']:.3f} "
+                        f"localReferenceValid={int(green_status.get('greenLocalReferenceValid', False))} "
+                        f"localTrackX={green_status.get('greenLocalTrackX', 0.0):.2f} "
+                        f"localTrackSlope={green_status.get('greenLocalTrackSlope', 0.0):.3f} "
+                        f"localReferenceSamples={green_status.get('greenLocalReferenceSamples', 0)} "
+                        f"localReferenceReason={green_status.get('greenLocalReferenceReason', 'not_evaluated')}",
+                        flush=True,
+                    )
+                pair_diagnostics = green_interpretation.get("pair_diagnostics")
+                if (pair_diagnostics is not None
+                        and geometry_log_at - last_green_pair_log_at >= GREEN_PAIR_LOG_INTERVAL_SECONDS):
+                    last_green_pair_log_at = geometry_log_at
+                    # Os ângulos pertencem ao mesmo snapshot e às mesmas ROIs
+                    # usados na decisão. NA significa ausência de estimativa,
+                    # não zero grau. A confiança não participa dos gates.
+                    angles = [
+                        "NA" if pair_diagnostics[key] is None else f"{pair_diagnostics[key]:.2f}"
+                        for key in ("first_angle_degrees", "second_angle_degrees", "angle_delta_degrees")
+                    ]
+                    print(
+                        f"GREEN_PAIR snapshot={line_sequence} raw={green_raw_interpretation} "
+                        f"interpretation={green_status['greenInterpretation']} "
+                        f"confirmed={int(green_status['greenConfirmed'])} "
+                        f"samples={green_status['greenConsecutiveSamples']} "
+                        f"compatible={int(green_status['greenPairCompatible'])} "
+                        f"verticalOk={int(pair_diagnostics['vertical_compatible'])} "
+                        f"verticalDeltaPx={pair_diagnostics['vertical_delta_px']:.2f} "
+                        f"verticalTolerancePx={pair_diagnostics['vertical_tolerance_px']:.2f} "
+                        f"orientationOk={int(pair_diagnostics['orientation_compatible'])} "
+                        f"orientationCompared={int(pair_diagnostics['orientation_comparison_available'])} "
+                        f"angle1Defined={int(pair_diagnostics['first_orientation_defined'])} "
+                        f"angle2Defined={int(pair_diagnostics['second_orientation_defined'])} "
+                        f"angle1Deg={angles[0]} angle2Deg={angles[1]} angleDeltaDeg={angles[2]} "
+                        f"angleToleranceDeg={GREEN_PAIR_MAX_BLACK_ORIENTATION_DELTA_DEGREES:.2f} "
+                        f"confidence1={pair_diagnostics['first_confidence']:.3f} "
+                        f"confidence2={pair_diagnostics['second_confidence']:.3f} "
+                        f"blackPixels1={pair_diagnostics['first_black_pixels']} "
+                        f"blackPixels2={pair_diagnostics['second_black_pixels']} "
+                        f"upperRatio1={pair_diagnostics['first_upper_ratio']:.3f} "
+                        f"upperRatio2={pair_diagnostics['second_upper_ratio']:.3f}",
+                        flush=True,
+                    )
                 green_status["greenPathBlackValid"] = (
                     confirmed_green_path_black_valid(
                         green_interpretation,
@@ -457,14 +509,40 @@ class DownwardCameraApplication:
                     )
                 )
 
-                # Um verde confirmado é aceito apenas quando o sistema está armado
-                # e nenhuma outra direção verde está sendo executada.
-                confirmed_green_direction = select_confirmed_green_direction(
-                    maneuver_state.green_armed,
-                    maneuver_state.green_direction,
-                    green_status,
-                    marker_consumed=maneuver_state.green_marker_consumed,
+                # Na execução real, a Raspberry libera LEFT/RIGHT somente
+                # depois das janelas medidas por encoder e da trava da IMU.
+                # Sem o heartbeat novo, preserva o comportamento legado usado
+                # pelos testes isolados e pelas ferramentas de visão.
+                green_managed_by_robot = (
+                    camera_control.get("greenManagedByRobot") is True
                 )
+                requested_green_direction = {
+                    "LEFT": "ESQUERDA",
+                    "RIGHT": "DIREITA",
+                }.get(camera_control.get("greenManeuverDirection"))
+                if green_managed_by_robot:
+                    if requested_green_direction is None:
+                        if maneuver_state.green_direction != "NENHUMA":
+                            maneuver_state.green_direction = "NENHUMA"
+                            maneuver_state.green_curve_started = False
+                            maneuver_state.green_centered_frames = 0
+                            maneuver_state.green_active_frames = 0
+                            maneuver_state.green_start_yaw_degrees = None
+                            maneuver_state.last_green_fusion_line = None
+                            maneuver_state.green_fusion_target_missing_frames = 0
+                            line_controller.line_search_tracker.stop()
+                        confirmed_green_direction = None
+                    elif maneuver_state.green_direction == "NENHUMA":
+                        confirmed_green_direction = requested_green_direction
+                    else:
+                        confirmed_green_direction = None
+                else:
+                    confirmed_green_direction = select_confirmed_green_direction(
+                        maneuver_state.green_armed,
+                        maneuver_state.green_direction,
+                        green_status,
+                        marker_consumed=maneuver_state.green_marker_consumed,
+                    )
                 green_accepted_this_frame = confirmed_green_direction is not None
                 if confirmed_green_direction is not None:
                     maneuver_state.green_marker_consumed = True
@@ -488,21 +566,40 @@ class DownwardCameraApplication:
                         maneuver_state.green_armed = False
                         maneuver_state.green_clear_frames = 0
 
+                if green_managed_by_robot:
+                    # No modo gerenciado, somente o coordenador libera CENTER
+                    # após o yaw mínimo. Novos frames não reiniciam o giro.
+                    maneuver_state.green_curve_started = managed_green_curve_started(
+                        camera_control
+                    )
+
                 # O yaw limita somente a prioridade: o giro continua visual.
                 # A liberação ocorre antes da extração para que o Fusion normal
                 # selecione um alvo novo sem a máscara ou o histórico do GREEN.
                 green_angle_limited = (
+                    not green_managed_by_robot
+                    and
                     maneuver_state.green_direction != "NENHUMA"
                     and green_maneuver_angle_limit_reached(
                         maneuver_state.green_start_yaw_degrees, camera_control,
                     )
                 )
-                green_state = update_green_maneuver_state(
-                    maneuver_state.green_direction,
-                    maneuver_state.green_active_frames,
-                    raw_line_visible=False,
-                    completed=green_angle_limited,
-                )
+                if green_managed_by_robot:
+                    green_state = {
+                        "direction": maneuver_state.green_direction,
+                        "activeFrames": (
+                            maneuver_state.green_active_frames + 1
+                            if maneuver_state.green_direction != "NENHUMA"
+                            else 0
+                        ),
+                    }
+                else:
+                    green_state = update_green_maneuver_state(
+                        maneuver_state.green_direction,
+                        maneuver_state.green_active_frames,
+                        raw_line_visible=False,
+                        completed=green_angle_limited,
+                    )
                 if (maneuver_state.green_direction != "NENHUMA"
                         and green_state["direction"] == "NENHUMA"):
                     maneuver_state.green_curve_started = False
@@ -680,6 +777,8 @@ class DownwardCameraApplication:
                 # Confirma que o robô realmente começou a entrar no ramo
                 # indicado pelo marcador verde.
                 if (
+                    not green_managed_by_robot
+                    and
                     not maneuver_state.green_curve_started
                     and green_maneuver_entry_is_confirmed(
                         maneuver_state.green_direction,
@@ -696,6 +795,8 @@ class DownwardCameraApplication:
                 # Depois que a curva começou, exige alinhamento simultâneo no NEAR
                 # e em uma fileira frontal trusted antes de liberar a prioridade.
                 if (
+                    not green_managed_by_robot
+                    and
                     maneuver_state.green_direction != "NENHUMA"
                     and maneuver_state.green_curve_started
                 ):

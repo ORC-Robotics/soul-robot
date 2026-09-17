@@ -265,6 +265,35 @@ GREEN_ROI_MIN_BLACK_RATIO = 0.25
 # A ROI lateral aceita uma fração menor porque a faixa ocupa uma área triangular
 # quando o robô chega inclinado. Isso altera somente a direção do verde.
 GREEN_SIDE_ROI_MIN_BLACK_RATIO = 0.18
+# Separação mínima entre o centro verde e o centro do preto superior,
+# como fração da largura do marcador, quando há preto nos dois lados.
+# Evita escolher um lado por pequenas oscilações de uma geometria simétrica.
+GREEN_SIDE_REFERENCE_MIN_OFFSET_WIDTHS = 0.10
+# Confirmação local para um marcador: prioriza a continuação preta abaixo dele
+# para separar a faixa longitudinal do preto transversal da interseção.
+# Desativar restaura as ROIs extensas e o desempate superior anterior.
+# O par de 180° mantém a geometria existente, independentemente desta opção.
+GREEN_LOCAL_L_CONFIRMATION_ENABLED = True
+# Profundidade lateral como múltiplo da meia largura de referência da ROI.
+# 1,0 reduz a extensão anterior pela metade e evita amostrar ramos distantes.
+GREEN_LOCAL_L_SIDE_DEPTH_SCALE = 1.0
+# Fração mínima da banda inferior com centros de faixa coerentes. A mesma
+# fração limita o comprimento mínimo observado para não extrapolar um ponto.
+GREEN_LOCAL_TRACK_MIN_COVERAGE = 0.50
+# Larguras de segmentos pretos como frações da largura do marcador. Segmentos
+# largos demais representam a barra transversal; estreitos demais podem ser ruído.
+GREEN_LOCAL_TRACK_MIN_WIDTH_SCALE = 0.15
+GREEN_LOCAL_TRACK_MAX_WIDTH_SCALE = 1.50
+# Erro máximo do ajuste reto como fração da largura do marcador. Uma referência
+# irregular ou com dois ramos conflitantes não pode determinar LEFT/RIGHT.
+GREEN_LOCAL_TRACK_MAX_RESIDUAL_SCALE = 0.15
+# Intervalo mínimo, em segundos, dos diagnósticos com candidato verde.
+# Limita o volume do journal sem bloquear o processamento dos frames.
+GREEN_GEOMETRY_LOG_INTERVAL_SECONDS = 0.5
+# Intervalo mínimo, em segundos, do diagnóstico detalhado de dois verdes válidos.
+# Dez registros por segundo mostram oscilações curtas sem imprimir a cada frame.
+# Este limite afeta somente logs, nunca a confirmação temporal do detector.
+GREEN_PAIR_LOG_INTERVAL_SECONDS = 0.10
 # Mantém a orientação durante meio segundo depois da última leitura válida.
 GREEN_DIRECTION_RETENTION_SECONDS = 0.3
 # Dois marcadores só representam retorno quando estão na mesma altura local.

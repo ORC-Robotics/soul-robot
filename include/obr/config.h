@@ -1306,9 +1306,68 @@ static_assert(kDriveDistanceBaseCommandPower >= kMotorStartMinimumPower &&
 // Ao reconhecer o retorno, o robô permanece parado por 250 milissegundos antes
 // de alinhar. A pausa curta estabiliza a leitura sem atrasar a reação ao verde.
 // O atraso não bloqueia o loop, mantendo E-Stop e telemetria ativos.
-// Esta pista não possui retorno de 180°. O gate evita que uma leitura dupla
-// acidental inicie a sequência por IMU; os verdes laterais continuam visuais.
-constexpr bool kGreenTurnAroundEnabled = false;
+// O retorno de 180° usa a rotina dedicada somente depois da confirmação
+// métrica comum aos verdes. Desative apenas se a prova não usar esse marcador.
+constexpr bool kGreenTurnAroundEnabled = true;
+// Maior potência base permitida enquanto um candidato verde é confirmado.
+// A base não aumenta; o rumo reto é corrigido pela IMU durante esta janela.
+constexpr double kGreenConfirmationMaximumBasePower = 0.72;
+// Distância máxima, em centímetros, desde a primeira detecção. Ao atingir
+// este limite, LEFT/RIGHT acumulado é travado ou o candidato é descartado.
+constexpr double kGreenConfirmationMaximumDistanceCm = 3.0;
+// Tempo máximo, em milissegundos, para aguardar uma decisão visual depois de
+// interromper o avanço nos 30 mm. O timeout libera o seguidor sem converter
+// uma observação inconclusiva em verde falso.
+constexpr int kGreenConfirmationDecisionWaitMs = 400;
+// Espera adicional, em milissegundos, parada nos 30 mm quando ainda há
+// candidato com preto válido. Um teto fixo evita espera indefinida.
+constexpr int kGreenConfirmationExtraWaitMs = 600;
+// Posição lateral normalizada mínima para aceitar uma faixa no lado do verde
+// antes dos 30°. Exclui a região central, que pode ser a trajetória antiga.
+constexpr double kGreenEarlyLineSideMinimumPosition = 0.20;
+// Proteção experimental somente da dispensa dos 30°. Desativar restaura
+// a regra anterior, sem desfazer as outras correções dos verdes.
+constexpr bool kGreenEarlyBranchGuardEnabled = true;
+// Diferença angular mínima, em graus, entre a faixa de entrada e o ramo
+// observado, compensando o yaw. É evidência visual, não um giro obrigatório.
+// A projeção da câmera é aproximada; validar também com chegadas inclinadas.
+constexpr double kGreenEarlyBranchMinimumHeadingChangeDegrees = 20.0;
+// Frames novos consecutivos com evidência do ramo para dispensar os 30°.
+// Duas imagens evitam liberar a busca por uma única leitura lateral espúria.
+constexpr int kGreenEarlyBranchStableFrames = 2;
+// Quantidade de frames sem candidato necessária para aceitar um novo marcador.
+constexpr int kGreenRearmClearFrames = 3;
+// Distância reta, em centímetros, percorrida depois de travar LEFT/RIGHT.
+// Os 10 cm afastam o robô do marcador antes do giro lateral.
+constexpr double kGreenLateralForwardDistanceCm = 10.0;
+// Potência do avanço medido. Ela permanece abaixo do limite da confirmação.
+constexpr double kGreenLateralForwardPower = 0.70;
+// Ré curta, em centímetros, após reencontrar a faixa do ramo verde.
+constexpr double kGreenLateralReverseDistanceCm = 5.0;
+// Potência da ré medida; o piso permite partir sem acelerar desnecessariamente.
+constexpr double kGreenLateralReversePower = kMotorStartMinimumPower;
+// Correção diferencial por grau de desvio do yaw nas retas do verde.
+// O limite evita que a IMU transforme um avanço ou uma ré em pivot.
+constexpr double kGreenStraightYawGainPerDegree = 0.012;
+constexpr double kGreenStraightYawMaximumCorrection = 0.08;
+// Giro mínimo de segurança, em graus, quando falta faixa válida no lado
+// confirmado. A evidência visual desse ramo pode dispensar o mínimo.
+constexpr double kGreenLateralMinimumYawDegrees = 30.0;
+// Potência do pivot visual que procura o ramo escolhido pelo marcador.
+constexpr double kGreenLateralSearchPower = kTurn90CommandPower;
+// Tempo máximo, em milissegundos, para encontrar a nova trajetória.
+constexpr int kGreenLateralSearchTimeoutMs = 4500;
+// Parâmetros do controle local de centralização. NEAR e MID calculam a
+// correção, mas FAR também deve estar confiável para habilitar esta fase.
+constexpr double kGreenCenteringBasePower = 0.67;
+constexpr double kGreenCenteringPositionGain = 0.34;
+constexpr double kGreenCenteringHeadingGain = 0.22;
+constexpr double kGreenCenteringMaximumCorrection = 0.18;
+constexpr double kGreenCenteringPositionTolerance = 0.18;
+constexpr double kGreenCenteringHeadingTolerance = 0.22;
+constexpr int kGreenCenteringRequiredFrames = 3;
+// O timeout encerra a centralização opcional e inicia a ré medida.
+constexpr int kGreenCenteringTimeoutMs = 2000;
 // Limite, em graus de yaw, da prioridade do verde lateral visual. Ao alcançar
 // este deslocamento, a câmera devolve o controle ao Fusion normal, sem novo giro.
 constexpr double kGreenVisualMaximumTurnDegrees = 45.0;
@@ -1328,7 +1387,7 @@ constexpr int kGreenTurnAroundCenteringTimeoutMs = 3000;
 // Essa pausa permite que o robô estabilize sem carregar o SPIN para a sequência.
 constexpr int kGreenTurnAroundPostCenteringDelayMs = 1000;
 // Distância, em centímetros, percorrida antes de iniciar o giro por IMU.
-constexpr double kGreenTurnAroundForwardDistanceCm = 15.0;
+constexpr double kGreenTurnAroundForwardDistanceCm = 12.0;
 // Potência normalizada usada exclusivamente no avanço após reconhecer o
 // retorno de 180°.
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
@@ -1377,6 +1436,42 @@ static_assert(kGreenTurnAroundRecognitionDelayMs > 0 &&
                   kGreenTurnAroundForwardSafetyTimeoutMs >
                       kGreenTurnAroundEncoderDataTimeoutMs,
               "As etapas iniciais do retorno verde devem permanecer seguras.");
+static_assert(kGreenConfirmationMaximumBasePower >= kMotorStartMinimumPower &&
+                  kGreenConfirmationMaximumBasePower <= kMaxMotorOutput &&
+                  kGreenConfirmationMaximumDistanceCm > 0.0 &&
+                  kGreenConfirmationDecisionWaitMs > 0 &&
+                  kGreenConfirmationExtraWaitMs > 0 &&
+                  kGreenEarlyLineSideMinimumPosition > 0.0 &&
+                  kGreenEarlyLineSideMinimumPosition < 1.0 &&
+                  kGreenEarlyBranchMinimumHeadingChangeDegrees > 0.0 &&
+                  kGreenEarlyBranchMinimumHeadingChangeDegrees < 90.0 &&
+                  kGreenEarlyBranchStableFrames > 0 &&
+                  kGreenRearmClearFrames > 0 &&
+                  kGreenLateralForwardDistanceCm > 0.0 &&
+                  kGreenLateralForwardPower >= kMotorStartMinimumPower &&
+                  kGreenLateralForwardPower <=
+                      kGreenConfirmationMaximumBasePower &&
+                  kGreenLateralReverseDistanceCm > 0.0 &&
+                  kGreenLateralReversePower >= kMotorStartMinimumPower &&
+                  kGreenLateralReversePower <= kMaxMotorOutput &&
+                  kGreenStraightYawGainPerDegree > 0.0 &&
+                  kGreenStraightYawMaximumCorrection > 0.0 &&
+                  kGreenStraightYawMaximumCorrection <
+                      kGreenLateralReversePower &&
+                  kGreenLateralMinimumYawDegrees >= 30.0 &&
+                  kGreenLateralMinimumYawDegrees < 180.0 &&
+                  kGreenLateralSearchPower >= kMotorStartMinimumPower &&
+                  kGreenLateralSearchPower <= kMaxMotorOutput &&
+                  kGreenLateralSearchTimeoutMs > 0 &&
+                  kGreenCenteringBasePower >= kMotorStartMinimumPower &&
+                  kGreenCenteringBasePower <=
+                      kGreenConfirmationMaximumBasePower &&
+                  kGreenCenteringMaximumCorrection > 0.0 &&
+                  kGreenCenteringPositionTolerance > 0.0 &&
+                  kGreenCenteringHeadingTolerance > 0.0 &&
+                  kGreenCenteringRequiredFrames > 0 &&
+                  kGreenCenteringTimeoutMs == 2000,
+              "A confirmação e a curva lateral verde devem permanecer seguras.");
 static_assert(kGreenTurnAroundImuDegrees > 0.0 &&
                   kGreenTurnAroundImuDegrees <= 180.0 &&
                   kGreenTurnAroundImuToleranceDegrees > 0.0 &&

@@ -403,8 +403,11 @@ CameraLineSnapshot unavailableLineSnapshot(
     snapshot.obstacleContinuationBand = false;
     snapshot.trustedDirection = "NONE";
     snapshot.greenPathBlackValid = false;
+    snapshot.greenFrontRoiValid = false;
+    snapshot.greenPairCompatible = false;
     snapshot.greenCandidateCount = 0;
     snapshot.greenConfirmed = false;
+    snapshot.greenRawInterpretation = GreenInterpretation::None;
     snapshot.greenInterpretation = GreenInterpretation::None;
     snapshot.redValid = false;
     snapshot.redConfirmed = false;
@@ -516,7 +519,23 @@ CameraLineSnapshot CameraMonitor::lineSnapshot()
         }
         tryGetJsonBool(json, "exitLineUnbranched", candidate.exitLineUnbranched);
         std::string greenInterpretation;
+        std::string greenRawInterpretation;
         std::string lineControlSource;
+        // O detector já publica esta evidência geométrica independente.
+        // Ausência ou tipo inválido não concede espera extra por preto superior.
+        candidate.greenFrontRoiValid = false;
+        tryGetJsonBool(json, "greenFrontRoiValid", candidate.greenFrontRoiValid);
+        // O campo já é publicado pelo detector atual. Mantê-lo opcional faz
+        // processos antigos falharem fechado apenas para o retorno de 180°.
+        tryGetJsonBool(
+            json, "greenPairCompatible", candidate.greenPairCompatible);
+        if (tryGetJsonString(
+                json, "greenRawInterpretation", greenRawInterpretation))
+        {
+            parseGreenInterpretation(
+                greenRawInterpretation,
+                candidate.greenRawInterpretation);
+        }
         if (!tryGetJsonNumber(
                 json,
                 "lineFollowerLeftPower",
@@ -1224,6 +1243,24 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
     (void)greenYawAgeMs;
     return true;
 #else
+    std::string greenManeuverDirection = "NONE";
+    if (status.phase == "green_searching_left" ||
+        status.phase == "green_centering_left")
+    {
+        greenManeuverDirection = "LEFT";
+    }
+    else if (status.phase == "green_searching_right" ||
+             status.phase == "green_centering_right")
+    {
+        greenManeuverDirection = "RIGHT";
+    }
+    // O progresso da busca chega a 100 somente após o yaw mínimo. Então
+    // a faixa escolhida pode migrar do lado do verde para o centro da imagem.
+    const bool greenMinimumYawReached = greenManeuverDirection != "NONE" &&
+        (status.phase == "green_centering_left" ||
+         status.phase == "green_centering_right" ||
+         status.progressPercent >= 100.0);
+
     // O protocolo visual exige um identificador positivo. Antes da primeira
     // execução autônoma, o modo Manual usa 1 somente para manter o overlay;
     // esse valor não concede autoridade de movimento nem altera o RobotState.
@@ -1247,6 +1284,13 @@ bool CameraMonitor::publishExitControl(bool enabled, std::uint64_t runSequence,
              << ",\"greenMaximumTurnDegrees\":" << config::kGreenVisualMaximumTurnDegrees
              << ",\"greenAnglePredictionSeconds\":"
              << config::kGreenVisualAnglePredictionSeconds
+             // A Raspberry autoriza o ramo somente depois dos 30/100 mm e usa
+             // este campo para impedir que a visão antecipe o pivot lateral.
+             << ",\"greenManagedByRobot\":true"
+             << ",\"greenManeuverDirection\":"
+             << std::quoted(greenManeuverDirection)
+             << ",\"greenMinimumYawReached\":"
+             << (greenMinimumYawReached ? "true" : "false")
              << ",\"runSequence\":" << visionRunSequence
              << ",\"timestamp\":" << currentUnixSeconds()
              << ",\"phase\":" << std::quoted(status.phase)

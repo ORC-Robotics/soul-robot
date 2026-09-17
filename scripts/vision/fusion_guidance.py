@@ -50,6 +50,16 @@ from .numeric import (
     finite_virtual_position,
 )
 
+
+def managed_green_curve_started(camera_control):
+    """Libera CENTER apenas quando o coordenador concluiu o yaw mínimo."""
+    return (
+        camera_control.get("greenManagedByRobot") is True
+        and camera_control.get("greenManeuverDirection") in ("LEFT", "RIGHT")
+        and camera_control.get("greenMinimumYawReached") is True
+    )
+
+
 def empty_fusion_style_line(processing_ms=0.0):
     """Cria a telemetria vazia do diagnóstico inspirado no FusionZero."""
 

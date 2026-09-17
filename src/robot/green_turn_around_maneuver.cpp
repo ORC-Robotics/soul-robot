@@ -40,7 +40,7 @@ AutonomousStatus makeTurnAroundForwardStatus(
 bool turnAroundDetected(const CameraLineSnapshot& snapshot)
 {
     return config::kGreenTurnAroundEnabled && snapshot.greenConfirmed &&
-           snapshot.greenPathBlackValid &&
+           snapshot.greenPathBlackValid && snapshot.greenPairCompatible &&
            snapshot.greenCandidateCount == 2 &&
            snapshot.greenInterpretation == GreenInterpretation::TurnAround180;
 }

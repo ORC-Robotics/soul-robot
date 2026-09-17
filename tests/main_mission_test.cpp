@@ -107,12 +107,17 @@ CameraLineSnapshot freshVision(
                                         : std::numeric_limits<double>::quiet_NaN();
     snapshot.lineSequence = 1;
     snapshot.greenCandidateCount =
-        interpretation == GreenInterpretation::TurnAround180 ? 2 : 1;
+        interpretation == GreenInterpretation::None
+            ? 0
+            : (interpretation == GreenInterpretation::TurnAround180 ? 2 : 1);
     snapshot.greenPathBlackValid =
         interpretation == GreenInterpretation::Left ||
         interpretation == GreenInterpretation::Right ||
         interpretation == GreenInterpretation::TurnAround180;
+    snapshot.greenPairCompatible =
+        interpretation == GreenInterpretation::TurnAround180;
     snapshot.greenConfirmed = interpretation != GreenInterpretation::None;
+    snapshot.greenRawInterpretation = interpretation;
     snapshot.greenInterpretation = interpretation;
     return snapshot;
 }
@@ -398,7 +403,9 @@ void testObstacleContinuationBandIpcFailsSafe()
         file << std::setprecision(17)
              << "{\"lineFollowerLeftPower\":0.5,\"lineFollowerRightPower\":0.5,"
                 "\"lineNearDetected\":true,\"greenPathBlackValid\":false,"
+                "\"greenPairCompatible\":true,"
                 "\"greenCandidateCount\":0,\"greenConfirmed\":false,"
+                "\"greenRawInterpretation\":\"DIREITA\","
                 "\"greenInterpretation\":\"SEM_DECISAO\",\"lineControlSource\":\"fusion\","
                 "\"finalSteering\":0,\"lineSequence\":" << ++sequence
              << ",\"lineTimestamp\":" << std::chrono::duration<double>(
@@ -416,9 +423,30 @@ void testObstacleContinuationBandIpcFailsSafe()
                 "O booleano true deve ser aceito no IPC atual.");
         publish(field);
         const auto line = monitor.lineSnapshot();
-        require(line.sourceFresh && line.normalSteeringValid && !line.obstacleContinuationBand,
+        require(line.sourceFresh && line.normalSteeringValid &&
+                    line.greenPairCompatible &&
+                    line.greenRawInterpretation == GreenInterpretation::Right &&
+                    !line.obstacleContinuationBand,
                 "Campo ausente ou inválido deve ser falso sem alterar Fusion válido.");
     }
+    for (const std::string field : {"", ",\"greenFrontRoiValid\":false",
+                                   ",\"greenFrontRoiValid\":null",
+                                   ",\"greenFrontRoiValid\":1",
+                                   ",\"greenFrontRoiValid\":\"true\""})
+    {
+        publish(",\"greenFrontRoiValid\":true");
+        const auto upperValid = monitor.lineSnapshot();
+        require(upperValid.sourceFresh && upperValid.greenFrontRoiValid &&
+                    !upperValid.greenPathBlackValid && !upperValid.greenConfirmed,
+                "Preto superior válido deve ser independente de decisão e confirmação.");
+        publish(field);
+        require(!monitor.lineSnapshot().greenFrontRoiValid,
+                "Preto superior ausente ou inválido não deve reutilizar o cache.");
+    }
+    publish(",\"greenFrontRoiValid\":true",
+            config::kCameraLineStatusTimeoutMs / 1000.0 + 1.0);
+    require(!monitor.lineSnapshot().greenFrontRoiValid,
+            "Preto superior de um frame vencido não deve conceder espera.");
     publish(",\"obstacleContinuationBand\":true",
             config::kCameraLineStatusTimeoutMs / 1000.0 + 1.0);
     require(!monitor.lineSnapshot().obstacleContinuationBand,
@@ -624,20 +652,29 @@ void testRampCompensationClampsFinalMotorCommands()
 
 void testNonReturnGreenDoesNotStartSequence()
 {
-    const GreenInterpretation interpretations[] = {
-        GreenInterpretation::FalseMarker,
-        GreenInterpretation::Ambiguous,
-    };
-    for (const GreenInterpretation interpretation : interpretations)
-    {
-        MissionFixture fixture;
-        requireFollowingLine(
-            fixture.update(freshVision(interpretation)),
-            "Classificação diferente de retorno");
-    }
+    MissionFixture falseFixture;
+    RobotSnapshot falseSnapshot = falseFixture.update(
+        freshVision(GreenInterpretation::FalseMarker));
+    require(falseSnapshot.autonomousStatus.phase == "green_confirming",
+            "Verde falso deve aguardar a janela curta antes do descarte.");
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenConfirmationDecisionWaitMs + 20));
+    CameraLineSnapshot laterFalse = freshVision(GreenInterpretation::FalseMarker);
+    laterFalse.lineSequence = 2;
+    requireFollowingLine(
+        falseFixture.update(laterFalse),
+        "Verde falso persistente");
+
+    MissionFixture ambiguousFixture;
+    const RobotSnapshot ambiguous = ambiguousFixture.update(
+        freshVision(GreenInterpretation::Ambiguous));
+    require(
+        closeTo(ambiguous.left, 0.675) && closeTo(ambiguous.right, 0.675) &&
+            ambiguous.autonomousStatus.phase == "green_confirming",
+        "Candidato ambíguo deve manter a base e avançar reto na confirmação.");
 }
 
-void testLateralGreenUsesCameraCommandWithoutImuGate()
+void testLateralGreenWaitsForMeasuredConfirmation()
 {
     const GreenInterpretation interpretations[] = {
         GreenInterpretation::Left,
@@ -647,14 +684,827 @@ void testLateralGreenUsesCameraCommandWithoutImuGate()
     for (const GreenInterpretation interpretation : interpretations)
     {
         MissionFixture fixture;
-        fixture.telemetry.mpuOk = false;
         CameraLineSnapshot greenVision = freshVision(interpretation);
         greenVision.curveDiagnostics.lineState = "GREEN";
+        greenVision.lineFollowerLeftPower = 0.90;
+        greenVision.lineFollowerRightPower = 0.80;
 
-        requireFollowingLine(
-            fixture.update(greenVision),
-            "Verde lateral deve usar imediatamente o comando da câmera");
+        RobotSnapshot snapshot = fixture.update(greenVision);
+        require(
+            closeTo((snapshot.left + snapshot.right) * 0.5,
+                    config::kGreenConfirmationMaximumBasePower) &&
+                snapshot.autonomousStatus.phase == "green_confirming",
+            "Verde lateral deve limitar a base sem iniciar o giro antecipadamente.");
+
+        require(closeTo(snapshot.left, snapshot.right) &&
+                    !snapshot.encoderSynchronizationAllowed,
+                "Os 30 mm devem ignorar o steering e usar rumo próprio.");
+        fixture.telemetry.yawZDeg = 3.0;
+        snapshot = fixture.update(greenVision);
+        require(snapshot.left < snapshot.right &&
+                    closeTo((snapshot.left + snapshot.right) * 0.5,
+                            config::kGreenConfirmationMaximumBasePower),
+                "A confirmação deve corrigir yaw sem aumentar a base.");
+        fixture.telemetry.yawZDeg = -3.0;
+        snapshot = fixture.update(greenVision);
+        require(snapshot.left > snapshot.right,
+                "A confirmação deve corrigir também o desvio oposto.");
+        fixture.telemetry.yawZDeg = 0.0;
+
+        const long long confirmationCounts = static_cast<long long>(std::ceil(
+            config::kGreenConfirmationMaximumDistanceCm *
+            config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount = confirmationCounts;
+        fixture.telemetry.rightEncoderCount = confirmationCounts;
+        snapshot = fixture.update(greenVision);
+        require(
+            closeTo(snapshot.left, config::kGreenLateralForwardPower) &&
+                closeTo(snapshot.right, config::kGreenLateralForwardPower) &&
+                snapshot.autonomousStatus.phase ==
+                    (interpretation == GreenInterpretation::Left
+                         ? "green_forward_left"
+                         : "green_forward_right"),
+            "LEFT/RIGHT só deve travar depois dos 30 mm de confirmação.");
+
+        fixture.telemetry.yawZDeg = 3.0;
+        snapshot = fixture.update(greenVision);
+        require(
+            snapshot.autonomousStatus.phase ==
+                (interpretation == GreenInterpretation::Left
+                     ? "green_forward_left"
+                     : "green_forward_right") &&
+                snapshot.left < snapshot.right &&
+                !snapshot.encoderSynchronizationAllowed,
+            "Yaw à direita deve corrigir a reta verde para a esquerda sem sincronismo duplicado.");
+
+        fixture.telemetry.yawZDeg = -3.0;
+        snapshot = fixture.update(greenVision);
+        require(snapshot.left > snapshot.right,
+                "Yaw à esquerda deve corrigir a reta verde para a direita.");
     }
+}
+
+void testGreenConfirmationPreservesLowBaseAndStopsOnImuLoss()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Right);
+    green.lineFollowerLeftPower = 0.18;
+    green.lineFollowerRightPower = 0.02;
+    RobotSnapshot snapshot = fixture.update(green);
+    require(closeTo(snapshot.left, 0.10) && closeTo(snapshot.right, 0.10),
+            "A confirmação não deve aumentar uma base já baixa.");
+    fixture.telemetry.yawZDeg = 20.0;
+    snapshot = fixture.update(green);
+    require(snapshot.left >= 0.0 && snapshot.right >= 0.0 &&
+                closeTo((snapshot.left + snapshot.right) * 0.5, 0.10),
+            "A correção da confirmação não deve inverter roda nem aumentar a base.");
+    fixture.telemetry.mpuOk = false;
+    snapshot = fixture.update(green);
+    require(snapshot.autonomousStatus.phase == "green_confirmation_imu_lost" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Perder o rumo durante os 30 mm deve parar as duas rodas.");
+}
+
+void testTurnAroundOverridesProvisionalLateralGreen()
+{
+    MissionFixture fixture;
+    RobotSnapshot snapshot = fixture.update(
+        freshVision(GreenInterpretation::Left));
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "LEFT provisório deve permanecer na janela de confirmação.");
+
+    snapshot = fixture.update(
+        freshVision(GreenInterpretation::TurnAround180));
+    require(
+        snapshot.autonomousStatus.phase == "turnaround_recognition_delay" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O retorno de 180° deve substituir LEFT antes dos 30 mm.");
+}
+
+void testOppositeGreenDoesNotRestartOrPromoteLatchedEvent()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot rightCandidate =
+        freshVision(GreenInterpretation::Right);
+    rightCandidate.greenConfirmed = false;
+    rightCandidate.greenPathBlackValid = true;
+    rightCandidate.greenInterpretation = GreenInterpretation::None;
+    CameraLineSnapshot right = freshVision(GreenInterpretation::Right);
+    CameraLineSnapshot left = freshVision(GreenInterpretation::Left);
+
+    RobotSnapshot snapshot = fixture.update(rightCandidate);
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "RIGHT deve abrir uma única janela de confirmação.");
+
+    const long long oneCentimeter = static_cast<long long>(std::ceil(
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = oneCentimeter;
+    fixture.telemetry.rightEncoderCount = oneCentimeter;
+    snapshot = fixture.update(right);
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "RIGHT confirmado deve atualizar o evento já aberto sem reiniciá-lo.");
+
+    const long long twoCentimeters = static_cast<long long>(std::ceil(
+        2.0 * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = twoCentimeters;
+    fixture.telemetry.rightEncoderCount = twoCentimeters;
+    snapshot = fixture.update(left);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming" &&
+            snapshot.autonomousStatus.progressPercent >= 60.0,
+        "LEFT distante não pode reiniciar distância nem zerar o evento RIGHT.");
+    require(snapshot.autonomousStatus.phase != "turnaround_recognition_delay",
+            "RIGHT histórico seguido de LEFT não pode criar um falso 180°.");
+
+    CameraLineSnapshot incompatiblePair =
+        freshVision(GreenInterpretation::TurnAround180);
+    incompatiblePair.greenPairCompatible = false;
+    snapshot = fixture.update(incompatiblePair);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming" &&
+            snapshot.autonomousStatus.progressPercent >= 60.0,
+        "Um RETORNO_180 sem par geométrico compatível deve permanecer no evento atual.");
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    snapshot = fixture.update(left);
+    require(
+        snapshot.autonomousStatus.phase == "green_forward_right",
+        "O evento latched deve preservar RIGHT mesmo se outro LEFT aparecer adiante.");
+}
+
+void testConfirmedLateralGreenCannotReturnToFalse()
+{
+    MissionFixture fixture;
+    RobotSnapshot snapshot = fixture.update(
+        freshVision(GreenInterpretation::Right));
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "RIGHT confirmado deve permanecer na confirmação medida.");
+
+    const long long oneCentimeter = static_cast<long long>(std::ceil(
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = oneCentimeter;
+    fixture.telemetry.rightEncoderCount = oneCentimeter;
+    snapshot = fixture.update(freshVision(GreenInterpretation::FalseMarker));
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "FALSE não pode apagar RIGHT depois de sua confirmação.");
+
+    const long long twoCentimeters = static_cast<long long>(std::ceil(
+        2.0 * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = twoCentimeters;
+    fixture.telemetry.rightEncoderCount = twoCentimeters;
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming" &&
+            snapshot.autonomousStatus.progressPercent >= 60.0,
+        "Ausência temporária não pode apagar nem reiniciar RIGHT confirmado.");
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(snapshot.autonomousStatus.phase == "green_forward_right",
+            "RIGHT confirmado deve concluir mesmo sem verde nos últimos frames.");
+}
+
+void testRetainedLateralConfirmationPrecedesMissingCandidate()
+{
+    CameraLineSnapshot retainedRight =
+        freshVision(GreenInterpretation::Right);
+    retainedRight.greenCandidateCount = 0;
+    retainedRight.greenPathBlackValid = false;
+    retainedRight.greenRawInterpretation = GreenInterpretation::None;
+
+    MissionFixture retentionOnlyFixture;
+    requireFollowingLine(
+        retentionOnlyFixture.update(retainedRight),
+        "Confirmação retida sem evento ativo");
+
+    MissionFixture fixture;
+    CameraLineSnapshot rightCandidate =
+        freshVision(GreenInterpretation::Right);
+    rightCandidate.greenConfirmed = false;
+    rightCandidate.greenPathBlackValid = true;
+    rightCandidate.greenInterpretation = GreenInterpretation::None;
+
+    RobotSnapshot snapshot = fixture.update(rightCandidate);
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "RIGHT provisório deve abrir a janela de confirmação.");
+
+    snapshot = fixture.update(retainedRight);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming",
+        "A confirmação retida deve ser consumida antes da ausência do candidato.");
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(
+        snapshot.autonomousStatus.phase == "green_forward_right",
+        "RIGHT retido e confirmado deve concluir a janela e iniciar os 100 mm.");
+}
+
+void testTransientCandidateLossDuringBrakingKeepsCurrentEvent()
+{
+    CameraLineSnapshot rightCandidate =
+        freshVision(GreenInterpretation::Right);
+    rightCandidate.greenConfirmed = false;
+    rightCandidate.greenPathBlackValid = true;
+    rightCandidate.greenInterpretation = GreenInterpretation::None;
+
+    MissionFixture fixture;
+    fixture.telemetry.leftEncoderRate = -3000.0;
+    fixture.telemetry.rightEncoderRate = 3000.0;
+    RobotSnapshot snapshot = fixture.update(rightCandidate);
+    require(snapshot.autonomousStatus.phase == "green_confirmation_stopping",
+            "RIGHT provisório deve abrir a confirmação e iniciar a frenagem.");
+
+    snapshot = fixture.update(freshVision(GreenInterpretation::FalseMarker));
+    require(snapshot.autonomousStatus.phase == "green_confirmation_stopping",
+            "FALSE transitório não pode apagar um RIGHT válido durante a frenagem.");
+
+    CameraLineSnapshot retainedRight =
+        freshVision(GreenInterpretation::Right);
+    retainedRight.greenCandidateCount = 0;
+    retainedRight.greenPathBlackValid = false;
+    retainedRight.greenRawInterpretation = GreenInterpretation::None;
+    snapshot = fixture.update(retainedRight);
+    require(snapshot.autonomousStatus.phase == "green_confirmation_stopping",
+            "A confirmação RIGHT retida deve ser consumida pelo evento ainda ativo.");
+
+    fixture.telemetry.leftEncoderRate = 0.0;
+    fixture.telemetry.rightEncoderRate = 0.0;
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "Após parar, o evento RIGHT confirmado deve iniciar os 30 mm.");
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    snapshot = fixture.update(freshVision(GreenInterpretation::None));
+    require(snapshot.autonomousStatus.phase == "green_forward_right",
+            "RIGHT confirmado deve seguir obrigatoriamente para os 100 mm.");
+}
+
+void testBrakingDoesNotConsumeVisualDiscardWindow()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot provisional = freshVision(GreenInterpretation::FalseMarker);
+    provisional.greenConfirmed = false;
+    fixture.telemetry.leftEncoderRate = -3000.0;
+    fixture.telemetry.rightEncoderRate = 3000.0;
+    fixture.update(provisional);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenConfirmationDecisionWaitMs + 20));
+    ++provisional.lineSequence;
+    RobotSnapshot snapshot = fixture.update(provisional);
+    require(snapshot.autonomousStatus.phase == "green_confirmation_stopping" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "FALSE durante a frenagem não pode consumir a janela visual.");
+
+    fixture.telemetry.leftEncoderRate = 0.0;
+    fixture.telemetry.rightEncoderRate = 0.0;
+    snapshot = fixture.update(provisional);
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "O avanço deve começar com um prazo visual novo após parar.");
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenConfirmationDecisionWaitMs + 20));
+    snapshot = fixture.update(provisional);
+    require(snapshot.autonomousStatus.phase == "green_confirming",
+            "A mesma imagem que iniciou o avanço não pode descartar o evento.");
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    ++provisional.lineSequence;
+    snapshot = fixture.update(provisional);
+    require(snapshot.autonomousStatus.phase == "green_confirming" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Ao atingir 30 mm, FALSE não pode antecipar a espera parada.");
+
+    CameraLineSnapshot retainedRight = freshVision(GreenInterpretation::Right);
+    retainedRight.lineSequence = provisional.lineSequence + 1;
+    retainedRight.greenCandidateCount = 0;
+    retainedRight.greenPathBlackValid = false;
+    retainedRight.greenRawInterpretation = GreenInterpretation::None;
+    snapshot = fixture.update(retainedRight);
+    require(snapshot.autonomousStatus.phase == "green_forward_right",
+            "RIGHT retido deve confirmar o evento preservado após a frenagem.");
+}
+
+void testValidBlackCandidateGetsBoundedExtraConfirmationWait()
+{
+    for (const auto finalDecision : {GreenInterpretation::Right,
+                                    GreenInterpretation::Left,
+                                    GreenInterpretation::FalseMarker,
+                                    GreenInterpretation::Ambiguous})
+    {
+        MissionFixture fixture;
+        CameraLineSnapshot candidate = freshVision(GreenInterpretation::Ambiguous);
+        candidate.greenConfirmed = false;
+        candidate.greenInterpretation = GreenInterpretation::Ambiguous;
+        candidate.greenPathBlackValid = false;
+        candidate.greenFrontRoiValid = true;
+        fixture.update(candidate);
+        const long long counts = static_cast<long long>(std::ceil(
+            config::kGreenConfirmationMaximumDistanceCm * config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount = counts;
+        fixture.telemetry.rightEncoderCount = counts;
+        ++candidate.lineSequence;
+        fixture.update(candidate);
+        // Reproduz a perda da ROI antes de o prazo inicial terminar.
+        candidate.greenFrontRoiValid = false;
+        candidate.greenCandidateCount = 0;
+        candidate.greenRawInterpretation = GreenInterpretation::FalseMarker;
+        candidate.greenInterpretation = GreenInterpretation::FalseMarker;
+        candidate.greenConfirmed = true;
+        ++candidate.lineSequence;
+        fixture.update(candidate);
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config::kGreenConfirmationDecisionWaitMs + 20));
+        ++candidate.lineSequence;
+        RobotSnapshot snapshot = fixture.update(candidate);
+        require(snapshot.autonomousStatus.phase == "green_confirming" &&
+                    snapshot.left == 0.0 && snapshot.right == 0.0,
+                "Preto válido anterior deve preservar a espera mesmo com FALSE após perder a ROI.");
+        // Mesmo depois da concessão, FALSE não pode antecipar o teto da espera.
+        ++candidate.lineSequence;
+        snapshot = fixture.update(candidate);
+        require(snapshot.autonomousStatus.phase == "green_confirming" &&
+                    snapshot.left == 0.0 && snapshot.right == 0.0,
+                "A espera extra deve permanecer ativa após outro snapshot FALSE.");
+        if (finalDecision == GreenInterpretation::Left ||
+            finalDecision == GreenInterpretation::Right)
+        {
+            candidate.greenConfirmed = true;
+            candidate.greenInterpretation = finalDecision;
+            candidate.greenCandidateCount = 0;
+            candidate.greenPathBlackValid = false;
+            candidate.greenFrontRoiValid = false;
+            ++candidate.lineSequence;
+            snapshot = fixture.update(candidate);
+            require(snapshot.autonomousStatus.phase ==
+                        (finalDecision == GreenInterpretation::Right
+                             ? "green_forward_right" : "green_forward_left"),
+                    "O lado confirmado na espera extra deve iniciar a manobra sem novos pixels verdes.");
+        }
+        else
+        {
+            candidate.greenInterpretation = finalDecision;
+            candidate.greenRawInterpretation = finalDecision;
+            candidate.greenConfirmed = finalDecision == GreenInterpretation::FalseMarker;
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                config::kGreenConfirmationExtraWaitMs + 20));
+            ++candidate.lineSequence;
+            snapshot = fixture.update(candidate);
+            require(snapshot.autonomousStatus.phase == "line_following",
+                    "Novos candidatos não podem renovar indefinidamente a espera extra.");
+        }
+    }
+}
+
+void testGreenAcceptsOnlyConfirmedSideLineBeforeMinimumYaw()
+{
+    for (const auto direction : {GreenInterpretation::Left, GreenInterpretation::Right})
+    {
+      for (const bool referenceAvailable : {true, false})
+      {
+        MissionFixture fixture;
+        CameraLineSnapshot green = freshVision(direction);
+        const double sign = direction == GreenInterpretation::Right ? 1.0 : -1.0;
+        green.curveDiagnostics.lineState = "GREEN";
+        green.lineControlSource = "fusion";
+        green.mediumTrusted = true;
+        green.curveDiagnostics.mediumPosition = sign * 0.5;
+        green.curveDiagnostics.headingAngleDeg = referenceAvailable
+            ? sign * 6.2 : std::numeric_limits<double>::quiet_NaN();
+        // Cruza a fronteira do yaw para verificar a compensação nos dois lados.
+        fixture.telemetry.yawZDeg = sign * 179.0;
+        fixture.update(green);
+        const long long confirmationCounts = static_cast<long long>(std::ceil(
+            config::kGreenConfirmationMaximumDistanceCm * config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount = confirmationCounts;
+        fixture.telemetry.rightEncoderCount = confirmationCounts;
+        fixture.update(green);
+        const long long forwardCounts = static_cast<long long>(std::ceil(
+            config::kGreenLateralForwardDistanceCm * config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount += forwardCounts;
+        fixture.telemetry.rightEncoderCount += forwardCounts;
+        fixture.update(green);
+        std::this_thread::sleep_for(std::chrono::milliseconds(config::kRescueDistanceSettleMs + 20));
+        fixture.update(green);
+        fixture.telemetry.yawZDeg = std::remainder(sign * 189.0, 360.0);
+        green.lineControlSource = "fusion-green";
+        green.mediumTrusted = true;
+        green.curveDiagnostics.finalSteering = sign * 0.3;
+        const std::string searchPhase = direction == GreenInterpretation::Right
+            ? "green_searching_right" : "green_searching_left";
+        for (const double position : {0.0, -sign * 0.5})
+        {
+            ++green.lineSequence;
+            green.curveDiagnostics.mediumPosition = position;
+            require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                    "CENTER e lado oposto não dispensam o yaw mínimo.");
+        }
+        green.curveDiagnostics.mediumPosition = sign * 0.5;
+        require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                "Reutilizar o snapshot não dispensa o yaw mínimo.");
+        ++green.lineSequence;
+        green.lineControlSource = "green-direction-hold";
+        require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                "Hold sem Fusion atual não dispensa o yaw mínimo.");
+        ++green.lineSequence;
+        green.lineControlSource = "fusion-green";
+        green.curveDiagnostics.finalSteering = -sign * 0.3;
+        require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                "Fusion apontando para o lado oposto não dispensa o yaw mínimo.");
+        ++green.lineSequence;
+        green.curveDiagnostics.finalSteering = sign * 0.3;
+        green.curveDiagnostics.headingAngleDeg = sign * (6.2 - 10.0);
+        require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                "A mesma faixa frontal vista de lado não pode dispensar o giro mínimo.");
+        ++green.lineSequence;
+        green.curveDiagnostics.headingAngleDeg = sign * (14.0 - 10.0);
+        require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                "A mudança de projeção de 6,2° para 14° não comprova um ramo lateral.");
+
+        green.curveDiagnostics.headingAngleDeg = sign * (6.2 + 40.0 - 10.0);
+        for (int frame = 1; frame <= config::kGreenEarlyBranchStableFrames; ++frame)
+        {
+            ++green.lineSequence;
+            const RobotSnapshot snapshot = fixture.update(green);
+            if (referenceAvailable && frame == config::kGreenEarlyBranchStableFrames)
+            {
+                require(snapshot.autonomousStatus.phase ==
+                            (direction == GreenInterpretation::Right
+                                 ? "green_reverse_right" : "green_reverse_left") &&
+                            snapshot.left < 0.0 && snapshot.right < 0.0,
+                        "Um ramo distinto e estável no lado confirmado deve dispensar os 30°.");
+            }
+            else
+            {
+                require(snapshot.autonomousStatus.phase == searchPhase,
+                        "Uma imagem isolada ou referência ausente não pode liberar antecipadamente.");
+                require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                        "Repetir a mesma imagem não acumula estabilidade do ramo.");
+                if (referenceAvailable && frame == 1)
+                {
+                    const double validHeading = green.curveDiagnostics.headingAngleDeg;
+                    ++green.lineSequence;
+                    green.curveDiagnostics.headingAngleDeg =
+                        std::numeric_limits<double>::quiet_NaN();
+                    require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                            "Um heading ausente deve interromper a sequência de evidências.");
+                    ++green.lineSequence;
+                    green.curveDiagnostics.headingAngleDeg = validHeading;
+                    require(fixture.update(green).autonomousStatus.phase == searchPhase,
+                            "Depois de perder a geometria, um frame válido ainda não basta.");
+                }
+            }
+        }
+        if (!referenceAvailable)
+        {
+            fixture.telemetry.yawZDeg = std::remainder(
+                sign * (179.0 + config::kGreenLateralMinimumYawDegrees), 360.0);
+            ++green.lineSequence;
+            const RobotSnapshot snapshot = fixture.update(green);
+            require(snapshot.autonomousStatus.phase ==
+                        (direction == GreenInterpretation::Right
+                             ? "green_reverse_right" : "green_reverse_left"),
+                    "Após os 30°, a referência ausente não altera a aquisição normal da faixa.");
+        }
+      }
+    }
+}
+
+void testConfirmationStartsAfterInitialStopAndMeasuresRealDistance()
+{
+    CameraLineSnapshot rightCandidate =
+        freshVision(GreenInterpretation::Right);
+    rightCandidate.greenConfirmed = false;
+    rightCandidate.greenPathBlackValid = false;
+    rightCandidate.greenInterpretation = GreenInterpretation::None;
+
+    MissionFixture fixture;
+    fixture.telemetry.leftEncoderRate = -3000.0;
+    fixture.telemetry.rightEncoderRate = 3000.0;
+    RobotSnapshot snapshot = fixture.update(rightCandidate);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirmation_stopping" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "O primeiro candidato deve parar o robô antes de medir os 30 mm.");
+
+    const long long brakingCounts = static_cast<long long>(std::ceil(
+        2.0 * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = -brakingCounts;
+    fixture.telemetry.rightEncoderCount = brakingCounts;
+    fixture.telemetry.leftEncoderRate = 0.0;
+    fixture.telemetry.rightEncoderRate = 0.0;
+    snapshot = fixture.update(rightCandidate);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming" &&
+            snapshot.left != 0.0 && snapshot.right != 0.0,
+        "A confirmação deve avançar somente depois de registrar a parada.");
+
+    CameraLineSnapshot retainedRight =
+        freshVision(GreenInterpretation::Right);
+    retainedRight.greenCandidateCount = 0;
+    retainedRight.greenPathBlackValid = false;
+    retainedRight.greenRawInterpretation = GreenInterpretation::None;
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount =
+        -brakingCounts - confirmationCounts;
+    fixture.telemetry.rightEncoderCount =
+        brakingCounts + confirmationCounts;
+    snapshot = fixture.update(rightCandidate);
+    require(
+        snapshot.autonomousStatus.phase == "green_confirming" &&
+            snapshot.left == 0.0 && snapshot.right == 0.0,
+        "Somente 30 mm após a parada devem interromper o avanço.");
+
+    snapshot = fixture.update(retainedRight);
+    require(
+        snapshot.autonomousStatus.phase == "green_forward_right",
+        "A decisão visual após os 30 mm reais deve iniciar os 100 mm.");
+}
+
+void testLateralGreenCentersOnlyWithCompleteLocalGeometry()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Right);
+    green.lineControlSource = "fusion-green";
+    green.mediumTrusted = true;
+    green.farTrusted = true;
+    green.curveDiagnostics.lineState = "GREEN";
+    green.curveDiagnostics.mediumPosition = 0.0;
+    green.curveDiagnostics.farBandPosition = 0.0;
+
+    fixture.update(green);
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    fixture.update(green);
+
+    const long long forwardCounts = static_cast<long long>(std::ceil(
+        config::kGreenLateralForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount += forwardCounts / 2;
+    fixture.telemetry.rightEncoderCount += forwardCounts / 2;
+    RobotSnapshot snapshot = fixture.update(green);
+    require(
+        snapshot.autonomousStatus.phase == "green_forward_right",
+        "Cinco centímetros não devem concluir o novo avanço de 10 cm.");
+
+    fixture.telemetry.leftEncoderCount = confirmationCounts + forwardCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts + forwardCounts;
+    fixture.update(green);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceSettleMs + 20));
+    snapshot = fixture.update(green);
+    require(
+        snapshot.autonomousStatus.phase == "green_searching_right" &&
+            snapshot.left > 0.0 && snapshot.right < 0.0,
+        "RIGHT deve girar fisicamente para a direita e ignorar a linha antes de 30°.");
+
+    fixture.telemetry.yawZDeg =
+        config::kGreenLateralMinimumYawDegrees - 1.0;
+    CameraLineSnapshot beforeMinimum = green;
+    beforeMinimum.lineSequence = 2;
+    snapshot = fixture.update(beforeMinimum);
+    require(snapshot.autonomousStatus.phase == "green_searching_right",
+            "A busca deve continuar abaixo do yaw mínimo.");
+
+    fixture.telemetry.yawZDeg = config::kGreenLateralMinimumYawDegrees;
+    snapshot = fixture.update(beforeMinimum);
+    require(snapshot.autonomousStatus.phase == "green_searching_right",
+            "Um snapshot antigo não pode encerrar a procura após 30°.");
+
+    CameraLineSnapshot foundGreen = green;
+    foundGreen.lineSequence = 3;
+    snapshot = fixture.update(foundGreen);
+    require(snapshot.autonomousStatus.phase == "green_centering_right",
+            "Um frame novo com NEAR, MID e FAR deve iniciar GREEN_CENTERING.");
+
+    for (int frame = 0; frame < config::kGreenCenteringRequiredFrames; ++frame)
+    {
+        ++foundGreen.lineSequence;
+        snapshot = fixture.update(foundGreen);
+    }
+    require(
+        snapshot.autonomousStatus.phase == "green_reverse_right" &&
+            snapshot.left < 0.0 && snapshot.right < 0.0 &&
+            !snapshot.encoderSynchronizationAllowed,
+        "Frames centralizados devem iniciar a ré medida antes do seguidor normal.");
+
+    fixture.telemetry.yawZDeg += 3.0;
+    snapshot = fixture.update(foundGreen);
+    require(snapshot.left < snapshot.right &&
+                snapshot.autonomousStatus.phase == "green_reverse_right",
+            "Yaw à direita deve corrigir a ré para a esquerda.");
+
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kGreenLateralReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount -= reverseCounts;
+    fixture.telemetry.rightEncoderCount -= reverseCounts;
+    snapshot = fixture.update(foundGreen);
+    require(snapshot.left == 0.0 && snapshot.right == 0.0,
+            "A ré deve parar ao atingir 5 cm pelos encoders.");
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceSettleMs + 20));
+    snapshot = fixture.update(foundGreen);
+    require(snapshot.autonomousStatus.phase == "green_reverse_complete" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "A conclusão da ré não pode sobrepor o seguidor no mesmo ciclo.");
+
+    CameraLineSnapshot normalFusion = freshVision(GreenInterpretation::None);
+    normalFusion.lineSequence = foundGreen.lineSequence + 1;
+    normalFusion.lineControlSource = "fusion";
+    normalFusion.normalSteeringValid = true;
+    normalFusion.curveDiagnostics.lineState = "LINE";
+    normalFusion.curveDiagnostics.virtualState = "NORMAL";
+    normalFusion.curveDiagnostics.finalSteering = 0.0;
+    normalFusion.lineFollowerLeftPower = 0.73;
+    normalFusion.lineFollowerRightPower = 0.69;
+    snapshot = fixture.update(normalFusion);
+    require(snapshot.autonomousStatus.phase == "line_following" &&
+                closeTo(snapshot.left, normalFusion.lineFollowerLeftPower) &&
+                closeTo(snapshot.right, normalFusion.lineFollowerRightPower),
+            "O Fusion deve reassumir somente depois da ré concluída.");
+}
+
+void testLateralGreenSkipsCenteringWhenGeometryIsIncomplete()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Right);
+    green.lineControlSource = "green-direction-hold";
+    green.mediumTrusted = false;
+    green.farTrusted = false;
+    green.curveDiagnostics.lineState = "GREEN";
+
+    fixture.update(green);
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    fixture.update(green);
+
+    const long long forwardCounts = static_cast<long long>(std::ceil(
+        config::kGreenLateralForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount += forwardCounts;
+    fixture.telemetry.rightEncoderCount += forwardCounts;
+    fixture.update(green);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceSettleMs + 20));
+    fixture.update(green);
+
+    fixture.telemetry.yawZDeg = config::kGreenLateralMinimumYawDegrees;
+    RobotSnapshot snapshot = fixture.update(green);
+    require(
+        snapshot.autonomousStatus.phase == "green_searching_right" &&
+            snapshot.left > 0.0 && snapshot.right < 0.0,
+        "Após 30°, RIGHT continua o pivot enquanto a faixa não aparecer.");
+
+    CameraLineSnapshot noPath = green;
+    noPath.lineSequence = 2;
+    snapshot = fixture.update(noPath);
+    require(
+        snapshot.autonomousStatus.phase == "green_searching_right" &&
+            snapshot.left > 0.0 && snapshot.right < 0.0,
+        "Frame novo sem MID/FAR não pode encerrar a procura.");
+
+    fixture.telemetry.yawZDeg =
+        config::kGreenLateralMinimumYawDegrees + 15.0;
+    snapshot = fixture.update(noPath);
+    require(
+        snapshot.autonomousStatus.phase == "green_searching_right" &&
+            snapshot.left > 0.0 && snapshot.right < 0.0,
+        "O pivot deve continuar além de 30° enquanto a faixa não aparecer.");
+
+    CameraLineSnapshot foundMid = noPath;
+    foundMid.lineSequence = 3;
+    foundMid.mediumTrusted = true;
+    foundMid.curveDiagnostics.mediumPosition = 0.0;
+    snapshot = fixture.update(foundMid);
+    require(
+        snapshot.autonomousStatus.phase == "green_reverse_right" &&
+            snapshot.left < 0.0 && snapshot.right < 0.0,
+        "MID encontrada sem FAR deve pular a centralização e iniciar a ré.");
+}
+
+void testLeftGreenReversesOnlyAfterVisualLine()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Left);
+    green.lineControlSource = "green-direction-hold";
+    green.curveDiagnostics.lineState = "GREEN";
+
+    fixture.update(green);
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    fixture.update(green);
+
+    const long long forwardCounts = static_cast<long long>(std::ceil(
+        config::kGreenLateralForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount += forwardCounts;
+    fixture.telemetry.rightEncoderCount += forwardCounts;
+    fixture.update(green);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceSettleMs + 20));
+    fixture.update(green);
+
+    fixture.telemetry.yawZDeg = -config::kGreenLateralMinimumYawDegrees;
+    RobotSnapshot snapshot = fixture.update(green);
+    require(snapshot.autonomousStatus.phase == "green_searching_left" &&
+                snapshot.left < 0.0 && snapshot.right > 0.0,
+            "LEFT deve continuar procurando a faixa após o giro mínimo.");
+
+    CameraLineSnapshot foundMid = green;
+    foundMid.lineSequence = 2;
+    foundMid.mediumTrusted = true;
+    foundMid.curveDiagnostics.mediumPosition = -0.4;
+    snapshot = fixture.update(foundMid);
+    require(snapshot.autonomousStatus.phase == "green_reverse_left" &&
+                snapshot.left < 0.0 && snapshot.right < 0.0,
+            "MID encontrada deve iniciar a mesma ré de 5 cm para LEFT.");
+
+    fixture.telemetry.mpuOk = false;
+    snapshot = fixture.update(foundMid);
+    require(snapshot.autonomousStatus.phase == "green_reverse_imu_lost" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Perder a IMU durante a ré deve parar as duas rodas.");
+}
+
+void testGreenReverseIgnoresBlindLinePlaceholder()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Right);
+    green.lineControlSource = "green-direction-hold";
+    green.curveDiagnostics.lineState = "GREEN";
+
+    fixture.update(green);
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    fixture.update(green);
+
+    const long long forwardCounts = static_cast<long long>(std::ceil(
+        config::kGreenLateralForwardDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount += forwardCounts;
+    fixture.telemetry.rightEncoderCount += forwardCounts;
+    fixture.update(green);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceSettleMs + 20));
+    fixture.update(green);
+
+    fixture.telemetry.yawZDeg = config::kGreenLateralMinimumYawDegrees;
+    fixture.update(green);
+
+    CameraLineSnapshot waiting = freshVision(GreenInterpretation::None, false);
+    waiting.lineSequence = 2;
+    waiting.lineControlSource = "virtual-search-wait";
+    waiting.curveDiagnostics.lineState = "LINE";
+    waiting.lineFollowerLeftPower = 0.0;
+    waiting.lineFollowerRightPower = 0.0;
+    const RobotSnapshot snapshot = fixture.update(waiting);
+    require(snapshot.autonomousStatus.phase == "green_searching_right" &&
+                snapshot.left > 0.0 && snapshot.right < 0.0,
+            "LINE de espera sem faixa física não pode encerrar o pivot nem iniciar ré.");
+
+    CameraLineSnapshot foundMid = green;
+    foundMid.lineSequence = 3;
+    foundMid.mediumTrusted = true;
+    foundMid.curveDiagnostics.mediumPosition = 0.4;
+    const RobotSnapshot reverse = fixture.update(foundMid);
+    require(reverse.autonomousStatus.phase == "green_reverse_right" &&
+                reverse.left < 0.0 && reverse.right < 0.0,
+            "A MID encontrada depois do placeholder deve iniciar a ré medida.");
 }
 
 void testReturnWaitsForRequiredSensors()
@@ -1985,6 +2835,27 @@ int main(int argc, char** argv)
             std::cout << "red_finish_test: OK\n";
             return 0;
         }
+        if (argc > 1 && std::string(argv[1]) == "--green-only")
+        {
+            testNonReturnGreenDoesNotStartSequence();
+            testLateralGreenWaitsForMeasuredConfirmation();
+            testGreenConfirmationPreservesLowBaseAndStopsOnImuLoss();
+            testTurnAroundOverridesProvisionalLateralGreen();
+            testOppositeGreenDoesNotRestartOrPromoteLatchedEvent();
+            testConfirmedLateralGreenCannotReturnToFalse();
+            testRetainedLateralConfirmationPrecedesMissingCandidate();
+            testTransientCandidateLossDuringBrakingKeepsCurrentEvent();
+            testBrakingDoesNotConsumeVisualDiscardWindow();
+            testValidBlackCandidateGetsBoundedExtraConfirmationWait();
+            testGreenAcceptsOnlyConfirmedSideLineBeforeMinimumYaw();
+            testConfirmationStartsAfterInitialStopAndMeasuresRealDistance();
+            testLateralGreenCentersOnlyWithCompleteLocalGeometry();
+            testLateralGreenSkipsCenteringWhenGeometryIsIncomplete();
+            testLeftGreenReversesOnlyAfterVisualLine();
+            testGreenReverseIgnoresBlindLinePlaceholder();
+            std::cout << "green_maneuver_test: OK\n";
+            return 0;
+        }
         testExitAcquisitionRestoresFollower();
         testCornerYawModeOnlyTurnsAndStopsOnImuLoss();
         testExitFailureDiagnosticSurvivesStop();
@@ -2002,7 +2873,21 @@ int main(int argc, char** argv)
         testRampCompensationPreservesSpecialLineCommands();
         testRampCompensationClampsFinalMotorCommands();
         testNonReturnGreenDoesNotStartSequence();
-        testLateralGreenUsesCameraCommandWithoutImuGate();
+        testLateralGreenWaitsForMeasuredConfirmation();
+        testGreenConfirmationPreservesLowBaseAndStopsOnImuLoss();
+        testTurnAroundOverridesProvisionalLateralGreen();
+        testOppositeGreenDoesNotRestartOrPromoteLatchedEvent();
+        testConfirmedLateralGreenCannotReturnToFalse();
+        testRetainedLateralConfirmationPrecedesMissingCandidate();
+        testTransientCandidateLossDuringBrakingKeepsCurrentEvent();
+        testBrakingDoesNotConsumeVisualDiscardWindow();
+        testValidBlackCandidateGetsBoundedExtraConfirmationWait();
+        testGreenAcceptsOnlyConfirmedSideLineBeforeMinimumYaw();
+        testConfirmationStartsAfterInitialStopAndMeasuresRealDistance();
+        testLateralGreenCentersOnlyWithCompleteLocalGeometry();
+        testLateralGreenSkipsCenteringWhenGeometryIsIncomplete();
+        testLeftGreenReversesOnlyAfterVisualLine();
+        testGreenReverseIgnoresBlindLinePlaceholder();
         testReturnWaitsForRequiredSensors();
         testImuFailureAlwaysStopsReturn();
         testUnequalEncoderDistancesDoNotInterruptForwardStage();

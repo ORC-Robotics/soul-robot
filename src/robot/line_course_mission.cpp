@@ -60,7 +60,7 @@ AutonomousStatus makeObstacleStatus(
 void LineCourseMission::reset()
 {
     obstacleAvoidance_.reset();
-    greenTurnAroundManeuver_.reset();
+    greenManeuver_.reset();
     forwardLineAssist_.reset();
 }
 
@@ -91,12 +91,51 @@ void LineCourseMission::update(
         return;
     }
 
-    // O desvio só pode iniciar fora do retorno verde. Depois de iniciado, ele
-    // mantém autoridade até escolher o lado e parar no yaw correspondente.
+    // Qualquer candidato verde novo assume prioridade antes do obstáculo.
+    // Uma fonte ausente ou antiga nunca pode iniciar nem sustentar movimento.
+    if (greenManeuver_.active() &&
+        (!cameraReady || !cameraLineSnapshot.sourceFresh))
+    {
+        greenManeuver_.reset();
+        if (cameraReady)
+        {
+            robotState.driveAutonomous(0.0, 0.0);
+        }
+        else
+        {
+            reset();
+            robotState.stop();
+        }
+        robotState.updateAutonomousStatus(makeMainMissionStatus(
+            cameraReady ? "line_ipc_waiting" : "camera_not_ready",
+            cameraReady
+                ? "Manobra verde pausada: aguardando uma leitura visual nova"
+                : "Missão interrompida: câmera inferior indisponível"));
+        return;
+    }
+    if (cameraReady && cameraLineSnapshot.sourceFresh &&
+        greenManeuver_.shouldBlockForwardAssist(cameraLineSnapshot))
+    {
+        forwardLineAssist_.reset();
+    }
+    if (cameraReady && cameraLineSnapshot.sourceFresh &&
+        greenManeuver_.update(
+            robotState,
+            esp32Telemetry,
+            cameraLineSnapshot))
+    {
+        // Um verde novo invalida qualquer desvio parcialmente iniciado. Depois
+        // da curva, o obstáculo deve ser detectado novamente com dados atuais.
+        obstacleAvoidance_.reset();
+        return;
+    }
+
+    // O desvio só pode iniciar fora de uma sequência verde. Depois de iniciado,
+    // ele mantém autoridade até escolher o lado e parar no yaw correspondente.
     const ObstacleAvoidanceOutput obstacleOutput = obstacleAvoidance_.update(
         esp32Telemetry,
         cameraLineSnapshot,
-        !greenTurnAroundManeuver_.active() && cameraReady &&
+        !greenManeuver_.active() && cameraReady &&
             cameraLineSnapshot.sourceFresh,
         forwardLineSnapshot);
     if (obstacleOutput.failed)
@@ -142,19 +181,6 @@ void LineCourseMission::update(
             makeMainMissionStatus(
                 "line_ipc_waiting",
                 "Pausado: aguardando uma leitura visual nova"));
-        return;
-    }
-
-    if (greenTurnAroundManeuver_.shouldBlockForwardAssist(cameraLineSnapshot))
-    {
-        // O retorno verde nunca compartilha seu estado com a assistência frontal.
-        forwardLineAssist_.reset();
-    }
-    if (greenTurnAroundManeuver_.update(
-            robotState,
-            esp32Telemetry,
-            cameraLineSnapshot))
-    {
         return;
     }
 

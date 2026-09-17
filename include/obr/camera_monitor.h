@@ -58,8 +58,17 @@ struct CameraLineSnapshot
     double lineNearFinePosition = std::numeric_limits<double>::quiet_NaN();
 
     bool greenPathBlackValid = false;
+    // Preto válido na ROI superior do marcador atual, independente da
+    // classificação lateral. Autoriza espera extra, nunca confirma um lado.
+    bool greenFrontRoiValid = false;
+    // Verdadeiro somente quando os dois verdes do frame atual possuem altura
+    // e orientação compatíveis com a mesma interseção física.
+    bool greenPairCompatible = false;
     std::uint64_t greenCandidateCount = 0;
     bool greenConfirmed = false;
+    // Evidência geométrica do frame atual antes da confirmação temporal.
+    // O coordenador usa este campo apenas para latchear o lado do evento.
+    GreenInterpretation greenRawInterpretation = GreenInterpretation::None;
     GreenInterpretation greenInterpretation = GreenInterpretation::None;
 
     // Marcadores de transição só têm efeito depois da confirmação temporal
