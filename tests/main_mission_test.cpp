@@ -1327,6 +1327,7 @@ void testLateralGreenCentersOnlyWithCompleteLocalGeometry()
 
     CameraLineSnapshot foundGreen = green;
     foundGreen.lineSequence = 3;
+    foundGreen.lineControlSource = "fusion-green";
     snapshot = fixture.update(foundGreen);
     require(snapshot.autonomousStatus.phase == "green_centering_right",
             "Um frame novo com NEAR, MID e FAR deve iniciar GREEN_CENTERING.");
@@ -1433,6 +1434,16 @@ void testLateralGreenSkipsCenteringWhenGeometryIsIncomplete()
     foundMid.lineSequence = 3;
     foundMid.mediumTrusted = true;
     foundMid.curveDiagnostics.mediumPosition = 0.0;
+    for (const std::string source : {"green-direction-hold", "green-entry-pivot", "fusion"})
+    {
+        foundMid.lineControlSource = source;
+        snapshot = fixture.update(foundMid);
+        require(snapshot.autonomousStatus.phase == "green_searching_right" &&
+                    snapshot.left > 0.0 && snapshot.right < 0.0,
+                "Após o yaw mínimo, MID isolada sem Fusion verde ativo não confirma o ramo.");
+        ++foundMid.lineSequence;
+    }
+    foundMid.lineControlSource = "fusion-green";
     snapshot = fixture.update(foundMid);
     require(
         snapshot.autonomousStatus.phase == "green_reverse_right" &&
@@ -1473,6 +1484,7 @@ void testLeftGreenReversesOnlyAfterVisualLine()
 
     CameraLineSnapshot foundMid = green;
     foundMid.lineSequence = 2;
+    foundMid.lineControlSource = "fusion-green";
     foundMid.mediumTrusted = true;
     foundMid.curveDiagnostics.mediumPosition = -0.4;
     snapshot = fixture.update(foundMid);
@@ -1517,6 +1529,7 @@ void testGreenReverseStallNearTargetReleasesFollower()
         fixture.update(green);
         CameraLineSnapshot foundMid = green;
         foundMid.lineSequence = 2;
+        foundMid.lineControlSource = "fusion-green";
         foundMid.mediumTrusted = true;
         foundMid.curveDiagnostics.mediumPosition = -0.4;
         RobotSnapshot snapshot = fixture.update(foundMid);
@@ -1668,12 +1681,76 @@ void testGreenReverseIgnoresBlindLinePlaceholder()
 
     CameraLineSnapshot foundMid = green;
     foundMid.lineSequence = 3;
+    foundMid.lineControlSource = "fusion-green";
     foundMid.mediumTrusted = true;
     foundMid.curveDiagnostics.mediumPosition = 0.4;
     const RobotSnapshot reverse = fixture.update(foundMid);
     require(reverse.autonomousStatus.phase == "green_reverse_right" &&
                 reverse.left < 0.0 && reverse.right < 0.0,
             "A MID encontrada depois do placeholder deve iniciar a ré medida.");
+}
+
+// Usa tempo simulado para verificar o retorno sem prazo e os giros protegidos.
+void testReturnImuWithoutTimeoutPreservesSensorFailureAndOtherDeadlines()
+{
+    const auto startedAt = std::chrono::steady_clock::now();
+    const auto afterDeadline = startedAt +
+        std::chrono::milliseconds(config::kTurn180TimeoutMs + 1000);
+    auto telemetry = readyTelemetry();
+    ImuTurnController controller;
+    require(controller.start(
+                config::kGreenTurnAroundImuDegrees, ImuTurnDirection::Right,
+                telemetry, config::kGreenTurnAroundImuToleranceDegrees,
+                0, 0, 0.0, config::kGreenTurnAroundImuTimeoutMs, startedAt),
+            "O retorno deve iniciar com o prazo desativado.");
+    telemetry.yawZDeg = 99.0;
+    auto output = controller.update(telemetry, afterDeadline);
+    require(output.result == ImuTurnResult::Running &&
+                output.leftPower > 0.0 && output.rightPower < 0.0,
+            "O retorno incompleto não deve falhar após o antigo prazo.");
+
+    telemetry.yawZDeg = config::kGreenTurnAroundImuDegrees;
+    telemetry.gyroZDegPerSec = config::kTurn90StationaryRateDegPerSec + 1.0;
+    output = controller.update(telemetry, afterDeadline);
+    output = controller.update(telemetry, afterDeadline + std::chrono::seconds(10));
+    require(output.result == ImuTurnResult::Running &&
+                output.phase == "turn_settling" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "A espera por estabilização deve manter saída zero sem timeout.");
+    telemetry.gyroZDegPerSec = 0.0;
+    output = controller.update(telemetry, afterDeadline + std::chrono::seconds(11));
+    require(output.result == ImuTurnResult::Completed,
+            "O retorno deve concluir quando o alvo estiver estabilizado.");
+
+    telemetry = readyTelemetry();
+    require(controller.start(
+                config::kGreenTurnAroundImuDegrees, ImuTurnDirection::Right,
+                telemetry, 0.0, 0, 0, 0.0,
+                config::kGreenTurnAroundImuTimeoutMs, startedAt),
+            "O retorno deve reiniciar para verificar a perda da IMU.");
+    telemetry.mpuOk = false;
+    output = controller.update(telemetry, afterDeadline);
+    require(output.result == ImuTurnResult::Failed &&
+                output.phase == "turn_imu_lost" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "A perda da IMU deve parar os motores mesmo sem prazo.");
+
+    for (const int timeoutMs : {0, config::kObstacleTurnTimeoutMs})
+    {
+        telemetry = readyTelemetry();
+        require(controller.start(
+                    config::kTurn90TargetDegrees, ImuTurnDirection::Right,
+                    telemetry, 0.0, 0, 0, 0.0, timeoutMs, startedAt),
+                "Os demais giros devem iniciar com seus prazos.");
+        const int expectedTimeoutMs = timeoutMs == 0
+            ? config::kTurn90TimeoutMs : timeoutMs;
+        output = controller.update(telemetry, startedAt +
+            std::chrono::milliseconds(expectedTimeoutMs + 1));
+        require(output.result == ImuTurnResult::Failed &&
+                    output.phase == "turn_timeout" &&
+                    output.leftPower == 0.0 && output.rightPower == 0.0,
+                "Os prazos padrão e explícito dos demais giros devem continuar ativos.");
+    }
 }
 
 void testReturnWaitsForRequiredSensors()
@@ -1978,6 +2055,72 @@ void testReturnCenteringTimeoutReleasesConfiguredSequence()
             closeTo(snapshot.left, config::kGreenTurnAroundForwardPower) &&
             closeTo(snapshot.right, config::kGreenTurnAroundForwardPower),
         "Após timeout e segunda pausa, a sequência deve prosseguir.");
+}
+
+// Reproduz a falha observada no primeiro retorno e verifica a busca e a segurança.
+void testReturnCorrectionLimitContinuesVisualSearch()
+{
+    for (int scenario = 0; scenario < 3; ++scenario)
+    {
+        MissionFixture fixture;
+        const auto returnVision = freshVision(GreenInterpretation::TurnAround180, false);
+        startReturnImu(fixture, returnVision);
+        const double turnSign = config::kGreenTurnAroundTurnsRight ? 1.0 : -1.0;
+        fixture.telemetry.yawZDeg = turnSign *
+            (config::kGreenTurnAroundImuDegrees +
+             config::kGreenTurnAroundImuToleranceDegrees + 20.0);
+        fixture.update(returnVision);
+        for (int pulse = 0; pulse < config::kTurn90MaximumCorrectionPulses; ++pulse)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                config::kTurn90SettleMs + 20));
+            const auto correcting = fixture.update(returnVision);
+            require(correcting.mode == "autonomous" &&
+                        correcting.left * turnSign < 0.0,
+                    "A simulação deve esgotar os pulsos sem corrigir o yaw.");
+            std::this_thread::sleep_for(std::chrono::milliseconds(
+                config::kTurn90CorrectionPulseMs + 20));
+            fixture.update(returnVision);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config::kTurn90SettleMs + 20));
+        auto snapshot = fixture.update(returnVision);
+        require(snapshot.mode == "autonomous" &&
+                    snapshot.autonomousStatus.phase == "turnaround_searching_line" &&
+                    closeTo(snapshot.left, turnSign * config::kGreenTurnAroundLineSearchPower) &&
+                    closeTo(snapshot.right, -snapshot.left),
+                "Esgotar correções deve iniciar a busca no sentido do retorno sem parar a missão.");
+
+        if (scenario == 0)
+        {
+            auto fusion = freshVision(GreenInterpretation::None, false);
+            fusion.lineControlSource = "fusion";
+            fusion.normalSteeringValid = true;
+            for (int frame = 0; frame < config::kGreenTurnAroundLineReacquireFrames; ++frame)
+            {
+                snapshot = fixture.update(fusion);
+            }
+            require(snapshot.autonomousStatus.phase == "turnaround_reverse_starting",
+                    "O Fusion confirmado deve liberar a ré após esgotar as correções.");
+            snapshot = completeReturnReverse(fixture, fusion, snapshot);
+            requireFollowingLine(snapshot, "Retorno após esgotar correções");
+        }
+        else
+        {
+            if (scenario == 1)
+            {
+                fixture.telemetry.mpuOk = false;
+            }
+            else
+            {
+                fixture.robotState.emergencyStop();
+            }
+            snapshot = fixture.update(returnVision);
+            require(snapshot.mode != "autonomous" &&
+                        snapshot.left == 0.0 && snapshot.right == 0.0,
+                    "A busca após falha angular deve respeitar perda da IMU e E-Stop.");
+        }
+    }
 }
 
 void testVisualSearchStopsAtAngularLimit()
@@ -3630,6 +3773,10 @@ int main(int argc, char** argv)
         }
         if (argc > 1 && std::string(argv[1]) == "--return-only")
         {
+            testReturnImuWithoutTimeoutPreservesSensorFailureAndOtherDeadlines();
+            testReturnCorrectionLimitContinuesVisualSearch();
+            testImuFailureAlwaysStopsReturn();
+            testVisualSearchStopsAtAngularLimit();
             testReturnRunsConfiguredSequenceAndRestoresFollower();
             testVisualSearchAcceptsValidatedFusionWithoutNear();
             testReturnSettlingReversesWithoutAddingMissionFailures();
@@ -3735,6 +3882,7 @@ int main(int argc, char** argv)
         testGreenReverseStallNearTargetReleasesFollower();
         testGreenForwardStallWaitsForLine();
         testGreenReverseIgnoresBlindLinePlaceholder();
+        testReturnImuWithoutTimeoutPreservesSensorFailureAndOtherDeadlines();
         testReturnWaitsForRequiredSensors();
         testImuFailureAlwaysStopsReturn();
         testUnequalEncoderDistancesDoNotInterruptForwardStage();
@@ -3743,6 +3891,7 @@ int main(int argc, char** argv)
         testReturnStopsBeforeAndAfterCentering();
         testReturnCenteringRequiresBothNearAndMedium();
         testReturnCenteringTimeoutReleasesConfiguredSequence();
+        testReturnCorrectionLimitContinuesVisualSearch();
         testVisualSearchStopsAtAngularLimit();
         testVisualSearchAcceptsValidatedFusionWithoutNear();
         testReturnSettlingReversesWithoutAddingMissionFailures();

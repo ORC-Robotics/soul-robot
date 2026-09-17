@@ -449,6 +449,12 @@ static_assert(kRescueZoneApproachFarDistanceCm >
 constexpr double kRescueEntryAdvanceDistanceCm = 25.0;
 constexpr double kRescueEntryAdvancePower = 0.75;
 
+// Sentido inicial da busca quando nenhuma vítima foi vista durante a entrada.
+// Use 1 para começar pela direita ou -1 pela esquerda; uma vítima vista tem prioridade.
+constexpr int kRescueEntrySearchDirection = 1;
+static_assert(kRescueEntrySearchDirection == 1 || kRescueEntrySearchDirection == -1,
+              "O sentido inicial da busca deve ser 1 (direita) ou -1 (esquerda).");
+
 // Limites angulares, em graus, da busca de vítimas em relação ao heading de
 // entrada. A segunda varredura amplia a área observada somente quando ±45°
 // não encontram uma vítima do tipo solicitado.
@@ -1054,7 +1060,7 @@ constexpr int kObstacleRearmConfirmationSamples = 3;
 // Depois da escolha, o robô retorna a 40 graus para fechar a aproximação antes
 // da reta curta e da curva nominal.
 constexpr double kObstacleClearanceScanDegrees = 60.0;
-constexpr double kObstacleSideApproachDegrees = 40.0;
+constexpr double kObstacleSideApproachDegrees = 50.0;
 // A CAM1 confirma preto apenas nesta janela angular do scan. Antes dela, o
 // obstáculo pode preencher a ROI; depois dela, a faixa lateral pode sair do quadro.
 constexpr double kObstacleCameraBlackMinimumAngleDegrees = 10.0;
@@ -1459,9 +1465,9 @@ constexpr double kGreenTurnAroundForwardDistanceCm = 10.0;
 // O valor 0,69 independe da potência base do segue-linha e não representa cm/s.
 constexpr double kGreenTurnAroundForwardPower = 0.73;
 // Ré após reencontrar a faixa, em centímetros, antes de retomar o segue-linha.
-constexpr double kGreenTurnAroundReverseDistanceCm = 5.0;
+constexpr double kGreenTurnAroundReverseDistanceCm = 10.0;
 // Potência normalizada da ré; aumentar este valor aumenta a velocidade do recuo.
-constexpr double kGreenTurnAroundReversePower = kMotorStartMinimumPower;
+constexpr double kGreenTurnAroundReversePower = 0.8;
 // Limite da ré, em milissegundos. Ao expirar, encerra o recuo e retoma a missão.
 constexpr int kGreenTurnAroundReverseTimeoutMs = 3000;
 // Tempo parado, em milissegundos, entre o avanço e o início do giro.
@@ -1479,6 +1485,10 @@ constexpr int kGreenTurnAroundForwardSafetyTimeoutMs = 10000;
 constexpr double kGreenTurnAroundImuDegrees = 140.0;
 // Erro angular máximo, em graus, aceito para concluir a etapa do IMU.
 constexpr double kGreenTurnAroundImuToleranceDegrees = 8.0;
+// Prazo da etapa por IMU do retorno, em milissegundos. O valor negativo remove
+// a interrupção por tempo; com IMU válida, o giro pode continuar até o alvo.
+// E-Stop e perda de dados da IMU ainda param os motores.
+constexpr int kGreenTurnAroundImuTimeoutMs = -1;
 // Define o sentido do retorno: true gira à direita; false gira à esquerda.
 constexpr bool kGreenTurnAroundTurnsRight = true;
 // Potência normalizada do pivot que continua até o NEAR encontrar a linha.

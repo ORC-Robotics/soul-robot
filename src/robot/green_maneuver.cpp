@@ -106,9 +106,11 @@ bool centeringGeometryAvailable(const CameraLineSnapshot& line)
 
 bool greenPathAvailable(const CameraLineSnapshot& line)
 {
-    // NEAR sozinho ainda pode ser a faixa antiga sob o robô. MID ou FAR
-    // trusted em um frame GREEN novo identificam a continuação após o giro.
-    if (line.curveDiagnostics.lineState != "GREEN")
+    // NEAR sozinho ainda pode ser a faixa antiga sob o robô. Exige Fusion
+    // ativo com MID ou FAR confiável; manter o giro sem Fusion não confirma
+    // uma trajetória, mesmo depois do yaw mínimo de segurança.
+    if (line.curveDiagnostics.lineState != "GREEN" ||
+        line.lineControlSource != "fusion-green")
     {
         return false;
     }

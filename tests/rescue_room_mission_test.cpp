@@ -348,7 +348,7 @@ void completeEntryAdvance(
             "Sem vítima, o avanço deve entregar controle à varredura.");
 }
 
-void testSweepRemembersEntryCandidateAndDefaultsLeft()
+void testSweepRemembersEntryCandidateAndDefaultsRight()
 {
     for (double hint : {static_cast<double>(NAN), -20.0, 20.0})
     {
@@ -361,8 +361,8 @@ void testSweepRemembersEntryCandidateAndDefaultsLeft()
         const auto output = updateMission(
             mission, emptyFrame(sequence, 4.0), {}, telemetry, pose, now);
         require(output.status.phase == "rescue_search_sweep" &&
-                    (hint > 0.0 ? output.leftPower > 0.0 : output.leftPower < 0.0),
-                "A busca deve lembrar o lado visto na entrada; sem pista, começa à esquerda.");
+                    (hint < 0.0 ? output.leftPower < 0.0 : output.leftPower > 0.0),
+                "A busca deve lembrar o lado visto na entrada; sem pista, começa à direita.");
         require(output.servoPoseRequested &&
                     output.servoPose.armDegrees ==
                         config::kServoRoutineArmStorageTransitionDegrees &&
@@ -371,6 +371,14 @@ void testSweepRemembersEntryCandidateAndDefaultsLeft()
                     output.servoPose.gripperDegrees ==
                         config::kServoRoutineGripperClosedDegrees,
                 "A busca deve manter braço e pulso recolhidos contra colisões.");
+        mission.reset();
+        telemetry = readyTelemetry();
+        completeEntryAdvance(mission, telemetry, now, sequence);
+        const auto restartedOutput = updateMission(
+            mission, emptyFrame(sequence, 4.0), {}, telemetry, pose, now);
+        require(restartedOutput.status.phase == "rescue_search_sweep" &&
+                    restartedOutput.leftPower > 0.0 && restartedOutput.rightPower < 0.0,
+                "Após reiniciar a missão sem pista, a busca deve voltar ao padrão à direita.");
     }
 }
 
@@ -381,7 +389,7 @@ void testSweepTimeoutsReverseExpandAndStop()
     auto now = Clock::time_point{};
     ServoPose pose;
     const auto sequence = mission.ballTargetSequence(kRunSequence);
-    completeEntryAdvance(mission, telemetry, now, sequence);
+    completeEntryAdvance(mission, telemetry, now, sequence, -20.0);
     auto frame = emptyFrame(sequence, 10.0);
     for (int attempt = 0; attempt < 4; ++attempt)
     {
@@ -413,7 +421,7 @@ void testSweepUsesActualHeadingAfterPartialTurn()
     auto now = Clock::time_point{};
     ServoPose pose;
     const auto sequence = mission.ballTargetSequence(kRunSequence);
-    completeEntryAdvance(mission, telemetry, now, sequence);
+    completeEntryAdvance(mission, telemetry, now, sequence, -20.0);
     auto frame = emptyFrame(sequence, 10.0);
     updateMission(mission, frame, {}, telemetry, pose, now);
     telemetry.yawZDeg = 160.0;
@@ -492,7 +500,7 @@ void testRequiredVictimSearchBecomesContinuousAfterInitialSweep()
     auto now = Clock::time_point{};
     ServoPose pose;
     const auto sequence = mission.ballTargetSequence(kRunSequence);
-    completeEntryAdvance(mission, telemetry, now, sequence);
+    completeEntryAdvance(mission, telemetry, now, sequence, -20.0);
 
     double frameTimestamp = 10.0;
     const double endpoints[] = {-45.0, 45.0, -75.0, 75.0};
@@ -991,7 +999,7 @@ int main()
     try
     {
         testEntryAdvanceDoesNotWaitForOrStopOnYolo();
-        testSweepRemembersEntryCandidateAndDefaultsLeft();
+        testSweepRemembersEntryCandidateAndDefaultsRight();
         testDelicateMotionUsesOneShortKick();
         testSweepTimeoutsReverseExpandAndStop();
         testSweepUsesActualHeadingAfterPartialTurn();

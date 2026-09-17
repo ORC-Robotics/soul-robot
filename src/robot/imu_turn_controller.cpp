@@ -71,7 +71,7 @@ bool ImuTurnController::start(
     commandPower_ = commandPower > 0.0
                         ? commandPower
                         : config::kTurn90CommandPower;
-    timeoutMs_ = timeoutMs > 0
+    timeoutMs_ = timeoutMs != 0
                      ? timeoutMs
                      : (targetDegrees > config::kTurn90TargetDegrees
                             ? config::kTurn180TimeoutMs
@@ -106,7 +106,8 @@ ImuTurnOutput ImuTurnController::update(
     const double remainingDegrees = targetDegrees_ - turnedDegrees;
     const double progressPercent = std::clamp(
         turnedDegrees / targetDegrees_ * 100.0, 0.0, 100.0);
-    if (now - startedAt_ > std::chrono::milliseconds(timeoutMs_))
+    if (timeoutMs_ > 0 &&
+        now - startedAt_ > std::chrono::milliseconds(timeoutMs_))
     {
         reset();
         return stoppedOutput(

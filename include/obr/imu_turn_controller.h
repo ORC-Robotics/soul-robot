@@ -43,9 +43,11 @@ public:
         const Esp32TelemetrySnapshot& telemetry,
         double completionToleranceDegrees = 0.0,
         int correctionPulseMs = 0,
-        // Um valor negativo remove apenas o limite de pulsos; o timeout permanece ativo.
+        // Um valor negativo remove apenas o limite de pulsos de correção.
         int maximumCorrectionPulses = 0,
         double commandPower = 0.0,
+        // Em milissegundos: zero usa o prazo padrão; negativo desativa o prazo.
+        // A validação da IMU e a prioridade do E-Stop continuam obrigatórias.
         int timeoutMs = 0,
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
         bool allowEncoderStopConfirmation = false,
@@ -74,7 +76,7 @@ private:
     double correctionDirection_ = 1.0;
     int correctionPulseCount_ = 0;
     int correctionPulseMs_ = 0;
-    // Um valor negativo permite correções até o timeout total do giro.
+    // Um valor negativo remove o limite de correções; o prazo é independente.
     int maximumCorrectionPulses_ = 0;
     double commandPower_ = 0.0;
     int timeoutMs_ = 0;

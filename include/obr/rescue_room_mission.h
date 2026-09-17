@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/ball_alignment_mission.h"
+#include "obr/config.h"
 #include "obr/encoder_distance_controller.h"
 #include "obr/camera_monitor.h"
 #include "obr/esp32_bridge.h"
@@ -95,8 +96,8 @@ private:
     SweepStep sweepStep_ = SweepStep::First45;
     // O lado observado pertence à vítima atual. O heading fixa os limites da
     // varredura, mesmo quando um giro é interrompido antes de chegar ao destino.
-    int candidateSide_ = -1;
-    int sweepFirstSide_ = -1;
+    int candidateSide_ = config::kRescueEntrySearchDirection;
+    int sweepFirstSide_ = config::kRescueEntrySearchDirection;
     bool sweepReferenceSet_ = false;
     double sweepReferenceYaw_ = 0.0;
     bool sweepAttemptStarted_ = false;

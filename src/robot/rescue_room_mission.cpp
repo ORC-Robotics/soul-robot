@@ -1291,8 +1291,8 @@ void RescueRoomMission::reset()
     phase_ = Phase::EntryAdvance;
     desiredVictimType_ = VictimType::Alive;
     carriedVictimType_ = VictimType::Alive;
-    candidateSide_ = -1;
-    sweepFirstSide_ = -1;
+    candidateSide_ = config::kRescueEntrySearchDirection;
+    sweepFirstSide_ = config::kRescueEntrySearchDirection;
     sweepReferenceYaw_ = 0.0;
     liftRoutineKind_ = ServoRoutineKind::LiftAfterReverse;
     sweepStep_ = SweepStep::First45;

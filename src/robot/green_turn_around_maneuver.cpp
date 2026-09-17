@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iostream>
 #include <string>
 
 namespace
@@ -340,7 +341,9 @@ bool GreenTurnAroundManeuver::update(
                 config::kGreenTurnAroundImuDegrees,
                 configuredTurnDirection(),
                 esp32Telemetry,
-                config::kGreenTurnAroundImuToleranceDegrees))
+                config::kGreenTurnAroundImuToleranceDegrees,
+                0, 0, 0.0,
+                config::kGreenTurnAroundImuTimeoutMs))
         {
             robotState.stop();
             robotState.updateAutonomousStatus(makeMainMissionStatus(
@@ -367,21 +370,31 @@ bool GreenTurnAroundManeuver::update(
             startTurnAroundReverse();
             return true;
         }
-        if (output.result == ImuTurnResult::Failed)
+        const bool angularCorrectionsExhausted =
+            output.result == ImuTurnResult::Failed &&
+            output.phase == "turn_correction_failed";
+        if (output.result == ImuTurnResult::Failed && !angularCorrectionsExhausted)
         {
             robotState.stop();
             robotState.updateAutonomousStatus(makeMainMissionStatus(
                 output.phase, output.action, output.progressPercent));
             return true;
         }
-        if (output.result == ImuTurnResult::Completed)
+        if (output.result == ImuTurnResult::Completed || angularCorrectionsExhausted)
         {
-            // A busca visual começa somente após a IMU concluir e estabilizar
-            // o giro inicial. Isso evita trocar cedo para um pivot sem alvo angular.
+            // O ângulo inicial é uma referência para o retorno, não seu objetivo
+            // final. Após estabilizar e esgotar as correções, a câmera assume a
+            // busca da faixa sem encerrar a missão. Falhas da IMU ainda param;
+            // a busca visual mantém seus limites de tempo e deslocamento angular.
             phase_ = Phase::SearchingLine;
             phaseStartedAt_ = now;
             lineReacquireFrames_ = 0;
             lineSearchStartYawDegrees_ = esp32Telemetry.yawZDeg;
+            if (angularCorrectionsExhausted)
+            {
+                std::cout << "Turnaround: angular corrections exhausted; continuing visual line search"
+                          << std::endl;
+            }
         }
         else
         {
