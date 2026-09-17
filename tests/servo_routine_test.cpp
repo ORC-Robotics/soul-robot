@@ -203,34 +203,6 @@ int main()
                 "Storage must finish tucked before the next victim search");
         requireWristClearance(steps);
 
-        const ServoPose blackCarried{
-            config::kServoInitialAngleDegrees,
-            config::kServoRoutineWristForwardDegrees,
-            config::kServoRoutineGripperRetentionDegrees};
-        steps = runRoutine(
-            ServoRoutineKind::DepositCarriedKeepingStored,
-            33,
-            blackCarried,
-            output);
-        requirePhaseOrder(steps, {
-            "servo_deposit_gripper_open",
-            "servo_deposit_gripper_close",
-            "servo_deposit_arm_ready_for_stored"});
-        for (const auto& step : steps)
-        {
-            require(!closeTo(step.pose.wristDegrees,
-                             config::kServoRoutineWristInternalDegrees),
-                    "Com prata armazenada, o pulso não pode voltar a 0° após depositar a preta.");
-        }
-        require(closeTo(output.pose.armDegrees,
-                        config::kServoRoutineArmHomeDegrees) &&
-                    closeTo(output.pose.wristDegrees,
-                            config::kServoRoutineWristForwardDegrees) &&
-                    closeTo(output.pose.gripperDegrees,
-                            config::kServoRoutineGripperClosedDegrees),
-                "O depósito da preta deve terminar na pose da segunda prata.");
-        requireWristClearance(steps);
-
         steps = runRoutine(ServoRoutineKind::FullSequence, 4, home, output);
         require(closeTo(poseAt(steps, "servo_second_gripper_open").gripperDegrees, 180.0) &&
                     closeTo(poseAt(steps, "servo_second_gripper_retention").gripperDegrees, 5.0) &&
@@ -304,26 +276,6 @@ int main()
             "servo_final_arm_home",
             "servo_final_wrist_home",
             "servo_final_gripper_home"});
-
-        const ServoPose storedDeliveryStart{
-            config::kServoRoutineArmHomeDegrees,
-            config::kServoRoutineWristForwardDegrees,
-            config::kServoRoutineGripperClosedDegrees};
-        steps = runRoutine(
-            ServoRoutineKind::DepositStored,
-            34,
-            storedDeliveryStart,
-            output);
-        requirePhaseOrder(steps, {
-            "servo_stored_wrist_approach",
-            "servo_stored_arm_approach",
-            "servo_stored_wrist_internal",
-            "servo_stored_arm_pickup",
-            "servo_stored_gripper_press",
-            "servo_stored_gripper_retention",
-            "servo_stored_arm_carry",
-            "servo_stored_wrist_deposit",
-            "servo_stored_deposit"});
 
         steps = runRoutine(ServoRoutineKind::FullSequenceTwo, 5, home, output);
         require(closeTo(poseAt(steps, "servo_capture_gripper_open").gripperDegrees, 180.0) &&

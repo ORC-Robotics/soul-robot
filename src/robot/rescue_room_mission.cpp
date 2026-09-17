@@ -183,6 +183,8 @@ RescueRoomOutput RescueRoomMission::updateStep(
         sweepStep_ = SweepStep::First45;
         sweepTurnStarted_ = false;
         waitingForSweepFrame_ = false;
+        // Uma missão retomada já conhece a prioridade pendente e não repete
+        // a varredura inicial de uma sala ainda vazia.
         continuousSearchActive_ = !initialAlternatingSweepAllowed_;
         output.completed = false;
         output.status = makeStatus(
@@ -498,20 +500,10 @@ RescueRoomOutput RescueRoomMission::updateStep(
         if (triangle.completed)
         {
             triangleMission_.reset();
-            if (depositingStoredOnly_)
-            {
-                depositRoutineKind_ = ServoRoutineKind::DepositStored;
-            }
-            else if (storedAliveVictim_)
-            {
-                depositRoutineKind_ = carriedVictimType_ == VictimType::Alive
+            depositRoutineKind_ =
+                carriedVictimType_ == VictimType::Alive && storedAliveVictim_
                     ? ServoRoutineKind::DepositCarriedAndStored
-                    : ServoRoutineKind::DepositCarriedKeepingStored;
-            }
-            else
-            {
-                depositRoutineKind_ = ServoRoutineKind::Deposit;
-            }
+                    : ServoRoutineKind::Deposit;
             phase_ = Phase::DepositVictims;
             output.completed = false;
             output.status = makeStatus(
@@ -541,20 +533,22 @@ RescueRoomOutput RescueRoomMission::updateStep(
             servoRoutine_.resetExecution();
             if (carriedVictimType_ == VictimType::Alive)
             {
-                deliveredAliveVictims_ += depositingStoredOnly_
-                    ? 1 : storedAliveVictim_ ? 2 : 1;
+                deliveredAliveVictims_ += storedAliveVictim_ ? 2 : 1;
                 storedAliveVictim_ = false;
-                depositingStoredOnly_ = false;
             }
             else
             {
                 ++deliveredDeadVictims_;
             }
-            // Com prata armazenada, a entrega da preta ainda não é a última:
-            // primeiro libera o triângulo vermelho e depois procura o verde.
+            const bool requiredDeadDeliveryCompleted =
+                carriedVictimType_ == VictimType::Dead &&
+                deliveredAliveVictims_ >= 2 &&
+                deliveredDeadVictims_ == 1 &&
+                !finalVerification_;
+            // A última vítima pode ser depositada no vermelho ou no verde.
+            // Nos dois casos, 40 cm deixam a busca da saída longe do triângulo.
             const bool finalDepositReverse =
-                (deliveredDeadVictims_ >= 1 && !storedAliveVictim_) ||
-                finalVerification_;
+                requiredDeadDeliveryCompleted || finalVerification_;
             postDepositReverseDistanceCm_ =
                 finalDepositReverse
                     ? config::kRescueFinalDepositReverseDistanceCm
@@ -566,7 +560,7 @@ RescueRoomOutput RescueRoomMission::updateStep(
                 now);
             phase_ = Phase::ReverseAfterDeposit;
             output.completed = false;
-            output.internalObjectStored = storedAliveVictim_;
+            output.internalObjectStored = false;
             output.status = makeStatus(
                 "rescue_deposit_completed",
                 finalDepositReverse
@@ -598,33 +592,7 @@ RescueRoomOutput RescueRoomMission::updateStep(
 
         distanceController_.reset();
         output.completed = false;
-        if (carriedVictimType_ == VictimType::Dead && storedAliveVictim_)
-        {
-            // A preta já foi entregue no vermelho. Agora a prata guardada
-            // segue sozinha para o verde, sem fingir uma nova coleta.
-            triangleMission_.reset();
-            carriedVictimType_ = VictimType::Alive;
-            depositingStoredOnly_ = true;
-            phase_ = Phase::FindDepositZone;
-            output.status = makeStatus(
-                "rescue_stored_alive_deposit_starting",
-                "Preta entregue: procurando o verde para a prata armazenada");
-        }
-        else if (deliveredDeadVictims_ >= 1 || finalVerification_)
-        {
-            startVictimSearch(VictimType::Alive, true);
-            output.status = makeStatus(
-                "rescue_final_verification",
-                "Preta entregue: verificando mais uma volta antes da saída");
-        }
-        else if (silverSearchExhausted_ && deliveredDeadVictims_ < 1)
-        {
-            startVictimSearch(VictimType::Dead, false);
-            output.status = makeStatus(
-                "rescue_required_dead_search",
-                "Busca de prata encerrada; procurando a vítima preta");
-        }
-        else if (deliveredAliveVictims_ < 2)
+        if (deliveredAliveVictims_ < 2)
         {
             startVictimSearch(VictimType::Alive, false);
             output.status = makeStatus(
@@ -643,7 +611,7 @@ RescueRoomOutput RescueRoomMission::updateStep(
             startVictimSearch(VictimType::Alive, true);
             output.status = makeStatus(
                 "rescue_final_verification",
-                "Entregas concluídas; verificando vítimas extras antes da saída");
+                "Entregas obrigatórias concluídas; iniciando uma volta por vítimas extras");
         }
         return output;
     }
@@ -806,7 +774,6 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         // Após a pausa, recalcula o ângulo restante pela posição real da IMU.
         // O tempo parado por falta de sensores não caracteriza colisão.
         continuousSearchProgressWatchActive_ = false;
-        silverSearchStarted_ = false;
         sweepTurnController_.reset();
         sweepTurnStarted_ = false;
         output.status = makeStatus(
@@ -852,42 +819,6 @@ RescueRoomOutput RescueRoomMission::updateSearch(
                     ? "Uma volta completa sem nova vítima; iniciando busca da saída"
                     : "Tempo da busca final esgotado; iniciando busca da saída",
                 100.0);
-            return output;
-        }
-    }
-    else if (desiredVictimType_ == VictimType::Alive &&
-             continuousSearchActive_)
-    {
-        if (!silverSearchStarted_)
-        {
-            silverSearchStarted_ = true;
-            silverSearchLastYaw_ = telemetry.yawZDeg;
-        }
-        else if (candidateConfirmationActive_ || ball.candidateVisible)
-        {
-            // A pausa para confirmar uma candidata não conta como giro de busca.
-            silverSearchLastYaw_ = telemetry.yawZDeg;
-        }
-        else
-        {
-            const double yawDelta = std::remainder(
-                telemetry.yawZDeg - silverSearchLastYaw_, 360.0);
-            silverSearchAccumulatedDegrees_ = std::max(
-                0.0,
-                silverSearchAccumulatedDegrees_ +
-                    yawDelta * static_cast<double>(sweepFirstSide_));
-            silverSearchLastYaw_ = telemetry.yawZDeg;
-        }
-        if (silverSearchAccumulatedDegrees_ >=
-            config::kRescueSilverSearchDegrees)
-        {
-            // A prata permanece no armazenamento até a preta ser depositada
-            // no vermelho. A troca de prioridade nunca abre a garra.
-            silverSearchExhausted_ = true;
-            startVictimSearch(VictimType::Dead, false);
-            output.status = makeStatus(
-                "rescue_dead_priority_starting",
-                "Duas voltas sem prata: procurando a vítima preta");
             return output;
         }
     }
@@ -970,11 +901,6 @@ RescueRoomOutput RescueRoomMission::updateSearch(
                     // sentido para não deixar um setor sem observar.
                     finalSearchAccumulatedDegrees_ = 0.0;
                     finalSearchLastYaw_ = telemetry.yawZDeg;
-                }
-                if (silverSearchStarted_)
-                {
-                    silverSearchAccumulatedDegrees_ = 0.0;
-                    silverSearchLastYaw_ = telemetry.yawZDeg;
                 }
                 continuousSearchProgressYaw_ = telemetry.yawZDeg;
                 continuousSearchProgressStartedAt_ = now;
@@ -1261,9 +1187,6 @@ void RescueRoomMission::startVictimSearch(
     finalSearchLastYaw_ = 0.0;
     finalSearchAccumulatedDegrees_ = 0.0;
     finalSearchStartedAt_ = {};
-    silverSearchStarted_ = false;
-    silverSearchLastYaw_ = 0.0;
-    silverSearchAccumulatedDegrees_ = 0.0;
     ++ballTargetGeneration_;
     sweepStep_ = SweepStep::First45;
     sweepReferenceSet_ = false;
@@ -1390,12 +1313,7 @@ void RescueRoomMission::reset()
     finalSearchLastYaw_ = 0.0;
     finalSearchAccumulatedDegrees_ = 0.0;
     finalSearchStartedAt_ = {};
-    silverSearchStarted_ = false;
-    silverSearchLastYaw_ = 0.0;
-    silverSearchAccumulatedDegrees_ = 0.0;
     storedAliveVictim_ = false;
-    silverSearchExhausted_ = false;
-    depositingStoredOnly_ = false;
     collectionRetentionActive_ = false;
     servoMotionStarted_ = false;
     servoOutputsConfirmed_ = false;

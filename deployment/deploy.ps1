@@ -7,8 +7,7 @@ param(
     [string]$ServiceName = "obr-robot",
     [switch]$Service,
     [switch]$Run,
-    [switch]$NoRun,
-    [switch]$FullSync
+    [switch]$NoRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,6 +81,7 @@ if (-not (Test-Path -LiteralPath $KeyPath -PathType Leaf)) {
 # Depois da preparação inicial, o deploy deve ser totalmente não interativo.
 # O modo BatchMode impede que uma falha de acesso gere vários pedidos de senha.
 $sshArgs = @("-i", $KeyPath, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
+$scpArgs = @("-i", $KeyPath, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new")
 
 & ssh @($sshArgs + @($remote, "true"))
 if ($LASTEXITCODE -ne 0) {
@@ -100,48 +100,39 @@ Invoke-Checked ssh @($sshArgs + @($remote, "mkdir -p '$RemoteDir' '$remoteBuild'
 # Para o serviço antes de trocar código ou binário. Se o build falhar, o robô
 # permanece parado e o executável válido anterior não é substituído.
 Invoke-Checked ssh @($sshArgs + @($remote, "sudo -n systemctl stop '$ServiceName.service' '$lineCameraServiceName.service' || { echo 'Deploy access is not configured. Run: $setupCommand' >&2; exit 1; }"))
-
-# --- INÍCIO DA TRANSFERÊNCIA INCREMENTAL (RSYNC) ---
-$rsyncSshCmd = "ssh -i `"$KeyPath`" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
-$foldersToSync = @("CMakeLists.txt", "src", "include", "scripts", "assets")
-
-if ($FullSync) {
-    Write-Host "Sincronizando todos os arquivos de deploy e recompilando do zero..."
-} else {
-    Write-Host "Sincronizando arquivos de forma incremental com rsync..."
-}
-Push-Location $workspace
-try {
-    foreach ($item in $foldersToSync) {
-        $rsyncArguments = @("-avz")
-        if ($FullSync) {
-            # Ignora data e tamanho para substituir conteúdo deixado por outro checkout.
-            $rsyncArguments += "--ignore-times"
-        }
-        $rsyncArguments += @(
-            "-e", $rsyncSshCmd,
-            $item,
-            "${remote}:$RemoteDir/"
-        )
-        Invoke-Checked -Command rsync -Arguments $rsyncArguments
-    }
-} catch {
-    throw "Falha ao executar o rsync. Certifique-se de que o rsync está instalado e adicionado ao PATH do Windows (ex: através do Git for Windows). Erro: $_"
-} finally {
-    Pop-Location
-}
-# --- FIM DA TRANSFERÊNCIA INCREMENTAL ---
-
-# O modo completo remove somente o build temporário. Código, dataset, ambiente
-# virtual e o último binário válido permanecem intactos até o novo build passar.
-if ($FullSync) {
-    Invoke-Checked ssh @($sshArgs + @($remote, "rm -rf '$remoteStagingBuild'"))
-}
+Invoke-Checked scp @(
+    $scpArgs +
+    "$workspace/CMakeLists.txt",
+    "${remote}:$RemoteDir/CMakeLists.txt"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    "$workspace/src",
+    "${remote}:$RemoteDir/"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    "$workspace/include",
+    "${remote}:$RemoteDir/"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    "$workspace/scripts",
+    "${remote}:$RemoteDir/"
+)
+Invoke-Checked scp @(
+    $scpArgs +
+    "-r",
+    "$workspace/assets",
+    "${remote}:$RemoteDir/"
+)
 
 # O deploy copia apenas os arquivos necessários para executar o robô. Os testes
 # continuam ativos no build local, mas não podem exigir a pasta tests na Raspberry.
-# NOTA: Adicionado '--parallel 4' no cmake --build para acelerar a compilação na Pi 5.
-$atomicBuildCommand = "cd '$RemoteDir' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && test -s assets/models/ball_detector.onnx && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$remoteStagingBuild' -DBUILD_TESTING=OFF && cmake --build '$remoteStagingBuild' --target '$Target' --parallel 4 && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
+$atomicBuildCommand = "cd '$RemoteDir' && test -s assets/dashboard-logo.png && test -s assets/soul-sync-favicon.png && test -s assets/models/ball_detector.onnx && find scripts -type d -name '__pycache__' -prune -exec rm -rf {} + && cmake -S . -B '$remoteStagingBuild' -DBUILD_TESTING=OFF && cmake --build '$remoteStagingBuild' --target '$Target' && test -s '$remoteStagingBuild/$Target' && install -m 755 '$remoteStagingBuild/$Target' '$remoteBuild/$Target.new' && mv -f '$remoteBuild/$Target.new' '$remoteBuild/$Target' && test -s '$remoteBuild/$Target'"
 Invoke-Checked ssh @($sshArgs + @($remote, $atomicBuildCommand))
 
 # Usa exatamente o mesmo Python escolhido por run_robot.sh. O ambiente virtual

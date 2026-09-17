@@ -126,13 +126,7 @@ private:
     double finalSearchLastYaw_ = 0.0;
     double finalSearchAccumulatedDegrees_ = 0.0;
     std::chrono::steady_clock::time_point finalSearchStartedAt_{};
-    // A busca contínua da prata termina após duas voltas válidas da IMU.
-    bool silverSearchStarted_ = false;
-    double silverSearchLastYaw_ = 0.0;
-    double silverSearchAccumulatedDegrees_ = 0.0;
     bool storedAliveVictim_ = false;
-    bool silverSearchExhausted_ = false;
-    bool depositingStoredOnly_ = false;
     bool collectionRetentionActive_ = false;
     bool servoMotionStarted_ = false;
     bool servoOutputsConfirmed_ = false;

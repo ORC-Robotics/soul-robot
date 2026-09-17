@@ -984,128 +984,6 @@ void testRescueMemorySurvivesStopAndRejectsChangesWhileRunning()
             "Um novo processo deve começar sem entregas na memória.");
 }
 
-void testTwoSilverTurnsChangePriorityToBlack()
-{
-    RescueRoomMission mission;
-    mission.resumeWithDeliveries(1, 0);
-    auto telemetry = readyTelemetry();
-    auto now = Clock::time_point{};
-    ServoPose pose;
-    const auto sequence = mission.ballTargetSequence(kRunSequence);
-    completeEntryAdvance(mission, telemetry, now, sequence);
-
-    auto output = updateMission(
-        mission, emptyFrame(sequence, 10.0), {}, telemetry, pose, now);
-    require(output.status.phase == "rescue_search_continuous" &&
-                std::string(mission.ballTargetType()) == "silver_ball",
-            "Após uma entrega lembrada, a busca deve começar pela prata.");
-
-    for (int quarterTurn = 1; quarterTurn <= 8; ++quarterTurn)
-    {
-        telemetry.yawZDeg = std::remainder(
-            telemetry.yawZDeg - 90.0, 360.0);
-        now += std::chrono::milliseconds(100);
-        output = updateMission(
-            mission, emptyFrame(sequence, 10.0 + quarterTurn),
-            {}, telemetry, pose, now);
-        if (quarterTurn < 8)
-        {
-            require(std::string(mission.ballTargetType()) == "silver_ball" &&
-                        !output.failed,
-                    "Menos de duas voltas não podem trocar a prioridade.");
-        }
-    }
-    require(output.status.phase == "rescue_dead_priority_starting" &&
-                output.leftPower == 0.0 && output.rightPower == 0.0 &&
-                std::string(mission.ballTargetType()) == "black_ball",
-            "Duas voltas sem prata devem parar e trocar para a preta.");
-}
-
-void testStoredSilverIsDeliveredAfterBlack()
-{
-    RescueRoomMission mission;
-    auto telemetry = readyTelemetry();
-    telemetry.ultrasonicDistanceCm =
-        config::kRescueZoneApproachStopDistanceCm;
-    auto now = Clock::time_point{};
-    ServoPose pose;
-    const auto sequence = mission.ballTargetSequence(kRunSequence);
-    completeEntryAdvance(mission, telemetry, now, sequence);
-    const auto first = lockedSilver(sequence, 10.0);
-    collectVictim(mission, first, telemetry, pose, now);
-    completeDistanceStage(
-        mission, first, telemetry, pose, now,
-        config::kRescuePostCollectionReverseDistanceCm);
-    completeServoStage(
-        mission, first, telemetry, pose, now,
-        "rescue_first_alive_storage");
-    auto output = completeServoStage(
-        mission, first, telemetry, pose, now,
-        "rescue_first_alive_stored");
-    require(output.internalObjectStored,
-            "A primeira prata deve permanecer guardada na busca.");
-
-    const auto secondSequence = mission.ballTargetSequence(kRunSequence);
-    updateMission(mission, emptyFrame(secondSequence, 20.0),
-                  {}, telemetry, pose, now);
-    for (int quarterTurn = 1; quarterTurn <= 8; ++quarterTurn)
-    {
-        telemetry.yawZDeg = std::remainder(
-            telemetry.yawZDeg - 90.0, 360.0);
-        now += std::chrono::milliseconds(100);
-        output = updateMission(
-            mission, emptyFrame(secondSequence, 20.0 + quarterTurn),
-            {}, telemetry, pose, now);
-    }
-    require(output.status.phase == "rescue_dead_priority_starting" &&
-                output.internalObjectStored &&
-                std::string(mission.ballTargetType()) == "black_ball",
-            "A preta deve virar prioridade sem retirar a prata armazenada.");
-
-    const auto deadSequence = mission.ballTargetSequence(kRunSequence);
-    const auto dead = lockedBlack(deadSequence, 40.0);
-    collectVictim(mission, dead, telemetry, pose, now);
-    completeDistanceStage(
-        mission, dead, telemetry, pose, now,
-        config::kRescuePostCollectionReverseDistanceCm);
-    completeServoStage(
-        mission, dead, telemetry, pose, now,
-        "rescue_deposit_zone_starting");
-    reachDepositZone(mission, dead, false, telemetry, pose, now);
-    output = completeServoStage(
-        mission, dead, telemetry, pose, now,
-        "rescue_deposit_completed");
-    require(output.deliveredAliveVictims == 0 &&
-                output.deliveredDeadVictims == 1 &&
-                output.internalObjectStored &&
-                pose.armDegrees == config::kServoRoutineArmHomeDegrees &&
-                pose.wristDegrees == config::kServoRoutineWristForwardDegrees &&
-                pose.gripperDegrees == config::kServoRoutineGripperClosedDegrees,
-            "A preta deve ser contada no vermelho e terminar na pose da segunda prata.");
-    output = completeDistanceStage(
-        mission, dead, telemetry, pose, now,
-        config::kRescuePostDepositReverseDistanceCm);
-    require(output.status.phase == "rescue_stored_alive_deposit_starting" &&
-                output.internalObjectStored &&
-                mission.requiresRescueZoneDetection(),
-            "Após entregar a preta, o robô deve procurar o verde com a prata guardada.");
-
-    const auto afterBlack = emptyFrame(deadSequence, 50.0);
-    reachDepositZone(mission, afterBlack, true, telemetry, pose, now);
-    output = completeServoStage(
-        mission, afterBlack, telemetry, pose, now,
-        "rescue_deposit_completed");
-    require(output.deliveredAliveVictims == 1 &&
-                output.deliveredDeadVictims == 1 &&
-                !output.internalObjectStored,
-            "A prata só pode ser contada depois da entrega no verde.");
-    output = completeDistanceStage(
-        mission, afterBlack, telemetry, pose, now,
-        config::kRescueFinalDepositReverseDistanceCm);
-    require(output.status.phase == "rescue_final_verification" &&
-                std::string(mission.ballTargetType()) == "any",
-            "A verificação final só começa após entregar preta e prata.");
-}
 }
 
 int main()
@@ -1125,8 +1003,6 @@ int main()
         testRunsRequiredVictimsInPriorityOrder();
         testBlocksWristWhenServoOutputIsLostAfterFirstCapture();
         testRescueMemorySurvivesStopAndRejectsChangesWhileRunning();
-        testTwoSilverTurnsChangePriorityToBlack();
-        testStoredSilverIsDeliveredAfterBlack();
     }
     catch (const std::exception& error)
     {
