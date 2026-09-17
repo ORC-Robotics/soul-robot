@@ -77,10 +77,22 @@ a visão. Ao abrir uma sessão, novos frames aguardam a contagem inicial sem
 serem contabilizados como descartes. O dashboard mostra coleta ativa, pausada
 ou sem atualização (4 segundos). O painel não controla a coleta.
 
-Faça pelo menos três sessões independentes **por câmera**, cada uma com as três
-classes. Varie posição e iluminação entre sessões. O treino separa sessões
-inteiras, evitando que frames quase iguais caiam no treino e no teste.
-Confira espaço livre e examine alguns JPEGs antes de fazer uma coleta longa.
+Faça pelo menos duas sessões **por câmera**, cada uma com as três classes.
+Para uma coleta simples, use uma sessão `light_on` com a sala acesa e outra
+`light_off` com a sala escura, mantendo os LEDs do robô ligados nas duas.
+Misture distâncias, ângulos e posições dentro de cada sessão.
+
+Com exatamente duas sessões, o treino separa cada classe de cada sessão em
+blocos consecutivos de 20 imagens e distribui blocos inteiros entre treino,
+validação e teste. As duas iluminações participam dos três conjuntos sem
+dividir frames consecutivos individualmente. Essa avaliação não substitui
+passagens reais, pois os três conjuntos ainda vieram das mesmas duas montagens.
+Cada classe precisa ter pelo menos 41 imagens em cada sessão; a coleta sugerida
+de 500 imagens por classe fica bem acima desse mínimo técnico.
+
+Com três ou mais sessões, o treino continua separando sessões inteiras, que é
+o método mais rigoroso. Confira espaço livre e examine alguns JPEGs antes de
+fazer uma coleta longa.
 
 ## Conferir e treinar no computador
 

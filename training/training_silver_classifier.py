@@ -28,6 +28,10 @@ TEST_RATIO = 0.15
 
 DEFAULT_SEED = 42
 
+# Mantém cinco segundos de captura a 4 FPS no mesmo conjunto. Isso reduz o
+# risco de frames quase idênticos aparecerem ao mesmo tempo no treino e no teste.
+SAMPLE_BLOCK_SIZE = 20
+
 PHASE1_EPOCHS = 20
 PHASE1_LEARNING_RATE = 1e-3
 
@@ -42,7 +46,7 @@ def parse_arguments():
     parser = ArgumentParser(description="Treina o classificador de faixa prata da OBR.")
     parser.add_argument("--camera", choices=("forward", "down"), required=True, help="Câmera cujo modelo será treinado.")
     parser.add_argument("--dataset-root", type=Path, default=DATASET_ROOT, help="Diretório contendo forward/ e down/.")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed usada para dividir as sessões.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Seed usada para dividir os dados.")
     parser.add_argument("--fine-tune", action="store_true", help="Executa uma segunda fase descongelando parte da MobileNet.")
     parser.add_argument("--validate-only", action="store_true", help="Confere classes e sessões sem treinar nem exigir TensorFlow.")
     parser.add_argument(
@@ -69,8 +73,8 @@ def discover_sessions(camera_dir):
 
     sessions = sorted(path for path in camera_dir.iterdir() if path.is_dir())
 
-    if len(sessions) < 3:
-        raise RuntimeError("São necessárias pelo menos 3 sessões independentes para treino, validação e teste.")
+    if len(sessions) < 2:
+        raise RuntimeError("São necessárias pelo menos 2 sessões para treino, validação e teste.")
 
     return sessions
 
@@ -96,21 +100,124 @@ def split_sessions(sessions, seed):
     return train_sessions, validation_sessions, test_sessions
 
 
+def collect_class_samples(session, class_name):
+    class_dir = session / class_name
+
+    if not class_dir.is_dir():
+        return []
+
+    return [
+        (str(path), CLASS_TO_INDEX[class_name])
+        for path in sorted(class_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+
+
 def collect_samples(sessions):
     samples = []
 
     for session in sessions:
         for class_name in CLASS_NAMES:
-            class_dir = session / class_name
-
-            if not class_dir.is_dir():
-                continue
-
-            for path in sorted(class_dir.iterdir()):
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-                    samples.append((str(path), CLASS_TO_INDEX[class_name]))
+            samples.extend(collect_class_samples(session, class_name))
 
     return samples
+
+
+def split_two_session_samples(sessions, seed, block_size=SAMPLE_BLOCK_SIZE):
+    """Divide duas sessões por blocos consecutivos de cada classe."""
+
+    if len(sessions) != 2:
+        raise ValueError("A divisão por blocos exige exatamente duas sessões.")
+    if block_size <= 0:
+        raise ValueError("O tamanho do bloco deve ser maior que zero.")
+
+    split_samples = {
+        "train": [],
+        "validation": [],
+        "test": [],
+    }
+
+    for session in sessions:
+        for class_name in CLASS_NAMES:
+            samples = collect_class_samples(session, class_name)
+            blocks = [
+                samples[index:index + block_size]
+                for index in range(0, len(samples), block_size)
+            ]
+
+            if len(blocks) < 3:
+                minimum_images = block_size * 2 + 1
+                raise RuntimeError(
+                    f"A sessão {session.name}, classe {class_name}, precisa de "
+                    f"pelo menos {minimum_images} imagens para a divisão por "
+                    f"blocos de {block_size}. Encontradas: {len(samples)}."
+                )
+
+            # Cada sessão e classe recebe uma ordem reprodutível e independente.
+            random.Random(f"{seed}:{session.name}:{class_name}").shuffle(blocks)
+
+            total_blocks = len(blocks)
+            test_count = max(1, round(total_blocks * TEST_RATIO))
+            validation_count = max(1, round(total_blocks * VALIDATION_RATIO))
+
+            while total_blocks - test_count - validation_count < 1:
+                if test_count > validation_count:
+                    test_count -= 1
+                else:
+                    validation_count -= 1
+
+            test_blocks = blocks[:test_count]
+            validation_blocks = blocks[test_count:test_count + validation_count]
+            train_blocks = blocks[test_count + validation_count:]
+
+            for block in train_blocks:
+                split_samples["train"].extend(block)
+            for block in validation_blocks:
+                split_samples["validation"].extend(block)
+            for block in test_blocks:
+                split_samples["test"].extend(block)
+
+    # Mistura classes e iluminações sem alterar a associação dos blocos.
+    random.Random(seed).shuffle(split_samples["train"])
+    random.Random(seed + 1).shuffle(split_samples["validation"])
+    random.Random(seed + 2).shuffle(split_samples["test"])
+
+    return (
+        split_samples["train"],
+        split_samples["validation"],
+        split_samples["test"],
+    )
+
+
+def create_data_split(sessions, seed):
+    if len(sessions) == 2:
+        train_samples, validation_samples, test_samples = (
+            split_two_session_samples(sessions, seed)
+        )
+        shared_sessions = list(sessions)
+        return (
+            shared_sessions,
+            shared_sessions,
+            shared_sessions,
+            train_samples,
+            validation_samples,
+            test_samples,
+            "sample_blocks_within_sessions",
+        )
+
+    train_sessions, validation_sessions, test_sessions = split_sessions(
+        sessions,
+        seed,
+    )
+    return (
+        train_sessions,
+        validation_sessions,
+        test_sessions,
+        collect_samples(train_sessions),
+        collect_samples(validation_sessions),
+        collect_samples(test_sessions),
+        "independent_sessions",
+    )
 
 
 def count_classes(samples):
@@ -327,16 +434,31 @@ def convert_to_tflite(model, output_path):
     return len(tflite_model)
 
 
-def save_split_manifest(output_path, train_sessions, validation_sessions, test_sessions, roi, seed):
+def save_split_manifest(
+    output_path,
+    train_sessions,
+    validation_sessions,
+    test_sessions,
+    roi,
+    seed,
+    split_method,
+):
     manifest = {
         "seed": seed,
         "classes": CLASS_NAMES,
         "inputSize": [INPUT_WIDTH, INPUT_HEIGHT],
         "roi": list(roi),
+        "splitMethod": split_method,
         "trainSessions": [session.name for session in train_sessions],
         "validationSessions": [session.name for session in validation_sessions],
         "testSessions": [session.name for session in test_sessions],
     }
+
+    if split_method == "sample_blocks_within_sessions":
+        manifest["sampleBlockSize"] = SAMPLE_BLOCK_SIZE
+        manifest["warning"] = (
+            "Validação e teste usam blocos das mesmas sessões físicas do treino."
+        )
 
     output_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -363,22 +485,38 @@ def main():
     output_dir = OUTPUTS_DIR / f"silver_{args.camera}"
 
     sessions = discover_sessions(camera_dir)
-    train_sessions, validation_sessions, test_sessions = split_sessions(sessions, args.seed)
-
-    train_samples = collect_samples(train_sessions)
-    validation_samples = collect_samples(validation_sessions)
-    test_samples = collect_samples(test_sessions)
+    (
+        train_sessions,
+        validation_sessions,
+        test_sessions,
+        train_samples,
+        validation_samples,
+        test_samples,
+        split_method,
+    ) = create_data_split(sessions, args.seed)
 
     validate_samples(train_samples, "treino")
     validate_samples(validation_samples, "validação")
     validate_samples(test_samples, "teste")
+
+    if split_method == "sample_blocks_within_sessions":
+        print(
+            "\nDIVISÃO: blocos consecutivos dentro das duas sessões "
+            f"({SAMPLE_BLOCK_SIZE} imagens por bloco)."
+        )
+        print(
+            "AVISO: validação e teste não representam sessões físicas "
+            "independentes. Valide o modelo também em passagens reais."
+        )
+    else:
+        print("\nDIVISÃO: sessões físicas independentes.")
 
     print_split("TREINO", train_sessions, train_samples)
     print_split("VALIDAÇÃO", validation_sessions, validation_samples)
     print_split("TESTE", test_sessions, test_samples)
 
     if args.validate_only:
-        print("\nDataset válido para a divisão por sessões informada.")
+        print("\nDataset válido para a divisão informada.")
         return
 
     import tensorflow as tf
@@ -392,6 +530,7 @@ def main():
         test_sessions,
         roi,
         args.seed,
+        split_method,
     )
 
     train_dataset = create_dataset(train_samples, roi, training=True)
@@ -430,7 +569,10 @@ def main():
             callbacks=create_callbacks(),
         )
 
-    print("\nAVALIANDO TESTE INDEPENDENTE...")
+    if split_method == "independent_sessions":
+        print("\nAVALIANDO TESTE INDEPENDENTE...")
+    else:
+        print("\nAVALIANDO TESTE POR BLOCOS DAS SESSÕES DE COLETA...")
 
     probabilities = model.predict(test_dataset, verbose=1)
     true_labels = np.asarray([label for _, label in test_samples], dtype=np.int64)
@@ -464,6 +606,7 @@ def main():
         json.dumps(
             {
                 "camera": args.camera,
+                "splitMethod": split_method,
                 "metrics": metrics,
                 "confusionMatrix": matrix.tolist(),
             },
