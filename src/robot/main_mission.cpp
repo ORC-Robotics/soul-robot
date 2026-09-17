@@ -2,6 +2,7 @@
 #include "obr/config.h"
 
 #include <cmath>
+#include <iostream>
 
 namespace
 {
@@ -24,6 +25,9 @@ void MainMission::reset(bool startAtExit)
     phase_ = startAtExit ? Phase::ExitSearch : Phase::InitialLineCourse;
     lineCourseMission_.reset();
     silverEntryManeuver_.reset();
+    silverSuppressedUntilClear_ = false;
+    silverClearFrames_ = 0;
+    lastSilverClearSequence_ = 0;
     rescueRoomMission_.reset();
     rescueExitMission_.reset();
 }
@@ -126,31 +130,86 @@ void MainMission::update(
 
     if (phase_ == Phase::InitialLineCourse && cameraReady)
     {
-        const SilverEntryOutput silverEntry = silverEntryManeuver_.update(
-            cameraLineSnapshot,
-            esp32Telemetry);
-        if (silverEntry.completed)
+        // Verde, retorno de 180°, obstáculo e recuperações têm prioridade.
+        // Uma confirmação de prata feita nesses frames não pode disparar depois.
+        const bool obstacleNear = esp32Telemetry.sensorFresh &&
+            esp32Telemetry.lastSensorAgeMs >= 0 &&
+            esp32Telemetry.lastSensorAgeMs <= config::kObstacleUltrasonicFreshnessMs &&
+            std::isfinite(esp32Telemetry.ultrasonicDistanceCm) &&
+            esp32Telemetry.ultrasonicDistanceCm >= 2.0 &&
+            esp32Telemetry.ultrasonicDistanceCm <=
+                config::kObstacleDetectionDistanceCm;
+        const bool lineManeuverPending = cameraLineSnapshot.sourceFresh &&
+            cameraLineSnapshot.greenCandidateCount > 0;
+        const bool suppressSilver = lineCourseMission_.maneuverActive() ||
+            lineManeuverPending || obstacleNear;
+        if (suppressSilver)
         {
-            // A faixa cinza entrega autoridade diretamente à rotina completa.
-            // O primeiro avanço ainda aguarda o gate do YOLO publicar um frame.
-            lineCourseMission_.reset();
+            silverSuppressedUntilClear_ = true;
+            silverClearFrames_ = 0;
+            lastSilverClearSequence_ = cameraLineSnapshot.silverSequence;
             silverEntryManeuver_.reset();
-            rescueRoomMission_.reset();
-            phase_ = Phase::RescueArea;
-            robotState.driveAutonomous(0.0, 0.0);
-            robotState.updateAutonomousStatus(makeStatus(
-                "rescue_area_entering",
-                "Faixa cinza confirmada: ligando o YOLO para entrar no resgate"));
-            return;
         }
-        if (silverEntry.hasControl)
+        else if (silverSuppressedUntilClear_ &&
+                 cameraLineSnapshot.silverClassifierFresh)
         {
-            lineCourseMission_.reset();
-            robotState.driveAutonomous(
-                silverEntry.leftPower,
-                silverEntry.rightPower);
-            robotState.updateAutonomousStatus(silverEntry.status);
-            return;
+            if (cameraLineSnapshot.silverSequence < lastSilverClearSequence_)
+            {
+                // Reinício da câmera exige novas leituras, não a sequência antiga.
+                lastSilverClearSequence_ = cameraLineSnapshot.silverSequence;
+                silverClearFrames_ = 0;
+            }
+            else if (cameraLineSnapshot.silverSequence > lastSilverClearSequence_)
+            {
+                lastSilverClearSequence_ = cameraLineSnapshot.silverSequence;
+                silverClearFrames_ =
+                    !cameraLineSnapshot.silverCandidateDetected &&
+                            !cameraLineSnapshot.courseMarkerConfirmed
+                        ? silverClearFrames_ + 1
+                        : 0;
+                if (silverClearFrames_ >= config::kSilverAfterManeuverClearFrames)
+                {
+                    silverSuppressedUntilClear_ = false;
+                }
+            }
+        }
+
+        if (!silverSuppressedUntilClear_)
+        {
+            const SilverEntryOutput silverEntry = silverEntryManeuver_.update(
+                cameraLineSnapshot,
+                esp32Telemetry);
+            if (silverEntry.completed)
+            {
+                // A faixa cinza entrega autoridade diretamente à rotina completa.
+                // O primeiro avanço ainda aguarda o gate do YOLO publicar um frame.
+                const bool enteredWithoutLine =
+                    silverEntry.status.phase == "silver_entry_line_timeout";
+                lineCourseMission_.reset();
+                silverEntryManeuver_.reset();
+                rescueRoomMission_.reset();
+                phase_ = Phase::RescueArea;
+                robotState.driveAutonomous(0.0, 0.0);
+                robotState.updateAutonomousStatus(makeStatus(
+                    "rescue_area_entering",
+                    enteredWithoutLine
+                        ? "Faixa cinza confirmada: resgate iniciado sem linha NEAR após 2,5 s"
+                        : "Faixa cinza confirmada: ligando o YOLO para entrar no resgate"));
+                if (enteredWithoutLine)
+                {
+                    std::cout << "Silver entry continued without NEAR line after 2500 ms" << std::endl;
+                }
+                return;
+            }
+            if (silverEntry.hasControl)
+            {
+                lineCourseMission_.reset();
+                robotState.driveAutonomous(
+                    silverEntry.leftPower,
+                    silverEntry.rightPower);
+                robotState.updateAutonomousStatus(silverEntry.status);
+                return;
+            }
         }
     }
 

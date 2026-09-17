@@ -62,6 +62,10 @@ void LineCourseMission::reset()
     obstacleAvoidance_.reset();
     greenManeuver_.reset();
     forwardLineAssist_.reset();
+    obstacleRecoveryWaiting_ = false;
+    obstacleRecoveryFusionFrames_ = 0;
+    obstacleRecoveryLastLineSequence_ = 0;
+    obstacleRecoveryCause_.clear();
 }
 
 void LineCourseMission::update(
@@ -96,6 +100,15 @@ void LineCourseMission::update(
     if (greenManeuver_.active() &&
         (!cameraReady || !cameraLineSnapshot.sourceFresh))
     {
+        if (cameraReady && greenManeuver_.waitingForStallRecovery())
+        {
+            // Uma falha transitória do IPC não pode cancelar a espera pela faixa.
+            robotState.driveAutonomous(0.0, 0.0);
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "green_stall_waiting_line",
+                "Manobra verde pausada: aguardando faixa Fusion confiável"));
+            return;
+        }
         greenManeuver_.reset();
         if (cameraReady)
         {
@@ -111,6 +124,52 @@ void LineCourseMission::update(
             cameraReady
                 ? "Manobra verde pausada: aguardando uma leitura visual nova"
                 : "Missão interrompida: câmera inferior indisponível"));
+        return;
+    }
+
+    if (obstacleRecoveryWaiting_)
+    {
+        // Após uma falha do desvio, não volta a acelerar perto do obstáculo.
+        // A missão continua ativa e retoma ao confirmar a faixa e frente livre.
+        const bool frontClear = esp32Telemetry.lastSensorAgeMs >= 0 &&
+            esp32Telemetry.lastSensorAgeMs <= config::kObstacleUltrasonicFreshnessMs &&
+            std::isfinite(esp32Telemetry.ultrasonicDistanceCm) &&
+            esp32Telemetry.ultrasonicDistanceCm >= config::kObstacleRearmDistanceCm &&
+            esp32Telemetry.ultrasonicDistanceCm <= 400.0;
+        const bool lineConfirmed = cameraReady && cameraLineSnapshot.sourceFresh &&
+            cameraLineSnapshot.lineControlSource == "fusion" &&
+            cameraLineSnapshot.normalSteeringValid &&
+            cameraLineSnapshot.curveDiagnostics.lineState == "LINE" &&
+            cameraLineSnapshot.curveDiagnostics.virtualState == "NORMAL";
+        const bool imuReady = ImuTurnController::imuReady(esp32Telemetry);
+        if (frontClear && lineConfirmed && imuReady &&
+            cameraLineSnapshot.lineSequence > obstacleRecoveryLastLineSequence_)
+        {
+            ++obstacleRecoveryFusionFrames_;
+            obstacleRecoveryLastLineSequence_ = cameraLineSnapshot.lineSequence;
+        }
+        else if (!frontClear || !lineConfirmed || !imuReady)
+        {
+            obstacleRecoveryFusionFrames_ = 0;
+        }
+        robotState.driveAutonomous(0.0, 0.0);
+        if (obstacleRecoveryFusionFrames_ >=
+            config::kObstacleRecoveryRequiredFusionFrames)
+        {
+            obstacleRecoveryWaiting_ = false;
+            obstacleRecoveryFusionFrames_ = 0;
+            obstacleAvoidance_.reset();
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "obstacle_recovery_ready",
+                "Desvio abortado: faixa e frente livre confirmadas; retomando seguidor"));
+        }
+        else
+        {
+            robotState.updateAutonomousStatus(makeMainMissionStatus(
+                "obstacle_recovery_waiting",
+                "Desvio pausado (" + obstacleRecoveryCause_ +
+                    "): aguardando faixa Fusion e frente livre"));
+        }
         return;
     }
     if (cameraReady && cameraLineSnapshot.sourceFresh &&
@@ -140,9 +199,13 @@ void LineCourseMission::update(
         forwardLineSnapshot);
     if (obstacleOutput.failed)
     {
-        robotState.stop();
+        obstacleRecoveryWaiting_ = true;
+        obstacleRecoveryFusionFrames_ = 0;
+        obstacleRecoveryLastLineSequence_ = cameraLineSnapshot.lineSequence;
+        obstacleRecoveryCause_ = obstacleOutput.phase;
+        robotState.driveAutonomous(0.0, 0.0);
         robotState.updateAutonomousStatus(makeObstacleStatus(obstacleOutput));
-        std::cout << "Obstacle avoidance stopped: "
+        std::cout << "Obstacle avoidance paused for recovery: "
                   << obstacleOutput.phase << std::endl;
         return;
     }

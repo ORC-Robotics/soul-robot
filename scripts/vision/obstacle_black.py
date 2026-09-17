@@ -16,7 +16,7 @@ OBSTACLE_BLACK_THRESHOLD = 160
 OBSTACLE_BLACK_MIN_COMPONENT_AREA_PX = 24
 # Limites observados no scan real. Pouco preto rejeita ruído e emendas; preto
 # demais rejeita o obstáculo ocupando quase toda a ROI.
-OBSTACLE_BLACK_MIN_RATIO = 0.06
+OBSTACLE_BLACK_MIN_RATIO = 0.30
 OBSTACLE_BLACK_MAX_RATIO = 0.65
 OBSTACLE_BLACK_MIN_LARGEST_COMPONENT = 3000
 

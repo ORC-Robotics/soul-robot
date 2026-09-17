@@ -14,6 +14,7 @@ class ForwardLineAssist
 {
 public:
     void reset();
+    bool active() const { return recovering_; }
     bool update(
         RobotState& robotState,
         const Esp32TelemetrySnapshot& esp32Telemetry,

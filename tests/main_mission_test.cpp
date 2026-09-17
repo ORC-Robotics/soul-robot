@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace
 {
@@ -1458,6 +1459,143 @@ void testLeftGreenReversesOnlyAfterVisualLine()
             "Perder a IMU durante a ré deve parar as duas rodas.");
 }
 
+void testGreenReverseStallNearTargetReleasesFollower()
+{
+    const auto runUntilStall = [](double reverseDistanceCm) {
+        MissionFixture fixture;
+        CameraLineSnapshot green = freshVision(GreenInterpretation::Left);
+        green.lineControlSource = "green-direction-hold";
+        green.curveDiagnostics.lineState = "GREEN";
+        fixture.update(green);
+
+        const long long confirmationCounts = static_cast<long long>(std::ceil(
+            config::kGreenConfirmationMaximumDistanceCm *
+            config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount = confirmationCounts;
+        fixture.telemetry.rightEncoderCount = confirmationCounts;
+        fixture.update(green);
+
+        const long long forwardCounts = static_cast<long long>(std::ceil(
+            config::kGreenLateralForwardDistanceCm *
+            config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount += forwardCounts;
+        fixture.telemetry.rightEncoderCount += forwardCounts;
+        fixture.update(green);
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config::kRescueDistanceSettleMs + 20));
+        fixture.update(green);
+
+        fixture.telemetry.yawZDeg = -config::kGreenLateralMinimumYawDegrees;
+        fixture.update(green);
+        CameraLineSnapshot foundMid = green;
+        foundMid.lineSequence = 2;
+        foundMid.mediumTrusted = true;
+        foundMid.curveDiagnostics.mediumPosition = -0.4;
+        RobotSnapshot snapshot = fixture.update(foundMid);
+        require(snapshot.autonomousStatus.phase == "green_reverse_left",
+                "O teste deve começar pela ré do verde esquerdo.");
+
+        const long long reverseCounts = static_cast<long long>(std::ceil(
+            reverseDistanceCm * config::kEncoderCountsPerCentimeter));
+        fixture.telemetry.leftEncoderCount -= reverseCounts;
+        fixture.telemetry.rightEncoderCount -= reverseCounts;
+        fixture.update(foundMid);
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config::kRescueDistanceStallTimeoutMs + 20));
+        snapshot = fixture.update(foundMid);
+
+        if (reverseDistanceCm <
+            config::kGreenLateralReverseDistanceCm -
+                config::kGreenLateralReverseStallToleranceCm)
+        {
+            const RobotSnapshot waiting = fixture.update(foundMid);
+            require(waiting.autonomousStatus.phase == "green_stall_waiting_line" &&
+                        waiting.left == 0.0 && waiting.right == 0.0,
+                    "Sem Fusion confiável, a ré travada deve manter o PWM zerado.");
+            CameraLineSnapshot staleLine = foundMid;
+            staleLine.sourceFresh = false;
+            const RobotSnapshot stale = fixture.update(staleLine);
+            require(stale.autonomousStatus.phase == "green_stall_waiting_line" &&
+                        stale.left == 0.0 && stale.right == 0.0,
+                    "IPC antigo não deve descartar a espera pela faixa nova.");
+        }
+
+        CameraLineSnapshot normalFusion = freshVision(GreenInterpretation::None);
+        normalFusion.lineControlSource = "fusion";
+        normalFusion.normalSteeringValid = true;
+        normalFusion.curveDiagnostics.lineState = "LINE";
+        normalFusion.curveDiagnostics.virtualState = "NORMAL";
+        normalFusion.curveDiagnostics.finalSteering = 0.0;
+        normalFusion.lineFollowerLeftPower = 0.73;
+        normalFusion.lineFollowerRightPower = 0.69;
+        for (std::uint64_t sequence = 3; sequence < 6; ++sequence)
+        {
+            normalFusion.lineSequence = sequence;
+            fixture.update(normalFusion);
+        }
+        normalFusion.lineSequence = 6;
+        const RobotSnapshot next = fixture.update(normalFusion);
+        return std::make_pair(snapshot, next);
+    };
+
+    const auto nearTarget = runUntilStall(3.75);
+    require(nearTarget.first.autonomousStatus.phase == "green_reverse_short" &&
+                nearTarget.first.left == 0.0 && nearTarget.first.right == 0.0 &&
+                nearTarget.second.autonomousStatus.phase == "line_following" &&
+                nearTarget.second.left > 0.0 && nearTarget.second.right > 0.0,
+            "Ré quase concluída deve parar neste ciclo e devolver o controle ao seguidor.");
+
+    const auto farFromTarget = runUntilStall(2.0);
+    require(farFromTarget.first.autonomousStatus.phase == "green_stall_waiting_line" &&
+                farFromTarget.first.left == 0.0 && farFromTarget.first.right == 0.0 &&
+                farFromTarget.second.autonomousStatus.phase == "line_following" &&
+                farFromTarget.second.left > 0.0 && farFromTarget.second.right > 0.0,
+            "Ré travada longe da meta deve aguardar a faixa antes de retomar.");
+}
+
+void testGreenForwardStallWaitsForLine()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot green = freshVision(GreenInterpretation::Left);
+    green.lineControlSource = "green-direction-hold";
+    green.curveDiagnostics.lineState = "GREEN";
+    fixture.update(green);
+
+    const long long confirmationCounts = static_cast<long long>(std::ceil(
+        config::kGreenConfirmationMaximumDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = confirmationCounts;
+    fixture.telemetry.rightEncoderCount = confirmationCounts;
+    RobotSnapshot snapshot = fixture.update(green);
+    require(snapshot.autonomousStatus.phase == "green_forward_left",
+            "O teste deve iniciar pelo avanço medido do verde.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kRescueDistanceStallTimeoutMs + 20));
+    snapshot = fixture.update(green);
+    require(snapshot.mode == "autonomous" &&
+                snapshot.autonomousStatus.phase == "green_stall_waiting_line" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Avanço verde sem progresso deve pausar sem matar a missão.");
+
+    CameraLineSnapshot fusion = freshVision(GreenInterpretation::None);
+    fusion.lineControlSource = "fusion";
+    fusion.normalSteeringValid = true;
+    fusion.curveDiagnostics.lineState = "LINE";
+    fusion.curveDiagnostics.virtualState = "NORMAL";
+    for (std::uint64_t sequence = 2; sequence < 5; ++sequence)
+    {
+        fusion.lineSequence = sequence;
+        snapshot = fixture.update(fusion);
+    }
+    require(snapshot.autonomousStatus.phase == "green_stall_recovery_ready" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Três quadros novos devem liberar o seguidor ainda com PWM zerado.");
+    fusion.lineSequence = 5;
+    snapshot = fixture.update(fusion);
+    requireFollowingLine(snapshot, "Retomada após travamento no avanço verde");
+}
+
 void testGreenReverseIgnoresBlindLinePlaceholder()
 {
     MissionFixture fixture;
@@ -2077,6 +2215,56 @@ void testTransientLineIpcLossPausesAndResumesMission()
     requireFollowingLine(snapshot, "Retorno do IPC visual");
 }
 
+void testObstacleFailureWaitsAndResumesWithClearLine()
+{
+    MissionFixture fixture;
+    fixture.telemetry.ultrasonicDistanceCm = 5.0;
+    CameraLineSnapshot waitingLine = freshVision(GreenInterpretation::None);
+    fixture.update(waitingLine);
+    RobotSnapshot snapshot = fixture.update(waitingLine);
+    require(snapshot.autonomousStatus.phase == "obstacle_detected",
+            "O obstáculo deve ser confirmado antes de testar a falha.");
+
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kObstacleReverseDistanceCm * config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount -= reverseCounts;
+    fixture.telemetry.rightEncoderCount -= reverseCounts;
+    fixture.update(waitingLine);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kGreenTurnAroundCenteringTimeoutMs + 20));
+    snapshot = fixture.update(waitingLine);
+    require(snapshot.mode == "autonomous" && snapshot.left == 0.0 &&
+                snapshot.right == 0.0 &&
+                snapshot.autonomousStatus.phase == "obstacle_centering_timeout",
+            "Falha do desvio deve zerar o PWM sem matar a missão.");
+
+    CameraLineSnapshot fusion = freshVision(GreenInterpretation::None);
+    fusion.lineControlSource = "fusion";
+    fusion.normalSteeringValid = true;
+    fusion.curveDiagnostics.lineState = "LINE";
+    fusion.curveDiagnostics.virtualState = "NORMAL";
+    fusion.curveDiagnostics.finalSteering = 0.0;
+    fusion.lineSequence = 2;
+    snapshot = fixture.update(fusion);
+    require(snapshot.autonomousStatus.phase == "obstacle_recovery_waiting" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Faixa visível não autoriza avançar com obstáculo ainda próximo.");
+
+    fixture.telemetry.ultrasonicDistanceCm = 20.0;
+    for (std::uint64_t sequence = 3; sequence < 6; ++sequence)
+    {
+        fusion.lineSequence = sequence;
+        snapshot = fixture.update(fusion);
+    }
+    require(snapshot.autonomousStatus.phase == "obstacle_recovery_ready" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Três quadros novos e frente livre devem liberar a retomada com PWM zerado.");
+
+    fusion.lineSequence = 6;
+    snapshot = fixture.update(fusion);
+    requireFollowingLine(snapshot, "Retomada após falha do desvio");
+}
+
 void testObstaclePausesIfBottomCameraBecomesUnavailable()
 {
     MissionFixture fixture;
@@ -2270,6 +2458,132 @@ void testConfirmedCourseMarkersControlOnlyExpectedPhase()
         snapshot.autonomousStatus.phase == "rescue_area_entering" &&
             snapshot.left == 0.0 && snapshot.right == 0.0,
         "A linha recuperada e centralizada deve confirmar a área de resgate.");
+}
+
+void testSilverDoesNotOverrideLineManeuvers()
+{
+    for (const GreenInterpretation interpretation :
+         {GreenInterpretation::Left, GreenInterpretation::TurnAround180})
+    {
+        MissionFixture fixture;
+        CameraLineSnapshot frame = freshVision(interpretation);
+        frame.silverClassifierFresh = true;
+        frame.silverSequence = 1;
+        frame.silverCandidateDetected = true;
+        frame.courseMarkerConfirmed = true;
+        frame.courseMarker = CourseMarker::Gray;
+        RobotSnapshot snapshot = fixture.update(frame);
+        require(snapshot.mode == "autonomous" &&
+                    snapshot.autonomousStatus.phase.find("silver_entry") != 0 &&
+                    fixture.mission.silverSuppressedUntilClear_,
+                "Prata simultânea não pode interromper verde lateral ou retorno de 180°.");
+        frame.lineSequence = 2;
+        frame.silverSequence = 2;
+        frame.greenCandidateCount = 0;
+        frame.greenConfirmed = false;
+        frame.greenInterpretation = GreenInterpretation::None;
+        snapshot = fixture.update(frame);
+        require(snapshot.autonomousStatus.phase.find("silver_entry") != 0 &&
+                    !fixture.mission.requiresRescueVision(),
+                "Prata persistente não pode interromper verde ou 180° já ativos.");
+    }
+
+    MissionFixture obstacle;
+    obstacle.telemetry.ultrasonicDistanceCm = 5.0;
+    CameraLineSnapshot frame = freshVision(GreenInterpretation::None);
+    frame.silverClassifierFresh = true;
+    frame.silverSequence = 1;
+    frame.silverCandidateDetected = true;
+    frame.courseMarkerConfirmed = true;
+    frame.courseMarker = CourseMarker::Gray;
+    obstacle.update(frame);
+    frame.lineSequence = 2;
+    frame.silverSequence = 2;
+    const RobotSnapshot snapshot = obstacle.update(frame);
+    require(snapshot.autonomousStatus.phase == "obstacle_detected" &&
+                obstacle.mission.silverSuppressedUntilClear_ &&
+                !obstacle.mission.requiresRescueVision(),
+            "Prata simultânea não pode sobrepor o início do desvio de obstáculo.");
+    obstacle.telemetry.ultrasonicDistanceCm = 20.0;
+    frame.lineSequence = 3;
+    frame.silverSequence = 3;
+    const RobotSnapshot moving = obstacle.update(frame);
+    require(moving.autonomousStatus.phase == "obstacle_initial_reverse" &&
+                moving.left < 0.0 && moving.right < 0.0 &&
+                !obstacle.mission.requiresRescueVision(),
+            "Prata não pode interromper o desvio mesmo após o ultrassom liberar a frente.");
+}
+
+void testSilverRequiresNewClearFramesAfterManeuver()
+{
+    MissionFixture fixture;
+    fixture.mission.silverSuppressedUntilClear_ = true;
+    fixture.mission.lastSilverClearSequence_ = 10;
+    CameraLineSnapshot frame = freshVision(GreenInterpretation::None);
+    frame.silverClassifierFresh = true;
+    frame.silverCandidateDetected = true;
+    frame.courseMarkerConfirmed = true;
+    frame.courseMarker = CourseMarker::Gray;
+    frame.silverSequence = 11;
+    RobotSnapshot snapshot = fixture.update(frame);
+    require(snapshot.autonomousStatus.phase != "silver_entry_backing_up" &&
+                fixture.mission.silverSuppressedUntilClear_,
+            "Positivos acumulados durante manobra não podem disparar prata depois.");
+
+    frame.silverCandidateDetected = false;
+    frame.courseMarkerConfirmed = false;
+    frame.courseMarker = CourseMarker::None;
+    frame.silverSequence = 12;
+    fixture.update(frame);
+    fixture.update(frame);
+    require(fixture.mission.silverSuppressedUntilClear_,
+            "A mesma inferência negativa não pode contar duas vezes.");
+    frame.silverSequence = 13;
+    fixture.update(frame);
+    require(!fixture.mission.silverSuppressedUntilClear_,
+            "Duas inferências negativas novas devem rearmar a prata.");
+
+    frame.silverSequence = 14;
+    frame.silverCandidateDetected = true;
+    snapshot = fixture.update(frame);
+    require(snapshot.autonomousStatus.phase == "silver_entry_advancing",
+            "Uma nova candidata após o rearme deve iniciar a entrada cinza.");
+}
+
+void testSilverWaitingLineTimeoutEntersRescue()
+{
+    MissionFixture fixture;
+    CameraLineSnapshot frame = freshVision(GreenInterpretation::None, false);
+    frame.silverCandidateDetected = true;
+    fixture.update(frame);
+    frame.courseMarkerConfirmed = true;
+    frame.courseMarker = CourseMarker::Gray;
+    fixture.update(frame);
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = reverseCounts;
+    fixture.telemetry.rightEncoderCount = reverseCounts;
+    RobotSnapshot snapshot = fixture.update(frame);
+    require(snapshot.autonomousStatus.phase == "silver_entry_waiting_line" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0,
+            "Após a ré, a entrada cinza deve aguardar a linha com PWM zerado.");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kSilverEntryWaitingLineTimeoutMs + 20));
+    CameraLineSnapshot stale = frame;
+    stale.sourceFresh = false;
+    snapshot = fixture.update(stale);
+    require(snapshot.autonomousStatus.phase == "silver_entry_waiting_line" &&
+                !fixture.mission.requiresRescueVision(),
+            "Câmera sem frame atual não pode liberar o resgate por timeout.");
+
+    snapshot = fixture.update(frame);
+    require(snapshot.autonomousStatus.phase == "rescue_area_entering" &&
+                snapshot.mode == "autonomous" &&
+                snapshot.left == 0.0 && snapshot.right == 0.0 &&
+                fixture.mission.requiresRescueVision(),
+            "Com câmera atual e NEAR ausente por 2,5 s, deve entrar no resgate parado.");
 }
 
 void testRescueAlignmentModeKeepsExistingMotorAuthority()
@@ -2857,9 +3171,19 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--silver-only")
+        {
+            testConfirmedCourseMarkersControlOnlyExpectedPhase();
+            testSilverDoesNotOverrideLineManeuvers();
+            testSilverRequiresNewClearFramesAfterManeuver();
+            testSilverWaitingLineTimeoutEntersRescue();
+            std::cout << "silver_entry_test: OK\n";
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--obstacle-only")
         {
             testObstacleContinuationBandIpcFailsSafe();
+            testObstacleFailureWaitsAndResumesWithClearLine();
             testObstaclePausesIfBottomCameraBecomesUnavailable();
             testObstacleRespectsStopAndSafetyPriority();
             std::cout << "obstacle_integration_test: OK\n";
@@ -2898,6 +3222,8 @@ int main(int argc, char** argv)
             testLateralGreenCentersOnlyWithCompleteLocalGeometry();
             testLateralGreenSkipsCenteringWhenGeometryIsIncomplete();
             testLeftGreenReversesOnlyAfterVisualLine();
+            testGreenReverseStallNearTargetReleasesFollower();
+            testGreenForwardStallWaitsForLine();
             testGreenReverseIgnoresBlindLinePlaceholder();
             std::cout << "green_maneuver_test: OK\n";
             return 0;
@@ -2933,6 +3259,8 @@ int main(int argc, char** argv)
         testLateralGreenCentersOnlyWithCompleteLocalGeometry();
         testLateralGreenSkipsCenteringWhenGeometryIsIncomplete();
         testLeftGreenReversesOnlyAfterVisualLine();
+        testGreenReverseStallNearTargetReleasesFollower();
+        testGreenForwardStallWaitsForLine();
         testGreenReverseIgnoresBlindLinePlaceholder();
         testReturnWaitsForRequiredSensors();
         testImuFailureAlwaysStopsReturn();
@@ -2952,9 +3280,13 @@ int main(int argc, char** argv)
         testForwardIpcAcceptsGeometryWithoutPowersAndRejectsInvalidSources();
         testUnavailableCameraStopsMission();
         testTransientLineIpcLossPausesAndResumesMission();
+        testObstacleFailureWaitsAndResumesWithClearLine();
         testObstaclePausesIfBottomCameraBecomesUnavailable();
         testObstacleRespectsStopAndSafetyPriority();
         testConfirmedCourseMarkersControlOnlyExpectedPhase();
+        testSilverDoesNotOverrideLineManeuvers();
+        testSilverRequiresNewClearFramesAfterManeuver();
+        testSilverWaitingLineTimeoutEntersRescue();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();
         testRescueZoneAlignKeepsDetectionGateActive();

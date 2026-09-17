@@ -154,11 +154,23 @@ SilverEntryOutput SilverEntryManeuver::update(
                 return output;
             }
             phase_ = Phase::WaitingForLine;
+            startTime_ = std::chrono::steady_clock::now();
         }
     }
 
     if (visionConfirmed_ && phase_ == Phase::WaitingForLine)
     {
+        // A câmera continua atual, mas a linha NEAR pode estar ausente.
+        // O prazo conta desde o fim da ré e não reabre por uma leitura tardia.
+        if (std::chrono::steady_clock::now() - startTime_ >=
+            std::chrono::milliseconds(config::kSilverEntryWaitingLineTimeoutMs))
+        {
+            output.completed = true;
+            output.status = makeStatus(
+                "silver_entry_line_timeout",
+                "Linha NEAR ausente por 2,5 s: entrando no resgate sem alinhamento");
+            return output;
+        }
         if (!alignmentLineVisible(vision))
         {
             nearCenteredFrames_ = 0;
@@ -174,6 +186,16 @@ SilverEntryOutput SilverEntryManeuver::update(
 
     if (visionConfirmed_ && phase_ == Phase::CenteringLine)
     {
+        if (!alignmentLineVisible(vision))
+        {
+            phase_ = Phase::WaitingForLine;
+            startTime_ = std::chrono::steady_clock::now();
+            nearCenteredFrames_ = 0;
+            output.status = makeStatus(
+                "silver_entry_waiting_line",
+                "Aguardando a linha preta na parte inferior da imagem");
+            return output;
+        }
         const auto alignmentElapsedMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - startTime_)
@@ -186,15 +208,6 @@ SilverEntryOutput SilverEntryManeuver::update(
                 "Alinhamento da faixa preta expirou: robô parado");
             return output;
         }
-        if (!alignmentLineVisible(vision))
-        {
-            nearCenteredFrames_ = 0;
-            output.status = makeStatus(
-                "silver_entry_waiting_line",
-                "Aguardando a linha preta na parte inferior da imagem");
-            return output;
-        }
-
         const double nearPosition = vision.lineNearFinePosition;
         if (std::abs(nearPosition) <= config::kSilverEntryNearCenterTolerance)
         {

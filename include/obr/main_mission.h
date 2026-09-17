@@ -59,6 +59,9 @@ private:
     Phase phase_ = Phase::InitialLineCourse;
     LineCourseMission lineCourseMission_;
     SilverEntryManeuver silverEntryManeuver_;
+    bool silverSuppressedUntilClear_ = false;
+    int silverClearFrames_ = 0;
+    std::uint64_t lastSilverClearSequence_ = 0;
     RescueRoomMission rescueRoomMission_;
     RescueExitMission rescueExitMission_;
 };

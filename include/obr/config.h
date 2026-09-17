@@ -317,7 +317,13 @@ constexpr double kSilverEntryReversePower = 0.68;
 constexpr double kSilverEntryNearCenterTolerance = 0.12;
 constexpr int kSilverEntryNearStableFrames = 2;
 constexpr double kSilverEntryNearCenteringPower = 0.69;
+// Prazo, em milissegundos, para encontrar a linha NEAR após a ré da prata.
+// Com câmera atual e sem linha, a entrada segue para o resgate com PWM zerado.
+constexpr int kSilverEntryWaitingLineTimeoutMs = 2500;
 constexpr int kSilverEntryAlignmentTimeoutMs = 3000;
+// Leituras negativas novas exigidas após verde, obstáculo ou outra recuperação
+// antes de permitir uma nova candidata de prata.
+constexpr int kSilverAfterManeuverClearFrames = 2;
 constexpr int kSilverEntryEncoderFreshnessMs = 300;
 constexpr int kSilverEntryAdvanceTimeoutMs = 2500;
 
@@ -332,7 +338,9 @@ static_assert(kSilverEntryAdvanceDistanceCm > 0.0 &&
                   kSilverEntryNearStableFrames > 0 &&
                   kSilverEntryNearCenteringPower >= kMotorStartMinimumPower &&
                   kSilverEntryNearCenteringPower <= kMaxMotorOutput &&
+                  kSilverEntryWaitingLineTimeoutMs > 0 &&
                   kSilverEntryAlignmentTimeoutMs > 0 &&
+                  kSilverAfterManeuverClearFrames > 0 &&
                   kSilverEntryEncoderFreshnessMs > 0 &&
                   kSilverEntryAdvanceTimeoutMs > 0,
               "O avanço da entrada cinza deve permanecer em limites seguros.");
@@ -544,9 +552,9 @@ constexpr double kRescueExitExplorationOffsetDegrees = 30.0;
 constexpr int kRescueExitExplorationMaximumAttempts = 3;
 // Yaws de avanço reto medidos a partir do alinhamento do último triângulo.
 // O teste isolado usa os mesmos alvos para permitir a calibração na arena.
-constexpr double kRescueExitFirstStraightYawDegrees = 58.0;
+constexpr double kRescueExitFirstStraightYawDegrees = 100.0;
 constexpr double kRescueExitSecondStraightYawDegrees = -100.0;
-constexpr double kRescueExitThirdStraightYawDegrees = 58.0;
+constexpr double kRescueExitThirdStraightYawDegrees = 100.0;
 // A saída fica neste yaw relativo ao último triângulo centralizado.
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
 // Tempo parado, em milissegundos, em cada direção do teste isolado de yaw.
@@ -1010,6 +1018,9 @@ constexpr double kEncoderCountsPerCentimeter =
 constexpr double kObstacleDetectionDistanceCm = 6.0;
 constexpr int kObstacleDetectionConfirmationSamples = 2;
 constexpr double kObstacleRearmDistanceCm = 15.0;
+// Quantidade de quadros Fusion novos exigidos antes de retomar a missão
+// após uma falha no desvio. Evita avançar por causa de uma leitura isolada.
+constexpr int kObstacleRecoveryRequiredFusionFrames = 3;
 constexpr int kObstacleRearmConfirmationSamples = 3;
 
 // A medição gira 60 graus para enxergar a passagem lateral além do obstáculo.
@@ -1150,6 +1161,7 @@ constexpr double kObstacleBrakePredictionSeconds = 0.14;
 
 static_assert(kObstacleDetectionDistanceCm > 0.0 &&
                   kObstacleRearmDistanceCm > kObstacleDetectionDistanceCm &&
+                  kObstacleRecoveryRequiredFusionFrames > 0 &&
                   kObstacleDetectionConfirmationSamples > 0 &&
                   kObstacleRearmConfirmationSamples > 0,
               "A detecção de obstáculo deve possuir histerese válida.");
@@ -1356,6 +1368,12 @@ constexpr double kGreenLateralForwardDistanceCm = 10.0;
 constexpr double kGreenLateralForwardPower = 0.70;
 // Ré curta, em centímetros, após reencontrar a faixa do ramo verde.
 constexpr double kGreenLateralReverseDistanceCm = 5.0;
+// Margem, em centímetros, para encerrar a ré do verde se os encoders
+// pararem perto da meta. Fora dessa margem, a manobra aguarda uma faixa Fusion.
+constexpr double kGreenLateralReverseStallToleranceCm = 1.5;
+// Quadros novos de Fusion necessários para abandonar uma manobra verde
+// travada antes da meta e devolver o controle ao segue-linha.
+constexpr int kGreenStallRecoveryRequiredFusionFrames = 3;
 // Potência da ré medida; o piso permite partir sem acelerar desnecessariamente.
 constexpr double kGreenLateralReversePower = kMotorStartMinimumPower;
 // Correção diferencial por grau de desvio do yaw nas retas do verde.
@@ -1464,6 +1482,9 @@ static_assert(kGreenConfirmationMaximumBasePower >= kMotorStartMinimumPower &&
                   kGreenLateralForwardPower <=
                       kGreenConfirmationMaximumBasePower &&
                   kGreenLateralReverseDistanceCm > 0.0 &&
+                  kGreenLateralReverseStallToleranceCm > 0.0 &&
+                  kGreenLateralReverseStallToleranceCm < kGreenLateralReverseDistanceCm &&
+                  kGreenStallRecoveryRequiredFusionFrames > 0 &&
                   kGreenLateralReversePower >= kMotorStartMinimumPower &&
                   kGreenLateralReversePower <= kMaxMotorOutput &&
                   kGreenStraightYawGainPerDegree > 0.0 &&

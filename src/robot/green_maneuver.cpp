@@ -24,6 +24,15 @@ AutonomousStatus makeStatus(
     return status;
 }
 
+bool frontObstacleConfirmed(const Esp32TelemetrySnapshot& telemetry)
+{
+    return telemetry.sensorFresh && telemetry.lastSensorAgeMs >= 0 &&
+           telemetry.lastSensorAgeMs <= config::kObstacleUltrasonicFreshnessMs &&
+           std::isfinite(telemetry.ultrasonicDistanceCm) &&
+           telemetry.ultrasonicDistanceCm >= 2.0 &&
+           telemetry.ultrasonicDistanceCm <= config::kObstacleDetectionDistanceCm;
+}
+
 bool isTurnAround(const CameraLineSnapshot& line)
 {
     return config::kGreenTurnAroundEnabled && line.greenConfirmed &&
@@ -233,6 +242,8 @@ void GreenManeuver::reset()
     straightStartYawDegrees_ = 0.0;
     straightYawReferenceValid_ = false;
     centeredFrames_ = 0;
+    stallRecoveryFusionFrames_ = 0;
+    stallRecoveryLastLineSequence_ = 0;
 }
 
 void GreenManeuver::startReverse(std::chrono::steady_clock::time_point now)
@@ -272,6 +283,46 @@ bool GreenManeuver::update(
             phase_ = Phase::Idle;
         }
         return handled;
+    }
+
+    if (phase_ == Phase::WaitingLineAfterStall)
+    {
+        // Mantém o PWM zerado até a câmera confirmar uma faixa nova e estável.
+        // O stall não mata a missão, mas também não autoriza avançar às cegas.
+        const bool lineConfirmed = line.sourceFresh &&
+            line.lineControlSource == "fusion" && line.normalSteeringValid &&
+            line.curveDiagnostics.lineState == "LINE" &&
+            line.curveDiagnostics.virtualState == "NORMAL";
+        const bool frontBlocked = frontObstacleConfirmed(telemetry);
+        if (lineConfirmed && !frontBlocked &&
+            line.lineSequence > stallRecoveryLastLineSequence_)
+        {
+            ++stallRecoveryFusionFrames_;
+            stallRecoveryLastLineSequence_ = line.lineSequence;
+        }
+        else if (!lineConfirmed || frontBlocked)
+        {
+            stallRecoveryFusionFrames_ = 0;
+        }
+        robotState.driveAutonomous(0.0, 0.0);
+        if (stallRecoveryFusionFrames_ >=
+            config::kGreenStallRecoveryRequiredFusionFrames)
+        {
+            phase_ = Phase::Idle;
+            lateralDecision_ = GreenInterpretation::None;
+            lateralDecisionConfirmed_ = false;
+            distanceController_.reset();
+            robotState.updateAutonomousStatus(makeStatus(
+                "green_stall_recovery_ready",
+                "Faixa confirmada após travamento: retomando seguidor"));
+        }
+        else
+        {
+            robotState.updateAutonomousStatus(makeStatus(
+                "green_stall_waiting_line",
+                "Manobra verde pausada: aguardando faixa Fusion confiável"));
+        }
+        return true;
     }
 
     if (phase_ == Phase::Idle)
@@ -564,6 +615,17 @@ bool GreenManeuver::update(
             "Verde confirmado: avançando 100 mm antes do giro");
         if (output.failed)
         {
+            if (output.status.phase == "rescue_distance_stall")
+            {
+                phase_ = Phase::WaitingLineAfterStall;
+                stallRecoveryFusionFrames_ = 0;
+                stallRecoveryLastLineSequence_ = line.lineSequence;
+                robotState.driveAutonomous(0.0, 0.0);
+                robotState.updateAutonomousStatus(makeStatus(
+                    "green_stall_waiting_line",
+                    "Avanço verde travado: aguardando faixa Fusion confiável"));
+                return true;
+            }
             phase_ = Phase::Failed;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(output.status);
@@ -802,6 +864,38 @@ bool GreenManeuver::update(
             "Faixa encontrada: recuando 50 mm em linha reta");
         if (output.failed)
         {
+            // Um recuo quase concluído não deve bloquear o seguidor para sempre.
+            // Encerra a manobra com PWM zerado; se parou antes, aguarda Fusion.
+            if (output.status.phase == "rescue_distance_stall" &&
+                std::min(output.status.leftDistanceCm,
+                         output.status.rightDistanceCm) >=
+                    config::kGreenLateralReverseDistanceCm -
+                    config::kGreenLateralReverseStallToleranceCm &&
+                !frontObstacleConfirmed(telemetry))
+            {
+                robotState.driveAutonomous(0.0, 0.0);
+                AutonomousStatus status = output.status;
+                status.phase = "green_reverse_short";
+                status.action =
+                    "Ré verde encerrada perto da meta: encoders sem progresso";
+                robotState.updateAutonomousStatus(status);
+                phase_ = Phase::Idle;
+                lateralDecision_ = GreenInterpretation::None;
+                lateralDecisionConfirmed_ = false;
+                distanceController_.reset();
+                return true;
+            }
+            if (output.status.phase == "rescue_distance_stall")
+            {
+                phase_ = Phase::WaitingLineAfterStall;
+                stallRecoveryFusionFrames_ = 0;
+                stallRecoveryLastLineSequence_ = line.lineSequence;
+                robotState.driveAutonomous(0.0, 0.0);
+                robotState.updateAutonomousStatus(makeStatus(
+                    "green_stall_waiting_line",
+                    "Ré verde travada: aguardando faixa Fusion confiável"));
+                return true;
+            }
             phase_ = Phase::Failed;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(output.status);

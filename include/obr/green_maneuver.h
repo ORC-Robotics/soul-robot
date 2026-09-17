@@ -15,6 +15,10 @@ class GreenManeuver
 public:
     void reset();
     bool active() const;
+    bool waitingForStallRecovery() const
+    {
+        return phase_ == Phase::WaitingLineAfterStall;
+    }
     bool shouldBlockForwardAssist(
         const CameraLineSnapshot& cameraLineSnapshot) const;
     bool update(
@@ -32,6 +36,7 @@ private:
         SearchingLine,
         Centering,
         Reversing,
+        WaitingLineAfterStall,
         Failed
     };
 
@@ -67,6 +72,8 @@ private:
     double straightStartYawDegrees_ = 0.0;
     bool straightYawReferenceValid_ = false;
     int centeredFrames_ = 0;
+    int stallRecoveryFusionFrames_ = 0;
+    std::uint64_t stallRecoveryLastLineSequence_ = 0;
     std::chrono::steady_clock::time_point phaseStartedAt_{};
 
     // Inicia a ré apenas depois da faixa visual encontrada ou centralizada.
