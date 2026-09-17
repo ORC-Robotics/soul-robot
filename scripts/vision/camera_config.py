@@ -238,11 +238,20 @@ GREEN_SINGLE_OBSERVATION_FRAMES = 2
 # surgir brevemente quando verdes de interseções diferentes entram no quadro.
 GREEN_TURNAROUND_CONFIRMATION_FRAMES = 3
 GREEN_CLEAR_HYSTERESIS_FRAMES = 2
+# Sobreposição mínima entre caixas do mesmo marcador em frames consecutivos.
+# Um valor menor pode associar outro verde; um maior perde movimento aparente.
+GREEN_PRIMARY_MARKER_MIN_IOU = 0.35
+# Permite mudança de tamanho quando a caixa menor permanece quase contida
+# na maior. A correspondência ainda precisa ser única entre todos os verdes.
+GREEN_PRIMARY_MARKER_MIN_CONTAINMENT = 0.75
+# Deslocamento máximo do centro, por eixo, relativo à maior dimensão local.
+# Evita que a contenção associe um fragmento a um verde distante.
+GREEN_PRIMARY_MARKER_MAX_CENTER_SHIFT = 0.50
 # Tolera até dois frames ambíguos entre leituras verdes válidas. Reflexos,
 # recortes na borda e o segundo marcador do retorno podem tornar uma imagem
 # inconclusiva por poucos milissegundos; isso não deve apagar uma confirmação
-# já obtida nem reiniciar o progresso válido. Ambiguidade persistente continua
-# removendo a decisão para impedir que evidência antiga arme uma manobra.
+# já obtida nem reiniciar o progresso válido. Ambiguidade persistente remove
+# apenas evidência provisória, nunca uma decisão já confirmada.
 GREEN_AMBIGUITY_HYSTERESIS_FRAMES = 2
 # Mantém por no máximo dois frames o último comando Fusion já aceito enquanto
 # um candidato verde aguarda confirmação. O limite evita um hold indefinido.

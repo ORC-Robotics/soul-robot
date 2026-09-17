@@ -41,6 +41,9 @@ from .camera_config import (
     GREEN_PARTIAL_BORDER_TOLERANCE_PX,
     GREEN_PARTIAL_DIMENSION_FACTOR,
     GREEN_PARTIAL_EXTENT_MIN,
+    GREEN_PRIMARY_MARKER_MIN_IOU,
+    GREEN_PRIMARY_MARKER_MIN_CONTAINMENT,
+    GREEN_PRIMARY_MARKER_MAX_CENTER_SHIFT,
     GREEN_ROI_HALF_SIZE_DIVISOR,
     GREEN_ROI_MIN_BLACK_RATIO,
     GREEN_ROI_MIN_VISIBLE_RATIO,
@@ -1323,6 +1326,8 @@ def analyze_green_marker_contours(green_contours, selected_black_mask):
 def green_geometry_reason(result):
     """Explica a classificação atual pelas mesmas condições geométricas do detector."""
 
+    if "primary_marker_reason" in result:
+        return result["primary_marker_reason"]
     markers = result.get("markers", [])
     if not markers:
         return "no_candidate"
@@ -1369,6 +1374,104 @@ class GreenObservationTracker:
         self.ambiguous_samples = 0
         self.confirmed_interpretation = "SEM_DECISAO"
         self.last_direction_seen_at = None
+        self.primary_marker_bounds = None
+        self.primary_marker_side = "SEM_DECISAO"
+        self.primary_marker_clear_frames = 0
+
+    def resolve_primary_marker(self, result, black_mask):
+        """Revalida o primeiro verde sem deixar outro contorno substituir sua evidência."""
+
+        markers = result["markers"]
+        if not markers:
+            self.primary_marker_clear_frames += 1
+            if self.primary_marker_clear_frames >= GREEN_CLEAR_HYSTERESIS_FRAMES:
+                self.primary_marker_bounds = None
+                self.primary_marker_side = "SEM_DECISAO"
+            return result
+        self.primary_marker_clear_frames = 0
+
+        # O par continua sendo avaliado pela geometria original, antes de
+        # qualquer leitura individual. A promoção temporal também não muda.
+        if result["pair_compatible"]:
+            return result
+
+        if self.primary_marker_bounds is None:
+            if len(markers) == 1:
+                # Identifica o candidato antes de conhecer seu lado. Isso não
+                # valida o verde: preto e confirmação temporal continuam exigidos.
+                box = markers[0]["geometry"]["box"]
+                self.primary_marker_bounds = (
+                    np.min(box, axis=0), np.max(box, axis=0),
+                )
+                if result["interpretation"] in ("ESQUERDA", "DIREITA"):
+                    self.primary_marker_side = result["interpretation"]
+            return result
+
+        previous_min, previous_max = self.primary_marker_bounds
+        matches = []
+        best_iou = 0.0
+        best_containment = 0.0
+        for index, marker in enumerate(markers):
+            box = marker["geometry"]["box"]
+            current_min, current_max = np.min(box, axis=0), np.max(box, axis=0)
+            overlap = np.maximum(
+                0.0, np.minimum(previous_max, current_max) - np.maximum(previous_min, current_min),
+            )
+            intersection = float(np.prod(overlap))
+            previous_size = previous_max - previous_min
+            current_size = current_max - current_min
+            previous_area, current_area = float(np.prod(previous_size)), float(np.prod(current_size))
+            union = previous_area + current_area - intersection
+            iou = intersection / union if union > 0.0 else 0.0
+            smaller_area = min(previous_area, current_area)
+            containment = intersection / smaller_area if smaller_area > 0.0 else 0.0
+            center_shift = np.abs((current_min + current_max - previous_min - previous_max) / 2.0)
+            centers_close = np.all(center_shift <= GREEN_PRIMARY_MARKER_MAX_CENTER_SHIFT
+                                   * np.maximum(previous_size, current_size))
+            best_iou = max(best_iou, iou)
+            best_containment = max(best_containment, containment)
+            # Um recorte que cresce perde IoU mesmo mantendo o mesmo verde.
+            # A contenção recupera esse caso sem escolher o melhor de dois pares.
+            if iou >= GREEN_PRIMARY_MARKER_MIN_IOU:
+                matches.append((index, current_min, current_max, "iou"))
+            elif containment >= GREEN_PRIMARY_MARKER_MIN_CONTAINMENT and centers_close:
+                matches.append((index, current_min, current_max, "size_change"))
+
+        resolved = dict(result)
+        resolved["primary_match_count"] = len(matches)
+        resolved["primary_best_iou"] = best_iou
+        resolved["primary_best_containment"] = best_containment
+        resolved.update(interpretation="AMBIGUO", left_seen=False,
+                        right_seen=False, path_black_valid=False)
+        if len(matches) != 1:
+            # Sem correspondência única, não usa um verde novo para confirmar
+            # o anterior. A ausência real continua necessária para o rearme.
+            resolved["primary_marker_reason"] = (
+                "primary_marker_missing" if not matches else "primary_marker_multiple_matches"
+            )
+            return resolved
+
+        index, current_min, current_max, match_method = matches[0]
+        resolved["primary_match_method"] = match_method
+        self.primary_marker_bounds = (current_min, current_max)
+        individual = analyze_green_marker_contours([markers[index]["contour"]], black_mask)
+        side = individual["interpretation"]
+        resolved["primary_marker_index"] = index
+        resolved["primary_marker_reason"] = "tracked_primary_" + green_geometry_reason(individual)
+        resolved["markers"] = list(markers)
+        resolved["markers"][index] = individual["markers"][0]
+        if self.primary_marker_side == "SEM_DECISAO" and side in ("ESQUERDA", "DIREITA"):
+            # Trava o primeiro lado validado do marcador já acompanhado, mesmo
+            # que outro verde tenha entrado no quadro antes dessa evidência.
+            self.primary_marker_side = side
+        if side == self.primary_marker_side:
+            # Este frame contém nova validação superior e lateral do mesmo
+            # marcador: pode completar a confirmação, independentemente do outro.
+            resolved.update(interpretation=side, left_seen=side == "ESQUERDA",
+                            right_seen=side == "DIREITA", path_black_valid=True)
+        elif side == "VERDE_FALSO":
+            resolved["interpretation"] = side
+        return resolved
 
     def update(self, line_sequence, interpretation, observed_at=None):
         """Confirma quadros novos e retém orientação lateral por 0,5 segundo."""
@@ -1398,6 +1501,23 @@ class GreenObservationTracker:
         )
         if interpretation == "AMBIGUO" and has_valid_evidence:
             self.ambiguous_samples += 1
+            if self.confirmed_interpretation in (
+                "ESQUERDA", "DIREITA", "RETORNO_180",
+            ):
+                # A ambiguidade do segundo verde não desfaz uma decisão já
+                # confirmada. Só uma ausência real rearma o próximo evento.
+                if (
+                    self.ambiguous_samples > GREEN_AMBIGUITY_HYSTERESIS_FRAMES
+                    and self.pending_interpretation == "RETORNO_180"
+                    and self.confirmed_interpretation != "RETORNO_180"
+                ):
+                    self.pending_interpretation = self.confirmed_interpretation
+                    self.consecutive_samples = 0
+                return (
+                    self.confirmed_interpretation,
+                    True,
+                    self.consecutive_samples,
+                )
             if (
                 self.ambiguous_samples
                 <= GREEN_AMBIGUITY_HYSTERESIS_FRAMES
@@ -1435,11 +1555,29 @@ class GreenObservationTracker:
 
         if (
             self.confirmed_interpretation in ("ESQUERDA", "DIREITA")
-            and interpretation == "VERDE_FALSO"
+            and interpretation != "SEM_DECISAO"
         ):
-            # Depois que a geometria lateral foi confirmada, uma oscilação
-            # curta do preto local não pode rebaixar o mesmo evento para falso.
-            # A decisão ainda pode ser promovida para RETORNO_180 em outro frame.
+            if interpretation == "RETORNO_180":
+                # Um par compatível precisa completar a confirmação temporal;
+                # até lá, preserva o lado já confirmado do mesmo evento.
+                if self.pending_interpretation == "RETORNO_180":
+                    self.consecutive_samples += 1
+                else:
+                    self.pending_interpretation = "RETORNO_180"
+                    self.consecutive_samples = 1
+                required_samples = max(
+                    GREEN_CONFIRMATION_FRAMES,
+                    GREEN_TURNAROUND_CONFIRMATION_FRAMES,
+                )
+                self.consecutive_samples = min(self.consecutive_samples, required_samples)
+                if self.consecutive_samples >= required_samples:
+                    self.confirmed_interpretation = "RETORNO_180"
+                return self.confirmed_interpretation, True, self.consecutive_samples
+
+            # Leituras falsas ou do lado oposto não substituem a curva já
+            # confirmada. Apenas o retorno geometricamente válido pode promovê-la.
+            if interpretation == self.confirmed_interpretation:
+                self.last_direction_seen_at = observed_at
             self.pending_interpretation = self.confirmed_interpretation
             self.missing_samples = 0
             return (
@@ -1544,6 +1682,10 @@ def build_green_status(
         "greenPairCompatible": interpretation_result["pair_compatible"],
         "greenConsecutiveSamples": int(consecutive_samples),
         "greenProcessingMs": float(processing_ms),
+        "greenPrimaryMatchCount": interpretation_result.get("primary_match_count", 0),
+        "greenPrimaryBestIou": interpretation_result.get("primary_best_iou", 0.0),
+        "greenPrimaryBestContainment": interpretation_result.get("primary_best_containment", 0.0),
+        "greenPrimaryMatchMethod": interpretation_result.get("primary_match_method", "none"),
     })
 
     # A ROI superior valida a associação com a faixa. Os campos laterais
@@ -1556,6 +1698,8 @@ def build_green_status(
     status["greenMarkerCount"] = len(markers)
     status["greenValidatedMarkerCount"] = len(upper_valid_markers)
     diagnostic_marker = (
+        markers[interpretation_result["primary_marker_index"]]
+        if "primary_marker_index" in interpretation_result else
         upper_valid_markers[0] if upper_valid_markers else
         (markers[0] if markers else None)
     )

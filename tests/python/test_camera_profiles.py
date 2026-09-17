@@ -1019,16 +1019,53 @@ class CameraProfilesTest(unittest.TestCase):
         self.assertEqual(second, ("SEM_DECISAO", False, 2))
         self.assertEqual(confirmed, ("RETORNO_180", True, 3))
 
-    def test_persistent_ambiguity_clears_confirmed_direction(self):
+    def test_persistent_ambiguity_preserves_confirmed_direction(self):
         tracker = camera_line_frame.GreenObservationTracker()
+        confirmed = None
         for sequence in range(1, 6):
-            tracker.update(sequence, "ESQUERDA", sequence / 10.0)
+            confirmed = tracker.update(sequence, "ESQUERDA", sequence / 10.0)
 
         tracker.update(6, "AMBIGUO", 0.6)
         tracker.update(7, "AMBIGUO", 0.7)
-        cleared = tracker.update(8, "AMBIGUO", 0.8)
+        preserved = tracker.update(8, "AMBIGUO", 0.8)
 
-        self.assertEqual(cleared, ("AMBIGUO", False, 1))
+        self.assertEqual(preserved, confirmed)
+        self.assertTrue(camera_line_frame.confirmed_green_path_black_valid(
+            {"interpretation": "AMBIGUO", "path_black_valid": False},
+            preserved,
+        ))
+        cleared = tracker.update(9, "SEM_DECISAO", 1.5)
+        self.assertEqual(cleared, ("SEM_DECISAO", False, 0))
+
+    def test_confirmed_side_ignores_opposite_marker_and_only_promotes_to_180(self):
+        for direction, opposite in (("ESQUERDA", "DIREITA"), ("DIREITA", "ESQUERDA")):
+            with self.subTest(direction=direction):
+                tracker = camera_line_frame.GreenObservationTracker()
+                for sequence in range(1, 6):
+                    tracker.update(sequence, direction, sequence / 10.0)
+
+                for sequence in range(6, 10):
+                    self.assertEqual(
+                        tracker.update(sequence, opposite, sequence / 10.0)[0:2],
+                        (direction, True),
+                    )
+                for sequence in range(10, 12):
+                    self.assertEqual(
+                        tracker.update(sequence, "AMBIGUO", sequence / 10.0)[0:2],
+                        (direction, True),
+                    )
+                self.assertEqual(
+                    tracker.update(12, "RETORNO_180", 1.2)[0:2],
+                    (direction, True),
+                )
+                self.assertEqual(
+                    tracker.update(13, "RETORNO_180", 1.3)[0:2],
+                    (direction, True),
+                )
+                self.assertEqual(
+                    tracker.update(14, "RETORNO_180", 1.4)[0:2],
+                    ("RETORNO_180", True),
+                )
 
     def test_retained_turnaround_keeps_black_path_gate(self):
         interpretation = {

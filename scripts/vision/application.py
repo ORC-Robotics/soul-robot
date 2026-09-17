@@ -412,7 +412,6 @@ class DownwardCameraApplication:
                             else SILVER_CONFIRMATION_FRAMES
                         ),
                     )
-                green_raw_interpretation = green_interpretation["interpretation"]
                 # O marcador usado e o rearme são estados separados. A ausência
                 # real conta desde o giro, sem esperar a retenção de confirmação.
                 was_consumed = maneuver_state.green_marker_consumed
@@ -426,6 +425,11 @@ class DownwardCameraApplication:
                 if was_consumed and not maneuver_state.green_marker_consumed:
                     # Descarta somente a confirmação já executada, não um verde novo.
                     green_tracker = GreenObservationTracker()
+                if green_processing_enabled:
+                    green_interpretation = green_tracker.resolve_primary_marker(
+                        green_interpretation, green_association_mask,
+                    )
+                green_raw_interpretation = green_interpretation["interpretation"]
                 green_tracker_result = green_tracker.update(
                     line_sequence,
                     green_raw_interpretation,
@@ -461,6 +465,10 @@ class DownwardCameraApplication:
                         f"leftRatio={green_status['greenLeftBlackRatio']:.3f} "
                         f"rightMeasured={int(green_status['greenRightRoiMeasured'])} "
                         f"rightRatio={green_status['greenRightBlackRatio']:.3f} "
+                        f"primaryMatches={green_status['greenPrimaryMatchCount']} "
+                        f"primaryBestIou={green_status['greenPrimaryBestIou']:.3f} "
+                        f"primaryBestContainment={green_status['greenPrimaryBestContainment']:.3f} "
+                        f"primaryMatchMethod={green_status['greenPrimaryMatchMethod']} "
                         f"localReferenceValid={int(green_status.get('greenLocalReferenceValid', False))} "
                         f"localTrackX={green_status.get('greenLocalTrackX', 0.0):.2f} "
                         f"localTrackSlope={green_status.get('greenLocalTrackSlope', 0.0):.3f} "
