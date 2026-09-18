@@ -597,6 +597,127 @@ void testForcedLeftProfileReacquiresDuringRightSearch()
             "Três frames Fusion durante a busca à direita devem concluir parados.");
 }
 
+void testExitSearchReversesAndStopsAtOppositeLimit()
+{
+    for (const auto side : {config::ObstacleSideMode::Left,
+                            config::ObstacleSideMode::Right})
+    {
+        ObstacleAvoidance avoidance(side);
+        auto telemetry = readyTelemetry();
+        const auto line = centeredLine();
+        if (side == config::ObstacleSideMode::Left)
+        {
+            startForcedLeftExitForward(avoidance, telemetry, line);
+        }
+        else
+        {
+            startCurveWithSelectedSide(avoidance, telemetry, line, true);
+            advanceCurve(avoidance, telemetry, line,
+                         config::kObstacleCurveDistanceCm);
+            completeExitPivot(avoidance, telemetry, line);
+        }
+        completeExitDistance(avoidance, telemetry, line);
+        const double searchStartYaw = telemetry.yawZDeg;
+        completeExitFusionTurn(avoidance, telemetry, line);
+        std::this_thread::sleep_for(std::chrono::milliseconds(
+            config::kObstacleExitFusionForwardTimeoutMs + 20));
+        avoidance.update(telemetry, line, true);
+
+        const double direction = side == config::ObstacleSideMode::Left
+                                     ? 1.0 : -1.0;
+        telemetry.yawZDeg = searchStartYaw + direction *
+            (config::kObstacleExitSearchMaximumDegrees - 1.0);
+        auto output = avoidance.update(telemetry, fusionLine(1), true);
+        require(!output.failed && output.leftPower * direction > 0.0,
+                "A busca deve continuar antes do limite angular.");
+        output = avoidance.update(telemetry, fusionLine(2), true);
+        require(!output.completed,
+                "Dois frames Fusion ainda não confirmam a linha.");
+
+        telemetry.yawZDeg = searchStartYaw + direction *
+            config::kObstacleExitSearchMaximumDegrees;
+        output = avoidance.update(telemetry, fusionLine(3), true);
+        require(!output.failed && !output.completed &&
+                    output.phase == "obstacle_exit_search_opposite_start" &&
+                    output.leftPower * direction < 0.0 &&
+                    output.rightPower * direction > 0.0,
+                "No limite positivo, a busca deve inverter em movimento sem aceitar a linha traseira.");
+        output = avoidance.update(telemetry, fusionLine(4), true);
+        require(output.leftPower * direction < 0.0 &&
+                    output.rightPower * direction > 0.0,
+                "A busca deve girar no sentido oposto depois de 60 graus.");
+        telemetry.yawZDeg = searchStartYaw - direction *
+            (config::kObstacleExitSearchOppositeMaximumDegrees - 1.0);
+        output = avoidance.update(telemetry, line, true);
+        require(!output.failed && output.leftPower * direction < 0.0,
+                "A busca deve permitir chegar perto de 60 graus negativos.");
+        telemetry.yawZDeg = searchStartYaw - direction *
+            config::kObstacleExitSearchOppositeMaximumDegrees;
+        output = avoidance.update(telemetry, fusionLine(5), true);
+        require(output.failed && !output.completed &&
+                    output.phase == "obstacle_exit_search_angle_limit" &&
+                    output.leftPower == 0.0 && output.rightPower == 0.0,
+                "No limite negativo, a busca deve parar sem aceitar Fusion.");
+    }
+}
+
+void testExitSearchAcceptsLineOnOppositeSide()
+{
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
+    auto telemetry = readyTelemetry();
+    const auto line = centeredLine();
+    startForcedLeftExitForward(avoidance, telemetry, line);
+    completeExitDistance(avoidance, telemetry, line);
+    const double searchStartYaw = telemetry.yawZDeg;
+    completeExitFusionTurn(avoidance, telemetry, line);
+    std::this_thread::sleep_for(std::chrono::milliseconds(
+        config::kObstacleExitFusionForwardTimeoutMs + 20));
+    avoidance.update(telemetry, line, true);
+    telemetry.yawZDeg = searchStartYaw +
+        config::kObstacleExitSearchMaximumDegrees;
+    avoidance.update(telemetry, line, true);
+    telemetry.yawZDeg = searchStartYaw - 45.0;
+    avoidance.update(telemetry, fusionLine(10), true);
+    avoidance.update(telemetry, fusionLine(11), true);
+    const auto output = avoidance.update(telemetry, fusionLine(12), true);
+    require(output.completed && !output.failed &&
+                output.phase == "obstacle_exit_reacquired" &&
+                output.leftPower == 0.0 && output.rightPower == 0.0,
+            "Três frames novos devem confirmar a linha a 45 graus negativos.");
+}
+
+void testLeftExitRejectsReturnAndKeepsMovingLeft()
+{
+    ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
+    auto telemetry = readyTelemetry();
+    const auto line = centeredLine();
+    startForcedLeftExitForward(avoidance, telemetry, line);
+    completeExitDistance(avoidance, telemetry, line);
+    auto output = avoidance.update(telemetry, fusionSteeringLine(1, 0.843, 0.196), true);
+    require(!output.completed, "One frame cannot confirm entry");
+    avoidance.update(telemetry, fusionSteeringLine(2, 0.843, 0.196), true);
+    output = avoidance.update(telemetry, fusionSteeringLine(3, 0.843, 0.196), true);
+    require(output.completed, "Rightward continuation inside base sector must be accepted");
+    const double base = output.yawBase;
+    telemetry.yawZDeg = base + config::kObstacleExitHeadingRightLimitDegrees;
+    output = avoidance.update(telemetry, fusionSteeringLine(4, 0.827, -0.018), true);
+    require(output.hasControl && output.leftPower < 0.0 && output.rightPower > 0.0,
+            "Base heading boundary must force inward correction after handoff");
+    telemetry.yawZDeg = base + 40.0;
+    for (std::uint64_t sequence = 20; sequence <= 22; ++sequence)
+    {
+        output = avoidance.update(
+            telemetry, fusionSteeringLine(sequence, 0.78, -0.72), true);
+        require(!output.completed && output.leftPower < 0.0 && output.rightPower > 0.0,
+                "Rightward Fusion from the incident must not terminate leftward correction");
+    }
+    telemetry.yawZDeg = base + 30.0;
+    avoidance.update(telemetry, fusionSteeringLine(5, 0.72, 0.82), true);
+    avoidance.update(telemetry, fusionSteeringLine(6, 0.72, 0.82), true);
+    output = avoidance.update(telemetry, fusionSteeringLine(7, 0.72, 0.82), true);
+    require(output.completed, "Entry inside base sector must resume without distance persistence");
+}
+
 void testAutomaticNominalExitMirrorsBothSides()
 {
     for (const bool selectRight : {false, true})
@@ -1310,6 +1431,20 @@ int main(int argc, char** argv)
             std::cout << "early_fusion_test: OK\n";
             return 0;
         }
+        if (argc > 1 && std::string(argv[1]) == "--exit-search-only")
+        {
+            testExitSearchReversesAndStopsAtOppositeLimit();
+            testExitSearchAcceptsLineOnOppositeSide();
+            testForcedLeftProfileSearchTimeoutStops();
+            std::cout << "exit_search_test: OK\n";
+            return 0;
+        }
+        if (argc > 1 && std::string(argv[1]) == "--left-continuation-only")
+        {
+            testLeftExitRejectsReturnAndKeepsMovingLeft();
+            std::cout << "left_continuation_test: OK\n";
+            return 0;
+        }
         testCenteringIsSharedAndPrecedesScan();
         testStableEndpointUsesMaximumAndSelectsRight();
         testLeftSelectionReturnsToLeftYaw();
@@ -1329,6 +1464,9 @@ int main(int argc, char** argv)
         testExitDistanceRequiresBothEncoders();
         testFusionVotesCarryFromTurnToTimedForward();
         testForcedLeftProfileReacquiresDuringRightSearch();
+        testExitSearchReversesAndStopsAtOppositeLimit();
+        testExitSearchAcceptsLineOnOppositeSide();
+        testLeftExitRejectsReturnAndKeepsMovingLeft();
         testForcedLeftProfileSearchTimeoutStops();
         testAutomaticNominalExitMirrorsBothSides();
         testForcedSideStillAllowsEarlyRecovery();

@@ -62,6 +62,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
         return updateExitTimedForward(telemetry, line);
     case Phase::ExitSearch:
         return updateExitSearch(telemetry, line);
+    case Phase::ExitLeftSearch:
+        return updateExitLeftSearch(telemetry, line);
     case Phase::ReacquireForward:
         return updateReacquireForward(telemetry, line);
     case Phase::ReacquireSearch:
@@ -83,6 +85,7 @@ void ObstacleAvoidance::reset()
     turnController_.reset();
     lineCenteringController_.reset();
     armed_ = true;
+    exitHeadingGuardActive_ = false;
     obstacleConfirmationSamples_ = 0;
     rearmConfirmationSamples_ = 0;
     yawBase_ = std::numeric_limits<double>::quiet_NaN();
@@ -111,6 +114,7 @@ void ObstacleAvoidance::reset()
     exitFusionTurnStartedAt_ = {};
     exitTimedForwardStartedAt_ = {};
     exitSearchStartedAt_ = {};
+    exitSearchOppositeSide_ = false;
     fusionReacquireFrames_ = 0;
     lastFusionLineSequence_ = 0;
     reacquireForwardStartLeftCount_ = 0;
@@ -130,6 +134,18 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
     bool allowStart,
     const ForwardLineSnapshot& forwardLine)
 {
+    if (exitHeadingGuardActive_)
+    {
+        if (!line.sourceFresh || !ImuTurnController::imuReady(telemetry))
+            return fail("obstacle_exit_heading_sensors_lost", "Entry heading sensors unavailable");
+        if (std::chrono::steady_clock::now() - exitHeadingGuardStartedAt_ <
+            std::chrono::milliseconds(config::kObstacleExitHeadingGuardMs))
+        {
+            if (wrongWayExitFusion(telemetry, line))
+                return startExitLeftSearch(telemetry, line);
+        }
+        else exitHeadingGuardActive_ = false;
+    }
     const ObstacleAvoidanceOutput case3Output =
         updateCase3Idle(telemetry, line, forwardLine);
     if (case3Output.hasControl)
@@ -1069,6 +1085,16 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitFusionTurn(
             "obstacle_exit_fusion_turn_sensors_lost",
             "Giro de procura interrompido: IMU sem dados recentes");
     }
+    if (exitSearchLimitReached(telemetry.yawZDeg))
+    {
+        return fail(
+            "obstacle_exit_search_angle_limit",
+            "Busca interrompida ao atingir o limite angular positivo");
+    }
+    if (wrongWayExitFusion(telemetry, line))
+    {
+        return startExitLeftSearch(telemetry, line);
+    }
     if (observeFreshFusion(line))
     {
         return completeExit(
@@ -1126,6 +1152,16 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitTimedForward(
             "obstacle_exit_timed_forward_sensors_lost",
             "Procura reta interrompida: encoders ou IMU sem dados recentes");
     }
+    if (exitSearchLimitReached(telemetry.yawZDeg))
+    {
+        return fail(
+            "obstacle_exit_search_angle_limit",
+            "Busca interrompida ao atingir o limite angular positivo");
+    }
+    if (wrongWayExitFusion(telemetry, line))
+    {
+        return startExitLeftSearch(telemetry, line);
+    }
     if (observeFreshFusion(line))
     {
         return completeExit(
@@ -1138,6 +1174,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitTimedForward(
     {
         phase_ = Phase::ExitSearch;
         exitSearchStartedAt_ = std::chrono::steady_clock::now();
+        exitSearchOppositeSide_ = false;
         return output(
             selectedSide_ == "LEFT" ? "obstacle_exit_search_right_start"
                                     : "obstacle_exit_search_left_start",
@@ -1171,12 +1208,45 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
             "obstacle_exit_search_sensors_lost",
             "Busca interrompida: IMU sem dados recentes");
     }
+    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const double directedYawChange =
+        signedYawError(telemetry.yawZDeg, exitFusionTurnStartYaw_) * direction;
+    if (exitSearchOppositeSide_ &&
+        directedYawChange <= -config::kObstacleExitSearchOppositeMaximumDegrees)
+    {
+        return fail(
+            "obstacle_exit_search_angle_limit",
+            "Busca interrompida ao atingir o limite angular do lado oposto");
+    }
+    if (directedYawChange >= config::kObstacleExitSearchMaximumDegrees)
+    {
+        if (!exitSearchOppositeSide_)
+        {
+            // Ao atingir o extremo para dentro, zera os votos da faixa traseira.
+            // A próxima etapa procura no sentido oposto com o mesmo limite angular.
+            exitSearchOppositeSide_ = true;
+            exitSearchStartedAt_ = std::chrono::steady_clock::now();
+            fusionReacquireFrames_ = 0;
+            lastFusionLineSequence_ = line.lineSequence;
+            return output(
+                "obstacle_exit_search_opposite_start",
+                "Limite angular positivo atingido: invertendo a busca",
+                -direction * config::kObstacleExitSearchPower,
+                direction * config::kObstacleExitSearchPower);
+        }
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+    }
+    if (wrongWayExitFusion(telemetry, line))
+    {
+        return startExitLeftSearch(telemetry, line);
+    }
     if (observeFreshFusion(line))
     {
         return completeExit(
             telemetry, line,
             "obstacle_exit_reacquired",
-            "Faixa confirmada durante a busca para dentro");
+            "Faixa confirmada durante a busca angular de saída");
     }
     if (std::chrono::steady_clock::now() - exitSearchStartedAt_ >=
         std::chrono::milliseconds(
@@ -1186,16 +1256,130 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
             "obstacle_exit_search_timeout",
             "Faixa não encontrada após " +
                 std::to_string(config::kObstacleExitSearchTimeoutMs) +
-                " ms de busca para dentro");
+                " ms neste sentido da busca");
     }
 
-    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const double searchDirection = exitSearchOppositeSide_ ? -direction : direction;
     return output(
-        selectedSide_ == "LEFT" ? "obstacle_exit_search_right"
-                                : "obstacle_exit_search_left",
-        "Girando para dentro do contorno para procurar a faixa",
-        direction * config::kObstacleExitSearchPower,
-        -direction * config::kObstacleExitSearchPower);
+        exitSearchOppositeSide_
+            ? (selectedSide_ == "LEFT" ? "obstacle_exit_search_opposite_left"
+                                       : "obstacle_exit_search_opposite_right")
+            : (selectedSide_ == "LEFT" ? "obstacle_exit_search_right"
+                                       : "obstacle_exit_search_left"),
+        "Girando para procurar a faixa dentro do setor angular configurado",
+        searchDirection * config::kObstacleExitSearchPower,
+        -searchDirection * config::kObstacleExitSearchPower);
+}
+
+bool ObstacleAvoidance::wrongWayExitFusion(
+    const Esp32TelemetrySnapshot& telemetry, const CameraLineSnapshot& line) const
+{
+    const double heading = signedYawError(telemetry.yawZDeg, yawBase_);
+    const double predicted = heading + telemetry.gyroZDegPerSec *
+        config::kObstacleBrakePredictionSeconds;
+    const double steering = line.lineFollowerLeftPower - line.lineFollowerRightPower;
+    return heading >= config::kObstacleExitHeadingRightLimitDegrees ||
+           heading <= -config::kObstacleExitHeadingLeftLimitDegrees ||
+           (predicted >= config::kObstacleExitHeadingRightLimitDegrees && steering > 0.0) ||
+           (std::min(heading, predicted) <= -config::kObstacleExitHeadingLeftLimitDegrees && steering < 0.0);
+
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::startExitLeftSearch(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    const double correctionDirection = signedYawError(telemetry.yawZDeg, yawBase_) >= 0.0 ? -1.0 : 1.0;
+    const double yawChange = signedYawError(
+        telemetry.yawZDeg, exitFusionTurnStartYaw_);
+    if (yawChange <= -config::kObstacleExitSearchOppositeMaximumDegrees)
+    {
+        return fail(
+            "obstacle_exit_search_angle_limit",
+            "Busca à esquerda atingiu o limite angular sem continuação");
+    }
+    phase_ = Phase::ExitLeftSearch;
+    // Mantém o sentido escolhido até entrar na faixa; cruzar o yaw base
+    // não deve inverter novamente a procura e devolver o robô ao ramo anterior.
+    exitCorrectionDirection_ = correctionDirection;
+    exitSearchStartedAt_ = std::chrono::steady_clock::now();
+    fusionReacquireFrames_ = 0;
+    lastFusionLineSequence_ = line.lineSequence;
+    std::cout << "Obstacle exit rejected rightward Fusion: yaw="
+              << telemetry.yawZDeg
+              << " searchStartYaw=" << exitFusionTurnStartYaw_
+              << " left=" << line.lineFollowerLeftPower
+              << " right=" << line.lineFollowerRightPower
+              << " sequence=" << line.lineSequence << '\n';
+    return output(
+        "obstacle_exit_left_search",
+        "Fusion aponta para o obstáculo: procurando a continuação à esquerda",
+        correctionDirection * config::kObstacleReacquireSearchPower,
+        -correctionDirection * config::kObstacleReacquireSearchPower);
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateExitLeftSearch(
+    const Esp32TelemetrySnapshot& telemetry,
+    const CameraLineSnapshot& line)
+{
+    const double correctionDirection = exitCorrectionDirection_;
+    if (!line.sourceFresh || !ImuTurnController::imuReady(telemetry))
+    {
+        return fail(
+            "obstacle_exit_left_search_sensors_lost",
+            "Busca à esquerda interrompida: câmera ou IMU sem dados recentes");
+    }
+    const double yawChange = signedYawError(
+        telemetry.yawZDeg, exitFusionTurnStartYaw_);
+    if (yawChange <= -config::kObstacleExitSearchOppositeMaximumDegrees)
+    {
+        return fail(
+            "obstacle_exit_search_angle_limit",
+            "Busca à esquerda atingiu o limite angular sem continuação");
+    }
+    if (std::chrono::steady_clock::now() - exitSearchStartedAt_ >=
+        std::chrono::milliseconds(config::kObstacleExitSearchTimeoutMs))
+    {
+        return fail(
+            "obstacle_exit_search_timeout",
+            "Busca à esquerda expirou sem continuação válida");
+    }
+    const double heading = signedYawError(telemetry.yawZDeg, yawBase_);
+    const double steering = line.lineFollowerLeftPower - line.lineFollowerRightPower;
+    const bool insideReentrySector =
+        heading < config::kObstacleExitHeadingRightLimitDegrees -
+                      config::kObstacleExitHeadingReentryMarginDegrees &&
+        heading > -config::kObstacleExitHeadingLeftLimitDegrees +
+                      config::kObstacleExitHeadingReentryMarginDegrees;
+    const bool fusionMatchesCorrection =
+        std::isfinite(steering) && steering * correctionDirection >= 0.0;
+    if (!insideReentrySector || !fusionMatchesCorrection ||
+        wrongWayExitFusion(telemetry, line))
+    {
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+    }
+    else if (observeFreshFusion(line))
+    {
+        return completeExit(telemetry, line, "obstacle_exit_reacquired",
+                            "Fusion confirmed inside entry heading sector");
+    }
+
+    return output(
+        "obstacle_exit_left_search",
+        "Procurando a continuação à esquerda",
+        correctionDirection * config::kObstacleReacquireSearchPower,
+        -correctionDirection * config::kObstacleReacquireSearchPower);
+}
+
+bool ObstacleAvoidance::exitSearchLimitReached(double yawDegrees) const
+{
+    // O mesmo referencial da IMU limita toda a procura, inclusive após a reta.
+    // O sinal espelhado permite girar menos ou no sentido oposto sem rejeitar a linha.
+    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const double directedYawChange =
+        signedYawError(yawDegrees, exitFusionTurnStartYaw_) * direction;
+    return directedYawChange >= config::kObstacleExitSearchMaximumDegrees;
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::completeExit(
@@ -1211,8 +1395,22 @@ ObstacleAvoidanceOutput ObstacleAvoidance::completeExit(
     case3PostObstacleYaw_ = telemetry.yawZDeg;
     lastCase3LineSequence_ = line.lineSequence;
     armCase3FusionWindow();
+    exitHeadingGuardActive_ = true;
+    exitHeadingGuardStartedAt_ = std::chrono::steady_clock::now();
+    if (selectedSide_ == "LEFT")
+    {
+        std::cout << "Obstacle left exit confirmed: yaw="
+                  << telemetry.yawZDeg
+                  << " searchStartYaw=" << exitFusionTurnStartYaw_
+                  << " left=" << line.lineFollowerLeftPower
+                  << " right=" << line.lineFollowerRightPower
+                  << " sequence=" << line.lineSequence << '\n';
+    }
     phase_ = Phase::Idle;
-    ObstacleAvoidanceOutput result = output(phase, action);
+    ObstacleAvoidanceOutput result = selectedSide_ == "LEFT"
+        ? output(phase, action,
+                 line.lineFollowerLeftPower, line.lineFollowerRightPower)
+        : output(phase, action);
     result.completed = true;
     result.progressPercent = 100.0;
     return result;
@@ -1884,6 +2082,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::fail(
     turnController_.reset();
     lineCenteringController_.reset();
     phase_ = Phase::Idle;
+    exitHeadingGuardActive_ = false;
     obstacleConfirmationSamples_ = 0;
     ObstacleAvoidanceOutput result = output(phase, action);
     result.failed = true;

@@ -1172,11 +1172,38 @@ constexpr double kObstacleExitFusionTurnPower = 0.73;
 // Tempo máximo, em milissegundos, da segunda reta procurando o Fusion.
 // Se três frames não confirmarem a faixa, começa a busca final por giro.
 constexpr int kObstacleExitFusionForwardTimeoutMs = 1500;
-// Busca final para dentro: direita no LEFT e esquerda no RIGHT. O limite em
-// milissegundos impede giro indefinido; ao expirar, os motores são zerados.
-constexpr int kObstacleExitSearchTimeoutMs = 1500;
+// Tempo máximo, em milissegundos, para cada sentido da busca final. Ao atingir
+// o limite positivo, a busca inverte e reinicia esse prazo; ao expirar, para.
+constexpr int kObstacleExitSearchTimeoutMs = 3000;
+// Limite positivo, em graus, desde o início da procura após a reta de 6 cm.
+// Inclui o giro inicial de 10 graus; ao atingir este valor, a busca inverte.
+constexpr double kObstacleExitSearchMaximumDegrees = 60.0;
+// Limite negativo, em graus, no mesmo referencial da busca. Para mudar o ponto
+// final da procura no sentido oposto, altere este valor positivo: 60.0 permite
+// chegar a -60 graus; ao atingir o limite sem linha, os motores param.
+constexpr double kObstacleExitSearchOppositeMaximumDegrees = 60.0;
 // Potência normalizada do pivot final; valores maiores aumentam a inércia.
 constexpr double kObstacleExitSearchPower = 0.73;
+// Limites da entrada na faixa, em graus, relativos ao yawBase salvo antes
+// do contorno. Permitem continuação à direita e à esquerda sem apontar para trás.
+constexpr double kObstacleExitHeadingRightLimitDegrees = 60.0;
+constexpr double kObstacleExitHeadingLeftLimitDegrees = 60.0;
+// Margem para dentro do setor, em graus, antes de confirmar novamente a linha.
+// Evita alternar entre confirmar e rejeitar o Fusion na borda angular.
+constexpr double kObstacleExitHeadingReentryMarginDegrees = 10.0;
+static_assert(kObstacleExitHeadingReentryMarginDegrees > 0.0 &&
+              kObstacleExitHeadingReentryMarginDegrees < kObstacleExitHeadingRightLimitDegrees &&
+              kObstacleExitHeadingReentryMarginDegrees < kObstacleExitHeadingLeftLimitDegrees,
+              "A margem de reentrada deve caber no setor angular.");
+// Proteção angular após o reencontro, em milissegundos. Não exige distância:
+// nesse intervalo, um comando para fora do setor é substituído por giro para dentro.
+constexpr int kObstacleExitHeadingGuardMs = 2000;
+static_assert(kObstacleExitHeadingRightLimitDegrees > 0.0 &&
+              kObstacleExitHeadingRightLimitDegrees < 90.0 &&
+              kObstacleExitHeadingLeftLimitDegrees > 0.0 &&
+              kObstacleExitHeadingLeftLimitDegrees < 90.0 &&
+              kObstacleExitHeadingGuardMs > 0,
+              "O setor de entrada deve impedir uma orientação para trás.");
 
 // Recuperação antecipada exclusiva da curva de obstáculo. Três amostras novas
 // do Fusion cancelam a curva nominal; os encoders medem o avanço curto e a IMU
@@ -1285,6 +1312,10 @@ static_assert(kObstacleTurnToleranceDegrees > 0.0 &&
                   kObstacleExitFusionTurnPower <= kMaxMotorOutput &&
                   kObstacleExitFusionForwardTimeoutMs > 0 &&
                   kObstacleExitSearchTimeoutMs > 0 &&
+                  kObstacleExitSearchMaximumDegrees > kObstacleExitFusionTurnDegrees &&
+                  kObstacleExitSearchMaximumDegrees < 180.0 &&
+                  kObstacleExitSearchOppositeMaximumDegrees > 0.0 &&
+                  kObstacleExitSearchOppositeMaximumDegrees < 180.0 &&
                   kObstacleExitForwardPower > 0.0 &&
                   kObstacleExitForwardPower <= kMaxMotorOutput &&
                   kObstacleExitSearchPower > 0.0 &&

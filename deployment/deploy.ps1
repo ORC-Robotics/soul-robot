@@ -278,8 +278,12 @@ with zipfile.ZipFile(settings['archive']) as archive:
     $settings = ConvertTo-Json -Compress @{ root = $RemoteDir; archive = $remoteArchive }
     $settingsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($settings))
     $applyChanges = $applyChanges.Replace('SETTINGS_BASE64', $settingsBase64)
-    $codeBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($applyChanges))
-    Invoke-Checked ssh @($sshArgs + @($remote, "python3 -c 'import base64; exec(base64.b64decode(`"$codeBase64`"))'"))
+    # Envia o script pelo stdin para evitar que PowerShell e SSH removam aspas
+    # do argumento python3 -c no Windows.
+    $applyChanges | & ssh @($sshArgs + @($remote, "python3 -"))
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to apply deploy archive on $remote"
+    }
     } finally {
         Invoke-Checked ssh @($sshArgs + @($remote, "rm -f -- '$remoteArchive'"))
     }

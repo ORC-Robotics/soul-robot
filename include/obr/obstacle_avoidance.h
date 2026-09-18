@@ -83,6 +83,7 @@ private:
         ExitFusionTurn,
         ExitTimedForward,
         ExitSearch,
+        ExitLeftSearch,
         ReacquireForward,
         ReacquireSearch,
         ParabolaGapLostValidate,
@@ -132,6 +133,10 @@ private:
     std::chrono::steady_clock::time_point exitFusionTurnStartedAt_{};
     std::chrono::steady_clock::time_point exitTimedForwardStartedAt_{};
     std::chrono::steady_clock::time_point exitSearchStartedAt_{};
+    bool exitSearchOppositeSide_ = false;
+    bool exitHeadingGuardActive_ = false;
+    double exitCorrectionDirection_ = -1.0;
+    std::chrono::steady_clock::time_point exitHeadingGuardStartedAt_{};
     int fusionReacquireFrames_ = 0;
     std::uint64_t lastFusionLineSequence_ = 0;
     long long reacquireForwardStartLeftCount_ = 0;
@@ -207,6 +212,15 @@ private:
     ObstacleAvoidanceOutput updateExitSearch(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput startExitLeftSearch(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    ObstacleAvoidanceOutput updateExitLeftSearch(
+        const Esp32TelemetrySnapshot& telemetry,
+        const CameraLineSnapshot& line);
+    bool wrongWayExitFusion(const Esp32TelemetrySnapshot& telemetry,
+                            const CameraLineSnapshot& line) const;
+    bool exitSearchLimitReached(double yawDegrees) const;
     ObstacleAvoidanceOutput completeExit(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,

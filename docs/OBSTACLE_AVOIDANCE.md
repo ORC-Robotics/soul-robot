@@ -39,9 +39,39 @@ LEFT serve apenas para calibração e não desativa os cenários de recuperaçã
    esquerda no RIGHT. Se confirmar três frames, encerra a manobra imediatamente.
 10. Sem confirmação, avança reto por até 1500 ms ainda procurando o Fusion.
     A sincronização dos motores pode ajustar as saídas aplicadas.
-11. Se necessário, gira para dentro por até 1500 ms: direita no LEFT, esquerda
-   no RIGHT. Três frames novos e consecutivos com fonte `fusion` e
-   `normalSteeringValid` concluem a saída; sem confirmação, para.
+11. Se necessário, gira para dentro por até 3000 ms: direita no LEFT, esquerda
+   no RIGHT. O giro acumulado desde o início da procura após a reta de 6 cm
+   inclui os 10° anteriores e vai no máximo até +60°. Nesse extremo,
+   inverte o giro sem pausa, com até mais 3000 ms para chegar a -60°.
+   O limite negativo é `kObstacleExitSearchOppositeMaximumDegrees`, em
+   `include/obr/config.h`: altere `60.0` para mudar o módulo do ângulo negativo.
+   Três frames novos e consecutivos com fonte `fusion` e
+   `normalSteeringValid` concluem a saída dentro desse setor; sem confirmação,
+   para. O contorno RIGHT usa os sinais espelhados.
+
+A entrada aceita Fusion para ambos os lados dentro do setor relativo ao
+`yawBase` salvo antes do contorno. A regra anterior de rejeição por potência
+foi substituída por limites angulares. Após o reencontro, a proteção permanece
+por `kObstacleExitHeadingGuardMs`, sem exigir distância percorrida.
+
+Calibre em `include/obr/config.h`:
+
+- `kObstacleExitHeadingRightLimitDegrees`: limite positivo relativo ao yaw base.
+- `kObstacleExitHeadingLeftLimitDegrees`: módulo do limite negativo.
+- `kObstacleExitHeadingGuardMs`: duração da proteção após o reencontro.
+- `kObstacleExitHeadingReentryMarginDegrees`: margem para dentro do setor antes
+  de aceitar novamente a faixa; o padrão é 10 graus.
+- `kObstacleExitSearchTimeoutMs`: tempo máximo de cada busca, atualmente 3000 ms.
+
+Os padrões são 60 graus para cada lado e 2000 milissegundos. Ao alcançar um
+extremo, o comando é substituído por giro para dentro do setor. A direção da
+correção permanece fixa durante a busca. O reencontro exige três frames novos
+com Fusion coerente com essa direção e orientação dentro da margem do setor.
+Perda de sensores e timeout continuam exigindo parada de segurança.
+
+O cenário físico que motivou essa correção foi testado com sucesso pela equipe.
+Outros cenários de continuação ainda precisam de testes. Antes do teste no chão,
+confira os giros com rodas suspensas e use potência reduzida.
 
 ## Cenários de recuperação
 
@@ -80,7 +110,7 @@ normalizadas. O mesmo módulo de ângulo e a mesma potência atendem aos dois la
 | Primeiro avanço de saída | `kObstacleExitForwardDistanceCm`, `kObstacleExitForwardPower` |
 | Giro procurando Fusion | `kObstacleExitFusionTurnDegrees`, `kObstacleExitFusionTurnPower` |
 | Segundo avanço procurando Fusion | `kObstacleExitFusionForwardTimeoutMs`, `kObstacleExitForwardPower` |
-| Busca nominal | `kObstacleExitSearchTimeoutMs`, `kObstacleExitSearchPower` |
+| Busca nominal | `kObstacleExitSearchTimeoutMs`, `kObstacleExitSearchMaximumDegrees`, `kObstacleExitSearchOppositeMaximumDegrees`, `kObstacleExitSearchPower` |
 | Faixa durante a curva | `kObstacleEarlyFusionRecoveryEnabled`, `kObstacleFusionReacquireConfirmationFrames`, `kObstacleReacquireForwardDistanceCm` |
 | Potências de recuperação | `kObstacleReacquireForwardPower`, `kObstacleReacquireSearchPower` |
 | Memória e caso 3 | `kObstacleCase3RecoveryEnabled`, `kObstacleCase3FusionWindowMs`, `kObstacleParabolaMinimumBlackPixels`, `kObstacleParabolaMinimumDominance` |
