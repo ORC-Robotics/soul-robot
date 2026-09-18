@@ -1154,7 +1154,9 @@ void RescueRoomMission::startDistance(
     double targetCm, double power, int directionSign,
     std::chrono::steady_clock::time_point now)
 {
-    distanceController_.start(targetCm, power, directionSign, now);
+    // Diferenças entre rodas não encerram o resgate; a distância da roda mais
+    // lenta, a validade dos encoders e os limites de tempo continuam ativos.
+    distanceController_.start(targetCm, power, directionSign, now, false);
 }
 
 RescueRoomOutput RescueRoomMission::updateDistance(

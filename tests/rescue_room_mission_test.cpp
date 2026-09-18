@@ -840,13 +840,43 @@ void testRunsRequiredVictimsInPriorityOrder()
     require(!output.internalObjectStored,
             "O depósito verde deve liberar as duas pratas e limpar o armazenamento.");
 
-    output = completeDistanceStage(
-        mission,
-        secondAlive,
-        telemetry,
-        servoPose,
-        now,
-        config::kRescuePostDepositReverseDistanceCm);
+    output = updateMission(
+        mission, secondAlive, {}, telemetry, servoPose, now);
+    require(!output.failed && output.status.phase == "rescue_deposit_reversing" &&
+                output.leftPower < 0.0 && output.rightPower < 0.0,
+            "Após as duas pratas, a ré de 20 cm deve começar.");
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kRescuePostDepositReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    const long long sideLeadCounts = static_cast<long long>(std::ceil(
+        (config::kDriveDistanceMaximumSideDifferenceCm + 1.0) *
+        config::kEncoderCountsPerCentimeter));
+    telemetry.leftEncoderCount += sideLeadCounts;
+    for (int sample = 0;
+         sample < config::kDriveDistanceDifferenceConfirmationSamples;
+         ++sample)
+    {
+        ++telemetry.esp32UptimeMs;
+        now += std::chrono::milliseconds(20);
+        output = updateMission(
+            mission, secondAlive, {}, telemetry, servoPose, now);
+        require(!output.failed &&
+                    output.status.phase == "rescue_deposit_reversing" &&
+                    output.leftPower < 0.0 && output.rightPower < 0.0,
+                "A diferença entre encoders não deve encerrar a ré do resgate.");
+    }
+    telemetry.leftEncoderCount += reverseCounts - sideLeadCounts;
+    telemetry.rightEncoderCount += reverseCounts;
+    ++telemetry.esp32UptimeMs;
+    now += std::chrono::milliseconds(20);
+    output = updateMission(
+        mission, secondAlive, {}, telemetry, servoPose, now);
+    require(!output.failed && output.leftPower == 0.0 &&
+                output.rightPower == 0.0,
+            "A ré deve zerar os motores ao alcançar 20 cm em ambas as rodas.");
+    now += std::chrono::milliseconds(config::kRescueDistanceSettleMs);
+    output = updateMission(
+        mission, secondAlive, {}, telemetry, servoPose, now);
     require(output.status.phase == "rescue_required_dead_search" &&
                 std::string(mission.ballTargetType()) == "black_ball",
             "Somente depois das duas pratas a missão deve procurar a vítima preta.");

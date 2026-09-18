@@ -18,8 +18,11 @@ struct EncoderDistanceOutput
 class EncoderDistanceController
 {
 public:
+    // Desativar a parada por diferença lateral mantém os limites de distância,
+    // tempo, progresso e validade dos encoders durante o deslocamento.
     void start(double targetCm, double power, int directionSign,
-               std::chrono::steady_clock::time_point now);
+               std::chrono::steady_clock::time_point now,
+               bool stopOnSideMismatch = true);
     EncoderDistanceOutput update(const Esp32TelemetrySnapshot& telemetry,
         std::chrono::steady_clock::time_point now, const char* phase, const char* action);
     void reset() { distanceMove_ = {}; }
@@ -49,6 +52,7 @@ private:
         long long lastUptimeMs = 0;
         double lastProgressCounts = 0.0;
         int differenceSamples = 0;
+        bool stopOnSideMismatch = true;
         std::chrono::steady_clock::time_point phaseStartedAt{};
         std::chrono::steady_clock::time_point lastProgressAt{};
         AutonomousStatus failureStatus;

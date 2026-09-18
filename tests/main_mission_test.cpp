@@ -3103,6 +3103,13 @@ void testRememberedVictimsSkipRescueCollection()
                 fixture.mission.requiresExitVision() &&
                 !fixture.mission.requiresRescueVision(),
             "Três entregas lembradas devem iniciar a saída com motores parados.");
+    ForwardLineSnapshot forward;
+    forward.exitAnalysisActive = true;
+    forward.exitRunSequence = entered.autonomousRunSequence;
+    const RobotSnapshot advancing = fixture.update(gray, true, forward);
+    require(advancing.autonomousStatus.phase == "rescue_exit_remembered_entry" &&
+                advancing.left > 0.0 && advancing.right > 0.0,
+            "A memória completa deve iniciar o avanço curto antes do giro.");
     fixture.robotState.stop();
     const RobotSnapshot stopped = fixture.robotState.snapshot();
     require(stopped.rescueDeliveredAliveVictims == 2 &&

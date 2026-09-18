@@ -42,13 +42,15 @@ void EncoderDistanceController::start(
     double targetCm,
     double power,
     int directionSign,
-    std::chrono::steady_clock::time_point now)
+    std::chrono::steady_clock::time_point now,
+    bool stopOnSideMismatch)
 {
     distanceMove_ = {};
     distanceMove_.phase = DistancePhase::Preparing;
     distanceMove_.targetCm = targetCm;
     distanceMove_.power = power;
     distanceMove_.directionSign = directionSign < 0 ? -1 : 1;
+    distanceMove_.stopOnSideMismatch = stopOnSideMismatch;
     distanceMove_.phaseStartedAt = now;
     distanceMove_.lastProgressAt = now;
     // O controlador agora é compartilhado: chamadas inválidas não podem iniciar motores.
@@ -193,8 +195,9 @@ EncoderDistanceOutput EncoderDistanceController::update(
             return output;
         }
         distanceMove_.lastUptimeMs = telemetry.esp32UptimeMs;
-        if (std::abs(leftCm - rightCm) >
-            config::kDriveDistanceMaximumSideDifferenceCm)
+        if (distanceMove_.stopOnSideMismatch &&
+            std::abs(leftCm - rightCm) >
+                config::kDriveDistanceMaximumSideDifferenceCm)
         {
             ++distanceMove_.differenceSamples;
         }
@@ -203,7 +206,8 @@ EncoderDistanceOutput EncoderDistanceController::update(
             distanceMove_.differenceSamples = 0;
         }
     }
-    if (distanceMove_.differenceSamples >=
+    if (distanceMove_.stopOnSideMismatch &&
+        distanceMove_.differenceSamples >=
         config::kDriveDistanceDifferenceConfirmationSamples)
     {
         failDistance(

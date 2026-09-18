@@ -47,6 +47,13 @@ bool usableCandidate(const ExitCandidate& candidate)
 
 void RescueExitMission::reset() { *this = RescueExitMission{}; }
 
+void RescueExitMission::startCompletedRescueRoute()
+{
+    reset();
+    completedRescueRoute_ = true;
+    phase_ = Phase::EntryAdvance;
+}
+
 void RescueExitMission::setTriangleReferenceHeading(double headingDegrees)
 {
     referenceValid_ = std::isfinite(headingDegrees);
@@ -181,12 +188,35 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     cameraMissing_ = false;
     if (forward.cameraObscured) return fail("Câmera frontal obstruída durante a saída");
 
+    if (phase_ == Phase::EntryAdvance)
+    {
+        // Reutiliza a proteção por encoders da entrada normal. O Fusion ainda
+        // não assume o controle enquanto o robô cruza a sala de resgate.
+        if (entryDistance_.idle())
+            entryDistance_.start(config::kRescueCompletedEntryAdvanceCm,
+                config::kRescueCompletedEntryPower, 1, now);
+        const auto entry = entryDistance_.update(telemetry, now,
+            "rescue_exit_remembered_entry", "Avançando na sala com resgate concluído");
+        if (entry.failed) return fail(entry.status.action.c_str());
+        if (!entry.completed)
+            return output(entry.status.phase.c_str(), entry.status.action,
+                entry.leftPower, entry.rightPower);
+        // O heading ao fim da entrada é a referência do giro de 45° à direita.
+        referenceHeadingDegrees_ = telemetry.yawZDeg;
+        referenceValid_ = true;
+        phase_ = Phase::Preparing;
+        return output("rescue_exit_remembered_turn_starting",
+            "Entrada concluída: iniciando giro à direita");
+    }
+
     if (phase_ == Phase::Preparing)
     {
         // No teste isolado, o primeiro yaw válido substitui uma referência não salva.
         if (!referenceValid_) referenceHeadingDegrees_ = telemetry.yawZDeg;
         targetHeadingDegrees_ = std::remainder(
-            referenceHeadingDegrees_ + config::kRescueExitDirectYawDegrees, 360.0);
+            referenceHeadingDegrees_ +
+                (completedRescueRoute_ ? config::kRescueCompletedRightTurnDegrees
+                                       : config::kRescueExitDirectYawDegrees), 360.0);
         const double turnDegrees = std::remainder(targetHeadingDegrees_ - telemetry.yawZDeg, 360.0);
         if (std::abs(turnDegrees) <= config::kBallApproachStartToleranceDegrees)
             startStraight(telemetry, now);
@@ -203,7 +233,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     if (phase_ == Phase::Turning)
     {
         guidanceState_ = "TURNING";
-        bottomBlocker_ = "BEFORE_30_CM";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
         const auto movement = turn_.update(telemetry, now);
         if (movement.result == ImuTurnResult::Failed) return fail(movement.action.c_str());
         if (movement.result != ImuTurnResult::Completed)
@@ -221,7 +251,10 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     }
     if (now - progressAt_ >= std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
         return fail("Rodas sem progresso durante a saída fixa");
-    if (phase_ == Phase::Straight && progressCm >= config::kRescueExitFrontGuidanceStartCm)
+    const double straightCm = completedRescueRoute_
+        ? config::kRescueCompletedStraightCm
+        : config::kRescueExitFrontGuidanceStartCm;
+    if (phase_ == Phase::Straight && progressCm >= straightCm)
     {
         phase_ = Phase::FrontGuidance;
         fallbackStartCm_ = progressCm;
@@ -230,7 +263,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     {
         acquisitionFrames_ = 0;
         guidanceState_ = "INITIAL_STRAIGHT";
-        bottomBlocker_ = "BEFORE_30_CM";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
         movingForward_ = true;
         return output("rescue_exit_initial_straight", "Avançando reto antes de habilitar o Fusion frontal",
                       config::kRescueExitExplorationPower, config::kRescueExitExplorationPower);

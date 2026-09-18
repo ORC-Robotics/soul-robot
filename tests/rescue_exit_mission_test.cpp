@@ -228,6 +228,48 @@ void testTurnExcludedAndReferenceFallback()
     require(close(f.last.status.exitAdvanceCm, 0.0) && !f.last.completed, "Nova execução deve limpar a distância e o handoff");
 }
 
+void testCompletedRescueRoute()
+{
+    Fixture f;
+    f.mission.startCompletedRescueRoute();
+    f.telemetry.yawZDeg = 12.0;
+    require(f.tick().status.phase == "rescue_exit_remembered_entry" &&
+                f.last.leftPower > 0.0 && !f.last.completed,
+            "O resgate concluído deve avançar antes do giro, sem aceitar Fusion.");
+    f.travel(config::kRescueCompletedEntryAdvanceCm - 0.1,
+             config::kRescueCompletedEntryAdvanceCm - 0.1);
+    require(f.tick().status.phase == "rescue_exit_remembered_entry",
+            "O avanço de entrada deve respeitar a distância configurada.");
+    f.travel(0.2, 0.2);
+    require(close(f.tick().leftPower, 0.0),
+            "O robô deve parar para estabilizar antes do giro.");
+    require(f.tick(config::kRescueDistanceSettleMs + 1).status.phase ==
+                "rescue_exit_remembered_turn_starting" &&
+                close(f.last.leftPower, 0.0),
+            "A conclusão da entrada deve manter os motores parados neste ciclo.");
+
+    const double targetYaw = std::remainder(
+        12.0 + config::kRescueCompletedRightTurnDegrees, 360.0);
+    require(f.tick().status.phase == "rescue_exit_direct_turning" &&
+                close(f.last.status.exitHeadingDegrees, targetYaw),
+            "O giro deve apontar 45 graus à direita do heading da entrada.");
+    f.telemetry.yawZDeg = targetYaw;
+    f.tick();
+    require(f.tick(config::kTurn90SettleMs + 1).status.phase ==
+                "rescue_exit_initial_straight" &&
+                close(f.last.status.exitAdvanceCm, 0.0),
+            "A segunda reta deve começar a medir distância após o giro.");
+    f.travel(config::kRescueCompletedStraightCm - 0.1,
+             config::kRescueCompletedStraightCm - 0.1);
+    require(f.tick().status.phase == "rescue_exit_initial_straight",
+            "O Fusion não deve assumir antes dos 30 cm configurados.");
+    f.travel(0.2, 0.2);
+    require(!f.tick().completed, "Um frame Fusion não confirma a saída.");
+    for (int i = 1; i < config::kRescueExitAcquisitionFrames; ++i) f.tick();
+    require(f.last.completed && f.last.status.phase == "rescue_exit_acquired",
+            "A rota curta deve entregar a linha após os frames Fusion exigidos.");
+}
+
 void testFailuresAndRecovery()
 {
     Fixture camera;
@@ -283,6 +325,7 @@ int main()
         testBottomConfirmationUsesNewConsecutiveFrames();
         testFallbackDistanceLimitAndBlocker();
         testTurnExcludedAndReferenceFallback();
+        testCompletedRescueRoute();
         testFailuresAndRecovery();
         std::cout << "rescue_exit_mission_test: OK\n";
         return 0;

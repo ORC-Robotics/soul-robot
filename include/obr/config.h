@@ -449,6 +449,21 @@ static_assert(kRescueZoneApproachFarDistanceCm >
 constexpr double kRescueEntryAdvanceDistanceCm = 25.0;
 constexpr double kRescueEntryAdvancePower = 0.75;
 
+// Rota curta quando as três vítimas já foram entregues: avança na entrada,
+// gira à direita e só aceita Fusion após a segunda reta, medida em centímetros.
+// Ajuste estes valores para a arena; distâncias maiores aproximam o robô da parede.
+constexpr double kRescueCompletedEntryAdvanceCm = kRescueEntryAdvanceDistanceCm;
+constexpr double kRescueCompletedEntryPower = kRescueEntryAdvancePower;
+constexpr double kRescueCompletedRightTurnDegrees = 45.0;
+constexpr double kRescueCompletedStraightCm = 30.0;
+static_assert(kRescueCompletedEntryAdvanceCm > 0.0 &&
+                  kRescueCompletedEntryPower >= kMotorStartMinimumPower &&
+                  kRescueCompletedEntryPower <= kMaxMotorOutput &&
+                  kRescueCompletedRightTurnDegrees > 0.0 &&
+                  kRescueCompletedRightTurnDegrees < 180.0 &&
+                  kRescueCompletedStraightCm > 0.0,
+              "A rota do resgate concluído precisa de distâncias, giro e potência seguros.");
+
 // Sentido inicial da busca quando nenhuma vítima foi vista durante a entrada.
 // Use 1 para começar pela direita ou -1 pela esquerda; uma vítima vista tem prioridade.
 constexpr int kRescueEntrySearchDirection = 1;
@@ -558,9 +573,9 @@ constexpr double kRescueExitExplorationOffsetDegrees = 30.0;
 constexpr int kRescueExitExplorationMaximumAttempts = 3;
 // Yaws de avanço reto medidos a partir do alinhamento do último triângulo.
 // O teste isolado usa os mesmos alvos para permitir a calibração na arena.
-constexpr double kRescueExitFirstStraightYawDegrees = 100.0;
+constexpr double kRescueExitFirstStraightYawDegrees = 67.0;
 constexpr double kRescueExitSecondStraightYawDegrees = -100.0;
-constexpr double kRescueExitThirdStraightYawDegrees = 100.0;
+constexpr double kRescueExitThirdStraightYawDegrees = 67.0;
 // A saída fica neste yaw relativo ao último triângulo centralizado.
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
 // Distância inicial reta, em centímetros, medida pelo menor avanço das rodas.

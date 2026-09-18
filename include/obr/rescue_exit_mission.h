@@ -1,6 +1,7 @@
 #pragma once
 
 #include "obr/camera_monitor.h"
+#include "obr/encoder_distance_controller.h"
 #include "obr/imu_turn_controller.h"
 #include "obr/robot_state.h"
 
@@ -13,12 +14,15 @@ struct RescueExitOutput
     AutonomousStatus status;
 };
 
-// Executa a saída fixa, habilita a CAM1 após a reta e entrega a linha à CAM0.
+// Executa a saída fixa, com entrada opcional quando o resgate já terminou,
+// e entrega a linha à CAM0 após a confirmação visual.
 // Não acessa GPIO; as potências continuam sujeitas às proteções de RobotState.
 class RescueExitMission
 {
 public:
     void reset();
+    // Usa a entrada curta antes do giro para a saída quando o resgate já terminou.
+    void startCompletedRescueRoute();
     // Define o yaw de referência pelo último triângulo centralizado.
     void setTriangleReferenceHeading(double headingDegrees);
     bool requiresRescueZoneDetection() const;
@@ -29,9 +33,11 @@ public:
 
 private:
     using Time = std::chrono::steady_clock::time_point;
-    enum class Phase { Preparing, Turning, Straight, FrontGuidance, Completed, Failed };
+    enum class Phase { EntryAdvance, Preparing, Turning, Straight, FrontGuidance, Completed, Failed };
     Phase phase_ = Phase::Preparing;
+    EncoderDistanceController entryDistance_;
     ImuTurnController turn_;
+    bool completedRescueRoute_ = false;
     bool started_ = false;
     bool referenceValid_ = false;
     bool movingForward_ = false;

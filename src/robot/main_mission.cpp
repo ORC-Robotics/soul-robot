@@ -182,8 +182,8 @@ void MainMission::update(
                 esp32Telemetry);
             if (silverEntry.completed)
             {
-                // A faixa cinza entrega autoridade diretamente à rotina completa.
-                // O primeiro avanço ainda aguarda o gate do YOLO publicar um frame.
+                // A faixa cinza entrega autoridade ao resgate ou à rota curta.
+                // O primeiro avanço aguarda a visão frontal da execução atual.
                 const bool enteredWithoutLine =
                     silverEntry.status.phase == "silver_entry_line_timeout";
                 lineCourseMission_.reset();
@@ -194,7 +194,8 @@ void MainMission::update(
                     // Após STOP, a memória de entregas evita uma segunda coleta.
                     // A busca da saída ainda começa com PWM zerado neste ciclo.
                     phase_ = Phase::ExitSearch;
-                    rescueExitMission_.reset();
+                    rescueExitMission_.startCompletedRescueRoute();
+                    exitReferenceInitialized_ = true;
                     robotState.driveAutonomous(0.0, 0.0);
                     robotState.updateAutonomousStatus(makeStatus(
                         "rescue_exit_starting",
@@ -254,6 +255,8 @@ void MainMission::update(
         robotState.updateAutonomousStatus(output.status);
         if (output.failed)
         {
+            std::cerr << "Rescue room failed: phase=" << output.status.phase
+                      << " action=" << output.status.action << '\n';
             phase_ = Phase::Failed;
             robotState.stop();
             // stop() aplica primeiro a saída segura e substitui o texto do
