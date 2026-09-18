@@ -228,7 +228,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
             if (!turn_.start(std::abs(turnDegrees), turnDegrees < 0.0 ?
                     ImuTurnDirection::Left : ImuTurnDirection::Right,
                     telemetry, toleranceDegrees, 0, 0,
-                    config::kRescueExitTurnPower, config::kRescueExitApproachTimeoutMs, now))
+                    config::kRescueExitTurnPower, config::kRescueExitApproachTimeoutMs,
+                    now, false, 0.0, config::kRescueExitTurnCorrectionMaximumMs))
                 return fail("Não foi possível iniciar o giro da saída fixa");
             phase_ = Phase::Turning;
         }

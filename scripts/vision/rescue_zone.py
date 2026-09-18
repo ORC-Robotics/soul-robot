@@ -35,9 +35,10 @@ MIN_GREEN_NORMALIZED_CHROMA = 0.10
 # A evidência forte valida o componente inteiro sem apagar suas bordas mais
 # fracas. O piso MDF/oliva medido possui S entre 78 e 108, enquanto o limiar 120
 # ainda preserva verdes plausíveis lavados e fica bem abaixo dos verdes reais.
+# valor triangulo verde estadual/regional > 90, interno senai > 120
 STRONG_GREEN_HUE_MIN = 35
 STRONG_GREEN_HUE_MAX = 90
-STRONG_GREEN_MIN_SATURATION = 120
+STRONG_GREEN_MIN_SATURATION = 90
 STRONG_GREEN_MIN_VALUE = 45
 STRONG_GREEN_BLUE_DOMINANCE = 0.04
 STRONG_GREEN_RED_DOMINANCE = 0.04

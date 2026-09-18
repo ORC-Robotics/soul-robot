@@ -126,6 +126,13 @@ bool RobotState::observeRedFinish(const CameraLineSnapshot& camera)
     lastRedTimestamp_ = camera.lineTimestamp;
     lastRedSequence_ = camera.lineSequence;
     state_.redRatio = camera.redRatio;
+    // Durante todo o retorno de 180°, o vermelho não encerra a missão nem
+    // rearma a chegada. Consome o frame para exigir uma nova leitura após
+    // a conclusão da manobra, sem reaproveitar uma leitura feita durante o giro.
+    if (state_.mode == "autonomous" &&
+        state_.autonomousStatus.phase.rfind("turnaround_", 0) == 0)
+        return false;
+
     if (!redFinishArmed_)
     {
         if (camera.redClearConfirmed && !camera.redConfirmed &&

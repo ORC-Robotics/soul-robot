@@ -51,7 +51,10 @@ public:
         int timeoutMs = 0,
         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now(),
         bool allowEncoderStopConfirmation = false,
-        double stationaryRateDegPerSec = 0.0);
+        double stationaryRateDegPerSec = 0.0,
+        // Prazo da correção fina: positivo conclui com erro residual ao expirar.
+        // Zero preserva a política padrão de falha por limite de pulsos.
+        int correctionCompletionTimeoutMs = 0);
     ImuTurnOutput update(const Esp32TelemetrySnapshot& telemetry,
                         std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     void reset();
@@ -80,6 +83,8 @@ private:
     int maximumCorrectionPulses_ = 0;
     double commandPower_ = 0.0;
     int timeoutMs_ = 0;
+    int correctionCompletionTimeoutMs_ = 0;
+    std::chrono::steady_clock::time_point correctionStartedAt_{};
     // Esta confirmação auxiliar é habilitada apenas por manobras que aceitam
     // os encoders como prova física de que a inércia terminou.
     bool allowEncoderStopConfirmation_ = false;

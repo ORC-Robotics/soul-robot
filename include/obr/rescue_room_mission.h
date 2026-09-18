@@ -123,6 +123,14 @@ private:
     std::chrono::steady_clock::time_point continuousSearchProgressStartedAt_{};
     // Impede que frames intercalados façam a busca ultrapassar uma candidata em confirmação.
     bool candidateConfirmationActive_ = false;
+    // Contadores próprios da visão; nunca alteram o yaw de entrada usado na saída.
+    bool searchRotationTracked_ = false;
+    double searchLastYaw_ = 0.0;
+    double searchRotationDegrees_ = 0.0;
+    std::chrono::steady_clock::time_point candidateConfirmationStartedAt_{};
+    bool searchRepositionActive_ = false;
+    bool searchRepositionReversing_ = false;
+    ImuTurnController searchRepositionTurnController_;
     std::chrono::steady_clock::time_point candidateLastSeenAt_{};
     bool candidateHeadingValid_ = false;
     double candidateHeadingDegrees_ = 0.0;

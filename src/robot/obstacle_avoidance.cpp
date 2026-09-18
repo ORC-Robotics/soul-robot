@@ -886,11 +886,13 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateCurve(
             "obstacle_curve_timeout",
             "Curva interrompida pelo tempo limite de segurança");
     }
-    if (config::kObstacleCase3RecoveryEnabled)
+    if (!config::kObstacleIgnoreBlackDuringCurve &&
+        config::kObstacleCase3RecoveryEnabled)
     {
         observeParabolaFrame(forwardLine);
     }
-    if (config::kObstacleEarlyFusionRecoveryEnabled)
+    if (!config::kObstacleIgnoreBlackDuringCurve &&
+        config::kObstacleEarlyFusionRecoveryEnabled)
     {
         // Só interrompe o contorno após três frames novos de Fusion e da faixa
         // transversal. O lado forçado não desativa os cenários de recuperação.

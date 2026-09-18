@@ -779,6 +779,44 @@ void testAutomaticNominalExitMirrorsBothSides()
     }
 }
 
+// Confere que preto nas duas câmeras não interrompe a curva nem arma memória lateral.
+void testCurveIgnoresBlackAndReacquiresAfterExit()
+{
+    for (const auto side : {config::ObstacleSideMode::Left, config::ObstacleSideMode::Right})
+    {
+        ObstacleAvoidance avoidance(side);
+        auto telemetry = readyTelemetry();
+        const auto line = centeredLine();
+        beginAndCenter(avoidance, telemetry, line);
+        completeTurn(avoidance, telemetry, line,
+                     side == config::ObstacleSideMode::Left
+                         ? -config::kObstacleSideApproachDegrees
+                         : config::kObstacleSideApproachDegrees);
+        completeSelectedForward(avoidance, telemetry, line);
+        for (std::uint64_t sequence = 1; sequence <= 5; ++sequence)
+        {
+            const auto output = avoidance.update(
+                telemetry, fusionLine(sequence, true, true), true,
+                parabolaFrame(sequence, 21000, 2000));
+            require(output.phase == "obstacle_curving" && !output.completed &&
+                        !output.bestParabolaSideValid && !output.case3Armed,
+                    "Preto nas câmeras deve ser ignorado durante a curva nos dois lados.");
+        }
+        auto output = advanceCurve(avoidance, telemetry, fusionLine(6, true, true),
+                                   config::kObstacleCurveDistanceCm);
+        require(output.phase == "obstacle_exit_pivot_wait",
+                "A curva deve completar a distância mesmo com faixa preta visível.");
+        completeExitPivot(avoidance, telemetry, line);
+        reachExitTimedForward(avoidance, telemetry, line);
+        avoidance.update(telemetry, fusionLine(10), true);
+        avoidance.update(telemetry, fusionLine(11), true);
+        output = avoidance.update(telemetry, fusionLine(12), true);
+        require(output.completed && output.leftPower == 0.0 && output.rightPower == 0.0 &&
+                    !output.case3Armed && !output.bestParabolaSideValid,
+                "Após a curva, Fusion deve concluir a saída sem memória lateral falsa.");
+    }
+}
+
 void testForcedSideStillAllowsEarlyRecovery()
 {
     ObstacleAvoidance avoidance(config::ObstacleSideMode::Left);
@@ -1423,6 +1461,13 @@ int main(int argc, char** argv)
 {
     try
     {
+        if (argc > 1 && std::string(argv[1]) == "--ignore-curve-black-only")
+        {
+            testCurveIgnoresBlackAndReacquiresAfterExit();
+            testExitStopsWithStaleSensors();
+            std::cout << "ignore_curve_black_test: OK\n";
+            return 0;
+        }
         if (argc > 1 && std::string(argv[1]) == "--early-fusion-only")
         {
             testEarlyFusionRecoveryCompletesToTheSelectedSide();
@@ -1450,14 +1495,22 @@ int main(int argc, char** argv)
         testLeftSelectionReturnsToLeftYaw();
         testPracticalTieUsesFixedSide();
         testCameraBlackSelectsOnlyConfirmedSide();
-        testEarlyFusionRecoveryCompletesToTheSelectedSide();
-        testEarlyFusionRecoveryStopsAtAngularLimit();
-        testEarlyFusionRequiresConsecutiveContinuationBands();
-        testParabolaFalseGapUsesBestSideAndReacquires();
-        testParabolaForwardContinuationKeepsNormalGapHandling();
-        testParabolaOppositeSearchStopsAtSameAngularLimit();
-        testPostObstacleFusionCannotReturnToRearLine();
-        testParabolaCase3WindowExpiresWithoutRecovery();
+        if (config::kObstacleIgnoreBlackDuringCurve)
+        {
+            testCurveIgnoresBlackAndReacquiresAfterExit();
+        }
+        else
+        {
+            testEarlyFusionRecoveryCompletesToTheSelectedSide();
+            testEarlyFusionRecoveryStopsAtAngularLimit();
+            testEarlyFusionRequiresConsecutiveContinuationBands();
+            testParabolaFalseGapUsesBestSideAndReacquires();
+            testParabolaForwardContinuationKeepsNormalGapHandling();
+            testParabolaOppositeSearchStopsAtSameAngularLimit();
+            testPostObstacleFusionCannotReturnToRearLine();
+            testParabolaCase3WindowExpiresWithoutRecovery();
+            testForcedSideStillAllowsEarlyRecovery();
+        }
         testForcedLeftProfileReacquiresDuringStraightExit();
         testForcedRightSkipsSideMeasurement();
         testObstacleTurnAcceptsEncoderStopWithGyroBias();
@@ -1469,7 +1522,6 @@ int main(int argc, char** argv)
         testLeftExitRejectsReturnAndKeepsMovingLeft();
         testForcedLeftProfileSearchTimeoutStops();
         testAutomaticNominalExitMirrorsBothSides();
-        testForcedSideStillAllowsEarlyRecovery();
         testExitStopsWithStaleSensors();
         testStartCanBeBlockedAndMissingLineStops();
         std::cout << "obstacle_avoidance_test: OK\n";

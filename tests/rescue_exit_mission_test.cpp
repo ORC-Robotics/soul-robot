@@ -210,6 +210,52 @@ void testFallbackDistanceLimitAndBlocker()
             "Sem Fusion de nenhuma câmera, o limite deve parar o robô sem buscar outro yaw");
 }
 
+// Simula um giro próximo do alvo cuja correção não produz movimento.
+// A saída deve avançar após dois segundos, mas nunca com a IMU inválida.
+void testTurnCorrectionDeadlineContinuesExit()
+{
+    for (const bool loseImu : {false, true})
+    {
+        Fixture f;
+        f.mission.setReferenceHeading(0.0);
+        require(f.tick().status.phase == "rescue_exit_direct_turning",
+                "A saída deve iniciar o giro");
+        f.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
+            config::kRescueExitFromEntryYawToleranceDegrees - 1.0;
+        f.telemetry.gyroZDegPerSec = 100.0;
+        f.tick();
+        f.telemetry.gyroZDegPerSec = 0.0;
+        require(f.tick(config::kTurn90SettleMs + 1).status.phase ==
+                    "rescue_exit_direct_turning",
+                "O erro residual deve iniciar correção");
+        const auto correctionStartedAt = f.now;
+        // Ultrapassa o antigo limite de três pulsos sem mudar o yaw.
+        for (int pulse = 0; pulse < 4; ++pulse)
+        {
+            require(!f.tick(config::kTurn90CorrectionPulseMs + 1).failed,
+                    "Correção insuficiente não deve abortar a saída");
+            require(!f.tick(config::kTurn90SettleMs + 1).failed,
+                    "O limite de pulsos não deve abortar a saída");
+        }
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            f.now - correctionStartedAt).count();
+        require(f.tick(config::kRescueExitTurnCorrectionMaximumMs -
+                           static_cast<int>(elapsedMs) - 1).status.phase ==
+                    "rescue_exit_direct_turning",
+                "Antes dos dois segundos, a correção deve permanecer ativa");
+        if (loseImu) f.telemetry.mpuOk = false;
+        const auto result = f.tick(1);
+        if (loseImu)
+            require(result.leftPower == 0.0 && result.rightPower == 0.0 &&
+                        result.status.phase != "rescue_exit_initial_straight",
+                    "O prazo não pode liberar avanço com IMU inválida");
+        else
+            require(!result.failed && result.status.phase == "rescue_exit_initial_straight" &&
+                        result.leftPower > 0.0 && result.rightPower > 0.0,
+                    "Após o prazo de correção, a saída deve seguir para a reta");
+    }
+}
+
 void testTurnExcludedAndEntryReference()
 {
     Fixture f;
@@ -389,6 +435,7 @@ int main()
         testCandidateValidationAndProximity();
         testBottomConfirmationUsesNewConsecutiveFrames();
         testFallbackDistanceLimitAndBlocker();
+        testTurnCorrectionDeadlineContinuesExit();
         testTurnExcludedAndEntryReference();
         testAbsoluteExitHeadingAndShortestTurn();
         testMissingEntryHeadingStopsSafely();

@@ -478,6 +478,12 @@ constexpr double kRescueVictimSecondSweepDegrees = 75.0;
 constexpr double kRescueVictimSweepToleranceDegrees = 3.0;
 // Mantém o robô parado entre frames de confirmação para não varrer além da vítima.
 constexpr int kRescueVictimCandidateHoldMs = 500;
+// Reposiciona a visão após duas voltas completas sem selecionar uma vítima.
+constexpr double kRescueSearchRepositionDegrees = 720.0;
+// Tempo em milissegundos de confirmação sem alvo selecionado antes de recuar.
+constexpr int kRescueSearchConfirmationRepositionMs = 3000;
+// Ré em centímetros, alinhada ao yaw de entrada + 180°, para ampliar a visão da câmera.
+constexpr double kRescueSearchReverseDistanceCm = 5.0;
 // Limite por tentativa, em milissegundos. A varredura maior recebe mais tempo
 // para cruzar a sala; nenhum timeout autoriza insistir no mesmo lado sem limite.
 constexpr int kRescueVictimFirstSweepTimeoutMs = 3000;
@@ -555,17 +561,21 @@ constexpr int kRescueExitApproachTimeoutMs = 20000;
 constexpr int kRescueExitTotalTimeoutMs = 120000;
 // Potência dos giros da saída fixa e dos testes de yaw, na faixa normalizada dos motores.
 constexpr double kRescueExitTurnPower = 0.75;
+// Prazo máximo, em milissegundos, da correção fina do giro de saída.
+// Após este prazo, segue para a reta mesmo com erro angular residual;
+// a validade dos sensores e a parada de emergência continuam obrigatórias.
+constexpr int kRescueExitTurnCorrectionMaximumMs = 2000;
 // Potência base da correção frontal, na faixa normalizada dos motores.
 // A autoridade da CAM1 começa após a distância inicial configurada abaixo.
-constexpr double kRescueExitApproachPower = 0.75;
+constexpr double kRescueExitApproachPower = 0.80;
 constexpr double kRescueExitSteeringDeadbandDegrees = 3.5;
 // Perto da fita, a autoridade cresce suavemente sem arco fechado nem roda em ré.
 constexpr double kRescueExitSteeringFullDegrees = 24.0;
-constexpr double kRescueExitSteeringOuterPower = 0.78;
-constexpr double kRescueExitSteeringInnerPower = 0.70;
+constexpr double kRescueExitSteeringOuterPower = 0.83;
+constexpr double kRescueExitSteeringInnerPower = 0.75;
 // Potência normalizada do avanço reto na saída fixa, antes e após a reta inicial.
 // Reduza durante os primeiros testes para diminuir a velocidade do robô.
-constexpr double kRescueExitExplorationPower = 0.75;
+constexpr double kRescueExitExplorationPower = 0.80;
 constexpr double kRescueExitExplorationAttemptCm = 30.0;
 constexpr double kRescueExitExplorationTotalCm = 60.0;
 constexpr double kRescueExitExplorationRecoveryCm = 8.0;
@@ -580,7 +590,7 @@ constexpr double kRescueExitThirdStraightYawDegrees = 67.0;
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
 // Deslocamento angular da saída normal, em graus, à direita do yaw congelado na entrada.
 // Calibre o alvo da arena aqui; este valor não altera a rota curta já concluída.
-constexpr double kRescueExitFromEntryYawDegrees = 45.0;
+constexpr double kRescueExitFromEntryYawDegrees = 105.0;
 // Erro angular máximo, em graus, para concluir o alinhamento da saída normal.
 // Aumentar esta tolerância reduz a precisão; não compensa um alvo mal calibrado.
 constexpr double kRescueExitFromEntryYawToleranceDegrees = 3.0;
@@ -1083,7 +1093,7 @@ constexpr int kObstacleRearmConfirmationSamples = 3;
 // Depois da escolha, o robô retorna a 40 graus para fechar a aproximação antes
 // da reta curta e da curva nominal.
 constexpr double kObstacleClearanceScanDegrees = 60.0;
-constexpr double kObstacleSideApproachDegrees = 50.0;
+constexpr double kObstacleSideApproachDegrees = 40.0;
 // A CAM1 confirma preto apenas nesta janela angular do scan. Antes dela, o
 // obstáculo pode preencher a ROI; depois dela, a faixa lateral pode sair do quadro.
 constexpr double kObstacleCameraBlackMinimumAngleDegrees = 10.0;
@@ -1113,6 +1123,10 @@ enum class ObstacleSideMode
 // Define se o robô compara os dois lados ou segue diretamente por um deles.
 // Troque apenas Left por Right para forçar o contorno direito.
 constexpr ObstacleSideMode kObstacleSideMode = ObstacleSideMode::Left;
+// Ignora faixas pretas das câmeras durante a curva medida pelos encoders.
+// Como não há linhas laterais no obstáculo, evita interromper o contorno ou
+// salvar uma memória lateral falsa. A busca da faixa após a curva permanece ativa.
+constexpr bool kObstacleIgnoreBlackDuringCurve = true;
 // Habilita a sequência de avanço curto e giro quando a faixa inferior aparece
 // durante a curva. Desativar mantém somente a saída nominal temporizada.
 constexpr bool kObstacleEarlyFusionRecoveryEnabled = true;
@@ -1161,7 +1175,7 @@ constexpr int kObstacleExitPivotWaitMs = 250;
 constexpr double kObstacleExitPivotDegrees = 25.0;
 // Primeiro avanço da saída, em centímetros. Os dois encoders devem alcançar
 // essa distância antes de liberar o giro que começa a procurar o Fusion.
-constexpr double kObstacleExitForwardDistanceCm = 6.0;
+constexpr double kObstacleExitForwardDistanceCm = 10.0;
 // Potência normalizada dos dois avanços de saída; pode ser calibrada sem alterar
 // a aproximação de 12 cm nem os avanços curtos de recuperação.
 constexpr double kObstacleExitForwardPower = 0.75;

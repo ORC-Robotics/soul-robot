@@ -42,7 +42,8 @@ bool ImuTurnController::start(
     int timeoutMs,
     std::chrono::steady_clock::time_point now,
     bool allowEncoderStopConfirmation,
-    double stationaryRateDegPerSec)
+    double stationaryRateDegPerSec,
+    int correctionCompletionTimeoutMs)
 {
     if (completionToleranceDegrees <= 0.0)
     {
@@ -84,6 +85,8 @@ bool ImuTurnController::start(
     directionSign_ = direction == ImuTurnDirection::Right ? 1.0 : -1.0;
     correctionDirection_ = 1.0;
     correctionPulseCount_ = 0;
+    correctionCompletionTimeoutMs_ = std::max(0, correctionCompletionTimeoutMs);
+    correctionStartedAt_ = {};
     startedAt_ = now;
     phaseStartedAt_ = now;
     phase_ = Phase::Turning;
@@ -123,6 +126,20 @@ ImuTurnOutput ImuTurnController::update(
             ImuTurnResult::Failed,
             "turn_imu_lost",
             "Giro interrompido: MPU6050 sem amostra recente",
+            progressPercent);
+    }
+
+    // Na saída do resgate, o erro residual não aborta a missão após o prazo
+    // da correção fina. A IMU é validada acima antes de liberar a próxima etapa.
+    if (correctionCompletionTimeoutMs_ > 0 && correctionPulseCount_ > 0 &&
+        now - correctionStartedAt_ >=
+            std::chrono::milliseconds(correctionCompletionTimeoutMs_))
+    {
+        reset();
+        return stoppedOutput(
+            ImuTurnResult::Completed,
+            "turn_completed",
+            "Prazo de correção encerrado: seguindo com erro angular residual",
             progressPercent);
     }
 
@@ -227,7 +244,7 @@ ImuTurnOutput ImuTurnController::update(
             "Giro pelo MPU6050 concluído",
             100.0);
     }
-    if (maximumCorrectionPulses_ > 0 &&
+    if (correctionCompletionTimeoutMs_ == 0 && maximumCorrectionPulses_ > 0 &&
         correctionPulseCount_ >= maximumCorrectionPulses_)
     {
         reset();
@@ -238,11 +255,15 @@ ImuTurnOutput ImuTurnController::update(
             progressPercent);
     }
 
+    if (correctionPulseCount_ == 0)
+    {
+        correctionStartedAt_ = now;
+    }
     ++correctionPulseCount_;
     correctionDirection_ = remainingDegrees > 0.0 ? 1.0 : -1.0;
     phase_ = Phase::CorrectionPulse;
     phaseStartedAt_ = now;
-    return update(telemetry);
+    return update(telemetry, now);
 }
 
 void ImuTurnController::reset()
@@ -255,6 +276,8 @@ void ImuTurnController::reset()
     maximumCorrectionPulses_ = 0;
     commandPower_ = 0.0;
     timeoutMs_ = 0;
+    correctionCompletionTimeoutMs_ = 0;
+    correctionStartedAt_ = {};
     allowEncoderStopConfirmation_ = false;
     stationaryRateDegPerSec_ = 0.0;
 }

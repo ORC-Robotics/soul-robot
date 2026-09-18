@@ -12,6 +12,13 @@ desvio de obstáculo usado no OBR2026K.
 
 ## Sequência atual
 
+Com `kObstacleIgnoreBlackDuringCurve = true` (padrão atual), a curva de
+`kObstacleCurveDistanceCm` (20 cm) ignora o Fusion e as massas pretas da CAM1.
+Ela não inicia recuperação antecipada nem salva memória lateral para o caso 3.
+A saída nominal volta a procurar Fusion após a curva. Encoders, IMU, parada de
+emergência e timeouts continuam ativos. Use `false` para permitir os cenários
+de recuperação por linhas laterais descritos abaixo.
+
 O padrão tem `kObstacleForceLeftSide = false`: a escolha do lado e os cenários
 da branch `main` foram retomados, com a saída nominal atual espelhada. Forçar
 LEFT serve apenas para calibração e não desativa os cenários de recuperação.

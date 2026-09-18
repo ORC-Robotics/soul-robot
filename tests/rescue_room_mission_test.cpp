@@ -464,8 +464,8 @@ void testCandidateWaitDoesNotResetSweepTimeout()
             "Um frame intercalado deve retornar ao último ponto visto da candidata.");
     now += std::chrono::milliseconds(2900);
     output = updateMission(mission, candidate, {}, telemetry, pose, now);
-    require(output.status.phase == "rescue_search_turn_timeout",
-            "Candidata sem confirmação não pode reiniciar o orçamento.");
+    require(output.status.phase == "rescue_search_reposition_start",
+            "Candidata sem confirmação por três segundos deve reposicionar a visão.");
     telemetry.mpuOk = false;
     output = updateMission(mission, emptyFrame(sequence, 11.0), {}, telemetry, pose, now);
     require(output.leftPower == 0.0 && output.rightPower == 0.0,
@@ -1068,10 +1068,75 @@ void testRescueMemorySurvivesStopAndRejectsChangesWhileRunning()
 
 }
 
+// Verifica as duas causas da ré e preserva a referência usada pela saída.
+void testSearchRepositionUsesInverseEntryYaw()
+{
+    for (const bool stuckConfirmation : {false, true})
+    {
+        RescueRoomMission mission;
+        mission.resumeWithDeliveries(1, 0);
+        auto telemetry = readyTelemetry();
+        telemetry.yawZDeg = 170.0;
+        ServoPose pose;
+        auto now = Clock::now();
+        const auto sequence = mission.ballTargetSequence(kRunSequence);
+        auto frame = emptyFrame(sequence, 1.0);
+        completeDistanceStage(mission, frame, telemetry, pose, now,
+                              config::kRescueEntryAdvanceDistanceCm);
+        updateMission(mission, frame, {}, telemetry, pose, now);
+        RescueRoomOutput output;
+        if (stuckConfirmation)
+        {
+            frame.candidateVisible = true;
+            output = updateMission(mission, frame, {}, telemetry, pose, now);
+            require(output.status.phase == "rescue_confirming_victim",
+                    "Uma candidata sem alvo deve aguardar confirmação.");
+            now += std::chrono::milliseconds(config::kRescueSearchConfirmationRepositionMs);
+            output = updateMission(mission, frame, {}, telemetry, pose, now);
+        }
+        else
+        {
+            for (int step = 1; step <= 8; ++step)
+            {
+                telemetry.yawZDeg = std::remainder(170.0 + step * 90.0, 360.0);
+                now += std::chrono::milliseconds(100);
+                output = updateMission(mission, frame, {}, telemetry, pose, now);
+                if (step < 8)
+                    require(output.status.phase == "rescue_search_continuous",
+                            "A ré só deve começar após duas voltas completas.");
+            }
+        }
+        require(output.status.phase == "rescue_search_reposition_start",
+                "Duas voltas ou confirmação persistente devem iniciar a ré.");
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(output.status.phase == "rescue_search_reposition_align",
+                "O robô deve alinhar antes de recuar.");
+        telemetry.yawZDeg = -10.0;
+        now += std::chrono::milliseconds(20);
+        updateMission(mission, frame, {}, telemetry, pose, now);
+        now += std::chrono::milliseconds(config::kTurn90SettleMs);
+        updateMission(mission, frame, {}, telemetry, pose, now);
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(output.leftPower < 0.0 && output.rightPower < 0.0,
+                "No yaw inverso, as duas rodas devem executar ré.");
+        output = completeDistanceStage(mission, frame, telemetry, pose, now, 5.0);
+        require(output.status.phase == "rescue_search_reposition_done",
+                "A ré de 5 cm deve terminar e liberar a busca.");
+        require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == 170.0 &&
+                    mission.ballTargetSequence(kRunSequence) == sequence,
+                "Reposicionar não pode alterar o yaw base nem a seleção da busca.");
+        frame.candidateVisible = false;
+        output = updateMission(mission, frame, {}, telemetry, pose, now);
+        require(output.status.phase == "rescue_search_continuous",
+                "A busca deve continuar depois da ré.");
+    }
+}
+
 int main()
 {
     try
     {
+        testSearchRepositionUsesInverseEntryYaw();
         testEntryAdvanceDoesNotWaitForOrStopOnYolo();
         testEntryHeadingCapturedOnceAndReset();
         testSweepRemembersEntryCandidateAndDefaultsRight();

@@ -3783,6 +3783,41 @@ void testRedFinishStopsAndRearms()
             "Physical START must not clear emergency stop");
 }
 
+// O vermelho só pode encerrar a missão com uma nova leitura após o retorno completo.
+void testRedFinishWaitsUntilTurnAroundEnds()
+{
+    RobotState state;
+    CameraLineSnapshot camera;
+    camera.sourceFresh = camera.redValid = camera.redConfirmed = true;
+    camera.redRatio = 0.2;
+    camera.lineSequence = 1;
+    camera.lineTimestamp = 1.0;
+    state.startAutonomous();
+
+    for (const char* phase : {"turnaround_recognition_delay", "turnaround_centering",
+                             "turnaround_forward", "turnaround_imu",
+                             "turnaround_searching_line", "turnaround_reverse",
+                             "turnaround_reverse_complete"})
+    {
+        state.updateAutonomousStatus({phase, "Retorno de 180°"});
+        state.driveAutonomous(0.2, -0.2);
+        ++camera.lineSequence;
+        camera.lineTimestamp += 0.02;
+        require(!state.observeRedFinish(camera) && !state.snapshot().missionFinished &&
+                    state.snapshot().left == 0.2 && state.snapshot().right == -0.2,
+                "Red must not interrupt any stage of the turnaround");
+    }
+
+    state.updateAutonomousStatus({"line_following", "Seguindo linha"});
+    require(!state.observeRedFinish(camera),
+            "A red frame from the turnaround must not finish after completion");
+    ++camera.lineSequence;
+    camera.lineTimestamp += 0.02;
+    require(state.observeRedFinish(camera) && state.snapshot().missionFinished &&
+                state.snapshot().left == 0.0 && state.snapshot().right == 0.0,
+            "A fresh red frame must stop motors after the complete turnaround");
+}
+
 void testRedFinishWaitsUntilRescueEnds()
 {
     RobotState state;
@@ -3912,6 +3947,7 @@ int main(int argc, char** argv)
             return 0;
         }
         testRedFinishStopsAndRearms();
+        testRedFinishWaitsUntilTurnAroundEnds();
         testRedFinishWaitsUntilRescueEnds();
         if (argc > 1 && std::string(argv[1]) == "--red-only")
         {

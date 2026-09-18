@@ -741,7 +741,7 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         (finalVerification_ &&
          (matchesVictim(ball, VictimType::Alive, expectedTargetSequence) ||
           matchesVictim(ball, VictimType::Dead, expectedTargetSequence)));
-    if (matchingVictim)
+    if (matchingVictim && !searchRepositionActive_)
     {
         // Depois que qualquer vítima foi encontrada, uma eventual busca
         // posterior nunca volta aos headings alternados da entrada.
@@ -758,13 +758,82 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         return output;
     }
 
+    if (searchRepositionActive_)
+    {
+        // Reorienta pelo yaw congelado na entrada, sem recalibrar a IMU ou
+        // substituir a referência que a missão de saída utiliza depois.
+        if (!searchRepositionReversing_)
+        {
+            output.status = makeStatus(
+                "rescue_search_reposition_align", "Alinhando a ré ao yaw inverso da entrada");
+            if (!ImuTurnController::imuReady(telemetry) || !entryHeadingValid_)
+                return output;
+            const double remaining = std::remainder(
+                entryHeadingDegrees_ + 180.0 - telemetry.yawZDeg, 360.0);
+            if (!searchRepositionTurnController_.active() &&
+                std::abs(remaining) <= config::kRescueVictimSweepToleranceDegrees)
+            {
+                searchRepositionReversing_ = true;
+                startDistance(config::kRescueSearchReverseDistanceCm,
+                              config::kRescueEntryAdvancePower, -1, now);
+            }
+            else
+            {
+                if (!searchRepositionTurnController_.active())
+                    searchRepositionTurnController_.start(
+                        std::abs(remaining),
+                        remaining < 0.0 ? ImuTurnDirection::Left : ImuTurnDirection::Right,
+                        telemetry, config::kRescueVictimSweepToleranceDegrees,
+                        0, 0, config::kRescueSearchTurnPower, 0, now);
+                const auto turn = searchRepositionTurnController_.update(telemetry, now);
+                output.leftPower = turn.leftPower;
+                output.rightPower = turn.rightPower;
+                if (turn.result == ImuTurnResult::Completed ||
+                    turn.result == ImuTurnResult::Failed)
+                    searchRepositionTurnController_.reset();
+                return output;
+            }
+        }
+        const auto movement = updateDistance(
+            telemetry, now, "rescue_search_reposition_reverse",
+            "Recuando 5 cm para enxergar melhor as vítimas");
+        output.leftPower = movement.leftPower;
+        output.rightPower = movement.rightPower;
+        output.status = movement.status;
+        output.failed = movement.failed;
+        if (output.failed) fail(output.status);
+        if (movement.completed)
+        {
+            distanceController_.reset();
+            searchRepositionActive_ = false;
+            searchRepositionReversing_ = false;
+            searchRotationTracked_ = false;
+            searchRotationDegrees_ = 0.0;
+            candidateConfirmationActive_ = false;
+            candidateHeadingValid_ = false;
+            continuousSearchProgressWatchActive_ = false;
+            sweepAttemptStarted_ = false;
+            // O giro de reposicionamento não conta como busca de vítimas extras.
+            finalSearchLastYaw_ = telemetry.yawZDeg;
+            output.status = makeStatus(
+                "rescue_search_reposition_done", "Ré concluída; retomando a busca de vítimas");
+        }
+        return output;
+    }
+
     const bool wideSweep = sweepStep_ == SweepStep::First75 ||
                            sweepStep_ == SweepStep::Opposite75;
     const int timeoutMs = wideSweep ? config::kRescueVictimSecondSweepTimeoutMs
                                     : config::kRescueVictimFirstSweepTimeoutMs;
+    const bool confirmationStuck = candidateConfirmationActive_ &&
+        (ball.candidateVisible || now - candidateLastSeenAt_ <
+            std::chrono::milliseconds(config::kRescueVictimCandidateHoldMs)) &&
+        now - candidateConfirmationStartedAt_ >= std::chrono::milliseconds(
+            config::kRescueSearchConfirmationRepositionMs);
     // A espera por uma candidata não renova o orçamento. Mesmo com pausas,
     // uma tentativa bloqueada termina sem insistir indefinidamente na parede.
     if (!continuousSearchActive_ && sweepAttemptStarted_ &&
+        !confirmationStuck &&
         !waitingForSweepFrame_ &&
         now - sweepAttemptStartedAt_ >= std::chrono::milliseconds(timeoutMs))
     {
@@ -786,6 +855,24 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         sweepTurnStarted_ = false;
         output.status = makeStatus(
             "rescue_search_waiting_sensors", "Busca parada: aguardando YOLO e IMU atuais");
+        return output;
+    }
+    // Soma o percurso angular real da busca, inclusive ao cruzar +180°/-180°.
+    // Os giros de alinhamento da ré ficam fora deste contador.
+    if (searchRotationTracked_ && continuousSearchActive_)
+        searchRotationDegrees_ += std::abs(std::remainder(
+            telemetry.yawZDeg - searchLastYaw_, 360.0));
+    searchLastYaw_ = telemetry.yawZDeg;
+    searchRotationTracked_ = true;
+    if (entryHeadingValid_ &&
+        (searchRotationDegrees_ >= config::kRescueSearchRepositionDegrees || confirmationStuck))
+    {
+        searchRepositionActive_ = true;
+        sweepTurnController_.reset();
+        sweepTurnStarted_ = false;
+        continuousSearchProgressWatchActive_ = false;
+        output.status = makeStatus(
+            "rescue_search_reposition_start", "Busca sem alvo selecionado; reposicionando a visão");
         return output;
     }
     if (finalVerification_)
@@ -841,6 +928,7 @@ RescueRoomOutput RescueRoomMission::updateSearch(
         {
             sweepFirstSide_ = candidateSide_;
         }
+        if (!candidateConfirmationActive_) candidateConfirmationStartedAt_ = now;
         candidateConfirmationActive_ = true;
         candidateLastSeenAt_ = now;
     }
@@ -1192,6 +1280,11 @@ void RescueRoomMission::startVictimSearch(
         candidateSide_ = -1;
     }
     desiredVictimType_ = type;
+    searchRotationTracked_ = false;
+    searchRotationDegrees_ = 0.0;
+    searchRepositionActive_ = false;
+    searchRepositionReversing_ = false;
+    searchRepositionTurnController_.reset();
     finalVerification_ = finalVerification;
     finalSearchStarted_ = false;
     finalSearchLastYaw_ = 0.0;
@@ -1308,6 +1401,11 @@ const char* RescueRoomMission::ballTargetType() const
 
 void RescueRoomMission::reset()
 {
+    searchRotationTracked_ = false;
+    searchRotationDegrees_ = 0.0;
+    searchRepositionActive_ = false;
+    searchRepositionReversing_ = false;
+    searchRepositionTurnController_.reset();
     phase_ = Phase::EntryAdvance;
     entryHeadingValid_ = false;
     entryHeadingDegrees_ = 0.0;
