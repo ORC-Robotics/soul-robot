@@ -23,8 +23,8 @@ public:
     void reset();
     // Usa a entrada curta antes do giro para a saída quando o resgate já terminou.
     void startCompletedRescueRoute();
-    // Define o yaw de referência pelo último triângulo centralizado.
-    void setTriangleReferenceHeading(double headingDegrees);
+    // Define o yaw de entrada, em graus; valores inválidos impedem a saída normal.
+    void setReferenceHeading(double headingDegrees);
     bool requiresRescueZoneDetection() const;
     RescueExitOutput update(const CameraLineSnapshot& bottom,
         const ForwardLineSnapshot& forward, const RescueZoneSnapshot& zones,

@@ -3,6 +3,7 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace
 {
@@ -33,7 +34,7 @@ struct Fixture
         bottom.lineControlSource = "fusion";
         bottom.lineFollowerLeftPower = 0.72;
         bottom.lineFollowerRightPower = 0.69;
-        mission.setTriangleReferenceHeading(-config::kRescueExitDirectYawDegrees);
+        mission.setReferenceHeading(-config::kRescueExitFromEntryYawDegrees);
     }
     RescueExitOutput tick(int ms = 50, bool frame = true)
     {
@@ -83,11 +84,11 @@ void testDistanceGateAndFrontCorrections()
     f.tick();
     for (int i = 0; i < 5; ++i) f.tick();
     require(!f.last.completed && close(f.last.leftPower, 0.75) && close(f.last.rightPower, 0.75),
-            "Fusion não pode controlar antes dos 30 cm");
+            "Fusion não pode controlar antes dos 23 cm");
     f.travel(config::kRescueExitFrontGuidanceStartCm + 5.0,
              config::kRescueExitFrontGuidanceStartCm - 1.0);
     f.tick();
-    require(f.last.status.phase == "rescue_exit_initial_straight", "A menor roda deve limitar os 30 cm");
+    require(f.last.status.phase == "rescue_exit_initial_straight", "A menor roda deve limitar os 23 cm");
     f.travel(0.0, 1.1);
     f.tick();
     require(f.last.status.phase == "rescue_exit_front_guidance" && f.last.leftPower > f.last.rightPower,
@@ -107,6 +108,8 @@ void testDistanceGateAndFrontCorrections()
 
 void testEncoderThresholdAtConfiguredDistance()
 {
+    require(close(config::kRescueExitFrontGuidanceStartCm, 23.0),
+            "A saída normal deve liberar o Fusion frontal após 23 cm");
     Fixture f;
     f.bottom.normalSteeringValid = false;
     f.guidance(120.0);
@@ -116,11 +119,11 @@ void testEncoderThresholdAtConfiguredDistance()
     f.telemetry.leftEncoderCount = thresholdCounts + 100;
     f.telemetry.rightEncoderCount = thresholdCounts - 1;
     require(f.tick().status.phase == "rescue_exit_initial_straight",
-            "Um pulso antes dos 30 cm ainda deve manter a reta");
+            "Um pulso antes dos 23 cm ainda deve manter a reta");
     ++f.telemetry.rightEncoderCount;
     require(f.tick().status.phase == "rescue_exit_front_guidance" &&
             f.last.leftPower > f.last.rightPower,
-            "O primeiro pulso que atinge os 30 cm deve habilitar a correção");
+            "O primeiro pulso que atinge os 23 cm deve habilitar a correção");
 }
 
 void testCandidateValidationAndProximity()
@@ -132,7 +135,7 @@ void testCandidateValidationAndProximity()
     f.forward.exitCandidates[2].entryDepthNormalized = 0.2;
     f.tick();
     require(f.last.leftPower > f.last.rightPower && f.last.status.exitGuidanceState == "CAM1",
-            "Fusion distante deve corrigir após os 30 cm, sem exigir proximidade de 85%");
+            "Fusion distante deve corrigir após os 23 cm, sem exigir proximidade de 85%");
     f.forward.exitCandidates[2].entryDepthNormalized = 0.95;
     f.tick();
     require(f.last.leftPower > f.last.rightPower, "Fita próxima deve liberar correção");
@@ -160,7 +163,7 @@ void testCandidateValidationAndProximity()
     f.tick();
     require(close(f.last.leftPower, f.last.rightPower), "Zona morta deve preservar a reta");
     f.forward.exitCandidates = {};
-    f.travel(30.0, 30.0);
+    f.travel(40.0, 40.0);
     f.tick();
     require(!f.last.failed && f.last.status.exitAdvanceCm > 60.0 && f.last.leftPower > 0.0,
             "Ausência de fita após 60 cm não deve iniciar busca ou retorno");
@@ -207,13 +210,14 @@ void testFallbackDistanceLimitAndBlocker()
             "Sem Fusion de nenhuma câmera, o limite deve parar o robô sem buscar outro yaw");
 }
 
-void testTurnExcludedAndReferenceFallback()
+void testTurnExcludedAndEntryReference()
 {
     Fixture f;
     f.mission.reset();
     f.telemetry.yawZDeg = 170.0;
-    const double target = std::remainder(170.0 + config::kRescueExitDirectYawDegrees, 360.0);
-    require(f.tick().status.phase == "rescue_exit_direct_turning", "Sem referência deve girar desde o yaw inicial");
+    f.mission.setReferenceHeading(170.0);
+    const double target = std::remainder(170.0 + config::kRescueExitFromEntryYawDegrees, 360.0);
+    require(f.tick().status.phase == "rescue_exit_direct_turning", "A referência de entrada deve definir o alvo");
     f.travel(50.0, 50.0);
     f.telemetry.yawZDeg = target;
     f.tick();
@@ -224,8 +228,69 @@ void testTurnExcludedAndReferenceFallback()
     f.tick();
     require(f.last.status.exitAdvanceCm < 11.0, "Distância deve começar após o giro");
     f.mission.reset();
+    f.mission.setReferenceHeading(f.telemetry.yawZDeg);
     f.tick();
     require(close(f.last.status.exitAdvanceCm, 0.0) && !f.last.completed, "Nova execução deve limpar a distância e o handoff");
+}
+
+void testAbsoluteExitHeadingAndShortestTurn()
+{
+    for (const auto& headings : {std::pair<double, double>{0.0, 0.0},
+                                 {0.0, 90.0}, {170.0, 170.0}, {-170.0, 170.0},
+                                 {170.0, -100.0}})
+    {
+        Fixture f;
+        f.mission.reset();
+        f.mission.setReferenceHeading(headings.first);
+        f.telemetry.yawZDeg = headings.second;
+        const double target = std::remainder(
+            headings.first + config::kRescueExitFromEntryYawDegrees, 360.0);
+        const double turn = std::remainder(target - headings.second, 360.0);
+        f.tick();
+        require(close(f.last.status.exitHeadingDegrees, target),
+                "O alvo deve depender da entrada salva e não do yaw atual");
+        require(turn > 0.0 ? (f.last.leftPower > 0.0 && f.last.rightPower < 0.0)
+                           : (f.last.leftPower < 0.0 && f.last.rightPower > 0.0),
+                "A IMU deve escolher o menor giro à esquerda ou à direita");
+        f.telemetry.yawZDeg = target;
+        f.tick();
+        require(f.tick(config::kTurn90SettleMs + 1).status.phase == "rescue_exit_initial_straight",
+                "O giro deve terminar no mesmo alvo absoluto da saída");
+    }
+}
+
+void testMissingEntryHeadingStopsSafely()
+{
+    for (const double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                                 std::numeric_limits<double>::infinity()})
+    {
+        Fixture f;
+        f.mission.reset();
+        f.mission.setReferenceHeading(invalid);
+        f.telemetry.yawZDeg = 90.0;
+        require(f.tick().failed && close(f.last.leftPower, 0.0) && close(f.last.rightPower, 0.0),
+                "Referência inválida deve falhar com motores parados, sem usar o yaw atual");
+        require(f.tick().failed, "A falha deve permanecer até uma nova execução");
+    }
+    Fixture missing;
+    missing.mission.reset();
+    require(missing.tick().failed, "Referência ausente também deve impedir a saída normal");
+}
+
+void testNormalExitUsesDedicatedTolerance()
+{
+    Fixture inside;
+    inside.mission.setReferenceHeading(0.0);
+    inside.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
+                              config::kRescueExitFromEntryYawToleranceDegrees;
+    require(inside.tick().status.phase == "rescue_exit_initial_straight",
+            "Dentro da tolerância própria, a saída normal já pode iniciar a reta");
+    Fixture outside;
+    outside.mission.setReferenceHeading(0.0);
+    outside.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
+                               config::kRescueExitFromEntryYawToleranceDegrees - 0.1;
+    require(outside.tick().status.phase == "rescue_exit_direct_turning",
+            "Fora da tolerância própria, a saída normal deve alinhar o yaw");
 }
 
 void testCompletedRescueRoute()
@@ -324,7 +389,10 @@ int main()
         testCandidateValidationAndProximity();
         testBottomConfirmationUsesNewConsecutiveFrames();
         testFallbackDistanceLimitAndBlocker();
-        testTurnExcludedAndReferenceFallback();
+        testTurnExcludedAndEntryReference();
+        testAbsoluteExitHeadingAndShortestTurn();
+        testMissingEntryHeadingStopsSafely();
+        testNormalExitUsesDedicatedTolerance();
         testCompletedRescueRoute();
         testFailuresAndRecovery();
         std::cout << "rescue_exit_mission_test: OK\n";

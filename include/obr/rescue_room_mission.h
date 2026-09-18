@@ -51,6 +51,9 @@ public:
 
     bool requiresBallDetection() const;
     bool requiresRescueZoneDetection() const;
+    // Referência congelada na entrada, antes dos giros de busca e depósito.
+    bool entryHeadingValid() const;
+    double entryHeadingDegrees() const;
     double lastTriangleHeadingDegrees() const;
     std::uint64_t ballTargetSequence(
         std::uint64_t autonomousRunSequence) const;
@@ -91,6 +94,9 @@ private:
     };
 
     Phase phase_ = Phase::EntryAdvance;
+    // O yaw de entrada, em graus, só pode mudar ao iniciar uma nova missão.
+    bool entryHeadingValid_ = false;
+    double entryHeadingDegrees_ = 0.0;
     VictimType desiredVictimType_ = VictimType::Alive;
     VictimType carriedVictimType_ = VictimType::Alive;
     SweepStep sweepStep_ = SweepStep::First45;

@@ -93,6 +93,14 @@ RescueRoomOutput RescueRoomMission::updateStep(
         output.status = failureStatus_;
         return output;
     }
+    // Congela a primeira IMU válida da entrada, antes de qualquer busca ou giro.
+    // A referência da saída não acompanha as orientações dos triângulos.
+    if (phase_ == Phase::EntryAdvance && !entryHeadingValid_ &&
+        ImuTurnController::imuReady(telemetry))
+    {
+        entryHeadingDegrees_ = std::remainder(telemetry.yawZDeg, 360.0);
+        entryHeadingValid_ = true;
+    }
     if (!telemetry.readyForOperation())
     {
         triangleMission_.pause(now);
@@ -1264,6 +1272,16 @@ bool RescueRoomMission::requiresRescueZoneDetection() const
            triangleMission_.requiresRescueZoneDetection();
 }
 
+bool RescueRoomMission::entryHeadingValid() const
+{
+    return entryHeadingValid_;
+}
+
+double RescueRoomMission::entryHeadingDegrees() const
+{
+    return entryHeadingDegrees_;
+}
+
 double RescueRoomMission::lastTriangleHeadingDegrees() const
 {
     return lastTriangleHeadingDegrees_;
@@ -1291,6 +1309,8 @@ const char* RescueRoomMission::ballTargetType() const
 void RescueRoomMission::reset()
 {
     phase_ = Phase::EntryAdvance;
+    entryHeadingValid_ = false;
+    entryHeadingDegrees_ = 0.0;
     desiredVictimType_ = VictimType::Alive;
     carriedVictimType_ = VictimType::Alive;
     candidateSide_ = config::kRescueEntrySearchDirection;

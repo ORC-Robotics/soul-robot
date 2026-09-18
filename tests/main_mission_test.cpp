@@ -3414,7 +3414,7 @@ void testExitAcquisitionRestoresFollower()
         RobotState state;
         state.setAutonomousMission(AutonomousMission::RescueZoneAlign);
         state.startAutonomous();
-        require(state.setRescueZoneLockedHeading(-config::kRescueExitDirectYawDegrees),
+        require(state.setRescueZoneLockedHeading(-config::kRescueExitFromEntryYawDegrees),
                 "O teste precisa de um heading salvo por ALIGN_ZONE");
         state.setAutonomousMission(selected);
         state.startAutonomous();
@@ -3452,7 +3452,7 @@ void testExitAcquisitionRestoresFollower()
                 require(snapshot.autonomousStatus.phase == "rescue_exit_initial_straight" &&
                             closeTo(snapshot.left, config::kRescueExitExplorationPower) &&
                             closeTo(snapshot.right, config::kRescueExitExplorationPower),
-                        "A integração não pode entregar o controle à CAM0 antes dos 30 cm");
+                        "A integração não pode entregar o controle à CAM0 antes dos 23 cm");
             acquired = acquired || snapshot.autonomousStatus.phase == "rescue_exit_acquired";
             if (snapshot.autonomousStatus.phase == "rescue_exit_acquired")
                 require(closeTo(snapshot.left, bottom.lineFollowerLeftPower) &&
@@ -3479,13 +3479,57 @@ void testExitAcquisitionRestoresFollower()
     }
 }
 
+void testNormalExitUsesEntryHeadingAndRejectsTriangleFallback()
+{
+    for (const bool entryValid : {true, false})
+    {
+        for (const double currentYaw : {0.0, 90.0})
+        {
+            MissionFixture fixture;
+            fixture.robotState.setAutonomousMission(AutonomousMission::RescueZoneAlign);
+            fixture.robotState.startAutonomous();
+            require(fixture.robotState.setRescueZoneLockedHeading(120.0),
+                    "O teste deve preparar um heading de triângulo incompatível com a entrada.");
+            fixture.robotState.setAutonomousMission(AutonomousMission::MainMission);
+            fixture.robotState.startAutonomous();
+            fixture.mission.phase_ = MainMission::Phase::RescueArea;
+            auto& room = fixture.mission.rescueRoomMission_;
+            room.phase_ = RescueRoomMission::Phase::Completed;
+            room.entryHeadingValid_ = entryValid;
+            room.entryHeadingDegrees_ = 0.0;
+            room.lastTriangleHeadingDegrees_ = -110.0;
+            fixture.telemetry.yawZDeg = currentYaw;
+            ForwardLineSnapshot forward;
+            forward.exitAnalysisActive = true;
+            forward.exitRunSequence = fixture.robotState.snapshot().autonomousRunSequence;
+            fixture.update({}, true, forward);
+            const auto result = fixture.update({}, true, forward);
+            if (entryValid)
+            {
+                require(closeTo(result.autonomousStatus.exitHeadingDegrees,
+                                config::kRescueExitFromEntryYawDegrees),
+                        "A saída normal deve ignorar ambos os headings de triângulo e usar a entrada.");
+                require(currentYaw == 0.0 ? (result.left > 0.0 && result.right < 0.0)
+                                         : (result.left < 0.0 && result.right > 0.0),
+                        "A saída normal deve escolher direita ou esquerda para o mesmo alvo absoluto.");
+            }
+            else
+            {
+                require(result.autonomousStatus.phase == "rescue_exit_failed" &&
+                            result.mode == "stopped" && closeTo(result.left, 0.0) && closeTo(result.right, 0.0),
+                        "Sem entrada válida, a missão deve parar mesmo com headings de triângulo disponíveis.");
+            }
+        }
+    }
+}
+
 // Valida Stop, nova execução e E-Stop durante o avanço da saída fixa.
 void testFixedExitRestartAndEmergencyStop()
 {
     RobotState state;
     state.setAutonomousMission(AutonomousMission::RescueZoneAlign);
     state.startAutonomous();
-    require(state.setRescueZoneLockedHeading(-config::kRescueExitDirectYawDegrees),
+    require(state.setRescueZoneLockedHeading(-config::kRescueExitFromEntryYawDegrees),
             "Heading de referência do teste não foi salvo");
     state.setAutonomousMission(AutonomousMission::RescueExit);
     state.startAutonomous();
@@ -3505,7 +3549,7 @@ void testFixedExitRestartAndEmergencyStop()
     forward.exitCandidates[2].entryDepthNormalized = 0.95;
     controller.update(state, telemetry, true, bottom, forward, {});
     require(state.snapshot().left > state.snapshot().right,
-            "Fusion frontal não corrigiu após os 30 cm na integração");
+            "Fusion frontal não corrigiu após os 23 cm na integração");
     state.stop();
     controller.update(state, telemetry, true, bottom, forward, {});
     require(closeTo(state.snapshot().left, 0.0), "Stop deve zerar motores imediatamente");
@@ -3517,7 +3561,7 @@ void testFixedExitRestartAndEmergencyStop()
     require(state.snapshot().autonomousStatus.phase == "rescue_exit_initial_straight" &&
             closeTo(state.snapshot().autonomousStatus.exitAdvanceCm, 0.0) &&
             closeTo(state.snapshot().left, state.snapshot().right),
-            "Nova execução deve reiniciar os 30 cm sem reutilizar a correção frontal");
+            "Nova execução deve reiniciar os 23 cm sem reutilizar a correção frontal");
     state.emergencyStop();
     controller.update(state, telemetry, true, bottom, forward, {});
     require(closeTo(state.snapshot().left, 0.0) && closeTo(state.snapshot().right, 0.0),
@@ -3904,6 +3948,7 @@ int main(int argc, char** argv)
             return 0;
         }
         testExitAcquisitionRestoresFollower();
+        testNormalExitUsesEntryHeadingAndRejectsTriangleFallback();
         testFixedExitRestartAndEmergencyStop();
         testCornerYawModeOnlyTurnsAndStopsOnImuLoss();
         testExitFailureDiagnosticSurvivesStop();

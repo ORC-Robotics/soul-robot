@@ -273,8 +273,11 @@ void MainMission::update(
             robotState.setAutonomousServoPose(exitPose, true);
             phase_ = Phase::ExitSearch;
             rescueExitMission_.reset();
-            rescueExitMission_.setTriangleReferenceHeading(
-                rescueRoomMission_.lastTriangleHeadingDegrees());
+            if (rescueRoomMission_.entryHeadingValid())
+                rescueExitMission_.setReferenceHeading(
+                    rescueRoomMission_.entryHeadingDegrees());
+            // Mesmo sem entrada válida, bloqueia o fallback do teste isolado.
+            // RescueExitMission deve falhar com os motores parados nesse caso.
             exitReferenceInitialized_ = true;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(
@@ -287,11 +290,20 @@ void MainMission::update(
 
     if (phase_ == Phase::ExitSearch)
     {
-        // O teste isolado reutiliza o heading salvo; sem ele, a saída captura o yaw inicial.
+        // Apenas o teste isolado pode usar uma referência de calibração ou o yaw inicial.
+        // A saída após o resgate normal já recebeu a entrada e nunca usa este fallback.
         if (!exitReferenceInitialized_)
         {
-            rescueExitMission_.setTriangleReferenceHeading(snapshot.rescueZoneLockedHeading);
-            exitReferenceInitialized_ = true;
+            if (std::isfinite(snapshot.rescueZoneLockedHeading))
+            {
+                rescueExitMission_.setReferenceHeading(snapshot.rescueZoneLockedHeading);
+                exitReferenceInitialized_ = true;
+            }
+            else if (ImuTurnController::imuReady(esp32Telemetry))
+            {
+                rescueExitMission_.setReferenceHeading(esp32Telemetry.yawZDeg);
+                exitReferenceInitialized_ = true;
+            }
         }
         const auto exit = rescueExitMission_.update(
             cameraLineSnapshot, forwardLineSnapshot, rescueZoneSnapshot,

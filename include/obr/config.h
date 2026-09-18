@@ -491,7 +491,7 @@ constexpr int kRescueContinuousSearchStallTimeoutMs = 2000;
 
 // A verificação das vítimas extras cobre no máximo uma volta completa.
 // O tempo limite encerra a busca mesmo se o robô ficar preso e libera a rotina
-// da saída, que aponta para os corners usando o heading do último triângulo.
+// da saída, que usa o yaw congelado na entrada da sala.
 constexpr double kRescueFinalVictimSearchDegrees = 360.0;
 constexpr int kRescueFinalVictimSearchTimeoutMs = 20000;
 
@@ -563,7 +563,7 @@ constexpr double kRescueExitSteeringDeadbandDegrees = 3.5;
 constexpr double kRescueExitSteeringFullDegrees = 24.0;
 constexpr double kRescueExitSteeringOuterPower = 0.78;
 constexpr double kRescueExitSteeringInnerPower = 0.70;
-// Potência normalizada do avanço reto na saída fixa, antes e após os 30 cm.
+// Potência normalizada do avanço reto na saída fixa, antes e após a reta inicial.
 // Reduza durante os primeiros testes para diminuir a velocidade do robô.
 constexpr double kRescueExitExplorationPower = 0.75;
 constexpr double kRescueExitExplorationAttemptCm = 30.0;
@@ -576,12 +576,18 @@ constexpr int kRescueExitExplorationMaximumAttempts = 3;
 constexpr double kRescueExitFirstStraightYawDegrees = 67.0;
 constexpr double kRescueExitSecondStraightYawDegrees = -100.0;
 constexpr double kRescueExitThirdStraightYawDegrees = 67.0;
-// A saída fica neste yaw relativo ao último triângulo centralizado.
+// Referência angular legada, em graus; não calibra a saída normal da sala.
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
+// Deslocamento angular da saída normal, em graus, à direita do yaw congelado na entrada.
+// Calibre o alvo da arena aqui; este valor não altera a rota curta já concluída.
+constexpr double kRescueExitFromEntryYawDegrees = 45.0;
+// Erro angular máximo, em graus, para concluir o alinhamento da saída normal.
+// Aumentar esta tolerância reduz a precisão; não compensa um alvo mal calibrado.
+constexpr double kRescueExitFromEntryYawToleranceDegrees = 3.0;
 // Distância inicial reta, em centímetros, medida pelo menor avanço das rodas.
 // Um valor baixo libera a correção frontal ainda dentro da área de resgate;
 // um valor alto atrasa a retomada da linha pelas câmeras.
-constexpr double kRescueExitFrontGuidanceStartCm = 30.0;
+constexpr double kRescueExitFrontGuidanceStartCm = 23.0;
 // Avanço máximo sem Fusion de nenhuma câmera, em centímetros, após a reta inicial.
 // O robô para ao atingir o limite, evitando atravessar a arena com visão sem alvo.
 constexpr double kRescueExitFallbackMaximumAdvanceCm = 60.0;
@@ -608,6 +614,8 @@ static_assert(kRescueExitControlIntervalMs < kRescueExitControlTimeoutMs &&
               kRescueExitFrontGuidanceStartCm > 0.0 &&
               kRescueExitFallbackMaximumAdvanceCm > 0.0 &&
               kRescueExitDirectYawDegrees > -180.0 && kRescueExitDirectYawDegrees <= 180.0 &&
+              kRescueExitFromEntryYawDegrees > -180.0 && kRescueExitFromEntryYawDegrees <= 180.0 &&
+              kRescueExitFromEntryYawToleranceDegrees > 0.0 && kRescueExitFromEntryYawToleranceDegrees < 180.0 &&
               kRescueExitRejectedToleranceDegrees < kRescueExitTrackingToleranceDegrees &&
               kRescueExitSilverRejectedToleranceDegrees > kRescueExitRejectedToleranceDegrees &&
               kRescueExitCandidateHeadingToleranceDegrees > 0.0 &&

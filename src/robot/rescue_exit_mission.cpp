@@ -10,7 +10,7 @@ namespace
 {
 struct GuidancePowers { double left; double right; };
 
-// Após os 30 cm, o alvo Fusion atual permite correção leve, inclusive com fita distante.
+// Após a reta inicial configurada, o Fusion permite correção leve, inclusive com fita distante.
 // A distância inicial já impede que essa correção comece cedo dentro do resgate.
 GuidancePowers mapGuidancePowers(double angleDegrees)
 {
@@ -54,7 +54,7 @@ void RescueExitMission::startCompletedRescueRoute()
     phase_ = Phase::EntryAdvance;
 }
 
-void RescueExitMission::setTriangleReferenceHeading(double headingDegrees)
+void RescueExitMission::setReferenceHeading(double headingDegrees)
 {
     referenceValid_ = std::isfinite(headingDegrees);
     if (referenceValid_) referenceHeadingDegrees_ = std::remainder(headingDegrees, 360.0);
@@ -211,20 +211,23 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
 
     if (phase_ == Phase::Preparing)
     {
-        // No teste isolado, o primeiro yaw válido substitui uma referência não salva.
-        if (!referenceValid_) referenceHeadingDegrees_ = telemetry.yawZDeg;
+        // Sem uma entrada válida, não há alvo seguro para a saída normal.
+        if (!referenceValid_) return fail("Yaw de entrada da sala de resgate indisponível");
         targetHeadingDegrees_ = std::remainder(
             referenceHeadingDegrees_ +
                 (completedRescueRoute_ ? config::kRescueCompletedRightTurnDegrees
-                                       : config::kRescueExitDirectYawDegrees), 360.0);
+                                       : config::kRescueExitFromEntryYawDegrees), 360.0);
         const double turnDegrees = std::remainder(targetHeadingDegrees_ - telemetry.yawZDeg, 360.0);
-        if (std::abs(turnDegrees) <= config::kBallApproachStartToleranceDegrees)
+        const double toleranceDegrees = completedRescueRoute_
+            ? config::kBallApproachStartToleranceDegrees
+            : config::kRescueExitFromEntryYawToleranceDegrees;
+        if (std::abs(turnDegrees) <= toleranceDegrees)
             startStraight(telemetry, now);
         else
         {
             if (!turn_.start(std::abs(turnDegrees), turnDegrees < 0.0 ?
                     ImuTurnDirection::Left : ImuTurnDirection::Right,
-                    telemetry, config::kBallApproachStartToleranceDegrees, 0, 0,
+                    telemetry, toleranceDegrees, 0, 0,
                     config::kRescueExitTurnPower, config::kRescueExitApproachTimeoutMs, now))
                 return fail("Não foi possível iniciar o giro da saída fixa");
             phase_ = Phase::Turning;

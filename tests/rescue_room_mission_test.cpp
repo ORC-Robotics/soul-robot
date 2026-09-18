@@ -101,6 +101,8 @@ RescueRoomOutput updateMission(
     ServoPose& servoPose,
     Clock::time_point& now)
 {
+    const bool entryWasValid = mission.entryHeadingValid();
+    const double entryHeading = mission.entryHeadingDegrees();
     RescueRoomOutput output = mission.update(
         ball,
         zones,
@@ -109,6 +111,9 @@ RescueRoomOutput updateMission(
         0,
         servoPose,
         now);
+    if (entryWasValid)
+        require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == entryHeading,
+                "Buscas, giros, depósitos e varredura final não podem sobrescrever o yaw de entrada.");
     if (output.servoPoseRequested)
     {
         servoPose = output.servoPose;
@@ -663,6 +668,34 @@ void testEntryAdvanceDoesNotWaitForOrStopOnYolo()
             "Mesmo se a vítima sumir, a busca deve começar pelo lado direito memorizado.");
 }
 
+void testEntryHeadingCapturedOnceAndReset()
+{
+    RescueRoomMission mission;
+    auto telemetry = readyTelemetry();
+    telemetry.yawZDeg = NAN;
+    auto now = Clock::time_point{};
+    mission.update({}, {}, telemetry, kRunSequence, 0, {}, now);
+    require(!mission.entryHeadingValid(), "IMU inválida não pode criar uma referência de entrada.");
+
+    telemetry.yawZDeg = 395.0;
+    now += std::chrono::milliseconds(20);
+    mission.update({}, {}, telemetry, kRunSequence, 0, {}, now);
+    require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == 35.0,
+            "A primeira IMU válida na entrada deve congelar o yaw normalizado.");
+    telemetry.yawZDeg = -90.0;
+    now += std::chrono::milliseconds(20);
+    mission.update({}, {}, telemetry, kRunSequence, 0, {}, now);
+    require(mission.entryHeadingDegrees() == 35.0,
+            "Atualizações seguintes da própria entrada não podem mudar a referência.");
+
+    mission.reset();
+    require(!mission.entryHeadingValid() && mission.entryHeadingDegrees() == 0.0,
+            "Uma nova missão deve limpar a referência anterior.");
+    mission.update({}, {}, telemetry, kRunSequence, 0, {}, now);
+    require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == -90.0,
+            "Depois do reset, a nova entrada deve capturar sua própria referência.");
+}
+
 void testTransientEsp32LossPausesWithoutKillingMission()
 {
     RescueRoomMission mission;
@@ -762,7 +795,11 @@ void testRunsRequiredVictimsInPriorityOrder()
     Clock::time_point now{};
 
     std::uint64_t targetSequence = mission.ballTargetSequence(kRunSequence);
+    telemetry.yawZDeg = 395.0;
     completeEntryAdvance(mission, telemetry, now, targetSequence);
+    require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == 35.0,
+            "A sequência completa deve começar com a referência normalizada de entrada.");
+    telemetry.yawZDeg = 80.0;
 
     ForwardBallSnapshot firstAlive = lockedSilver(targetSequence, 10.0);
     collectVictim(mission, firstAlive, telemetry, servoPose, now);
@@ -830,6 +867,8 @@ void testRunsRequiredVictimsInPriorityOrder()
 
     reachDepositZone(
         mission, secondAlive, true, telemetry, servoPose, now, true);
+    require(mission.entryHeadingDegrees() == 35.0,
+            "A aproximação do triângulo verde não pode mudar o yaw de entrada.");
     output = completeServoStage(
         mission,
         secondAlive,
@@ -897,6 +936,7 @@ void testRunsRequiredVictimsInPriorityOrder()
                 servoPose.armDegrees == config::kServoInitialAngleDegrees,
             "A vítima preta deve seguir diretamente ao depósito.");
 
+    telemetry.yawZDeg = -55.0;
     reachDepositZone(mission, dead, false, telemetry, servoPose, now);
     completeServoStage(
         mission,
@@ -928,6 +968,7 @@ void testRunsRequiredVictimsInPriorityOrder()
                                 "rescue_deposit_zone_starting");
     require(servoPose.armDegrees == config::kServoInitialAngleDegrees,
             "A vítima extra sem armazenamento deve usar elevação para depósito direto.");
+    telemetry.yawZDeg = 95.0;
     reachDepositZone(mission, extra, true, telemetry, servoPose, now);
     output = completeServoStage(mission, extra, telemetry, servoPose, now,
                                 "rescue_deposit_completed");
@@ -962,6 +1003,9 @@ void testRunsRequiredVictimsInPriorityOrder()
                 output.status.phase == "rescue_room_completed" &&
                 output.leftPower == 0.0 && output.rightPower == 0.0,
             "Uma volta completa deve parar os motores e liberar a busca da saída.");
+    require(mission.entryHeadingValid() && mission.entryHeadingDegrees() == 35.0 &&
+                mission.lastTriangleHeadingDegrees() != mission.entryHeadingDegrees(),
+            "O yaw congelado deve sobreviver ao resgate completo e permanecer distinto do triângulo.");
 }
 
 void testBlocksWristWhenServoOutputIsLostAfterFirstCapture()
@@ -1029,6 +1073,7 @@ int main()
     try
     {
         testEntryAdvanceDoesNotWaitForOrStopOnYolo();
+        testEntryHeadingCapturedOnceAndReset();
         testSweepRemembersEntryCandidateAndDefaultsRight();
         testDelicateMotionUsesOneShortKick();
         testSweepTimeoutsReverseExpandAndStop();
