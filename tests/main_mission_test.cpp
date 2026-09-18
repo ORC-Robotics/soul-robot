@@ -2664,6 +2664,39 @@ void testSilverWaitingLineTimeoutEntersRescue()
             "Com câmera atual e NEAR ausente por 2,5 s, deve entrar no resgate parado.");
 }
 
+void testRememberedVictimsSkipRescueCollection()
+{
+    MissionFixture fixture;
+    fixture.robotState.stop();
+    require(fixture.robotState.setRescueTestDeliveries(2, 1),
+            "A memória de teste deve ser ajustada somente após STOP.");
+    fixture.robotState.startAutonomous();
+
+    CameraLineSnapshot gray = freshVision(GreenInterpretation::None);
+    gray.silverCandidateDetected = true;
+    fixture.update(gray);
+    gray.courseMarkerConfirmed = true;
+    gray.courseMarker = CourseMarker::Gray;
+    fixture.update(gray);
+    const long long reverseCounts = static_cast<long long>(std::ceil(
+        config::kSilverEntryReverseDistanceCm *
+        config::kEncoderCountsPerCentimeter));
+    fixture.telemetry.leftEncoderCount = reverseCounts;
+    fixture.telemetry.rightEncoderCount = reverseCounts;
+    fixture.update(gray);
+    const RobotSnapshot entered = fixture.update(gray);
+    require(entered.autonomousStatus.phase == "rescue_exit_starting" &&
+                entered.left == 0.0 && entered.right == 0.0 &&
+                fixture.mission.requiresExitVision() &&
+                !fixture.mission.requiresRescueVision(),
+            "Três entregas lembradas devem iniciar a saída com motores parados.");
+    fixture.robotState.stop();
+    const RobotSnapshot stopped = fixture.robotState.snapshot();
+    require(stopped.rescueDeliveredAliveVictims == 2 &&
+                stopped.rescueDeliveredDeadVictims == 1,
+            "STOP não pode apagar a memória das vítimas entregues.");
+}
+
 void testRescueAlignmentModeKeepsExistingMotorAuthority()
 {
     RobotState robotState;
@@ -3325,6 +3358,7 @@ int main(int argc, char** argv)
             testSilverDoesNotOverrideLineManeuvers();
             testSilverRequiresNewClearFramesAfterManeuver();
             testSilverWaitingLineTimeoutEntersRescue();
+            testRememberedVictimsSkipRescueCollection();
             std::cout << "silver_entry_test: OK\n";
             return 0;
         }
@@ -3374,6 +3408,12 @@ int main(int argc, char** argv)
             testGreenForwardStallWaitsForLine();
             testGreenReverseIgnoresBlindLinePlaceholder();
             std::cout << "green_maneuver_test: OK\n";
+            return 0;
+        }
+        if (argc > 1 && std::string(argv[1]) == "--rescue-memory-only")
+        {
+            testRememberedVictimsSkipRescueCollection();
+            std::cout << "rescue_memory_integration_test: OK\n";
             return 0;
         }
         testExitAcquisitionRestoresFollower();
@@ -3437,6 +3477,7 @@ int main(int argc, char** argv)
         testSilverDoesNotOverrideLineManeuvers();
         testSilverRequiresNewClearFramesAfterManeuver();
         testSilverWaitingLineTimeoutEntersRescue();
+        testRememberedVictimsSkipRescueCollection();
         testRescueAlignmentModeKeepsExistingMotorAuthority();
         testRescueZoneDetectionOnlyKeepsMotorsStopped();
         testRescueZoneAlignKeepsDetectionGateActive();

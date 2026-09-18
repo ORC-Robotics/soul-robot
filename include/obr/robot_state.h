@@ -165,6 +165,10 @@ struct RobotSnapshot
     unsigned long long servoRoutineConfirmationSequence = 0;
     bool servoRoutineInternalObjectStored = false;
     bool servoCalibrationActive = false;
+    // Entregas confirmadas permanecem na RAM após STOP, mas não após reinício.
+    int rescueDeliveredAliveVictims = 0;
+    int rescueDeliveredDeadVictims = 0;
+    bool rescueTestMemoryActive = false;
     AutonomousStatus autonomousStatus;
 };
 
@@ -181,6 +185,8 @@ public:
     void startAutonomous();
     bool tryStartAutonomous();
     void setAutonomousMission(AutonomousMission mission);
+    bool setRescueTestDeliveries(int alive, int dead);
+    void recordRescueDeliveries(int alive, int dead);
     bool setDriveDistanceTargetCm(double targetCm);
     void setRescueZoneTargetColor(RescueZoneTargetColor color);
     bool setRescueZoneLockedHeading(double headingDegrees);

@@ -277,6 +277,36 @@ void RobotState::setAutonomousMission(AutonomousMission mission)
     lastCommand_ = std::chrono::steady_clock::now();
 }
 
+bool RobotState::setRescueTestDeliveries(int alive, int dead)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    // A simulação só é aceita com os motores parados. Não altera servos,
+    // E-Stop nem autoriza a partida autônoma.
+    if (state_.mode != "stopped" || state_.emergencyStop ||
+        alive < 0 || alive > 2 || dead < 0 || dead > 1)
+    {
+        return false;
+    }
+    state_.rescueDeliveredAliveVictims = alive;
+    state_.rescueDeliveredDeadVictims = dead;
+    state_.rescueTestMemoryActive = alive != 0 || dead != 0;
+    return true;
+}
+
+void RobotState::recordRescueDeliveries(int alive, int dead)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Só entregas confirmadas pela missão podem aumentar a memória real.
+    if (state_.mode == "autonomous" &&
+        state_.autonomousMission == AutonomousMission::MainMission &&
+        alive >= state_.rescueDeliveredAliveVictims &&
+        dead >= state_.rescueDeliveredDeadVictims)
+    {
+        state_.rescueDeliveredAliveVictims = alive;
+        state_.rescueDeliveredDeadVictims = dead;
+    }
+}
+
 bool RobotState::setDriveDistanceTargetCm(double targetCm)
 {
     if (!std::isfinite(targetCm) ||

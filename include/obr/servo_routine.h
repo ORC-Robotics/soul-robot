@@ -20,7 +20,9 @@ enum class ServoRoutineKind
     Capture,
     InternalStorage,
     Deposit,
+    DepositCarriedKeepingStored,
     DepositCarriedAndStored,
+    DepositStored,
     FullSequence,
     FullSequenceTwo
 };

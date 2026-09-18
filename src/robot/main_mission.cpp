@@ -188,7 +188,22 @@ void MainMission::update(
                     silverEntry.status.phase == "silver_entry_line_timeout";
                 lineCourseMission_.reset();
                 silverEntryManeuver_.reset();
-                rescueRoomMission_.reset();
+                if (snapshot.rescueDeliveredAliveVictims >= 2 &&
+                    snapshot.rescueDeliveredDeadVictims >= 1)
+                {
+                    // Após STOP, a memória de entregas evita uma segunda coleta.
+                    // A busca da saída ainda começa com PWM zerado neste ciclo.
+                    phase_ = Phase::ExitSearch;
+                    rescueExitMission_.reset();
+                    robotState.driveAutonomous(0.0, 0.0);
+                    robotState.updateAutonomousStatus(makeStatus(
+                        "rescue_exit_starting",
+                        "Três vítimas já entregues: procurando a saída"));
+                    return;
+                }
+                rescueRoomMission_.resumeWithDeliveries(
+                    snapshot.rescueDeliveredAliveVictims,
+                    snapshot.rescueDeliveredDeadVictims);
                 phase_ = Phase::RescueArea;
                 robotState.driveAutonomous(0.0, 0.0);
                 robotState.updateAutonomousStatus(makeStatus(
@@ -223,6 +238,8 @@ void MainMission::update(
             autonomousRunSequence,
             snapshot.servoRoutineConfirmationSequence,
             snapshot.servoPose);
+        robotState.recordRescueDeliveries(
+            output.deliveredAliveVictims, output.deliveredDeadVictims);
         robotState.driveAutonomous(output.leftPower, output.rightPower);
         if (output.servoPoseRequested)
         {

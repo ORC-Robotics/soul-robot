@@ -313,13 +313,37 @@ void ServoRoutine::start(
         appendWrist(config::kServoRoutineWristInternalDegrees,
                     "servo_deposit_wrist_home", "Retornando pulso para 0°");
     }
-    else if (kind == ServoRoutineKind::DepositCarriedAndStored)
+    else if (kind == ServoRoutineKind::DepositCarriedKeepingStored)
     {
-        // Corresponde exatamente ao trecho final já validado da sequência
-        // completa: entrega a vítima da garra e depois retira a armazenada.
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_deposit_arm_clearance", "Elevando braço para 15°");
+        appendWrist(config::kServoRoutineWristForwardDegrees,
+                    "servo_deposit_wrist_forward", "Movendo pulso para 180°");
         appendGripper(config::kServoRoutineGripperDepositDegrees,
                       config::kServoRoutineGripperStepMs,
-                      "servo_second_deposit", "Abrindo garra em 90° no depósito");
+                      "servo_deposit_gripper_open", "Abrindo garra em 90° no depósito");
+        appendGripper(config::kServoRoutineGripperClosedDegrees,
+                      config::kServoRoutineGripperStepMs,
+                      "servo_deposit_gripper_close", "Fechando garra vazia em 0°");
+        // Mantém o pulso em 180° para não passar pela prata armazenada. Esta
+        // é a mesma pose imediatamente antes da retirada da prata na entrega
+        // da segunda vítima viva, garantindo a sequência mecânica validada.
+        appendArm(config::kServoRoutineArmHomeDegrees,
+                  "servo_deposit_arm_ready_for_stored",
+                  "Posicionando braço em 15° para entregar a prata armazenada");
+    }
+    else if (kind == ServoRoutineKind::DepositCarriedAndStored ||
+             kind == ServoRoutineKind::DepositStored)
+    {
+        // Corresponde exatamente ao trecho final já validado da sequência
+        // completa. Sem vítima carregada, não abre a garra antes de retirar
+        // a armazenada; assim o mecanismo só libera o objeto no triângulo.
+        if (kind == ServoRoutineKind::DepositCarriedAndStored)
+        {
+            appendGripper(config::kServoRoutineGripperDepositDegrees,
+                          config::kServoRoutineGripperStepMs,
+                          "servo_second_deposit", "Abrindo garra em 90° no depósito");
+        }
         appendWrist(config::kServoRoutineWristStoredApproachDegrees,
                     "servo_stored_wrist_approach", "Movendo pulso para 65°");
         appendArm(config::kServoRoutineArmStoredPickupDegrees,

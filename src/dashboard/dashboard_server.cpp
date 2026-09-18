@@ -477,6 +477,22 @@ void DashboardServer::handleCommand(const std::string& message)
         robotState_.startAutonomous();
         std::cout << "Autonomous start received\n";
     }
+    else if (message.find("\"command\":\"set_rescue_test_memory\"") != std::string::npos)
+    {
+        const double alive = getJsonNumber(message, "alive", -1.0);
+        const double dead = getJsonNumber(message, "dead", -1.0);
+        if (!std::isfinite(alive) || !std::isfinite(dead) ||
+            alive != std::floor(alive) || dead != std::floor(dead) ||
+            alive < 0.0 || alive > 2.0 || dead < 0.0 || dead > 1.0 ||
+            !robotState_.setRescueTestDeliveries(
+                static_cast<int>(alive), static_cast<int>(dead)))
+        {
+            std::cerr << "Rescue test memory ignored: robot must be stopped and counts valid\n";
+            return;
+        }
+        std::cout << "Rescue test memory set: alive=" << alive
+                  << " dead=" << dead << '\n';
+    }
     else if (message.find("\"command\":\"set_autonomous_mission\"") != std::string::npos)
     {
         endServoCalibrationIfActive();
@@ -945,6 +961,9 @@ std::string DashboardServer::buildTelemetryJson(
          << ",\"rescueZoneTargetColor\":\""
          << rescueZoneTargetColorName(state.rescueZoneTargetColor) << "\""
          << ",\"autonomousRunSequence\":" << state.autonomousRunSequence
+         << ",\"rescueDeliveredAliveVictims\":" << state.rescueDeliveredAliveVictims
+         << ",\"rescueDeliveredDeadVictims\":" << state.rescueDeliveredDeadVictims
+         << ",\"rescueTestMemoryActive\":" << (state.rescueTestMemoryActive ? "true" : "false")
          << ",\"missionFinished\":" << (state.missionFinished ? "true" : "false")
          << ",\"redRatio\":" << state.redRatio
          << ",\"redValid\":" << (state.redValid ? "true" : "false")
@@ -1895,6 +1914,18 @@ std::string DashboardServer::dashboardHtml()
                 <button id="servoRoutineConfirmButton" type="button" class="warning" disabled>Confirmar próximo passo</button>
                 <small class="distance-calibration">O armazenamento aguarda o pedido de fechamento. No depósito, cada abertura deve ser confirmada em até 2 segundos.</small>
               </div>
+              <div id="rescueMemorySettings" class="distance-mission-settings">
+                <span class="distance-input-label">Memória de entregas (RAM)</span>
+                <span id="rescueMemoryStatus">Prata 0/2 · Preta 0/1</span>
+                <div class="distance-input">
+                  <label for="rescueTestAlive">Pratas</label>
+                  <input id="rescueTestAlive" type="number" min="0" max="2" step="1" value="0">
+                  <label for="rescueTestDead">Pretas</label>
+                  <input id="rescueTestDead" type="number" min="0" max="1" step="1" value="0">
+                </div>
+                <button id="rescueTestMemoryButton" type="button" class="warning" disabled>Simular entregas</button>
+                <small class="distance-calibration">Só com o robô parado. Simula entregas para testar a missão principal; STOP mantém, reinício/deploy zera. Defina 0/0 para limpar.</small>
+              </div>
             </div>
 
             <div class="mode-buttons operation-mode-buttons">
@@ -2266,6 +2297,8 @@ std::string DashboardServer::dashboardHtml()
     const autonomousMission = element("autonomousMission");
     const distanceTargetCm = element("distanceTargetCm");
     const rescueZoneTargetColor = element("rescueZoneTargetColor");
+    const rescueTestAlive = element("rescueTestAlive");
+    const rescueTestDead = element("rescueTestDead");
     const oledTitle = element("oledTitle");
     const oledFirstLine = element("oledFirstLine");
     const oledSecondLine = element("oledSecondLine");
@@ -2469,6 +2502,17 @@ std::string DashboardServer::dashboardHtml()
         rescueZoneTargetColor.value = String(data.rescueZoneTargetColor || "green");
       }
       element("servoRoutineSettings").hidden = !mission.startsWith("servo_");
+      element("rescueMemoryStatus").textContent =
+        `Prata ${Number(data.rescueDeliveredAliveVictims) || 0}/2 · ` +
+        `Preta ${Number(data.rescueDeliveredDeadVictims) || 0}/1` +
+        (data.rescueTestMemoryActive === true ? " · SIMULAÇÃO" : "");
+      if (document.activeElement !== rescueTestAlive) {
+        rescueTestAlive.value = Number(data.rescueDeliveredAliveVictims) || 0;
+      }
+      if (document.activeElement !== rescueTestDead) {
+        rescueTestDead.value = Number(data.rescueDeliveredDeadVictims) || 0;
+      }
+      element("rescueTestMemoryButton").disabled = data.mode !== "stopped";
       element("servoRoutineStorageState").textContent =
         data.servoRoutineInternalObjectStored === true
           ? "Objeto registrado no armazenamento interno"
@@ -3526,6 +3570,14 @@ Rejeições: ${data.exitRejections || "nenhuma"}
       element("servoRoutineConfirmButton").disabled = true;
     }
 
+    function setRescueTestMemory() {
+      const alive = Number(rescueTestAlive.value);
+      const dead = Number(rescueTestDead.value);
+      if (!Number.isInteger(alive) || alive < 0 || alive > 2 ||
+          !Number.isInteger(dead) || dead < 0 || dead > 1) return;
+      send({ command: "set_rescue_test_memory", alive, dead });
+    }
+
     function startAutonomousMission() {
       // O WebSocket preserva a ordem: primeiro confirma missão e alvo, depois inicia.
       selectAutonomousMission();
@@ -4332,6 +4384,8 @@ Rejeições: ${data.exitRejections || "nenhuma"}
     distanceTargetCm.addEventListener("change", selectAutonomousMission);
     element("servoRoutineConfirmButton").addEventListener(
       "click", confirmServoRoutineAction);
+    element("rescueTestMemoryButton").addEventListener(
+      "click", setRescueTestMemory);
     document.addEventListener("keydown", event => {
       if (!driveKeyCodes.includes(event.code) || event.ctrlKey || event.altKey || event.metaKey) return;
       event.preventDefault();
