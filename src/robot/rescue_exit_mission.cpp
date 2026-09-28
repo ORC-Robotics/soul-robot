@@ -69,7 +69,32 @@ void RescueExitMission::startStraight(const Esp32TelemetrySnapshot& telemetry, T
     lastRightCount_ = telemetry.rightEncoderCount;
     leftDistanceCm_ = rightDistanceCm_ = lastProgressCm_ = 0.0;
     progressAt_ = now;
+    phaseStartedAt_ = now;
     movingForward_ = false;
+}
+
+void RescueExitMission::startNormalTurn(double targetHeadingDegrees, double fallbackDegrees,
+    double fallbackDirection, const Esp32TelemetrySnapshot& telemetry, Time now)
+{
+    targetHeadingDegrees_ = std::remainder(targetHeadingDegrees, 360.0);
+    phaseStartedAt_ = now;
+    turn_.reset();
+    const bool imuReady = ImuTurnController::imuReady(telemetry);
+    const double turnDegrees = imuReady
+        ? std::remainder(targetHeadingDegrees_ - telemetry.yawZDeg, 360.0)
+        : fallbackDegrees * fallbackDirection;
+    normalTurnDirection_ = turnDegrees < 0.0 ? -1.0 : 1.0;
+    normalTurnFallbackMs_ = static_cast<int>(std::ceil(
+        std::abs(turnDegrees) / 90.0 * config::kRescueExitTimedQuarterTurnMs));
+    normalTurnUsesImu_ = imuReady &&
+        std::abs(turnDegrees) > config::kRescueExitFromEntryYawToleranceDegrees &&
+        turn_.start(std::abs(turnDegrees), normalTurnDirection_ < 0.0
+            ? ImuTurnDirection::Left : ImuTurnDirection::Right, telemetry,
+            config::kRescueExitFromEntryYawToleranceDegrees, 0, -1,
+            config::kRescueExitTurnPower, config::kRescueExitNormalTurnTimeoutMs,
+            now, true, 0.0, config::kRescueExitTurnCorrectionMaximumMs);
+    if (imuReady && std::abs(turnDegrees) <= config::kRescueExitFromEntryYawToleranceDegrees)
+        normalTurnFallbackMs_ = 0;
 }
 
 RescueExitOutput RescueExitMission::fail(const char* reason)
@@ -121,6 +146,10 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     if (phase_ == Phase::Failed) return output("rescue_exit_failed", failure_);
     if (phase_ == Phase::Completed)
         return output("rescue_exit_acquired", "Linha confirmada pela CAM0");
+    // A sequência tolera falhas de medição, mas nunca libera tração durante
+    // a parada de emergência local ou uma calibração da ESP32.
+    if (telemetry.emergencyStopActive || telemetry.calibrationActive || telemetry.servoCalibrationActive)
+        return output("rescue_exit_safety_stop", "Parado: emergência ou calibração ativa na ESP32");
     selectedSector_ = -1;
     selectedConfidence_ = 0.0;
     if (!started_)
@@ -134,16 +163,25 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         lastBottomTimestamp_ = bottom.lineTimestamp;
     }
     if (telemetry.esp32UptimeMs < lastUptimeMs_)
-        return fail("ESP32 reiniciou durante a saída");
+    {
+        if (completedRescueRoute_) return fail("ESP32 reiniciou durante a saída");
+        // Um reinício não pode contar o salto dos encoders como distância percorrida.
+        lastLeftCount_ = telemetry.leftEncoderCount;
+        lastRightCount_ = telemetry.rightEncoderCount;
+        normalTurnUsesImu_ = false;
+        turn_.reset();
+    }
     lastUptimeMs_ = telemetry.esp32UptimeMs;
-    if (now - startedAt_ >= std::chrono::milliseconds(config::kRescueExitTotalTimeoutMs))
+    if (completedRescueRoute_ &&
+        now - startedAt_ >= std::chrono::milliseconds(config::kRescueExitTotalTimeoutMs))
         return fail("Tempo total da saída excedido");
 
     const bool sensorsReady = telemetry.readyForOperation() &&
         ImuTurnController::imuReady(telemetry) &&
         EncoderDistanceController::encodersReady(telemetry);
     // Conta somente avanço comandado com sensores atuais. Giros e pausas não entram na reta.
-    if (movingForward_ && sensorsReady)
+    if (movingForward_ && (completedRescueRoute_ ? sensorsReady :
+        EncoderDistanceController::encodersReady(telemetry)))
     {
         leftDistanceCm_ += std::abs(static_cast<double>(telemetry.leftEncoderCount) -
             static_cast<double>(lastLeftCount_)) / config::kEncoderCountsPerCentimeter;
@@ -160,7 +198,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         lastBottomSequence_ = bottom.lineSequence;
         lastBottomTimestamp_ = bottom.lineTimestamp;
     }
-    if (!sensorsReady)
+    if (!sensorsReady && completedRescueRoute_)
     {
         acquisitionFrames_ = 0;
         guidanceState_ = "WAITING_SENSORS";
@@ -171,11 +209,12 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         return output("rescue_exit_waiting_sensors", "Parado: aguardando ESP32, IMU e encoders");
     }
     sensorsMissing_ = false;
-    // Ausência de fita permite avanço; ausência de imagem atual sempre remove autoridade.
+    // Uma imagem vencida nunca fornece correção. Na saída normal, os movimentos
+    // temporizados continuam; a reentrada conserva a parada por perda de câmera.
     const bool forwardReady = forward.exitAnalysisActive && runSequence > 0 &&
         forward.exitRunSequence == runSequence && std::isfinite(forward.ageMs) &&
         forward.ageMs >= 0.0 && forward.ageMs <= config::kRescueExitForwardStatusTimeoutMs;
-    if (!forwardReady)
+    if (!forwardReady && completedRescueRoute_)
     {
         acquisitionFrames_ = 0;
         guidanceState_ = "WAITING_CAMERA";
@@ -186,7 +225,107 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         return output("rescue_exit_waiting_camera", "Parado: aguardando reinício automático da CAM1");
     }
     cameraMissing_ = false;
-    if (forward.cameraObscured) return fail("Câmera frontal obstruída durante a saída");
+    if (forward.cameraObscured && completedRescueRoute_)
+        return fail("Câmera frontal obstruída durante a saída");
+
+    if (!completedRescueRoute_ && phase_ == Phase::Preparing)
+    {
+        // O alvo normal é o yaw congelado no prata + 90°, e não o yaw do depósito.
+        // Sem referência salva, aceita a orientação atual ou um giro apenas por tempo.
+        const double baseHeading = referenceValid_ ? referenceHeadingDegrees_ :
+            (ImuTurnController::imuReady(telemetry) ? telemetry.yawZDeg : 0.0);
+        startNormalTurn(baseHeading + config::kRescueExitFromEntryYawDegrees,
+            config::kRescueExitFromEntryYawDegrees, 1.0, telemetry, now);
+        phase_ = Phase::Turning;
+    }
+
+    if (!completedRescueRoute_ && phase_ == Phase::WallReverse)
+    {
+        guidanceState_ = "WALL_REVERSE";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
+        // A ré e o novo avanço são exclusivamente temporizados. Falhas de
+        // medição não cancelam as etapas; E-Stop e watchdog continuam ativos.
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(config::kRescueExitWallReverseMs))
+            return output("rescue_exit_wall_reverse", "Ré temporizada para afastar a frente da quina",
+                -config::kRescueExitExplorationPower, -config::kRescueExitExplorationPower);
+        phase_ = Phase::WallAdvance;
+        phaseStartedAt_ = now;
+        // Um ciclo com saída zero separa a inversão de sentido dos motores.
+        return output("rescue_exit_wall_advance_starting", "Ré encerrada; preparando novo avanço na parede");
+    }
+
+    if (!completedRescueRoute_ && phase_ == Phase::WallAdvance)
+    {
+        guidanceState_ = "WALL_ADVANCE";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(config::kRescueExitWallAdvanceMs))
+            return output("rescue_exit_wall_advance", "Avanço temporizado para apoiar a frente na parede",
+                config::kRescueExitExplorationPower, config::kRescueExitExplorationPower);
+        phase_ = Phase::ZeroingYaw;
+        phaseStartedAt_ = now;
+        return output("rescue_exit_zeroing_yaw", "Novo avanço encerrado; parando para registrar o zero local na parede");
+    }
+
+    if (!completedRescueRoute_ && phase_ == Phase::ZeroingYaw)
+    {
+        guidanceState_ = "ZEROING_WALL_YAW";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
+        if (now - phaseStartedAt_ < std::chrono::milliseconds(config::kRescueExitYawZeroSettleMs))
+            return output("rescue_exit_zeroing_yaw", "Parado: estabilizando a referência de yaw na parede");
+        // A orientação parada na parede passa a ser zero apenas nesta missão.
+        // Não reinicia a IMU nem altera referências de outras manobras.
+        wallYawZeroValid_ = ImuTurnController::imuReady(telemetry);
+        wallYawZeroDegrees_ = wallYawZeroValid_ ? telemetry.yawZDeg : 0.0;
+        auto localTelemetry = telemetry;
+        if (wallYawZeroValid_) localTelemetry.yawZDeg = 0.0;
+        startNormalTurn(-config::kRescueExitLeftTurnDegrees,
+            config::kRescueExitLeftTurnDegrees, -1.0, localTelemetry, now);
+        phase_ = Phase::LeftTurning;
+        return output("rescue_exit_left_turn_starting", wallYawZeroValid_
+            ? "Yaw local zerado na parede; iniciando giro para o alvo negativo"
+            : "Yaw indisponível; iniciando giro à esquerda limitado por tempo");
+    }
+
+    if (!completedRescueRoute_ && (phase_ == Phase::Turning || phase_ == Phase::LeftTurning))
+    {
+        const bool leftTurn = phase_ == Phase::LeftTurning;
+        guidanceState_ = leftTurn ? "LEFT_TURN" : "TURNING";
+        bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
+        const auto elapsed = now - phaseStartedAt_;
+        bool finished = elapsed >= std::chrono::milliseconds(config::kRescueExitNormalTurnTimeoutMs);
+        if (!finished && normalTurnUsesImu_)
+        {
+            auto localTelemetry = telemetry;
+            if (leftTurn && wallYawZeroValid_)
+                localTelemetry.yawZDeg = std::remainder(telemetry.yawZDeg - wallYawZeroDegrees_, 360.0);
+            const auto movement = turn_.update(localTelemetry, now);
+            finished = movement.result == ImuTurnResult::Completed;
+            if (movement.result == ImuTurnResult::Failed)
+            {
+                // Não reinicia o relógio: perder a IMU não prolonga o giro cego.
+                normalTurnUsesImu_ = false;
+                turn_.reset();
+            }
+            else if (!finished)
+                return output(leftTurn ? "rescue_exit_left_turning" : "rescue_exit_direct_turning",
+                    movement.action, movement.leftPower, movement.rightPower);
+        }
+        if (!finished && !normalTurnUsesImu_)
+        {
+            finished = elapsed >= std::chrono::milliseconds(normalTurnFallbackMs_);
+            if (!finished)
+                return output(leftTurn ? "rescue_exit_left_turning" : "rescue_exit_direct_turning",
+                    "Giro limitado por tempo; IMU indisponível",
+                    normalTurnDirection_ * config::kRescueExitTurnPower,
+                    -normalTurnDirection_ * config::kRescueExitTurnPower);
+        }
+        startStraight(telemetry, now);
+        if (leftTurn) phase_ = Phase::FrontGuidance;
+        // Separa as etapas com comando zero para não contar o giro como avanço.
+        return output(leftTurn ? "rescue_exit_front_guidance_starting" : "rescue_exit_crossing_starting",
+            leftTurn ? "Giro à esquerda encerrado; iniciando busca da saída" :
+                       "Alinhamento encerrado; iniciando travessia de 60 cm");
+    }
 
     if (phase_ == Phase::EntryAdvance)
     {
@@ -211,7 +350,7 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
 
     if (phase_ == Phase::Preparing)
     {
-        // Sem uma entrada válida, não há alvo seguro para a saída normal.
+        // Na reentrada, o avanço inicial precisa fornecer a referência do giro.
         if (!referenceValid_) return fail("Yaw de entrada da sala de resgate indisponível");
         targetHeadingDegrees_ = std::remainder(
             referenceHeadingDegrees_ +
@@ -253,13 +392,24 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         lastProgressCm_ = progressCm;
         progressAt_ = now;
     }
-    if (now - progressAt_ >= std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
+    if (completedRescueRoute_ &&
+        now - progressAt_ >= std::chrono::milliseconds(config::kRescueDistanceStallTimeoutMs))
         return fail("Rodas sem progresso durante a saída fixa");
     const double straightCm = completedRescueRoute_
         ? config::kRescueCompletedStraightCm
-        : config::kRescueExitFrontGuidanceStartCm;
-    if (phase_ == Phase::Straight && progressCm >= straightCm)
+        : config::kRescueExitCrossingCm;
+    if (phase_ == Phase::Straight && (progressCm >= straightCm ||
+        (!completedRescueRoute_ && now - phaseStartedAt_ >=
+            std::chrono::milliseconds(config::kRescueExitCrossingTimeoutMs))))
     {
+        if (!completedRescueRoute_)
+        {
+            phase_ = Phase::WallReverse;
+            phaseStartedAt_ = now;
+            guidanceState_ = "WALL_REVERSE";
+            return output("rescue_exit_wall_reverse", "Travessia encerrada; iniciando ré temporizada na parede",
+                -config::kRescueExitExplorationPower, -config::kRescueExitExplorationPower);
+        }
         phase_ = Phase::FrontGuidance;
         fallbackStartCm_ = progressCm;
     }
@@ -269,7 +419,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
         guidanceState_ = "INITIAL_STRAIGHT";
         bottomBlocker_ = "BEFORE_STRAIGHT_GATE";
         movingForward_ = true;
-        return output("rescue_exit_initial_straight", "Avançando reto antes de habilitar o Fusion frontal",
+        return output("rescue_exit_initial_straight", completedRescueRoute_
+            ? "Avançando reto antes de habilitar o Fusion frontal" : "Travessia de 60 cm limitada por tempo",
                       config::kRescueExitExplorationPower, config::kRescueExitExplorationPower);
     }
 
@@ -297,7 +448,8 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     for (std::size_t sector = 0; sector < forward.exitCandidates.size(); ++sector)
     {
         const auto& candidate = forward.exitCandidates[sector];
-        if (usableCandidate(candidate) && (!best || candidate.score > best->score))
+        if (forwardReady && !forward.cameraObscured &&
+            usableCandidate(candidate) && (!best || candidate.score > best->score))
         {
             best = &candidate;
             selectedSector_ = static_cast<int>(sector);
@@ -306,7 +458,16 @@ RescueExitOutput RescueExitMission::update(const CameraLineSnapshot& bottom,
     }
     if (best || bottomValid) fallbackStartCm_ = progressCm;
     fallbackAdvanceCm_ = progressCm - fallbackStartCm_;
-    if (fallbackAdvanceCm_ >= config::kRescueExitFallbackMaximumAdvanceCm)
+    if (!completedRescueRoute_ &&
+        (fallbackAdvanceCm_ >= config::kRescueExitFallbackMaximumAdvanceCm ||
+         now - phaseStartedAt_ >= std::chrono::milliseconds(config::kRescueExitNormalSearchTimeoutMs)))
+    {
+        // Mantém a missão ativa e permite a confirmação posterior da CAM0.
+        // E-Stop, watchdog e clamp continuam aplicados fora desta sequência.
+        guidanceState_ = "WAITING_CAM0";
+        return output("rescue_exit_waiting_line", "Prazo da busca atingido; parado aguardando Fusion da CAM0");
+    }
+    if (completedRescueRoute_ && fallbackAdvanceCm_ >= config::kRescueExitFallbackMaximumAdvanceCm)
         return fail("Limite de avanço sem Fusion válido atingido");
     if (!best)
     {

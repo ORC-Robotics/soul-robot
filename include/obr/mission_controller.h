@@ -63,6 +63,9 @@ private:
     ServoRoutine servoRoutine_;
     // O bônus pausa a missão sem apagar suas fases ou a memória de armazenamento.
     ServoRoutine waveBonusRoutine_;
+    // A primeira partida após calibrar consome o bônus, mesmo se houver Stop.
+    // Novos starts e calibrações não rearmam o gesto; reiniciar o programa rearma.
+    bool startupWaveConsumed_ = false;
 
     DistancePhase distancePhase_ = DistancePhase::Idle;
     CornerYawPhase cornerYawPhase_ = CornerYawPhase::Ready;

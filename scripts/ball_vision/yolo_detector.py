@@ -34,7 +34,7 @@ class YoloBallDetectorConfig:
     # 0,55. O rastreador ainda exige confirmação temporal, então este limite
     # pode ser mais permissivo sem alterar a aceitação da bola prata.
     black_ball_confidence_threshold: float = 0.40
-    silver_ball_confidence_threshold: float = 0.55
+    silver_ball_confidence_threshold: float = 0.50
     nms_iou_threshold: float = 0.45
 
     def validate(self):

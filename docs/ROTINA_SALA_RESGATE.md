@@ -3,7 +3,7 @@
 Este documento descreve a sequência executada pela `MainMission` depois que a
 faixa cinza confirma a entrada da sala. Quando termina a verificação das vítimas
 extras, a `MainMission` mantém o robô parado durante a transição e inicia a busca
-da saída pelos corners.
+da saída pela [sequência final de travessia e reencontro da linha](RESCUE_EXIT_SEQUENCE.md).
 
 ## Ordem da missão
 

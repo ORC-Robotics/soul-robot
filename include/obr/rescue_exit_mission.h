@@ -23,7 +23,8 @@ public:
     void reset();
     // Usa a entrada curta antes do giro para a saída quando o resgate já terminou.
     void startCompletedRescueRoute();
-    // Define o yaw de entrada, em graus; valores inválidos impedem a saída normal.
+    // Define o yaw de entrada, em graus; sem referência, aceita o yaw atual
+    // ou um giro temporizado quando a IMU também estiver indisponível.
     void setReferenceHeading(double headingDegrees);
     bool requiresRescueZoneDetection() const;
     RescueExitOutput update(const CameraLineSnapshot& bottom,
@@ -33,7 +34,7 @@ public:
 
 private:
     using Time = std::chrono::steady_clock::time_point;
-    enum class Phase { EntryAdvance, Preparing, Turning, Straight, FrontGuidance, Completed, Failed };
+    enum class Phase { EntryAdvance, Preparing, Turning, Straight, WallReverse, WallAdvance, ZeroingYaw, LeftTurning, FrontGuidance, Completed, Failed };
     Phase phase_ = Phase::Preparing;
     EncoderDistanceController entryDistance_;
     ImuTurnController turn_;
@@ -57,11 +58,20 @@ private:
     int acquisitionFrames_ = 0;
     int selectedSector_ = -1;
     double selectedConfidence_ = 0.0;
+    bool normalTurnUsesImu_ = false;
+    bool wallYawZeroValid_ = false;
+    double wallYawZeroDegrees_ = 0.0;
+    double normalTurnDirection_ = 1.0;
+    int normalTurnFallbackMs_ = 0;
+    Time phaseStartedAt_{};
     Time startedAt_{}, progressAt_{}, sensorsMissingSince_{}, cameraMissingSince_{};
     std::string failure_, lastPhase_;
 
     // Inicia a medida linear somente depois que o giro terminou.
     void startStraight(const Esp32TelemetrySnapshot& telemetry, Time now);
+    // Usa a IMU quando disponível e limita o giro por tempo quando ela falhar.
+    void startNormalTurn(double targetHeadingDegrees, double fallbackDegrees,
+                         double fallbackDirection, const Esp32TelemetrySnapshot& telemetry, Time now);
     RescueExitOutput fail(const char* reason);
     RescueExitOutput output(const char* phase, const std::string& action,
                            double left = 0.0, double right = 0.0);

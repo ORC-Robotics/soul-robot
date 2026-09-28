@@ -1,4 +1,9 @@
-# Saída fixa e retomada do percurso
+# Saída fixa e retomada do percurso — referência histórica
+
+> A sequência abaixo documenta uma etapa anterior do desenvolvimento. Para a
+> saída normal da versão de competição, consulte
+> [Sequência final da saída do resgate](RESCUE_EXIT_SEQUENCE.md). Os valores e
+> as condições de falha abaixo não descrevem a saída normal atual.
 
 A missão principal inicia a saída após a varredura final do resgate. Não executa outra ré nessa transição. O modo **SAÍDA · BUSCAR E RETOMAR PERCURSO** usa a mesma rotina e também continua pelo percurso após adquirir a linha.
 

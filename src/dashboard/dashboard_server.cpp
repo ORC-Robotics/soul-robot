@@ -1006,6 +1006,8 @@ std::string DashboardServer::buildTelemetryJson(
          << (obstacleRightClearanceAvailable ? "true" : "false")
          << ",\"obstacleSelectedSide\":\""
          << state.autonomousStatus.obstacleSelectedSide << "\""
+         << ",\"obstacleWaitSecondsRemaining\":"
+         << state.autonomousStatus.obstacleWaitSecondsRemaining
          << ",\"cameraBlackLeft\":"
          << (state.autonomousStatus.cameraBlackLeft ? "true" : "false")
          << ",\"cameraBlackRight\":"

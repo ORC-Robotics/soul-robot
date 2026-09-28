@@ -34,6 +34,10 @@ ObstacleAvoidanceOutput ObstacleAvoidance::update(
     {
     case Phase::Idle:
         return updateIdle(telemetry, line, allowStart, forwardLine);
+    case Phase::WaitingAfterReverse:
+        return updateInitialWait();
+    case Phase::ContinuingAfterWait:
+        return continueAfterInitialWait(telemetry, "Espera concluída após a ré inicial");
     case Phase::ReversingBeforeCentering:
         return updateInitialReverse(telemetry);
     case Phase::Centering:
@@ -101,6 +105,7 @@ void ObstacleAvoidance::reset()
     forwardStartRightCount_ = 0;
     reverseStartLeftCount_ = 0;
     reverseStartRightCount_ = 0;
+    initialWaitStartedAt_ = {};
     selectedHeadingYaw_ = std::numeric_limits<double>::quiet_NaN();
     curveStartLeftCount_ = 0;
     curveStartRightCount_ = 0;
@@ -206,10 +211,45 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateIdle(
     reverseStartedAt_ = std::chrono::steady_clock::now();
     return output(
         "obstacle_detected",
-        "Obstáculo confirmado: parando antes da centralização");
+        "Obstáculo confirmado: preparando a ré inicial");
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::updateInitialWait()
+{
+    const auto now = std::chrono::steady_clock::now();
+    const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - initialWaitStartedAt_).count();
+    const long long remainingMs = std::max(0LL,
+        static_cast<long long>(config::kObstacleInitialWaitMs) - elapsedMs);
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_initial_wait", "DESVIO: aguardando com os motores parados");
+    result.waitSecondsRemaining = static_cast<int>((remainingMs + 999) / 1000);
+    if (remainingMs == 0)
+    {
+        // A ré já terminou. O próximo ciclo retoma apenas a etapa seguinte,
+        // deixando o zero disponível para a OLED antes de qualquer movimento.
+        phase_ = Phase::ContinuingAfterWait;
+        result.action = "DESVIO: 0 SEGUNDOS; retomando após a ré inicial";
+    }
+    return result;
 }
 
 ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterInitialReverse(
+    const Esp32TelemetrySnapshot& telemetry,
+    const std::string& action)
+{
+    // A ré acontece uma única vez. A espera usa um relógio monotônico e mantém
+    // os motores parados, sem consumir os timeouts das próximas manobras.
+    phase_ = Phase::WaitingAfterReverse;
+    initialWaitStartedAt_ = std::chrono::steady_clock::now();
+    ObstacleAvoidanceOutput result = output(
+        "obstacle_initial_wait", action + "; aguardando antes de continuar o desvio");
+    result.waitSecondsRemaining = (config::kObstacleInitialWaitMs + 999) / 1000;
+    result.targetDistanceCm = config::kObstacleReverseDistanceCm;
+    return result;
+}
+
+ObstacleAvoidanceOutput ObstacleAvoidance::continueAfterInitialWait(
     const Esp32TelemetrySnapshot& telemetry,
     const std::string& action)
 {
@@ -1037,6 +1077,32 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitDistanceForward(
         rightCounts + std::abs(telemetry.rightEncoderRate) * predictionSeconds;
     const double targetCounts = config::kObstacleExitForwardDistanceCm *
                                 config::kEncoderCountsPerCentimeter;
+    // Nesta reta, a faixa está à frente após o giro nominal. Exige avanço real
+    // das duas rodas e três imagens novas antes de entregar ao Fusion, sem
+    // comparar a entrada com o yaw antigo do contorno nem impor outro giro.
+    if (usedDistanceCm >= config::kObstacleExitMinimumForwardDistanceCm &&
+        std::isfinite(line.lineFollowerLeftPower) &&
+        std::isfinite(line.lineFollowerRightPower) &&
+        std::abs(line.lineFollowerLeftPower) <= config::kMaxMotorOutput &&
+        std::abs(line.lineFollowerRightPower) <= config::kMaxMotorOutput &&
+        observeFreshFusion(line))
+    {
+        exitFusionTurnStartYaw_ = telemetry.yawZDeg;
+        auto result = completeExit(telemetry, line, "obstacle_exit_reacquired",
+            "Fusion confirmado após avanço mínimo; entrando na faixa sem giro adicional", true);
+        result.targetDistanceCm = config::kObstacleExitMinimumForwardDistanceCm;
+        result.leftDistanceCm = leftDistanceCm;
+        result.rightDistanceCm = rightDistanceCm;
+        return result;
+    }
+    if (usedDistanceCm < config::kObstacleExitMinimumForwardDistanceCm ||
+        !std::isfinite(line.lineFollowerLeftPower) || !std::isfinite(line.lineFollowerRightPower) ||
+        std::abs(line.lineFollowerLeftPower) > config::kMaxMotorOutput ||
+        std::abs(line.lineFollowerRightPower) > config::kMaxMotorOutput)
+    {
+        fusionReacquireFrames_ = 0;
+        lastFusionLineSequence_ = line.lineSequence;
+    }
     if (std::min(projectedLeftCounts, projectedRightCounts) >= targetCounts)
     {
         phase_ = Phase::ExitFusionTurn;
@@ -1095,7 +1161,12 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitFusionTurn(
     }
     if (wrongWayExitFusion(telemetry, line))
     {
-        return startExitLeftSearch(telemetry, line);
+        // Antes de inverter a busca, tenta entrar na faixa que está à frente.
+        // O prazo da procura reta limita esse avanço e preserva E-Stop e clamp.
+        phase_ = Phase::ExitTimedForward;
+        exitTimedForwardStartedAt_ = std::chrono::steady_clock::now();
+        return output("obstacle_exit_timed_forward_start",
+            "Antes da correção angular: procurando a faixa avançando");
     }
     if (observeFreshFusion(line))
     {
@@ -1160,16 +1231,14 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitTimedForward(
             "obstacle_exit_search_angle_limit",
             "Busca interrompida ao atingir o limite angular positivo");
     }
-    if (wrongWayExitFusion(telemetry, line))
-    {
-        return startExitLeftSearch(telemetry, line);
-    }
+    // A faixa à frente pode estar fora do setor do yaw anterior ao contorno.
+    // Na procura reta, aceita o Fusion e protege a orientação do reencontro.
     if (observeFreshFusion(line))
     {
         return completeExit(
             telemetry, line,
             "obstacle_exit_reacquired",
-            "Faixa confirmada durante a procura reta de saída");
+            "Faixa confirmada durante a procura reta de saída", true);
     }
     if (std::chrono::steady_clock::now() - exitTimedForwardStartedAt_ >=
         std::chrono::milliseconds(config::kObstacleExitFusionForwardTimeoutMs))
@@ -1177,9 +1246,13 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitTimedForward(
         phase_ = Phase::ExitSearch;
         exitSearchStartedAt_ = std::chrono::steady_clock::now();
         exitSearchOppositeSide_ = false;
+        // A busca à esquerda começa na orientação atual, com limites próprios.
+        // Isso evita usar o yaw antigo para inverter imediatamente o sentido.
+        if (config::kObstacleExitSearchLeftFirst)
+            exitFusionTurnStartYaw_ = telemetry.yawZDeg;
         return output(
-            selectedSide_ == "LEFT" ? "obstacle_exit_search_right_start"
-                                    : "obstacle_exit_search_left_start",
+            !config::kObstacleExitSearchLeftFirst && selectedSide_ == "LEFT"
+                ? "obstacle_exit_search_right_start" : "obstacle_exit_search_left_start",
             "Fusion ausente após " +
                 std::to_string(config::kObstacleExitFusionForwardTimeoutMs) +
                 " ms: preparando busca final");
@@ -1210,7 +1283,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
             "obstacle_exit_search_sensors_lost",
             "Busca interrompida: IMU sem dados recentes");
     }
-    const double direction = selectedSide_ == "LEFT" ? 1.0 : -1.0;
+    const double direction = config::kObstacleExitSearchLeftFirst
+        ? -1.0 : (selectedSide_ == "LEFT" ? 1.0 : -1.0);
     const double directedYawChange =
         signedYawError(telemetry.yawZDeg, exitFusionTurnStartYaw_) * direction;
     if (exitSearchOppositeSide_ &&
@@ -1224,7 +1298,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
     {
         if (!exitSearchOppositeSide_)
         {
-            // Ao atingir o extremo para dentro, zera os votos da faixa traseira.
+            // Ao atingir o extremo do primeiro giro, zera os votos da faixa traseira.
             // A próxima etapa procura no sentido oposto com o mesmo limite angular.
             exitSearchOppositeSide_ = true;
             exitSearchStartedAt_ = std::chrono::steady_clock::now();
@@ -1239,7 +1313,7 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
         fusionReacquireFrames_ = 0;
         lastFusionLineSequence_ = line.lineSequence;
     }
-    if (wrongWayExitFusion(telemetry, line))
+    if (!config::kObstacleExitSearchLeftFirst && wrongWayExitFusion(telemetry, line))
     {
         return startExitLeftSearch(telemetry, line);
     }
@@ -1248,7 +1322,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
         return completeExit(
             telemetry, line,
             "obstacle_exit_reacquired",
-            "Faixa confirmada durante a busca angular de saída");
+            "Faixa confirmada durante a busca angular de saída",
+            config::kObstacleExitSearchLeftFirst);
     }
     if (std::chrono::steady_clock::now() - exitSearchStartedAt_ >=
         std::chrono::milliseconds(
@@ -1264,10 +1339,10 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
     const double searchDirection = exitSearchOppositeSide_ ? -direction : direction;
     return output(
         exitSearchOppositeSide_
-            ? (selectedSide_ == "LEFT" ? "obstacle_exit_search_opposite_left"
-                                       : "obstacle_exit_search_opposite_right")
-            : (selectedSide_ == "LEFT" ? "obstacle_exit_search_right"
-                                       : "obstacle_exit_search_left"),
+            ? (searchDirection > 0.0 ? "obstacle_exit_search_opposite_right"
+                                     : "obstacle_exit_search_opposite_left")
+            : (searchDirection > 0.0 ? "obstacle_exit_search_right"
+                                     : "obstacle_exit_search_left"),
         "Girando para procurar a faixa dentro do setor angular configurado",
         searchDirection * config::kObstacleExitSearchPower,
         -searchDirection * config::kObstacleExitSearchPower);
@@ -1276,7 +1351,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::updateExitSearch(
 bool ObstacleAvoidance::wrongWayExitFusion(
     const Esp32TelemetrySnapshot& telemetry, const CameraLineSnapshot& line) const
 {
-    const double heading = signedYawError(telemetry.yawZDeg, yawBase_);
+    const double referenceYaw = phase_ == Phase::Idle && exitHeadingGuardActive_
+        ? exitHeadingGuardReferenceYaw_ : yawBase_;
+    const double heading = signedYawError(telemetry.yawZDeg, referenceYaw);
     const double predicted = heading + telemetry.gyroZDegPerSec *
         config::kObstacleBrakePredictionSeconds;
     const double steering = line.lineFollowerLeftPower - line.lineFollowerRightPower;
@@ -1388,7 +1465,8 @@ ObstacleAvoidanceOutput ObstacleAvoidance::completeExit(
     const Esp32TelemetrySnapshot& telemetry,
     const CameraLineSnapshot& line,
     const std::string& phase,
-    const std::string& action)
+    const std::string& action,
+    bool useAcquiredHeadingReference)
 {
     turnController_.reset();
     lineCenteringController_.reset();
@@ -1398,6 +1476,9 @@ ObstacleAvoidanceOutput ObstacleAvoidance::completeExit(
     lastCase3LineSequence_ = line.lineSequence;
     armCase3FusionWindow();
     exitHeadingGuardActive_ = true;
+    // A procura reta ou a busca com prioridade à esquerda usa o yaw do reencontro.
+    // As outras recuperações conservam o setor relativo ao yaw base original.
+    exitHeadingGuardReferenceYaw_ = useAcquiredHeadingReference ? telemetry.yawZDeg : yawBase_;
     exitHeadingGuardStartedAt_ = std::chrono::steady_clock::now();
     if (selectedSide_ == "LEFT")
     {

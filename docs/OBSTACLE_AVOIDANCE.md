@@ -19,36 +19,58 @@ A saída nominal volta a procurar Fusion após a curva. Encoders, IMU, parada de
 emergência e timeouts continuam ativos. Use `false` para permitir os cenários
 de recuperação por linhas laterais descritos abaixo.
 
-O padrão tem `kObstacleForceLeftSide = false`: a escolha do lado e os cenários
-da branch `main` foram retomados, com a saída nominal atual espelhada. Forçar
-LEFT serve apenas para calibração e não desativa os cenários de recuperação.
+A configuração final usa `kObstacleSideMode = ObstacleSideMode::Left`.
+Após a ré e a espera, salva o yaw atual e inicia o contorno esquerdo sem
+centralização nem varredura lateral obrigatórias. As etapas 3 e 4 abaixo
+pertencem ao modo `Automatic`; o modo `Right` espelha o contorno fixo.
 
 1. Confirma o obstáculo a até 6 cm em duas chamadas elegíveis do controle.
    Atualmente, essa contagem não exige dois ecos distintos do ultrassônico.
 2. Recua até 2 cm, com encerramento da ré inicial após 1500 ms ou perda de
-   atualização dos encoders; nesses casos, passa para a centralização.
+   atualização dos encoders; nesses casos, passa para a espera inicial.
+   Após encerrar a ré, mantém os motores parados por 6000 ms
+   (`kObstacleInitialWaitMs`, em `include/obr/config.h`). A OLED exibe
+   `DESVIO` e a contagem `6 SEGUNDOS`, `5 SEGUNDOS`, até `0 SEGUNDOS`.
+   A espera depende apenas do relógio, sem novas exigências de sensores ou
+   confirmação da OLED. Ao terminar, retoma a próxima etapa, sem repetir a ré
+   nem consumir os timeouts das próximas manobras durante a contagem.
 3. Centraliza pela câmera inferior e salva `yawBase`.
 4. Mede a esquerda a `yawBase - 60°`, retorna ao yaw base e mede a direita a
    `yawBase + 60°`. Em cada lado, espera 200 ms parado e coleta cinco amostras
    novas pela telemetria da ESP32. Uma confirmação exclusiva de preto pela CAM1
    durante o scan prevalece; senão, escolhe a maior distância ultrassônica.
    Diferenças de até 2 cm empatam e escolhem RIGHT por padrão.
-5. Posiciona a aproximação em `yawBase - 40°` para LEFT ou `yawBase + 40°`
+5. Posiciona a aproximação em `yawBase - 42°` para LEFT ou `yawBase + 42°`
    para RIGHT e avança 12 cm mantendo o yaw realmente alcançado no giro.
 6. Executa uma curva de 20 cm, com yaw alvo progressivo até `yawBase + 45°`
    para LEFT ou `yawBase - 45°` para RIGHT.
    Concluir a distância não garante que esse yaw final tenha sido alcançado.
-7. Para por 250 ms e gira 25° para dentro a partir do yaw medido naquele momento:
+7. Para por 250 ms e gira 30° para dentro a partir do yaw medido naquele momento:
    direita no contorno LEFT, esquerda no contorno RIGHT.
-8. Avança 6 cm com comandos iguais. Os dois encoders precisam alcançar o alvo;
-   a compensação de frenagem evita ultrapassar a distância por inércia.
+8. Avança com comandos iguais. Após `kObstacleExitMinimumForwardDistanceCm`
+   (3 cm reais nas duas rodas), três frames novos de Fusion válido podem encerrar
+   a manobra imediatamente, sem completar `kObstacleExitForwardDistanceCm`
+   nem executar o giro adicional. A proteção angular dessa entrada usa a
+   orientação do reencontro, evitando rejeitar a faixa pelo yaw anterior ao
+   contorno. Sem confirmação, conserva a reta completa e as buscas seguintes;
+   a compensação de frenagem continua aplicada ao alvo completo.
 9. Gira mais 10° para dentro enquanto procura o Fusion: direita no LEFT e
    esquerda no RIGHT. Se confirmar três frames, encerra a manobra imediatamente.
-10. Sem confirmação, avança reto por até 1500 ms ainda procurando o Fusion.
+10. Sem confirmação, avança reto por até 1900 ms ainda procurando o Fusion.
+    Se o giro adicional rejeitar a faixa pelo yaw anterior ao contorno, também
+    inicia essa procura reta antes de tentar corrigir o ângulo. Nessa reta,
+    três frames novos de Fusion válido encerram a manobra, e a proteção da
+    entrada usa a orientação do reencontro para não rejeitar novamente a faixa.
     A sincronização dos motores pode ajustar as saídas aplicadas.
-11. Se necessário, gira para dentro por até 3000 ms: direita no LEFT, esquerda
-   no RIGHT. O giro acumulado desde o início da procura após a reta de 6 cm
-   inclui os 10° anteriores e vai no máximo até +60°. Nesse extremo,
+11. Com `kObstacleExitSearchLeftFirst = true`, após essa reta procura primeiro
+   à esquerda nos dois contornos, por até 3000 ms ou 75° a partir da orientação
+   atual. Três frames Fusion válidos devolvem o controle normal com proteção
+   relativa ao yaw do reencontro. No limite de 75°, conserva a segunda busca
+   no sentido oposto, limitada a 60° do outro lado; timeout ou sensores antigos
+   continuam exigindo parada. Use `false` para a sequência espelhada abaixo.
+   Nesse modo espelhado, se necessário, gira para dentro por até 3000 ms: direita no LEFT, esquerda
+   no RIGHT. O giro acumulado desde o início da procura após a reta de saída configurada
+   inclui os 10° anteriores e vai no máximo até +75°. Nesse extremo,
    inverte o giro sem pausa, com até mais 3000 ms para chegar a -60°.
    O limite negativo é `kObstacleExitSearchOppositeMaximumDegrees`, em
    `include/obr/config.h`: altere `60.0` para mudar o módulo do ângulo negativo.
@@ -85,7 +107,7 @@ confira os giros com rodas suspensas e use potência reduzida.
 | Cenário | Sequência |
 |---|---|
 | Faixa inferior durante a curva | Três frames novos e consecutivos com Fusion válido e `obstacleContinuationBand` interrompem a curva; avança 5 cm e gira para o lado escolhido até confirmar três novos frames Fusion |
-| Sem faixa durante a curva | Completa a curva, pausa, gira 25°, avança 6 cm, gira mais 10° procurando Fusion, avança procurando por 1500 ms e inicia a busca final por até 1500 ms |
+| Sem faixa durante a curva | Completa a curva, pausa, gira 30° e avança até 15 cm, aceitando Fusion após 3 cm; sem confirmação, gira mais 10°, avança procurando por 1900 ms e inicia a busca final por até 3000 ms em cada sentido |
 | GAP/LOST após saída nominal | Com memória lateral válida, abre janela de 2000 ms a partir do reencontro; três GAP/LOST novos fazem parar e consultar três frames NEAR da CAM1 |
 | Continuação frontal presente | Dois votos NEAR em três devolvem o tratamento ao GAP/LOST normal, sem busca lateral |
 | Continuação frontal ausente | Avança 5 cm e gira para o melhor lado salvo durante a curva; em 65° rejeita a faixa e inverte a busca; não aceita Fusion no retorno até cruzar o yaw inicial |
@@ -114,7 +136,7 @@ normalizadas. O mesmo módulo de ângulo e a mesma potência atendem aos dois la
 | Aproximação e primeira reta | `kObstacleSideApproachDegrees`, `kObstacleSelectedForwardDistanceCm`, `kObstacleSelectedForwardPower`, `kObstacleSelectedForwardMaximumHeadingCorrection` |
 | Curva | `kObstacleCurveDistanceCm`, `kObstacleCurveEndOffsetDegrees`, `kObstacleCurveBasePower`, `kObstacleCurveMaximumHeadingCorrection` |
 | Giro nominal de saída | `kObstacleExitPivotWaitMs`, `kObstacleExitPivotDegrees` |
-| Primeiro avanço de saída | `kObstacleExitForwardDistanceCm`, `kObstacleExitForwardPower` |
+| Primeiro avanço de saída | `kObstacleExitForwardDistanceCm`, `kObstacleExitMinimumForwardDistanceCm`, `kObstacleExitForwardPower` |
 | Giro procurando Fusion | `kObstacleExitFusionTurnDegrees`, `kObstacleExitFusionTurnPower` |
 | Segundo avanço procurando Fusion | `kObstacleExitFusionForwardTimeoutMs`, `kObstacleExitForwardPower` |
 | Busca nominal | `kObstacleExitSearchTimeoutMs`, `kObstacleExitSearchMaximumDegrees`, `kObstacleExitSearchOppositeMaximumDegrees`, `kObstacleExitSearchPower` |

@@ -14,7 +14,8 @@ public:
     void updateRedFinish(bool confirmed, bool missionFinished, bool displayAvailable);
     void updateLineEvents(const CameraLineSnapshot& cameraSnapshot,
                           bool displayAvailable);
-    void updateObstacleDetour(bool obstacleConfirmed, bool displayAvailable);
+    void updateObstacleDetour(bool obstacleConfirmed, bool displayAvailable,
+                              int waitSecondsRemaining = -1);
 
     static const char* greenDirectionText(GreenInterpretation interpretation);
     static bool isConfirmedGreen(const CameraLineSnapshot& cameraSnapshot);
@@ -30,4 +31,6 @@ private:
     bool gapAlertLatched_ = false;
     bool grayAlertLatched_ = false;
     bool obstacleAlertLatched_ = false;
+    bool obstacleCountdownActive_ = false;
+    int lastObstacleWaitSeconds_ = -1;
 };

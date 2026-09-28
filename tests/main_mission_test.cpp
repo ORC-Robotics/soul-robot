@@ -1,5 +1,13 @@
 #include "obr/config.h"
+#include "obr/forward_line_assist.h"
+#include "obr/green_maneuver.h"
+#include "obr/line_centering_controller.h"
+#include <vector>
+// Expõe a espera apenas para simular sua duração nos testes de integração.
+#define private public
+#include "obr/obstacle_avoidance.h"
 #include "obr/line_course_mission.h"
+#undef private
 #include "obr/rescue_area_mission.h"
 #include "obr/rescue_zone_triangle_mission.h"
 #include "obr/rescue_exit_mission.h"
@@ -296,6 +304,21 @@ struct MissionFixture
         return robotState.snapshot();
     }
 };
+
+void finishObstacleWait(MissionFixture& fixture, const CameraLineSnapshot& line)
+{
+    const auto waiting = fixture.robotState.snapshot();
+    require(waiting.autonomousStatus.obstacleWaitSecondsRemaining == 6 &&
+                waiting.left == 0.0 && waiting.right == 0.0,
+            "A missão deve iniciar a contagem após a ré com os motores parados.");
+    fixture.mission.lineCourseMission_.obstacleAvoidance_.initialWaitStartedAt_ -=
+        std::chrono::milliseconds(config::kObstacleInitialWaitMs);
+    const auto zero = fixture.update(line);
+    require(zero.autonomousStatus.obstacleWaitSecondsRemaining == 0 &&
+                zero.left == 0.0 && zero.right == 0.0,
+            "A missão deve disponibilizar zero para a OLED antes de continuar.");
+    fixture.update(line);
+}
 
 void testRescueExitWristTransitionPreservesOtherChannels()
 {
@@ -2709,6 +2732,8 @@ void testBottomCameraRecoveryHonorsStopEmergencyAndEsp32Failure()
 void testObstacleFailureWaitsAndResumesWithClearLine()
 {
     MissionFixture fixture;
+    fixture.mission.lineCourseMission_.obstacleAvoidance_.sideMode_ =
+        config::ObstacleSideMode::Automatic;
     fixture.telemetry.ultrasonicDistanceCm = 5.0;
     CameraLineSnapshot waitingLine = freshVision(GreenInterpretation::None);
     fixture.update(waitingLine);
@@ -2721,6 +2746,7 @@ void testObstacleFailureWaitsAndResumesWithClearLine()
     fixture.telemetry.leftEncoderCount -= reverseCounts;
     fixture.telemetry.rightEncoderCount -= reverseCounts;
     fixture.update(waitingLine);
+    finishObstacleWait(fixture, waitingLine);
     std::this_thread::sleep_for(std::chrono::milliseconds(
         config::kGreenTurnAroundCenteringTimeoutMs + 20));
     snapshot = fixture.update(waitingLine);
@@ -2759,6 +2785,8 @@ void testObstacleFailureWaitsAndResumesWithClearLine()
 void testObstaclePausesIfBottomCameraBecomesUnavailable()
 {
     MissionFixture fixture;
+    fixture.mission.lineCourseMission_.obstacleAvoidance_.sideMode_ =
+        config::ObstacleSideMode::Automatic;
     fixture.telemetry.ultrasonicDistanceCm = 5.0;
 
     RobotSnapshot snapshot = fixture.update(
@@ -2781,6 +2809,7 @@ void testObstaclePausesIfBottomCameraBecomesUnavailable()
     fixture.update(freshVision(GreenInterpretation::None));
 
     CameraLineSnapshot staleLine = freshVision(GreenInterpretation::None);
+    finishObstacleWait(fixture, freshVision(GreenInterpretation::None));
     staleLine.sourceFresh = false;
     snapshot = fixture.update(staleLine, false);
     require(
@@ -2793,7 +2822,7 @@ void testObstaclePausesIfBottomCameraBecomesUnavailable()
 
 void testObstacleRespectsStopAndSafetyPriority()
 {
-    for (int scenario = 0; scenario < 3; ++scenario)
+    for (int scenario = 0; scenario < 6; ++scenario)
     {
         MissionFixture fixture;
         fixture.telemetry.ultrasonicDistanceCm = 5.0;
@@ -2803,11 +2832,22 @@ void testObstacleRespectsStopAndSafetyPriority()
         const auto reversing = fixture.update(line);
         require(reversing.left < 0.0 && reversing.right < 0.0,
                 "O teste deve interromper um desvio que já está movimentando os motores.");
-        if (scenario == 0)
+        if (scenario >= 3)
+        {
+            const auto counts = static_cast<long long>(std::ceil(
+                config::kObstacleReverseDistanceCm * config::kEncoderCountsPerCentimeter));
+            fixture.telemetry.leftEncoderCount -= counts;
+            fixture.telemetry.rightEncoderCount -= counts;
+            const auto waiting = fixture.update(line);
+            require(waiting.autonomousStatus.obstacleWaitSecondsRemaining == 6 &&
+                        waiting.left == 0.0 && waiting.right == 0.0,
+                    "A segurança também deve interromper o desvio durante a contagem.");
+        }
+        if (scenario % 3 == 0)
         {
             fixture.robotState.emergencyStop();
         }
-        else if (scenario == 1)
+        else if (scenario % 3 == 1)
         {
             fixture.robotState.stop();
         }
@@ -3432,27 +3472,29 @@ void testExitAcquisitionRestoresFollower()
         forward.exitRunSequence = state.snapshot().autonomousRunSequence;
         forward.exitCandidates[2] = {true, 30.0, 0.5, 2, 1, true, true, 90.0};
         bool acquired = false;
-        for (int frame = 1; frame <= 20; ++frame)
+        for (int frame = 1; frame <= 120; ++frame)
         {
             bottom.lineTimestamp = forward.timestamp = frame;
             bottom.lineSequence = bottom.silverSequence = forward.sequence = frame;
             if (frame == 5)
             {
-                const auto counts = std::llround((config::kRescueExitFrontGuidanceStartCm + 0.1) *
+                const auto counts = std::llround((config::kRescueExitCrossingCm + 0.1) *
                                                  config::kEncoderCountsPerCentimeter);
                 telemetry.leftEncoderCount += counts;
                 telemetry.rightEncoderCount += counts;
             }
+            if (state.snapshot().autonomousStatus.phase == "rescue_exit_left_turning")
+                telemetry.yawZDeg = -config::kRescueExitLeftTurnDegrees;
             if (selected == AutonomousMission::MainMission)
                 main.update(state, telemetry, true, bottom, forward);
             else
                 controller.update(state, telemetry, true, bottom, forward, {});
             const auto snapshot = state.snapshot();
-            if (frame < 5)
+            if (frame > 1 && frame < 5)
                 require(snapshot.autonomousStatus.phase == "rescue_exit_initial_straight" &&
                             closeTo(snapshot.left, config::kRescueExitExplorationPower) &&
                             closeTo(snapshot.right, config::kRescueExitExplorationPower),
-                        "A integração não pode entregar o controle à CAM0 antes dos 23 cm");
+                        "A integração não pode entregar o controle à CAM0 antes da travessia e do segundo giro");
             acquired = acquired || snapshot.autonomousStatus.phase == "rescue_exit_acquired";
             if (snapshot.autonomousStatus.phase == "rescue_exit_acquired")
                 require(closeTo(snapshot.left, bottom.lineFollowerLeftPower) &&
@@ -3510,14 +3552,15 @@ void testNormalExitUsesEntryHeadingAndRejectsTriangleFallback()
                                 config::kRescueExitFromEntryYawDegrees),
                         "A saída normal deve ignorar ambos os headings de triângulo e usar a entrada.");
                 require(currentYaw == 0.0 ? (result.left > 0.0 && result.right < 0.0)
-                                         : (result.left < 0.0 && result.right > 0.0),
-                        "A saída normal deve escolher direita ou esquerda para o mesmo alvo absoluto.");
+                                         : (result.autonomousStatus.phase == "rescue_exit_crossing_starting"),
+                        "A saída normal deve alinhar ao alvo ou iniciar a travessia quando já estiver alinhada.");
             }
             else
             {
-                require(result.autonomousStatus.phase == "rescue_exit_failed" &&
-                            result.mode == "stopped" && closeTo(result.left, 0.0) && closeTo(result.right, 0.0),
-                        "Sem entrada válida, a missão deve parar mesmo com headings de triângulo disponíveis.");
+                require(result.mode == "autonomous" && result.left > 0.0 && result.right < 0.0 &&
+                            closeTo(result.autonomousStatus.exitHeadingDegrees,
+                                    std::remainder(currentYaw + config::kRescueExitFromEntryYawDegrees, 360.0)),
+                        "Sem entrada salva, deve usar o yaw atual sem aceitar o heading do triângulo.");
             }
         }
     }
@@ -3541,19 +3584,34 @@ void testFixedExitRestartAndEmergencyStop()
     forward.exitAnalysisActive = true;
     forward.exitRunSequence = state.snapshot().autonomousRunSequence;
     controller.update(state, telemetry, true, bottom, forward, {});
-    telemetry.leftEncoderCount += std::llround((config::kRescueExitFrontGuidanceStartCm + 1.0) * config::kEncoderCountsPerCentimeter);
-    telemetry.rightEncoderCount += std::llround((config::kRescueExitFrontGuidanceStartCm + 1.0) * config::kEncoderCountsPerCentimeter);
+    controller.update(state, telemetry, true, bottom, forward, {});
+    telemetry.leftEncoderCount += std::llround((config::kRescueExitCrossingCm + 1.0) * config::kEncoderCountsPerCentimeter);
+    telemetry.rightEncoderCount += std::llround((config::kRescueExitCrossingCm + 1.0) * config::kEncoderCountsPerCentimeter);
     forward.exitCandidates[2].visible = forward.exitCandidates[2].guidanceValid = true;
     forward.exitCandidates[2].score = 0.5;
     forward.exitCandidates[2].guidanceAngleDegrees = 120.0;
     forward.exitCandidates[2].entryDepthNormalized = 0.95;
     controller.update(state, telemetry, true, bottom, forward, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(config::kRescueExitWallReverseMs + 1));
+    controller.update(state, telemetry, true, bottom, forward, {});
+    controller.update(state, telemetry, true, bottom, forward, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(config::kRescueExitWallAdvanceMs + 1));
+    controller.update(state, telemetry, true, bottom, forward, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(config::kRescueExitYawZeroSettleMs + 1));
+    controller.update(state, telemetry, true, bottom, forward, {});
+    controller.update(state, telemetry, true, bottom, forward, {});
+    telemetry.yawZDeg = -config::kRescueExitLeftTurnDegrees;
+    controller.update(state, telemetry, true, bottom, forward, {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(config::kTurn90SettleMs + 1));
+    controller.update(state, telemetry, true, bottom, forward, {});
+    controller.update(state, telemetry, true, bottom, forward, {});
     require(state.snapshot().left > state.snapshot().right,
-            "Fusion frontal não corrigiu após os 23 cm na integração");
+            "Fusion frontal não corrigiu após a travessia e o giro à esquerda na integração");
     state.stop();
     controller.update(state, telemetry, true, bottom, forward, {});
     require(closeTo(state.snapshot().left, 0.0), "Stop deve zerar motores imediatamente");
     state.startAutonomous();
+    telemetry.yawZDeg = 0.0;
     controller.update(state, telemetry, true, bottom, forward, {});
     require(closeTo(state.snapshot().left, 0.0), "Imagem da execução anterior não pode guiar a nova saída");
     forward.exitRunSequence = state.snapshot().autonomousRunSequence;
@@ -3561,7 +3619,7 @@ void testFixedExitRestartAndEmergencyStop()
     require(state.snapshot().autonomousStatus.phase == "rescue_exit_initial_straight" &&
             closeTo(state.snapshot().autonomousStatus.exitAdvanceCm, 0.0) &&
             closeTo(state.snapshot().left, state.snapshot().right),
-            "Nova execução deve reiniciar os 23 cm sem reutilizar a correção frontal");
+            "Nova execução deve reiniciar os 60 cm sem reutilizar a correção frontal");
     state.emergencyStop();
     controller.update(state, telemetry, true, bottom, forward, {});
     require(closeTo(state.snapshot().left, 0.0) && closeTo(state.snapshot().right, 0.0),
@@ -3839,6 +3897,98 @@ void testRedFinishWaitsUntilRescueEnds()
             "Red must work again immediately after leaving the rescue phase");
 }
 
+void testStartupWaveOnceAfterCalibration()
+{
+    MissionController controller;
+    RobotState state;
+    auto telemetry = readyTelemetry();
+    telemetry.pca9685Ok = true;
+    const auto camera = freshVision(GreenInterpretation::None);
+    const auto update = [&]() {
+        controller.update(state, telemetry, true, camera, {}, {}, {});
+    };
+
+    for (int calibrationCase = 0; calibrationCase < 3; ++calibrationCase)
+    {
+        telemetry.calibrationStatusKnown = calibrationCase != 0;
+        telemetry.lastCalibrationSucceeded = calibrationCase == 2;
+        telemetry.calibrationActive = calibrationCase == 2;
+        state.startAutonomous();
+        update();
+        require(!state.snapshot().waveBonusRequested,
+                "Sem calibração concluída com sucesso, a partida não deve acenar.");
+        state.stop();
+        update();
+    }
+
+    telemetry.calibrationActive = false;
+    state.startAutonomous();
+    update();
+    if (!config::kWaveBonusAtMissionStartEnabled)
+    {
+        require(!state.snapshot().waveBonusRequested &&
+                    state.snapshot().mode == "autonomous" &&
+                    state.snapshot().autonomousStatus.phase.rfind("servo_", 0) != 0,
+                "Com o bônus desativado, a partida após calibrar deve seguir para a missão.");
+        return;
+    }
+    require(state.snapshot().waveBonusRequested,
+            "A primeira partida após calibrar deve iniciar o bônus.");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (state.snapshot().waveBonusRequested &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+        const auto snapshot = state.snapshot();
+        require(snapshot.left == 0.0 && snapshot.right == 0.0 &&
+                    snapshot.mode == "autonomous",
+                "A missão deve aguardar o gesto inteiro com tração zerada.");
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        update();
+    }
+    require(!state.snapshot().waveBonusRequested &&
+                state.snapshot().mode == "autonomous",
+            "O gesto deve concluir sem encerrar a missão.");
+    update();
+    require(state.snapshot().autonomousStatus.phase.rfind("servo_", 0) != 0,
+            "Após o gesto, o controle deve seguir para a missão principal.");
+    state.stop();
+    update();
+    state.startAutonomous();
+    update();
+    require(!state.snapshot().waveBonusRequested,
+            "Starts posteriores não devem repetir o bônus.");
+
+    for (int interruption = 0; interruption < 3; ++interruption)
+    {
+        MissionController interruptedController;
+        RobotState interruptedState;
+        const auto interruptedUpdate = [&]() {
+            interruptedController.update(interruptedState, telemetry, true, camera, {}, {}, {});
+        };
+        interruptedState.startAutonomous();
+        interruptedUpdate();
+        require(interruptedState.snapshot().waveBonusRequested,
+                "Cada execução nova do programa deve aceitar seu primeiro bônus.");
+        if (interruption == 0) interruptedState.stop();
+        if (interruption == 1) interruptedState.emergencyStop();
+        if (interruption == 2)
+        {
+            telemetry.sensorFresh = false;
+            interruptedUpdate();
+            telemetry.sensorFresh = true;
+        }
+        interruptedUpdate();
+        require(!interruptedState.snapshot().waveBonusRequested &&
+                    interruptedState.snapshot().left == 0.0 &&
+                    interruptedState.snapshot().right == 0.0,
+                "Stop, emergência e falha de comunicação devem cancelar com tração zero.");
+        interruptedState.startAutonomous();
+        interruptedUpdate();
+        require(!interruptedState.snapshot().waveBonusRequested,
+                "Cancelar o gesto não deve rearmar o bônus nos próximos starts.");
+    }
+}
+
 void testWaveBonusDispatch()
 {
     MissionController controller;
@@ -3888,6 +4038,7 @@ int main(int argc, char** argv)
     {
         if (argc > 1 && std::string(argv[1]) == "--wave-only")
         {
+            testStartupWaveOnceAfterCalibration();
             testWaveBonusDispatch();
             std::cout << "wave_bonus_test: OK\n";
             return 0;

@@ -552,10 +552,13 @@ int RobotApplication::run(const std::atomic<bool>& running)
         const RobotSnapshot robotSnapshot = robotState.snapshot();
         const bool obstacleDetourActive =
             robotSnapshot.mode == "autonomous" &&
-            robotSnapshot.autonomousStatus.phase.rfind("obstacle_", 0) == 0;
+            robotSnapshot.autonomousStatus.phase.rfind("obstacle_", 0) == 0 &&
+            robotSnapshot.autonomousStatus.phase != "obstacle_detected" &&
+            robotSnapshot.autonomousStatus.phase != "obstacle_initial_reverse";
         oledEvents.updateObstacleDetour(
             obstacleDetourActive,
-            oledEventDisplayAvailable);
+            oledEventDisplayAvailable,
+            robotSnapshot.autonomousStatus.obstacleWaitSecondsRemaining);
         const bool rescueVisionRequired =
             missionController.requiresForwardBallDetection(robotSnapshot);
         const bool selectedPerceptionReady =

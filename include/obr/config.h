@@ -564,18 +564,18 @@ constexpr double kRescueExitTurnPower = 0.75;
 // Prazo máximo, em milissegundos, da correção fina do giro de saída.
 // Após este prazo, segue para a reta mesmo com erro angular residual;
 // a validade dos sensores e a parada de emergência continuam obrigatórias.
-constexpr int kRescueExitTurnCorrectionMaximumMs = 2000;
+constexpr int kRescueExitTurnCorrectionMaximumMs = 4000;
 // Potência base da correção frontal, na faixa normalizada dos motores.
 // A autoridade da CAM1 começa após a distância inicial configurada abaixo.
-constexpr double kRescueExitApproachPower = 0.80;
-constexpr double kRescueExitSteeringDeadbandDegrees = 3.5;
+constexpr double kRescueExitApproachPower = 0.78;
+constexpr double kRescueExitSteeringDeadbandDegrees = 6.0;
 // Perto da fita, a autoridade cresce suavemente sem arco fechado nem roda em ré.
 constexpr double kRescueExitSteeringFullDegrees = 24.0;
-constexpr double kRescueExitSteeringOuterPower = 0.83;
-constexpr double kRescueExitSteeringInnerPower = 0.75;
+constexpr double kRescueExitSteeringOuterPower = 0.78;
+constexpr double kRescueExitSteeringInnerPower = 0.70;
 // Potência normalizada do avanço reto na saída fixa, antes e após a reta inicial.
 // Reduza durante os primeiros testes para diminuir a velocidade do robô.
-constexpr double kRescueExitExplorationPower = 0.80;
+constexpr double kRescueExitExplorationPower = 0.90;
 constexpr double kRescueExitExplorationAttemptCm = 30.0;
 constexpr double kRescueExitExplorationTotalCm = 60.0;
 constexpr double kRescueExitExplorationRecoveryCm = 8.0;
@@ -590,13 +590,47 @@ constexpr double kRescueExitThirdStraightYawDegrees = 67.0;
 constexpr double kRescueExitDirectYawDegrees = kRescueExitFirstStraightYawDegrees;
 // Deslocamento angular da saída normal, em graus, à direita do yaw congelado na entrada.
 // Calibre o alvo da arena aqui; este valor não altera a rota curta já concluída.
-constexpr double kRescueExitFromEntryYawDegrees = 105.0;
+constexpr double kRescueExitFromEntryYawDegrees = 90.0;
 // Erro angular máximo, em graus, para concluir o alinhamento da saída normal.
 // Aumentar esta tolerância reduz a precisão; não compensa um alvo mal calibrado.
-constexpr double kRescueExitFromEntryYawToleranceDegrees = 3.0;
-// Distância inicial reta, em centímetros, medida pelo menor avanço das rodas.
-// Um valor baixo libera a correção frontal ainda dentro da área de resgate;
-// um valor alto atrasa a retomada da linha pelas câmeras.
+constexpr double kRescueExitFromEntryYawToleranceDegrees = 5.0;
+// Travessia da saída normal, em centímetros, antes do giro à esquerda.
+// A rota de reentrada com resgate concluído conserva suas próprias distâncias.
+constexpr double kRescueExitCrossingCm = 60.0;
+// Ré temporizada, em milissegundos, para afastar a frente da quina após a
+// travessia. Não depende de encoders ou câmera; usa a potência de exploração.
+constexpr int kRescueExitWallReverseMs = 400;
+// Novo avanço, em milissegundos, para apoiar a frente na parede antes do zero
+// local de yaw. Aumentar o prazo prolonga a pressão contra a parede.
+constexpr int kRescueExitWallAdvanceMs = 2000;
+// Pausa parada, em milissegundos, antes de zerar a referência local na parede.
+// Um prazo curto pode registrar a orientação enquanto o robô ainda tem inércia.
+constexpr int kRescueExitYawZeroSettleMs = 300;
+// Módulo do alvo à esquerda, em graus, no referencial local zerado na parede.
+// O alvo do segundo giro é negativo; o yaw global da ESP32 não é alterado.
+constexpr double kRescueExitLeftTurnDegrees = 85.0;
+// Prazo máximo de cada giro normal, em milissegundos; expirar libera a próxima
+// etapa com erro residual, sem transformar uma correção incompleta em falha.
+constexpr int kRescueExitNormalTurnTimeoutMs = 10000;
+// Estimativa de tempo para 90° sem IMU, em milissegundos. Precisa de calibração
+// na arena: aumentar este valor aumenta o giro realizado sem referência atual.
+constexpr int kRescueExitTimedQuarterTurnMs = 1500;
+// Prazo da travessia, em milissegundos. Encoders atuais encerram antes aos 60 cm;
+// sem progresso medido, o prazo encerra a etapa com distância aproximada.
+constexpr int kRescueExitCrossingTimeoutMs = 4000;
+// Limite da busca normal, em milissegundos. Sem linha confirmada, para e aguarda
+// a CAM0, mantendo a missão ativa sem permitir avanço cego indefinido.
+constexpr int kRescueExitNormalSearchTimeoutMs = 12000;
+static_assert(kRescueExitCrossingCm > 0.0 &&
+              kRescueExitWallReverseMs > 0 && kRescueExitWallAdvanceMs > 0 &&
+              kRescueExitYawZeroSettleMs >= 0 &&
+              kRescueExitLeftTurnDegrees > 0.0 && kRescueExitLeftTurnDegrees <= 180.0 &&
+              kRescueExitTimedQuarterTurnMs > 0 &&
+              kRescueExitNormalTurnTimeoutMs > kRescueExitTimedQuarterTurnMs &&
+              kRescueExitCrossingTimeoutMs > 0 && kRescueExitNormalSearchTimeoutMs > 0,
+              "A sequência normal de saída precisa de movimentos limitados por tempo.");
+// Distância legada da reta inicial, em centímetros. A saída normal agora usa
+// kRescueExitCrossingCm e habilita a visão somente após o giro à esquerda.
 constexpr double kRescueExitFrontGuidanceStartCm = 23.0;
 // Avanço máximo sem Fusion de nenhuma câmera, em centímetros, após a reta inicial.
 // O robô para ao atingir o limite, evitando atravessar a arena com visão sem alvo.
@@ -1083,6 +1117,10 @@ constexpr double kEncoderCountsPerCentimeter =
 // um obstáculo. A histerese exige afastamento antes de armar uma nova manobra.
 constexpr double kObstacleDetectionDistanceCm = 6.0;
 constexpr int kObstacleDetectionConfirmationSamples = 2;
+// Espera, em milissegundos, com os motores parados após a ré inicial do desvio.
+// Reduzir este tempo encurta a contagem exibida na OLED no desafio surpresa.
+constexpr int kObstacleInitialWaitMs = 6000;
+static_assert(kObstacleInitialWaitMs > 0, "Obstacle initial wait must be positive");
 constexpr double kObstacleRearmDistanceCm = 15.0;
 // Quantidade de quadros Fusion novos exigidos antes de retomar a missão
 // após uma falha no desvio. Evita avançar por causa de uma leitura isolada.
@@ -1093,7 +1131,7 @@ constexpr int kObstacleRearmConfirmationSamples = 3;
 // Depois da escolha, o robô retorna a 40 graus para fechar a aproximação antes
 // da reta curta e da curva nominal.
 constexpr double kObstacleClearanceScanDegrees = 60.0;
-constexpr double kObstacleSideApproachDegrees = 40.0;
+constexpr double kObstacleSideApproachDegrees = 42.0;
 // A CAM1 confirma preto apenas nesta janela angular do scan. Antes dela, o
 // obstáculo pode preencher a ROI; depois dela, a faixa lateral pode sair do quadro.
 constexpr double kObstacleCameraBlackMinimumAngleDegrees = 10.0;
@@ -1172,10 +1210,16 @@ constexpr double kObstacleCurveFullHeadingErrorDegrees = 15.0;
 // contorno LEFT e esquerda no RIGHT. A pausa reduz o efeito da inércia na IMU.
 constexpr int kObstacleExitPivotWaitMs = 250;
 // Módulo do giro relativo de saída, em graus; o lado escolhido define o sinal.
-constexpr double kObstacleExitPivotDegrees = 25.0;
+constexpr double kObstacleExitPivotDegrees = 30.0;
 // Primeiro avanço da saída, em centímetros. Os dois encoders devem alcançar
 // essa distância antes de liberar o giro que começa a procurar o Fusion.
-constexpr double kObstacleExitForwardDistanceCm = 10.0;
+constexpr double kObstacleExitForwardDistanceCm = 15.0;
+// Avanço mínimo real, em centímetros, após o giro nominal antes de aceitar
+// Fusion. Três frames novos podem encerrar a reta sem completar os 15 cm.
+constexpr double kObstacleExitMinimumForwardDistanceCm = 3.0;
+static_assert(kObstacleExitMinimumForwardDistanceCm > 0.0 &&
+              kObstacleExitMinimumForwardDistanceCm <= kObstacleExitForwardDistanceCm,
+              "O avanço mínimo de entrada precisa caber na reta de saída.");
 // Potência normalizada dos dois avanços de saída; pode ser calibrada sem alterar
 // a aproximação de 12 cm nem os avanços curtos de recuperação.
 constexpr double kObstacleExitForwardPower = 0.75;
@@ -1185,13 +1229,17 @@ constexpr double kObstacleExitFusionTurnDegrees = 10.0;
 constexpr double kObstacleExitFusionTurnPower = 0.73;
 // Tempo máximo, em milissegundos, da segunda reta procurando o Fusion.
 // Se três frames não confirmarem a faixa, começa a busca final por giro.
-constexpr int kObstacleExitFusionForwardTimeoutMs = 1500;
+constexpr int kObstacleExitFusionForwardTimeoutMs = 1900;
+// Após a procura reta expirar, começa a busca pela esquerda, independentemente
+// do lado do contorno. false conserva a busca espelhada para dentro do contorno.
+constexpr bool kObstacleExitSearchLeftFirst = true;
 // Tempo máximo, em milissegundos, para cada sentido da busca final. Ao atingir
 // o limite positivo, a busca inverte e reinicia esse prazo; ao expirar, para.
 constexpr int kObstacleExitSearchTimeoutMs = 3000;
-// Limite positivo, em graus, desde o início da procura após a reta de 6 cm.
-// Inclui o giro inicial de 10 graus; ao atingir este valor, a busca inverte.
-constexpr double kObstacleExitSearchMaximumDegrees = 60.0;
+// Limite do primeiro sentido da busca, em graus; ao atingir este valor, inverte.
+// Com prioridade à esquerda, parte do yaw após a reta temporizada. No modo
+// espelhado, parte do yaw anterior ao giro adicional e inclui esse giro.
+constexpr double kObstacleExitSearchMaximumDegrees = 75.0;
 // Limite negativo, em graus, no mesmo referencial da busca. Para mudar o ponto
 // final da procura no sentido oposto, altere este valor positivo: 60.0 permite
 // chegar a -60 graus; ao atingir o limite sem linha, os motores param.
@@ -1734,6 +1782,9 @@ constexpr double kServoRoutineWristInternalDegrees = 0.0;
 // Cada saída de obstáculo confirmada executa uma vez; a chegada mantém a tração bloqueada.
 constexpr bool kWaveBonusAfterObstacleEnabled = false;
 constexpr bool kWaveBonusAfterFinishEnabled = false;
+// Executa o gesto na primeira partida da missão principal após calibrar.
+// A tração aguarda o término; outros starts não repetem durante esta execução.
+constexpr bool kWaveBonusAtMissionStartEnabled = false;
 // Posições do tchauzinho, em graus, e quantidade de ciclos 30° → 0°.
 // Alterar os ângulos exige conferir a folga mecânica do braço e do pulso.
 constexpr double kServoWaveArmDegrees = 105.0;

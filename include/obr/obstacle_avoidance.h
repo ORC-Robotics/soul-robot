@@ -16,6 +16,8 @@ struct ObstacleAvoidanceOutput
     bool hasControl = false;
     bool completed = false;
     bool failed = false;
+    // -1 indica ausência de contagem; zero marca a liberação da sequência.
+    int waitSecondsRemaining = -1;
     double leftPower = 0.0;
     double rightPower = 0.0;
     double progressPercent = 0.0;
@@ -67,6 +69,8 @@ private:
     enum class Phase
     {
         Idle,
+        WaitingAfterReverse,
+        ContinuingAfterWait,
         ReversingBeforeCentering,
         Centering,
         TurningLeftForMeasurement,
@@ -116,6 +120,7 @@ private:
     long long forwardStartRightCount_ = 0;
     long long reverseStartLeftCount_ = 0;
     long long reverseStartRightCount_ = 0;
+    std::chrono::steady_clock::time_point initialWaitStartedAt_{};
     std::chrono::steady_clock::time_point reverseStartedAt_{};
     double selectedHeadingYaw_ = std::numeric_limits<double>::quiet_NaN();
     std::chrono::steady_clock::time_point forwardStartedAt_{};
@@ -135,6 +140,8 @@ private:
     std::chrono::steady_clock::time_point exitSearchStartedAt_{};
     bool exitSearchOppositeSide_ = false;
     bool exitHeadingGuardActive_ = false;
+    // Orientação da faixa aceita; impede rejeição imediata pelo yaw anterior ao contorno.
+    double exitHeadingGuardReferenceYaw_ = 0.0;
     double exitCorrectionDirection_ = -1.0;
     std::chrono::steady_clock::time_point exitHeadingGuardStartedAt_{};
     int fusionReacquireFrames_ = 0;
@@ -179,6 +186,11 @@ private:
         const CameraLineSnapshot& line);
     ObstacleAvoidanceOutput updateInitialReverse(
         const Esp32TelemetrySnapshot& telemetry);
+    // Mantém PWM zero durante a contagem após a ré, sem repetir o recuo.
+    ObstacleAvoidanceOutput updateInitialWait();
+    ObstacleAvoidanceOutput continueAfterInitialWait(
+        const Esp32TelemetrySnapshot& telemetry,
+        const std::string& action);
     ObstacleAvoidanceOutput continueAfterInitialReverse(
         const Esp32TelemetrySnapshot& telemetry,
         const std::string& action);
@@ -225,7 +237,8 @@ private:
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line,
         const std::string& phase,
-        const std::string& action);
+        const std::string& action,
+        bool useAcquiredHeadingReference = false);
     ObstacleAvoidanceOutput updateReacquireForward(
         const Esp32TelemetrySnapshot& telemetry,
         const CameraLineSnapshot& line);

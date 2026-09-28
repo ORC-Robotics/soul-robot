@@ -26,7 +26,7 @@ void OledEventNotifier::updateLineEvents(
     const CameraLineSnapshot& cameraSnapshot,
     bool displayAvailable)
 {
-    if (redAlertPriority_ || !cameraSnapshot.sourceFresh)
+    if (redAlertPriority_ || obstacleCountdownActive_ || !cameraSnapshot.sourceFresh)
     {
         // Uma leitura antiga não confirma nem rearma eventos visuais.
         return;
@@ -102,12 +102,29 @@ void OledEventNotifier::updateLineEvents(
 
 void OledEventNotifier::updateObstacleDetour(
     bool obstacleConfirmed,
-    bool displayAvailable)
+    bool displayAvailable,
+    int waitSecondsRemaining)
 {
+    obstacleCountdownActive_ = obstacleConfirmed && waitSecondsRemaining >= 0;
     if (redAlertPriority_) return;
     if (!obstacleConfirmed)
     {
         obstacleAlertLatched_ = false;
+        lastObstacleWaitSeconds_ = -1;
+        return;
+    }
+    if (obstacleCountdownActive_)
+    {
+        // Envia apenas quando o segundo muda; falhas de envio são tentadas
+        // novamente. Outros alertas de linha não sobrescrevem a contagem.
+        if (displayAvailable && waitSecondsRemaining != lastObstacleWaitSeconds_ &&
+            esp32_.sendOledLargeMessage(
+                "DESVIO", std::to_string(waitSecondsRemaining) + " SEGUNDOS",
+                config::kOledNavigationAlertDurationMs))
+        {
+            lastObstacleWaitSeconds_ = waitSecondsRemaining;
+            obstacleAlertLatched_ = true;
+        }
         return;
     }
     if (!displayAvailable || obstacleAlertLatched_)
@@ -115,8 +132,7 @@ void OledEventNotifier::updateObstacleDetour(
         return;
     }
 
-    // A futura rotina de obstáculo deve chamar este método com true somente
-    // depois de validar a detecção e de realmente assumir o desvio.
+    // As fases sem contagem mantêm o alerta simples de desvio.
     if (esp32_.sendOledLargeMessage(
             "DESVIO",
             "",

@@ -277,7 +277,7 @@ void MainMission::update(
                 rescueExitMission_.setReferenceHeading(
                     rescueRoomMission_.entryHeadingDegrees());
             // Mesmo sem entrada válida, bloqueia o fallback do teste isolado.
-            // RescueExitMission deve falhar com os motores parados nesse caso.
+            // Sem referência salva, RescueExitMission limita o giro por tempo.
             exitReferenceInitialized_ = true;
             robotState.driveAutonomous(0.0, 0.0);
             robotState.updateAutonomousStatus(makeStatus(

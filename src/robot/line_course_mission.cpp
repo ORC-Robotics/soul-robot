@@ -35,6 +35,7 @@ AutonomousStatus makeObstacleStatus(
     status.obstacleLeftClearance = output.leftClearance;
     status.obstacleRightClearance = output.rightClearance;
     status.obstacleSelectedSide = output.selectedSide;
+    status.obstacleWaitSecondsRemaining = output.waitSecondsRemaining;
     status.cameraBlackLeft = output.cameraBlackLeft;
     status.cameraBlackRight = output.cameraBlackRight;
     status.cameraBlackLeftFrames = output.cameraBlackLeftFrames;

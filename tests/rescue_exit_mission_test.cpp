@@ -66,278 +66,33 @@ struct Fixture
         candidate.guidanceAngleDegrees = angle;
         candidate.entryDepthNormalized = 0.95;
     }
+    void finishWallReposition()
+    {
+        require(tick(config::kRescueExitWallReverseMs).status.phase == "rescue_exit_wall_advance_starting" &&
+                close(last.leftPower, 0.0), "A ré deve encerrar com saída zero antes da inversão");
+        tick();
+        require(close(last.leftPower, config::kRescueExitExplorationPower) &&
+                close(last.rightPower, config::kRescueExitExplorationPower), "O novo avanço deve usar a potência configurada");
+        require(tick(config::kRescueExitWallAdvanceMs).status.phase == "rescue_exit_zeroing_yaw" &&
+                close(last.leftPower, 0.0) && close(last.rightPower, 0.0),
+                "O novo avanço deve encerrar parado antes do zero de yaw");
+    }
     void enableFront()
     {
         tick();
-        travel(config::kRescueExitFrontGuidanceStartCm + 0.1,
-               config::kRescueExitFrontGuidanceStartCm + 0.1);
         tick();
+        travel(config::kRescueExitCrossingCm + 0.1, config::kRescueExitCrossingCm + 0.1);
+        require(tick().status.phase == "rescue_exit_wall_reverse", "Os 60 cm devem iniciar a ré na parede");
+        finishWallReposition();
+        require(tick(config::kRescueExitYawZeroSettleMs).status.phase == "rescue_exit_left_turn_starting",
+                "A pausa deve registrar o zero local e preparar o giro");
+        tick();
+        telemetry.yawZDeg -= config::kRescueExitLeftTurnDegrees;
+        tick();
+        tick(config::kTurn90SettleMs + 1);
+        require(last.status.phase == "rescue_exit_front_guidance_starting", "O segundo giro deve liberar a busca");
     }
 };
-
-void testDistanceGateAndFrontCorrections()
-{
-    Fixture f;
-    f.bottom.normalSteeringValid = false;
-    f.guidance(120.0);
-    require(!f.mission.requiresRescueZoneDetection(), "Saída fixa não precisa classificar corners");
-    f.tick();
-    for (int i = 0; i < 5; ++i) f.tick();
-    require(!f.last.completed && close(f.last.leftPower, 0.75) && close(f.last.rightPower, 0.75),
-            "Fusion não pode controlar antes dos 23 cm");
-    f.travel(config::kRescueExitFrontGuidanceStartCm + 5.0,
-             config::kRescueExitFrontGuidanceStartCm - 1.0);
-    f.tick();
-    require(f.last.status.phase == "rescue_exit_initial_straight", "A menor roda deve limitar os 23 cm");
-    f.travel(0.0, 1.1);
-    f.tick();
-    require(f.last.status.phase == "rescue_exit_front_guidance" && f.last.leftPower > f.last.rightPower,
-            "Fusion frontal deve corrigir à direita após o limiar");
-    f.guidance(60.0);
-    f.tick();
-    require(f.last.leftPower < f.last.rightPower, "Fusion deve corrigir à esquerda");
-    f.forward.exitCandidates = {};
-    f.tick();
-    require(close(f.last.leftPower, 0.75) && close(f.last.rightPower, 0.75),
-            "Imagem sem Fusion deve cancelar a correção imediatamente");
-    f.guidance(120.0);
-    f.tick();
-    require(!f.last.completed && f.last.status.phase == "rescue_exit_front_guidance" &&
-            f.last.leftPower > f.last.rightPower, "Fusion deve voltar a corrigir quando reaparecer");
-}
-
-void testEncoderThresholdAtConfiguredDistance()
-{
-    require(close(config::kRescueExitFrontGuidanceStartCm, 23.0),
-            "A saída normal deve liberar o Fusion frontal após 23 cm");
-    Fixture f;
-    f.bottom.normalSteeringValid = false;
-    f.guidance(120.0);
-    f.tick();
-    const auto thresholdCounts = static_cast<long long>(std::ceil(
-        config::kRescueExitFrontGuidanceStartCm * config::kEncoderCountsPerCentimeter));
-    f.telemetry.leftEncoderCount = thresholdCounts + 100;
-    f.telemetry.rightEncoderCount = thresholdCounts - 1;
-    require(f.tick().status.phase == "rescue_exit_initial_straight",
-            "Um pulso antes dos 23 cm ainda deve manter a reta");
-    ++f.telemetry.rightEncoderCount;
-    require(f.tick().status.phase == "rescue_exit_front_guidance" &&
-            f.last.leftPower > f.last.rightPower,
-            "O primeiro pulso que atinge os 23 cm deve habilitar a correção");
-}
-
-void testCandidateValidationAndProximity()
-{
-    Fixture f;
-    f.bottom.normalSteeringValid = false;
-    f.enableFront();
-    f.guidance(120.0);
-    f.forward.exitCandidates[2].entryDepthNormalized = 0.2;
-    f.tick();
-    require(f.last.leftPower > f.last.rightPower && f.last.status.exitGuidanceState == "CAM1",
-            "Fusion distante deve corrigir após os 23 cm, sem exigir proximidade de 85%");
-    f.forward.exitCandidates[2].entryDepthNormalized = 0.95;
-    f.tick();
-    require(f.last.leftPower > f.last.rightPower, "Fita próxima deve liberar correção");
-    for (int invalid = 0; invalid < 4; ++invalid)
-    {
-        f.guidance(120.0);
-        auto& candidate = f.forward.exitCandidates[2];
-        candidate.blockedByColor = invalid == 0;
-        candidate.grayNoiseLikely = invalid == 1;
-        candidate.guidanceValid = invalid != 2;
-        if (invalid == 3) candidate.guidanceAngleDegrees = std::numeric_limits<double>::quiet_NaN();
-        f.tick();
-        require(close(f.last.leftPower, f.last.rightPower), "Fusion inválido deve manter a reta");
-    }
-    f.forward.exitCandidates = {};
-    f.guidance(120.0);
-    f.forward.exitCandidates[0] = f.forward.exitCandidates[2];
-    f.forward.exitCandidates[0].score = 0.9;
-    f.forward.exitCandidates[0].guidanceAngleDegrees = 60.0;
-    f.tick();
-    require(f.last.leftPower < f.last.rightPower && f.last.status.exitSector == 0 &&
-            close(f.last.status.exitConfidence, 0.9), "Controle e diagnóstico devem usar a melhor candidata válida");
-    f.guidance(91.0);
-    f.forward.exitCandidates[0] = {};
-    f.tick();
-    require(close(f.last.leftPower, f.last.rightPower), "Zona morta deve preservar a reta");
-    f.forward.exitCandidates = {};
-    f.travel(40.0, 40.0);
-    f.tick();
-    require(!f.last.failed && f.last.status.exitAdvanceCm > 60.0 && f.last.leftPower > 0.0,
-            "Ausência de fita após 60 cm não deve iniciar busca ou retorno");
-}
-
-void testBottomConfirmationUsesNewConsecutiveFrames()
-{
-    Fixture f;
-    f.enableFront();
-    f.tick(50, false);
-    f.tick(50, false);
-    require(!f.last.completed, "IPC repetido não pode confirmar a CAM0");
-    f.tick();
-    f.bottom.normalSteeringValid = false;
-    f.tick();
-    f.bottom.normalSteeringValid = true;
-    f.bottom.exitLineUnbranched = false;
-    for (int i = 0; i < config::kRescueExitAcquisitionFrames - 1; ++i)
-        require(!f.tick().completed, "CAM0 precisa de quatro frames consecutivos após perda");
-    require(f.tick().completed && close(f.last.leftPower, f.bottom.lineFollowerLeftPower) &&
-            close(f.last.rightPower, f.bottom.lineFollowerRightPower), "Handoff deve aplicar a CAM0 sem pausa");
-}
-
-void testFallbackDistanceLimitAndBlocker()
-{
-    Fixture f;
-    f.bottom.lineControlSource = "gap-forward";
-    f.bottom.normalSteeringValid = false;
-    f.enableFront();
-    require(f.last.status.exitGuidanceState == "STRAIGHT_NO_FUSION" &&
-            f.last.status.exitBottomBlocker == "SOURCE_gap-forward",
-            "O diagnóstico deve distinguir fallback de Fusion inferior válido");
-    f.travel(30.0, 30.0);
-    require(!f.tick().failed && f.last.leftPower > 0.0,
-            "O fallback deve continuar reto dentro do limite configurado");
-    f.guidance(120.0);
-    f.tick();
-    require(close(f.last.status.exitFallbackAdvanceCm, 0.0), "Fusion atual deve reiniciar o limite sem alvo");
-    f.forward.exitCandidates = {};
-    f.travel(config::kRescueExitFallbackMaximumAdvanceCm + 0.1,
-             config::kRescueExitFallbackMaximumAdvanceCm + 0.1);
-    require(f.tick().failed && close(f.last.leftPower, 0.0) && close(f.last.rightPower, 0.0) &&
-            f.last.status.exitGuidanceState == "STOPPED",
-            "Sem Fusion de nenhuma câmera, o limite deve parar o robô sem buscar outro yaw");
-}
-
-// Simula um giro próximo do alvo cuja correção não produz movimento.
-// A saída deve avançar após dois segundos, mas nunca com a IMU inválida.
-void testTurnCorrectionDeadlineContinuesExit()
-{
-    for (const bool loseImu : {false, true})
-    {
-        Fixture f;
-        f.mission.setReferenceHeading(0.0);
-        require(f.tick().status.phase == "rescue_exit_direct_turning",
-                "A saída deve iniciar o giro");
-        f.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
-            config::kRescueExitFromEntryYawToleranceDegrees - 1.0;
-        f.telemetry.gyroZDegPerSec = 100.0;
-        f.tick();
-        f.telemetry.gyroZDegPerSec = 0.0;
-        require(f.tick(config::kTurn90SettleMs + 1).status.phase ==
-                    "rescue_exit_direct_turning",
-                "O erro residual deve iniciar correção");
-        const auto correctionStartedAt = f.now;
-        // Ultrapassa o antigo limite de três pulsos sem mudar o yaw.
-        for (int pulse = 0; pulse < 4; ++pulse)
-        {
-            require(!f.tick(config::kTurn90CorrectionPulseMs + 1).failed,
-                    "Correção insuficiente não deve abortar a saída");
-            require(!f.tick(config::kTurn90SettleMs + 1).failed,
-                    "O limite de pulsos não deve abortar a saída");
-        }
-        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            f.now - correctionStartedAt).count();
-        require(f.tick(config::kRescueExitTurnCorrectionMaximumMs -
-                           static_cast<int>(elapsedMs) - 1).status.phase ==
-                    "rescue_exit_direct_turning",
-                "Antes dos dois segundos, a correção deve permanecer ativa");
-        if (loseImu) f.telemetry.mpuOk = false;
-        const auto result = f.tick(1);
-        if (loseImu)
-            require(result.leftPower == 0.0 && result.rightPower == 0.0 &&
-                        result.status.phase != "rescue_exit_initial_straight",
-                    "O prazo não pode liberar avanço com IMU inválida");
-        else
-            require(!result.failed && result.status.phase == "rescue_exit_initial_straight" &&
-                        result.leftPower > 0.0 && result.rightPower > 0.0,
-                    "Após o prazo de correção, a saída deve seguir para a reta");
-    }
-}
-
-void testTurnExcludedAndEntryReference()
-{
-    Fixture f;
-    f.mission.reset();
-    f.telemetry.yawZDeg = 170.0;
-    f.mission.setReferenceHeading(170.0);
-    const double target = std::remainder(170.0 + config::kRescueExitFromEntryYawDegrees, 360.0);
-    require(f.tick().status.phase == "rescue_exit_direct_turning", "A referência de entrada deve definir o alvo");
-    f.travel(50.0, 50.0);
-    f.telemetry.yawZDeg = target;
-    f.tick();
-    f.tick(config::kTurn90SettleMs + 1);
-    require(f.last.status.phase == "rescue_exit_initial_straight" && close(f.last.status.exitAdvanceCm, 0.0) &&
-            close(f.last.status.exitHeadingDegrees, target), "Giro não pode entrar na distância da reta");
-    f.travel(10.0, 10.0);
-    f.tick();
-    require(f.last.status.exitAdvanceCm < 11.0, "Distância deve começar após o giro");
-    f.mission.reset();
-    f.mission.setReferenceHeading(f.telemetry.yawZDeg);
-    f.tick();
-    require(close(f.last.status.exitAdvanceCm, 0.0) && !f.last.completed, "Nova execução deve limpar a distância e o handoff");
-}
-
-void testAbsoluteExitHeadingAndShortestTurn()
-{
-    for (const auto& headings : {std::pair<double, double>{0.0, 0.0},
-                                 {0.0, 90.0}, {170.0, 170.0}, {-170.0, 170.0},
-                                 {170.0, -100.0}})
-    {
-        Fixture f;
-        f.mission.reset();
-        f.mission.setReferenceHeading(headings.first);
-        f.telemetry.yawZDeg = headings.second;
-        const double target = std::remainder(
-            headings.first + config::kRescueExitFromEntryYawDegrees, 360.0);
-        const double turn = std::remainder(target - headings.second, 360.0);
-        f.tick();
-        require(close(f.last.status.exitHeadingDegrees, target),
-                "O alvo deve depender da entrada salva e não do yaw atual");
-        require(turn > 0.0 ? (f.last.leftPower > 0.0 && f.last.rightPower < 0.0)
-                           : (f.last.leftPower < 0.0 && f.last.rightPower > 0.0),
-                "A IMU deve escolher o menor giro à esquerda ou à direita");
-        f.telemetry.yawZDeg = target;
-        f.tick();
-        require(f.tick(config::kTurn90SettleMs + 1).status.phase == "rescue_exit_initial_straight",
-                "O giro deve terminar no mesmo alvo absoluto da saída");
-    }
-}
-
-void testMissingEntryHeadingStopsSafely()
-{
-    for (const double invalid : {std::numeric_limits<double>::quiet_NaN(),
-                                 std::numeric_limits<double>::infinity()})
-    {
-        Fixture f;
-        f.mission.reset();
-        f.mission.setReferenceHeading(invalid);
-        f.telemetry.yawZDeg = 90.0;
-        require(f.tick().failed && close(f.last.leftPower, 0.0) && close(f.last.rightPower, 0.0),
-                "Referência inválida deve falhar com motores parados, sem usar o yaw atual");
-        require(f.tick().failed, "A falha deve permanecer até uma nova execução");
-    }
-    Fixture missing;
-    missing.mission.reset();
-    require(missing.tick().failed, "Referência ausente também deve impedir a saída normal");
-}
-
-void testNormalExitUsesDedicatedTolerance()
-{
-    Fixture inside;
-    inside.mission.setReferenceHeading(0.0);
-    inside.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
-                              config::kRescueExitFromEntryYawToleranceDegrees;
-    require(inside.tick().status.phase == "rescue_exit_initial_straight",
-            "Dentro da tolerância própria, a saída normal já pode iniciar a reta");
-    Fixture outside;
-    outside.mission.setReferenceHeading(0.0);
-    outside.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
-                               config::kRescueExitFromEntryYawToleranceDegrees - 0.1;
-    require(outside.tick().status.phase == "rescue_exit_direct_turning",
-            "Fora da tolerância própria, a saída normal deve alinhar o yaw");
-}
 
 void testCompletedRescueRoute()
 {
@@ -381,48 +136,250 @@ void testCompletedRescueRoute()
             "A rota curta deve entregar a linha após os frames Fusion exigidos.");
 }
 
-void testFailuresAndRecovery()
+
+void testNormalSequenceAndDistanceGate()
+{
+    Fixture f;
+    f.bottom.normalSteeringValid = false;
+    f.guidance(120.0);
+    require(f.tick().status.phase == "rescue_exit_crossing_starting", "Alinhado, deve iniciar a travessia");
+    f.tick();
+    f.travel(config::kRescueExitCrossingCm + 5.0, config::kRescueExitCrossingCm - 1.0);
+    require(f.tick().status.phase == "rescue_exit_initial_straight" &&
+            close(f.last.leftPower, config::kRescueExitExplorationPower) &&
+            close(f.last.rightPower, config::kRescueExitExplorationPower),
+            "A menor roda limita a travessia e a visão não pode corrigir nessa etapa");
+    f.travel(0.0, 1.1);
+    require(f.tick().status.phase == "rescue_exit_wall_reverse", "Após 60 cm deve iniciar a ré na parede");
+    f.finishWallReposition();
+    require(f.tick(config::kRescueExitYawZeroSettleMs).status.phase == "rescue_exit_left_turn_starting",
+            "Depois da pausa deve preparar o giro");
+    require(f.tick().status.phase == "rescue_exit_left_turning" &&
+            f.last.leftPower < 0.0 && f.last.rightPower > 0.0,
+            "O segundo giro deve ser à esquerda");
+    require(close(f.last.status.exitHeadingDegrees, -config::kRescueExitLeftTurnDegrees), "O segundo alvo usa o zero local da parede");
+    f.telemetry.yawZDeg = -config::kRescueExitLeftTurnDegrees;
+    f.tick();
+    f.tick(config::kTurn90SettleMs + 1);
+    require(f.last.status.phase == "rescue_exit_front_guidance_starting" &&
+            close(f.last.status.exitAdvanceCm, 0.0), "O giro não deve entrar na distância da busca");
+    f.tick();
+    require(f.last.status.phase == "rescue_exit_front_guidance" && f.last.leftPower > f.last.rightPower,
+            "Após o giro, a busca deve corrigir imediatamente pelo Fusion frontal");
+}
+
+void testSilverReferenceAndTolerance()
+{
+    for (const auto headings : {std::pair<double,double>{170.0, 170.0}, {-170.0, 170.0}, {0.0, -100.0}})
+    {
+        Fixture f;
+        f.mission.setReferenceHeading(headings.first);
+        f.telemetry.yawZDeg = headings.second;
+        const double target = std::remainder(headings.first + config::kRescueExitFromEntryYawDegrees, 360.0);
+        const double error = std::remainder(target - headings.second, 360.0);
+        f.tick();
+        require(close(f.last.status.exitHeadingDegrees, target), "O alvo deve usar o yaw salvo no prata");
+        require(error > 0.0 ? f.last.leftPower > 0.0 : f.last.leftPower < 0.0,
+                "O alinhamento deve escolher o menor giro até o alvo absoluto");
+        f.travel(50.0, 50.0);
+        f.telemetry.yawZDeg = target;
+        f.tick();
+        f.tick(config::kTurn90SettleMs + 1);
+        require(f.last.status.phase == "rescue_exit_crossing_starting" &&
+                close(f.last.status.exitAdvanceCm, 0.0), "Pulsos durante o giro não contam como travessia");
+    }
+    Fixture inside;
+    inside.mission.setReferenceHeading(0.0);
+    inside.telemetry.yawZDeg = config::kRescueExitFromEntryYawDegrees -
+                              config::kRescueExitFromEntryYawToleranceDegrees;
+    require(inside.tick().status.phase == "rescue_exit_crossing_starting", "Deve aceitar a tolerância ampla");
+}
+
+void testSensorlessTimedSequenceAndRecovery()
+{
+    Fixture f;
+    f.mission.reset();
+    f.telemetry.sensorFresh = f.telemetry.mpuOk = false;
+    f.telemetry.yawZDeg = std::numeric_limits<double>::quiet_NaN();
+    f.forward.exitAnalysisActive = false;
+    f.forward.cameraObscured = true;
+    f.bottom.sourceFresh = false;
+    require(f.tick().leftPower > 0.0 && f.last.rightPower < 0.0, "Sem IMU, o giro deve usar tempo");
+    require(f.tick(config::kRescueExitTimedQuarterTurnMs).status.phase == "rescue_exit_crossing_starting",
+            "O giro temporizado deve encerrar sem falha");
+    require(f.tick().leftPower > 0.0 && f.last.rightPower > 0.0, "A câmera obstruída não bloqueia a travessia");
+    require(f.tick(config::kRescueExitCrossingTimeoutMs).status.phase == "rescue_exit_wall_reverse",
+            "Sem encoders, o prazo deve encerrar a travessia");
+    f.finishWallReposition();
+    require(f.tick(config::kRescueExitYawZeroSettleMs).status.phase == "rescue_exit_left_turn_starting",
+            "Sem IMU, zerar a referência não deve bloquear a sequência");
+    require(f.tick().leftPower < 0.0 && f.last.rightPower > 0.0, "Sem IMU, o segundo giro é à esquerda");
+    require(f.tick(config::kRescueExitTimedQuarterTurnMs).status.phase == "rescue_exit_front_guidance_starting",
+            "O segundo giro deve liberar a busca");
+    f.tick();
+    require(!f.last.failed && f.last.leftPower > 0.0, "A busca deve continuar por tempo sem câmera");
+    require(f.tick(config::kRescueExitNormalSearchTimeoutMs).status.phase == "rescue_exit_waiting_line" &&
+            !f.last.failed && close(f.last.leftPower, 0.0), "Busca sem visão deve parar sem falhar a missão");
+    f.bottom.sourceFresh = true;
+    for (int i = 0; i < config::kRescueExitAcquisitionFrames; ++i) f.tick();
+    require(f.last.completed, "A CAM0 recuperada deve concluir mesmo após o prazo da busca");
+}
+
+void testTurnTimeoutAndImuLossDoNotAbort()
+{
+    for (const bool loseImu : {false, true})
+    {
+        Fixture f;
+        f.mission.setReferenceHeading(0.0);
+        require(f.tick().status.phase == "rescue_exit_direct_turning", "Deve iniciar o alinhamento");
+        if (loseImu) f.telemetry.mpuOk = false;
+        require(f.tick(config::kRescueExitNormalTurnTimeoutMs).status.phase == "rescue_exit_crossing_starting" &&
+                !f.last.failed, "Timeout ou perda da IMU devem liberar a próxima etapa");
+    }
+    Fixture partial;
+    partial.mission.setReferenceHeading(0.0);
+    partial.tick();
+    partial.tick(config::kRescueExitTimedQuarterTurnMs - 10);
+    partial.telemetry.mpuOk = false;
+    require(partial.tick(10).status.phase == "rescue_exit_crossing_starting",
+            "Perder a IMU não deve reiniciar o prazo do giro temporizado");
+}
+
+void testFusionValidationAndConsecutiveHandoff()
+{
+    Fixture f;
+    f.bottom.normalSteeringValid = false;
+    f.enableFront();
+    f.guidance(120.0);
+    f.tick();
+    require(f.last.leftPower > f.last.rightPower, "Fusion válido deve corrigir à direita");
+    f.guidance(60.0);
+    f.tick();
+    require(f.last.leftPower < f.last.rightPower, "Fusion válido deve corrigir à esquerda");
+    f.forward.cameraObscured = true;
+    f.tick();
+    require(close(f.last.leftPower, f.last.rightPower), "Câmera obstruída não pode fornecer correção");
+    f.forward.cameraObscured = false;
+    f.forward.exitRunSequence = 6;
+    f.tick();
+    require(close(f.last.leftPower, f.last.rightPower), "IPC de outra execução não pode fornecer correção");
+    f.forward.exitRunSequence = 7;
+    f.guidance(std::numeric_limits<double>::quiet_NaN());
+    f.tick();
+    require(close(f.last.leftPower, f.last.rightPower), "Ângulo inválido não pode fornecer correção");
+    f.bottom.normalSteeringValid = true;
+    f.tick();
+    for (int i = 0; i < 5; ++i) require(!f.tick(50, false).completed, "Frames repetidos não confirmam a CAM0");
+    f.bottom.normalSteeringValid = false;
+    f.tick();
+    f.bottom.normalSteeringValid = true;
+    for (int i = 0; i < config::kRescueExitAcquisitionFrames - 1; ++i)
+        require(!f.tick().completed, "A confirmação deve exigir frames consecutivos");
+    require(f.tick().completed && close(f.last.leftPower, f.bottom.lineFollowerLeftPower),
+            "A CAM0 deve assumir com suas potências");
+}
+
+void testCompletedRouteStillStopsOnFailures()
 {
     Fixture camera;
-    camera.bottom.normalSteeringValid = false;
-    camera.enableFront();
-    camera.guidance(120.0);
-    camera.tick();
-    camera.forward.ageMs = config::kRescueExitForwardStatusTimeoutMs + 1;
-    require(camera.tick().status.phase == "rescue_exit_waiting_camera" && close(camera.last.leftPower, 0.0),
-            "Imagem vencida deve zerar motores");
-    camera.forward.ageMs = 0.0;
-    camera.forward.exitCandidates = {};
-    require(camera.tick().leftPower > 0.0, "Imagem atual sem linha deve permitir retomada reta");
-    camera.forward.exitRunSequence = 6;
-    require(close(camera.tick().leftPower, 0.0), "Execução incorreta não pode guiar motores");
-    require(camera.tick(config::kRescueExitCameraRecoveryTimeoutMs).failed, "Câmera ausente deve falhar após recuperação");
-
+    camera.mission.startCompletedRescueRoute();
+    camera.forward.cameraObscured = true;
+    require(camera.tick().failed && close(camera.last.leftPower, 0.0), "Reentrada conserva a proteção visual");
     Fixture sensor;
-    sensor.tick();
+    sensor.mission.startCompletedRescueRoute();
     sensor.telemetry.sensorFresh = false;
-    require(sensor.tick().status.phase == "rescue_exit_waiting_sensors" && close(sensor.last.leftPower, 0.0),
-            "Sensor inválido deve parar imediatamente");
-    sensor.telemetry.sensorFresh = true;
-    require(sensor.tick().leftPower > 0.0, "Sensor recuperado deve permitir retomada");
-    sensor.telemetry.sensorFresh = false;
-    sensor.tick();
-    require(sensor.tick(config::kRescueExitSensorTimeoutMs).failed, "Sensor ausente deve falhar no timeout");
+    require(close(sensor.tick().leftPower, 0.0), "Reentrada deve parar com sensor ausente");
+    require(sensor.tick(config::kRescueExitSensorTimeoutMs).failed, "Reentrada conserva o timeout dos sensores");
+}
 
-    Fixture wall;
-    wall.tick();
-    wall.forward.cameraObscured = true;
-    require(wall.tick().failed && close(wall.last.leftPower, 0.0), "Obstrução deve falhar sem buscar outro yaw");
-    Fixture stall;
-    stall.tick();
-    require(stall.tick(config::kRescueDistanceStallTimeoutMs).failed, "Rodas sem progresso devem parar");
+void testLocalEmergencyAndStalledCrossing()
+{
+    Fixture f;
+    f.mission.setReferenceHeading(0.0);
+    f.tick();
+    f.telemetry.emergencyStopActive = true;
+    f.tick();
+    require(close(f.last.leftPower, 0.0) && close(f.last.rightPower, 0.0) && !f.last.failed,
+            "Emergência local deve zerar ambos os comandos mesmo na sequência temporizada");
+
+    Fixture stalled;
+    stalled.bottom.normalSteeringValid = false;
+    stalled.tick();
+    stalled.tick();
+    require(stalled.tick(config::kRescueExitCrossingTimeoutMs).status.phase == "rescue_exit_wall_reverse" &&
+            !stalled.last.failed, "Encoders sem progresso não devem abortar a travessia normal");
+
     Fixture reboot;
     reboot.tick();
+    reboot.tick();
     reboot.telemetry.esp32UptimeMs = 0;
-    require(reboot.tick(1).failed, "Reinício do ESP32 deve interromper a saída");
-    Fixture timeout;
-    timeout.tick();
-    require(timeout.tick(config::kRescueExitTotalTimeoutMs).failed, "Timeout total deve permanecer ativo");
+    reboot.telemetry.leftEncoderCount = reboot.telemetry.rightEncoderCount = 100000;
+    reboot.tick(1);
+    require(!reboot.last.failed && close(reboot.last.status.exitAdvanceCm, 0.0),
+            "Reinício da ESP32 não pode falhar a missão nem somar o salto dos encoders");
+}
+
+void testWallYawZeroAfterSettling()
+{
+    Fixture f;
+    f.bottom.normalSteeringValid = false;
+    f.tick();
+    f.tick();
+    f.telemetry.yawZDeg = 170.0;
+    f.travel(config::kRescueExitCrossingCm + 0.1, config::kRescueExitCrossingCm + 0.1);
+    require(f.tick().status.phase == "rescue_exit_wall_reverse", "Deve reposicionar antes de registrar o zero");
+    f.finishWallReposition();
+    f.telemetry.yawZDeg = -170.0;
+    const auto waiting = f.tick(config::kRescueExitYawZeroSettleMs - 1);
+    require(waiting.status.phase == "rescue_exit_zeroing_yaw" && close(waiting.leftPower, 0.0),
+            "O zero não pode ser registrado antes da pausa terminar");
+    require(f.tick(1).status.phase == "rescue_exit_left_turn_starting" &&
+            close(f.last.status.exitHeadingDegrees, -config::kRescueExitLeftTurnDegrees),
+            "O alvo deve ser negativo no referencial local zerado depois de estabilizar");
+    f.tick();
+    require(f.last.leftPower < 0.0 && f.last.rightPower > 0.0, "O alvo local deve comandar a esquerda");
+    f.telemetry.yawZDeg = std::remainder(-170.0 - config::kRescueExitLeftTurnDegrees, 360.0);
+    f.tick();
+    f.tick(config::kTurn90SettleMs + 1);
+    require(f.last.status.phase == "rescue_exit_front_guidance_starting" && !f.last.failed,
+            "A conversão do yaw global com passagem por 180 graus deve concluir o giro local");
+}
+
+void testWallRepositionDeadlinesAndEmergency()
+{
+    Fixture f;
+    f.bottom.normalSteeringValid = false;
+    f.tick();
+    f.tick();
+    f.travel(config::kRescueExitCrossingCm + 0.1, config::kRescueExitCrossingCm + 0.1);
+    f.tick();
+    f.telemetry.sensorFresh = f.telemetry.mpuOk = false;
+    f.forward.cameraObscured = true;
+    f.tick(config::kRescueExitWallReverseMs - 1);
+    require(f.last.status.phase == "rescue_exit_wall_reverse" &&
+            close(f.last.leftPower, -config::kRescueExitExplorationPower) &&
+            close(f.last.rightPower, -config::kRescueExitExplorationPower) && !f.last.failed,
+            "A ré deve durar um segundo mesmo com câmera e sensores inválidos");
+    require(f.tick(1).status.phase == "rescue_exit_wall_advance_starting", "A ré deve encerrar no prazo exato");
+    f.tick(config::kRescueExitWallAdvanceMs - 1);
+    require(f.last.status.phase == "rescue_exit_wall_advance" && f.last.leftPower > 0.0 && !f.last.failed,
+            "O novo avanço deve durar dois segundos antes de registrar o zero");
+    require(f.tick(1).status.phase == "rescue_exit_zeroing_yaw" && close(f.last.leftPower, 0.0),
+            "O prazo deve encerrar o avanço sem falhar a missão");
+
+    for (const bool duringReverse : {true, false})
+    {
+        Fixture emergency;
+        emergency.tick();
+        emergency.tick();
+        emergency.travel(config::kRescueExitCrossingCm + 0.1, config::kRescueExitCrossingCm + 0.1);
+        emergency.tick();
+        if (!duringReverse) emergency.tick(config::kRescueExitWallReverseMs);
+        emergency.telemetry.emergencyStopActive = true;
+        emergency.tick();
+        require(close(emergency.last.leftPower, 0.0) && close(emergency.last.rightPower, 0.0),
+                "Emergência deve zerar ambos os motores durante a ré e o novo avanço");
+    }
 }
 }
 
@@ -430,18 +387,16 @@ int main()
 {
     try
     {
-        testDistanceGateAndFrontCorrections();
-        testEncoderThresholdAtConfiguredDistance();
-        testCandidateValidationAndProximity();
-        testBottomConfirmationUsesNewConsecutiveFrames();
-        testFallbackDistanceLimitAndBlocker();
-        testTurnCorrectionDeadlineContinuesExit();
-        testTurnExcludedAndEntryReference();
-        testAbsoluteExitHeadingAndShortestTurn();
-        testMissingEntryHeadingStopsSafely();
-        testNormalExitUsesDedicatedTolerance();
+        testNormalSequenceAndDistanceGate();
+        testSilverReferenceAndTolerance();
+        testSensorlessTimedSequenceAndRecovery();
+        testTurnTimeoutAndImuLossDoNotAbort();
+        testFusionValidationAndConsecutiveHandoff();
         testCompletedRescueRoute();
-        testFailuresAndRecovery();
+        testCompletedRouteStillStopsOnFailures();
+        testLocalEmergencyAndStalledCrossing();
+        testWallYawZeroAfterSettling();
+        testWallRepositionDeadlinesAndEmergency();
         std::cout << "rescue_exit_mission_test: OK\n";
         return 0;
     }

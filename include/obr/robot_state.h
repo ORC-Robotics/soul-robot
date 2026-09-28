@@ -59,6 +59,7 @@ struct AutonomousStatus
     double obstacleLeftClearance = std::numeric_limits<double>::quiet_NaN();
     double obstacleRightClearance = std::numeric_limits<double>::quiet_NaN();
     std::string obstacleSelectedSide = "NONE";
+    int obstacleWaitSecondsRemaining = -1;
     bool cameraBlackLeft = false;
     bool cameraBlackRight = false;
     int cameraBlackLeftFrames = 0;

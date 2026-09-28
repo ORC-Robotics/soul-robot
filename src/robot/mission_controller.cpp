@@ -216,6 +216,21 @@ void MissionController::update(
         activeAutonomousRunSequence_ = snapshot.autonomousRunSequence;
         if (snapshot.autonomousMission == AutonomousMission::RescueExit)
             mainMission_.reset(true);
+        if (config::kWaveBonusAtMissionStartEnabled && !startupWaveConsumed_ &&
+            snapshot.autonomousMission == AutonomousMission::MainMission &&
+            esp32Telemetry.calibrationStatusKnown &&
+            esp32Telemetry.lastCalibrationSucceeded &&
+            esp32Telemetry.readyForOperation())
+        {
+            // Consome na solicitação para que Stop ou emergência não repitam
+            // o bônus. A missão principal só recebe controle após o término.
+            if (robotState.requestWaveBonus())
+            {
+                startupWaveConsumed_ = true;
+                updateWaveBonus(robotState, robotState.snapshot(), esp32Telemetry);
+            }
+            return;
+        }
     }
 
     switch (snapshot.autonomousMission)
@@ -584,6 +599,7 @@ void MissionController::updateObstacleAvoidance(
     status.obstacleLeftClearance = output.leftClearance;
     status.obstacleRightClearance = output.rightClearance;
     status.obstacleSelectedSide = output.selectedSide;
+    status.obstacleWaitSecondsRemaining = output.waitSecondsRemaining;
     status.cameraBlackLeft = output.cameraBlackLeft;
     status.cameraBlackRight = output.cameraBlackRight;
     status.cameraBlackLeftFrames = output.cameraBlackLeftFrames;
