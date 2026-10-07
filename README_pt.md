@@ -12,9 +12,9 @@
 
 O Soul é um robô autônomo de resgate projetado e construído pela ORC Robotics. Sozinho, ele segue a linha da pista, interpreta as marcações de curva e passa por gaps, rampas e obstáculos. Na área de resgate, encontra as vítimas, recolhe cada uma, deposita na zona certa e segue até a saída.
 
-### Compacto e completo
+### Um robô, todas as camadas
 
-Apesar do tamanho compacto, o Soul reúne um sistema robótico completo. Uma **Raspberry Pi** executa a estratégia das missões em C++ e a visão computacional em Python, enquanto uma **ESP32** aciona motores e servos e devolve as leituras dos sensores pela UART. Duas câmeras, encoders, uma IMU e um sensor ultrassônico permitem ler a pista e o ambiente, e um painel web mostra tudo em tempo real.
+Uma **Raspberry Pi** executa a estratégia das missões em C++ e a visão computacional em Python, enquanto uma **ESP32** aciona motores e servos e devolve as leituras dos sensores pela UART. Duas câmeras, encoders, uma IMU e um sensor ultrassônico permitem ler a pista e o ambiente, e um painel web mostra tudo em tempo real.
 
 ## Principais recursos
 
@@ -35,6 +35,8 @@ Apesar do tamanho compacto, o Soul reúne um sistema robótico completo. Uma **R
 - **Tração segura** — a parada de emergência tem prioridade máxima, e a ESP32 para os motores se os comandos deixarem de chegar por 500 ms
 
 ## Hardware
+
+Apesar do tamanho compacto, o Soul vem equipado com um hardware completo:
 
 - **Computador principal**: Raspberry Pi
 - **Microcontrolador**: ESP32, ligada por UART a 115200 bps
