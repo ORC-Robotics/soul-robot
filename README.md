@@ -1,6 +1,6 @@
-# Soul — OBR2026K
+# Soul
 
-Software do Soul, robô autônomo da ORC Robotics para a Olimpíada Brasileira de Robótica (OBR). Este repositório reúne a versão final utilizada em competição: controle e navegação na Raspberry Pi, firmware da ESP32, percepção visual e painel de operação.
+Software do Soul, robô autônomo da ORC Robotics. Este repositório reúne a versão final utilizada em competição: controle e navegação na Raspberry Pi, firmware da ESP32, percepção visual e painel de operação.
 
 O sistema percorre a pista seguindo a linha, interpreta marcações, trata interrupções do trajeto e obstáculos, executa a coleta e o depósito de vítimas na área de resgate e busca a linha para continuar o percurso.
 
